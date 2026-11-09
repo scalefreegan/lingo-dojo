@@ -298,7 +298,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         return;
       }
       const ctrl = freshCtrl();
-      const { text } = await transcribe(wav, [locale, nativeLocale].filter((l): l is string => !!l), ctrl.signal);
+      const { text } = await transcribe(wav, [locale, nativeLocale].filter((l): l is string => !!l), ctrl.signal, expectedPhrases(entriesRef.current));
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       if (!text) {
         setPhase("idle");
@@ -1020,4 +1020,18 @@ function LibraryBrowser({
       )}
     </div>
   );
+}
+
+/** The target-language phrases of the dojo master's last two turns, newest
+ *  first: what the learner is most likely about to say. Sent as hints for
+ *  speech to text, capped so the URL stays short. */
+function expectedPhrases(history: VoiceHistoryItem[]): string[] {
+  const out: string[] = [];
+  const masters = history.filter((h): h is Extract<VoiceHistoryItem, { role: "master" }> => h.role === "master").slice(-2).reverse();
+  for (const h of masters) {
+    for (const line of h.lines) {
+      for (const g of line.segments ?? []) if (g.lang === "target" && out.length < 60) out.push(g.text.slice(0, 300));
+    }
+  }
+  return out;
 }

@@ -144,7 +144,9 @@ declare module "*/scripts/voice.mjs" {
   export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;
   export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string }): Req;
   export function elevenVoicesRequest(o: { key: string }): Req;
-  export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string }): Req;
+  export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string; language?: string; keyterms?: string[] }): Req;
+  export const MAX_KEYTERMS: number;
+  export function keytermsFrom(phrases: unknown, max?: number): string[];
   export function azureSpeechRequest(o: { key: string; region: string; voice: string; text: string; locale?: string }): Req;
   export function azureVoicesRequest(o: { key: string; region: string }): Req;
   export function azureTranscribeRequest(o: { key: string; region: string; audio: Uint8Array; locales: string[]; mime?: string }): Req;
