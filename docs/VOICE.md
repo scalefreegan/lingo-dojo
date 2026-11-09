@@ -46,9 +46,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   target and native segments, and every segment is spoken by the **same
   speaker's voice** with that language's pronunciation: ElevenLabs gets
   `language_code` per segment, a multilingual Azure voice gets an SSML
-  `<lang xml:lang>`, and macOS (one language per voice) uses the target voice
-  for target text and the native locale's voice, else the system default, for
-  the rest. Target words show highlighted in the transcript.
+  `<lang xml:lang>`. The voice never changes mid-line: native-language text is
+  read by the same native target-language speaker (with their accent, as the
+  frame asks). macOS voices take no language hint, so there the marks only
+  highlight target words in the transcript.
 - **Speak**: one call per segment; the browser plays one while the next is
   being made. Segments are cached for ▶ replay.
 - **Your turn ends** when you tap Done (the default, best for thinking out loud
