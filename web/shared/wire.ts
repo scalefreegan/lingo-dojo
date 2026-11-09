@@ -460,6 +460,12 @@ export interface VoiceLine {
   gender: VoiceGender | null;
   text: string;
   segments: VoiceSegment[];
+  /** The dojo master's own timing mark, seconds: <pause N> → N,
+   *  <overlap N> → -N. Absent when it gave none. */
+  gap?: number;
+  /** The delay to play before this line, ms (negative = overlap), resolved
+   *  by the server from `gap` and who is speaking. 0 for the first line. */
+  pauseMs?: number;
 }
 
 /** The session so far, as the client holds it (the server keeps none). */

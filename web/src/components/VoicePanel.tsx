@@ -88,7 +88,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Every clip playing right now: usually one, two while lines overlap.
+  const audiosRef = useRef(new Set<HTMLAudioElement>());
   const urls = useRef(new Map<string, Promise<string>>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -146,11 +147,12 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   useEffect(() => {
     const cache = urls.current;
     const gen = genRef;
+    const audios = audiosRef;
     return () => {
       gen.current += 1;
       ctrlRef.current?.abort();
       recRef.current?.cancel();
-      audioRef.current?.pause();
+      for (const a of audios.current) a.pause();
       for (const p of cache.values()) void p.then(URL.revokeObjectURL, () => {});
     };
   }, []);
@@ -179,8 +181,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     ctrlRef.current = null;
     recRef.current?.cancel();
     recRef.current = null;
-    audioRef.current?.pause();
-    audioRef.current = null;
+    for (const a of audiosRef.current) a.pause();
+    audiosRef.current.clear();
     setPlaying(null);
     setLevel(0);
     setPhase("idle");
@@ -210,19 +212,65 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     return p;
   }
 
-  function playUrl(url: string, signal: AbortSignal): Promise<void> {
+  /** Play one clip. Resolves when it ends, or `leadMs` before it ends when
+   *  the next line overlaps it; the clip then plays on to its end (or until
+   *  Stop) while the next one starts. */
+  function playUrl(url: string, signal: AbortSignal, leadMs = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       const a = new Audio(url);
-      audioRef.current = a;
-      const done = () => {
-        signal.removeEventListener("abort", done);
-        a.pause();
-        resolve();
+      audiosRef.current.add(a);
+      let poll = 0;
+      let settled = false;
+      const release = () => {
+        settled = true;
+        window.clearInterval(poll);
       };
-      a.onended = done;
-      a.onerror = () => reject(new Error("the browser could not play that audio"));
+      const finish = () => {
+        audiosRef.current.delete(a);
+        signal.removeEventListener("abort", stop);
+        window.clearInterval(poll);
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      const stop = () => {
+        a.pause();
+        finish();
+      };
+      a.onended = finish;
+      a.onerror = () => {
+        finish();
+        reject(new Error("the browser could not play that audio"));
+      };
+      signal.addEventListener("abort", stop, { once: true });
+      a.play().then(() => {
+        if (leadMs <= 0) return;
+        // Watch the time left: timeupdate fires only ~4 times a second, too
+        // coarse for a 0.3 s overlap.
+        poll = window.setInterval(() => {
+          if (Number.isFinite(a.duration) && a.duration - a.currentTime <= leadMs / 1000) {
+            release();
+            resolve();
+          }
+        }, 25);
+      }, (e) => {
+        finish();
+        reject(e);
+      });
+    });
+  }
+
+  /** Wait between lines; Stop cuts it short. */
+  function pause(ms: number, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const t = window.setTimeout(done, ms);
+      function done() {
+        window.clearTimeout(t);
+        signal.removeEventListener("abort", done);
+        resolve();
+      }
       signal.addEventListener("abort", done, { once: true });
-      a.play().catch(reject);
     });
   }
 
@@ -232,10 +280,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
     setPhase("speaking");
     const last = only ? from : lines.length - 1;
-    const queue: { key: string; lineKey: string; line: VoiceLine; seg: VoiceSegment }[] = [];
+    // `pauseMs` is the gap before a line's first segment (none before the
+    // first line played); segments within a line run back to back.
+    const queue: { key: string; lineKey: string; line: VoiceLine; seg: VoiceSegment; pauseMs: number }[] = [];
     for (let i = from; i <= last; i++) {
       const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
-      segs.forEach((seg, k) => queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg }));
+      segs.forEach((seg, k) =>
+        queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg, pauseMs: k === 0 && i > from ? (lines[i].pauseMs ?? 0) : 0 }),
+      );
     }
     for (let q = 0; q < queue.length; q++) {
       if (signal.aborted) return;
@@ -244,9 +296,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       const next = queue[q + 1];
       if (next) void audioFor(next.key, next.line, next.seg, signal).catch(() => {});
       if (signal.aborted) return;
+      if (cur.pauseMs > 0) await pause(cur.pauseMs, signal);
+      if (signal.aborted) return;
       setPlaying(cur.lineKey);
-      await playUrl(url, signal);
+      // An overlapping next line starts this far before this clip ends.
+      const lead = next && next.pauseMs < 0 ? -next.pauseMs : 0;
+      await playUrl(url, signal, lead);
     }
+    // The turn is over when every clip has finished, not when an overlap
+    // let the loop move on (a short line can overlap into a longer one).
+    while (audiosRef.current.size && !signal.aborted) await pause(50, signal);
     setPlaying(null);
   }
 

@@ -11,7 +11,7 @@ import path from "node:path";
 import YAML from "yaml";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
-  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
+  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
@@ -182,6 +182,45 @@ test("parseVoiceReply: punctuation after a target phrase stays with it, never a 
   ]);
   assert.equal(line.text, "The word for tomato here is jitomate. Try asking for a kilo: un kilo de jitomates, por favor.");
   assert.deepEqual(parseVoiceReply("CHARACTER-F: <t>你好</t>。", "adult")[0].segments, [{ lang: "target", text: "你好。" }]);
+});
+
+test("timing: <pause>/<overlap> marks set the gap; the narrator handover always pauses", () => {
+  const lines = parseVoiceReply(
+    `NARRATOR-F: Here we go.
+CHARACTER-M: <t>¡Buenas!</t>
+<pause 1.2> CHARACTER-M: <t>A ver, déjeme pesarlos.</t>
+<overlap 0.4>
+CHARACTER-F: <t>¡Oiga, yo estaba primero!</t>
+CHARACTER-F: <t>¿Me atiende?</t>
+<overlap 0.5> NARRATOR-F: Your turn.`,
+    "adult",
+  );
+  assert.deepEqual(lines.map((l) => [l.speaker, l.gap ?? null, l.pauseMs]), [
+    ["narrator", null, 0],
+    ["character", null, LINE_PAUSE.narratorSwitch],
+    ["character", 1.2, 1200], // a timed line from the same speaker stays its own line
+    ["character", -0.4, -400], // a mark on its own line applies to the next
+    ["narrator", -0.5, LINE_PAUSE.narratorSwitchMin], // never overlap the narrator
+  ]);
+  assert.equal(lines[3].text, "¡Oiga, yo estaba primero! ¿Me atiende?", "an untimed line by the same speaker merges");
+  assert.ok(lines.every((l) => !/pause|overlap/.test(l.text)), "marks are never spoken");
+  // The replayed history keeps the marks, so the model sees its own format.
+  const replay = voiceTurnPrompt([{ role: "master", lines }], "x");
+  assert.match(replay, /<pause 1\.2> CHARACTER-M: <t>A ver/);
+  assert.match(replay, /<overlap 0\.4> CHARACTER-F:/);
+});
+
+test("linePauseMs: defaults by who speaks, clamps what the model asks for", () => {
+  const n = { speaker: "narrator", gender: "female" };
+  const cm = { speaker: "character", gender: "male" };
+  assert.equal(linePauseMs(null, n), 0);
+  assert.equal(linePauseMs(n, cm), LINE_PAUSE.narratorSwitch);
+  assert.equal(linePauseMs(cm, { ...cm }), LINE_PAUSE.sameSpeaker);
+  assert.equal(linePauseMs(cm, { speaker: "character", gender: "female" }), LINE_PAUSE.newSpeaker);
+  assert.equal(linePauseMs(cm, { ...cm, gap: 0 }), 0, "back to back when asked");
+  assert.equal(linePauseMs(cm, { ...cm, gap: 30 }), LINE_PAUSE.max);
+  assert.equal(linePauseMs(cm, { ...cm, gap: -9 }), -LINE_PAUSE.maxOverlap);
+  assert.equal(linePauseMs(cm, { ...n, gap: 0.1 }), LINE_PAUSE.narratorSwitchMin);
 });
 
 test("splitLong: long segments break at sentence ends, under the cap", () => {

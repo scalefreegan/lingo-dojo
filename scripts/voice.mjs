@@ -184,6 +184,9 @@ export function voiceAdapter(mode = "adult") {
 This session runs inside Lingo Dojo, not a live voice app. Each of your turns is turned into speech line by line, and every speaker has its own native-speaker voice, a woman's or a man's, so the voices, accents and pronunciation are handled for you. What you write is exactly what is spoken.
 
 - Start every line with a speaker tag that also says whose voice it is: -F for a woman, -M for a man, e.g. ${tags} (${who}). Take the gender from your instructions and the scenario's roles (a Señora is -F, a Don is -M), keep each person's gender for the whole session, and give a new person in the scene their own. The tags are read by the app, not spoken: never say a tag out loud. One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
+- Timing between lines is yours to set. There is always a short pause between lines, and a longer one whenever the narrator and the scene hand over. To change it, start a line with <pause N> (wait N seconds first, e.g. <pause 1.5> for a beat before a reply, or while a vendor weighs the tomatoes) or <overlap N> (start N seconds before the previous line ends, for people talking over each other or cutting in, at most 1.5). Use them in the scene where the moment calls for it; most lines need neither. Never overlap the narrator.
+  <pause 1.2> CHARACTER-M: <t>Mmm… a ver, déjeme pesarlos.</t>
+  <overlap 0.4> CHARACTER-F: <t>¡Oiga, yo estaba primero!</t>
 - Write only words to be spoken aloud: no markdown, lists, emoji, stage directions, or descriptions of tone or actions in brackets or asterisks.
 - Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
   NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
@@ -218,7 +221,7 @@ export const DIRECT = "[direct]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${tagFor(l)}: ${markedText(l)}`).join("\n")}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
   return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master, in tagged lines only.`;
@@ -229,6 +232,38 @@ export function voiceTurnPrompt(history, message) {
 // `NARRATOR:`, `CHARACTER-F:`, `**Character (M):**`, `SIDEKICK/woman:` — the
 // tag, then an optional gender, in whatever punctuation the model reached for.
 const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
+
+/** A timing mark at the start of a line, before its tag: `<pause 1.5>` waits
+ *  that many seconds first; `<overlap 0.4>` starts the line that much before
+ *  the previous one ends (people talking over each other). */
+const TIMING_RE = /^\s*<\s*(pause|overlap)\s+(\d+(?:\.\d+)?)\s*s?\s*\/?\s*>\s*/i;
+
+/** Gaps between lines, in ms. A switch between the narrator and anyone in
+ *  the scene always gets a slight delay (never an overlap), so the learner
+ *  hears the change of voice and of mode. */
+export const LINE_PAUSE = { narratorSwitch: 800, narratorSwitchMin: 600, newSpeaker: 400, sameSpeaker: 200, max: 4000, maxOverlap: 1500 };
+
+/** The pause before `line` (ms; negative = overlap) after `prev`: the dojo
+ *  master's own <pause>/<overlap> when it gave one, else a default by who is
+ *  speaking. */
+export function linePauseMs(prev, line) {
+  if (!prev) return 0;
+  const switching = (prev.speaker === "narrator") !== (line.speaker === "narrator");
+  if (typeof line.gap === "number" && Number.isFinite(line.gap)) {
+    const ms = Math.round(line.gap * 1000);
+    const clamped = Math.max(-LINE_PAUSE.maxOverlap, Math.min(LINE_PAUSE.max, ms));
+    return switching ? Math.max(LINE_PAUSE.narratorSwitchMin, clamped) : clamped;
+  }
+  if (switching) return LINE_PAUSE.narratorSwitch;
+  return prev.speaker === line.speaker && prev.gender === line.gender ? LINE_PAUSE.sameSpeaker : LINE_PAUSE.newSpeaker;
+}
+
+/** A line's timing mark in the model's notation, for the replayed history. */
+function timingFor(line) {
+  const g = line?.gap;
+  if (typeof g !== "number" || !Number.isFinite(g)) return "";
+  return g < 0 ? `<overlap ${+(-g).toFixed(2)}> ` : `<pause ${+g.toFixed(2)}> `;
+}
 
 const GENDER_OF = { f: "female", female: "female", woman: "female", m: "male", male: "male", man: "male" };
 
@@ -328,8 +363,18 @@ export function parseVoiceReply(text, mode = "adult") {
   let current = "narrator";
   let gender = null;
   let inside = false;
-  for (const raw of String(text).split(/\r?\n/)) {
-    if (!raw.trim()) continue;
+  // A timing mark waits for the next line that has words (it may sit on a
+  // line of its own).
+  let gap = null;
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    let raw = rawLine;
+    const t = raw.match(TIMING_RE);
+    if (t) {
+      gap = (t[1].toLowerCase() === "overlap" ? -1 : 1) * Number(t[2]);
+      raw = raw.slice(t[0].length);
+      if (!raw.trim()) continue;
+    }
     let line = raw;
     const m = raw.match(TAG_RE);
     if (m) {
@@ -345,8 +390,12 @@ export function parseVoiceReply(text, mode = "adult") {
     ({ segments, inside } = segmentsFrom(line, inside));
     if (!segments.length) continue;
     let target = out[out.length - 1];
-    if (!target || target.speaker !== current || target.gender !== gender) {
+    // A timed line is its own line even from the same speaker: the pause
+    // sits between the two.
+    if (!target || target.speaker !== current || target.gender !== gender || gap != null) {
       target = { speaker: current, gender, text: "", segments: [] };
+      if (gap != null) target.gap = gap;
+      gap = null;
       out.push(target);
     }
     for (const g of segments) {
@@ -366,10 +415,11 @@ export function parseVoiceReply(text, mode = "adult") {
       else target.segments.push({ lang: g.lang, text });
     }
   }
-  for (const l of out) {
+  out.forEach((l, i) => {
     l.segments = l.segments.flatMap((g) => splitLong(g.text).map((t) => ({ lang: g.lang, text: t })));
     l.text = joinSegments(l.segments);
-  }
+    l.pauseMs = linePauseMs(out[i - 1], l);
+  });
   return out;
 }
 
