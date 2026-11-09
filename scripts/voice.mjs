@@ -175,19 +175,19 @@ const TAG = { narrator: "NARRATOR", character: "CHARACTER", sidekick: "SIDEKICK"
  *  can go to the right voice. */
 export function voiceAdapter(mode = "adult") {
   const speakers = speakersFor(mode);
-  const tags = speakers.map((s) => `${TAG[s]}:`).join(", ");
+  const tags = speakers.map((s) => `${TAG[s]}-F:`).join(", ");
   const who = mode === "kids"
     ? "NARRATOR is you guiding, SIDEKICK is the helper character, CHARACTER is whoever the scene brings in"
     : "NARRATOR is you stepping out of the scene to guide, CHARACTER is whoever the learner talks to inside the scene";
   return `## How this session is delivered
 
-This session runs inside Lingo Dojo, not a live voice app. Each of your turns is turned into speech line by line, and every speaker has its own native-speaker voice, so the voices, accents and pronunciation are handled for you. What you write is exactly what is spoken.
+This session runs inside Lingo Dojo, not a live voice app. Each of your turns is turned into speech line by line, and every speaker has its own native-speaker voice, a woman's or a man's, so the voices, accents and pronunciation are handled for you. What you write is exactly what is spoken.
 
-- Start every line with a speaker tag: ${tags} (${who}). One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
+- Start every line with a speaker tag that also says whose voice it is: -F for a woman, -M for a man, e.g. ${tags} (${who}). Take the gender from your instructions and the scenario's roles (a Señora is -F, a Don is -M), keep each person's gender for the whole session, and give a new person in the scene their own. The tags are read by the app, not spoken: never say a tag out loud. One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
 - Write only words to be spoken aloud: no markdown, lists, emoji, stage directions, or descriptions of tone or actions in brackets or asterisks.
 - Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
-  NARRATOR: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
-  CHARACTER: <t>¡Claro que sí, güero! ¿Algo más?</t>
+  NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
+  CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
@@ -208,7 +208,7 @@ export const SESSION_START = "[session start]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${TAG[l.speaker] ?? "NARRATOR"}: ${markedText(l)}`).join("\n")}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${tagFor(l)}: ${markedText(l)}`).join("\n")}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
   return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master, in tagged lines only.`;
@@ -216,7 +216,17 @@ export function voiceTurnPrompt(history, message) {
 
 /* ------------------------------ the reply side ----------------------------- */
 
-const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
+// `NARRATOR:`, `CHARACTER-F:`, `**Character (M):**`, `SIDEKICK/woman:` — the
+// tag, then an optional gender, in whatever punctuation the model reached for.
+const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
+
+const GENDER_OF = { f: "female", female: "female", woman: "female", m: "male", male: "male", man: "male" };
+
+/** A line's tag in the model's notation, gender included when known. */
+function tagFor(line) {
+  const base = TAG[line?.speaker] ?? "NARRATOR";
+  return line?.gender === "female" ? `${base}-F` : line?.gender === "male" ? `${base}-M` : base;
+}
 
 /** Strip what a voice would read out but a person would not say: markdown
  *  emphasis and headings, bullets, bracketed or starred stage directions. */
@@ -265,15 +275,36 @@ export function splitSegments(text) {
   return out;
 }
 
-/** The model's reply as `{speaker, text, segments}` lines, in order. An
- *  untagged line continues the speaker before it (narrator at the top); a
+/** A segment longer than a synthesis call should carry, split at sentence
+ *  ends (a hard cut only for one enormous sentence). */
+export const MAX_SEGMENT_CHARS = 1200;
+export function splitLong(text, max = MAX_SEGMENT_CHARS) {
+  if (text.length <= max) return [text];
+  const out = [];
+  let cur = "";
+  for (const sentence of text.split(/(?<=[.!?。！？…])\s+/)) {
+    const next = cur ? `${cur} ${sentence}` : sentence;
+    if (next.length <= max) { cur = next; continue; }
+    if (cur) out.push(cur);
+    let rest = sentence;
+    while (rest.length > max) { out.push(rest.slice(0, max)); rest = rest.slice(max); }
+    cur = rest;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** The model's reply as `{speaker, gender, text, segments}` lines, in order.
+ *  An untagged line continues the speaker before it (narrator at the top); a
  *  speaker the mode doesn't have falls back to the narrator; consecutive
- *  lines by the same speaker merge, and so do adjacent segments in the same
- *  language — each segment is one synthesis call. */
+ *  lines by the same speaker and gender merge, and so do adjacent segments
+ *  in the same language — each segment is one synthesis call, so one longer
+ *  than MAX_SEGMENT_CHARS is split at sentence ends. */
 export function parseVoiceReply(text, mode = "adult") {
   const allowed = new Set(speakersFor(mode));
   const out = [];
   let current = "narrator";
+  let gender = null;
   for (const raw of String(text).split(/\r?\n/)) {
     if (!raw.trim()) continue;
     let line = raw;
@@ -281,13 +312,14 @@ export function parseVoiceReply(text, mode = "adult") {
     if (m) {
       const tag = m[1].toLowerCase() === "helper" ? "sidekick" : m[1].toLowerCase();
       current = allowed.has(tag) ? tag : "narrator";
+      gender = m[2] ? GENDER_OF[m[2].toLowerCase()] : null;
       line = raw.slice(m[0].length);
     }
     const segments = splitSegments(line);
     if (!segments.length) continue;
     let target = out[out.length - 1];
-    if (!target || target.speaker !== current) {
-      target = { speaker: current, text: "", segments: [] };
+    if (!target || target.speaker !== current || target.gender !== gender) {
+      target = { speaker: current, gender, text: "", segments: [] };
       out.push(target);
     }
     for (const g of segments) {
@@ -295,9 +327,39 @@ export function parseVoiceReply(text, mode = "adult") {
       if (prev && prev.lang === g.lang) prev.text = `${prev.text} ${g.text}`;
       else target.segments.push({ ...g });
     }
-    target.text = joinSegments(target.segments);
+  }
+  for (const l of out) {
+    l.segments = l.segments.flatMap((g) => splitLong(g.text).map((t) => ({ lang: g.lang, text: t })));
+    l.text = joinSegments(l.segments);
   }
   return out;
+}
+
+/* ---------------------------------- slots ---------------------------------- */
+
+export const GENDERS = ["female", "male"];
+
+/** The voice slots of a mode: every speaker as a woman and as a man, e.g.
+ *  "character:female". The dojo master tags each line with one. */
+export function voiceSlots(mode) {
+  return speakersFor(mode).flatMap((s) => GENDERS.map((g) => `${s}:${g}`));
+}
+
+const SLOT_RE = /^(narrator|character|sidekick)(?::(female|male))?$/;
+
+/** The voice for a line, from one locale's slot map. Gender beats role: the
+ *  exact slot, then the narrator's voice of the same gender, then the
+ *  speaker's other gender, then an ungendered (older) choice, then anything
+ *  the narrator has. "" when nothing at all is set. */
+export function voiceFor(set, speaker, gender) {
+  const s = set ?? {};
+  const g = gender === "male" || gender === "female" ? gender : null;
+  const other = g === "male" ? "female" : "male";
+  const order = g
+    ? [`${speaker}:${g}`, `narrator:${g}`, `${speaker}:${other}`, speaker, `narrator:${other}`, "narrator"]
+    : [`${speaker}:female`, `${speaker}:male`, speaker, "narrator:female", "narrator:male", "narrator"];
+  for (const k of order) if (s[k]) return s[k];
+  return "";
 }
 
 /* ------------------------------ request shapes ----------------------------- */
@@ -472,6 +534,69 @@ export function transcriptText(provider, json) {
   return phrases.map((p) => (typeof p?.text === "string" ? p.text : "")).join(" ").trim();
 }
 
+
+/* ------------------------------ voice library ------------------------------ */
+
+// ElevenLabs' shared Voice Library: thousands of community and professional
+// voices with an accent, a description and usage numbers, searchable by
+// language and locale. A library voice is added to the account before use
+// (POST /v1/voices/add), which is what "Use" in the browser does.
+
+export const LIBRARY_SORTS = ["usage_character_count_1y", "trending", "cloned_by_count", "created_date"];
+
+export function elevenLibraryRequest({ key, locale, gender, search, sort, page = 0, pageSize = 30 }) {
+  const q = new URLSearchParams({ page_size: String(pageSize), page: String(Math.max(0, page | 0)) });
+  if (locale) {
+    q.set("language", languageOf(locale));
+    q.set("locale", locale);
+  }
+  if (gender === "female" || gender === "male") q.set("gender", gender);
+  if (search) q.set("search", String(search).slice(0, 100));
+  q.set("sort", LIBRARY_SORTS.includes(sort) ? sort : LIBRARY_SORTS[0]);
+  return { url: `https://api.elevenlabs.io/v1/shared-voices?${q}`, init: { method: "GET", headers: { "xi-api-key": key } } };
+}
+
+/** /v1/shared-voices → rows for the browser. */
+export function elevenLibrary(json) {
+  const voices = Array.isArray(json?.voices) ? json.voices : [];
+  return {
+    voices: voices
+      .filter((v) => v && typeof v.voice_id === "string" && typeof v.public_owner_id === "string")
+      .map((v) => ({
+        id: v.voice_id,
+        ownerId: v.public_owner_id,
+        name: String(v.name ?? v.voice_id).trim(),
+        description: typeof v.description === "string" ? v.description.trim() : "",
+        accent: v.accent ? String(v.accent) : "",
+        gender: v.gender ? String(v.gender) : "",
+        age: v.age ? String(v.age).replace(/_/g, " ") : "",
+        useCase: v.use_case ? String(v.use_case).replace(/_/g, " ") : "",
+        locale: v.locale ? String(v.locale) : "",
+        previewUrl: typeof v.preview_url === "string" && v.preview_url.startsWith("https://") ? v.preview_url : "",
+        usage1y: Number(v.usage_character_count_1y) || 0,
+        usage7d: Number(v.usage_character_count_7d) || 0,
+        clonedBy: Number(v.cloned_by_count) || 0,
+        added: v.is_added_by_user === true,
+      })),
+    hasMore: json?.has_more === true,
+    total: Number(json?.total_count) || null,
+  };
+}
+
+const EL_ID_RE = /^[A-Za-z0-9]{8,64}$/;
+
+export function elevenAddRequest({ key, ownerId, voiceId, name }) {
+  if (!EL_ID_RE.test(String(ownerId)) || !EL_ID_RE.test(String(voiceId))) throw new Error("not an ElevenLabs voice id");
+  return {
+    url: `https://api.elevenlabs.io/v1/voices/add/${ownerId}/${voiceId}`,
+    init: {
+      method: "POST",
+      headers: { "xi-api-key": key, "Content-Type": "application/json" },
+      body: JSON.stringify({ new_name: String(name || voiceId).slice(0, 100) }),
+    },
+  };
+}
+
 /* --------------------------------- settings -------------------------------- */
 
 export const SILENCE_MS = { min: 500, max: 5000, default: 1600 };
@@ -490,7 +615,7 @@ export function normalizeVoiceSettings(raw) {
     for (const [loc, bySpeaker] of Object.entries(byLocale)) {
       if (!BCP47_RE.test(loc) || !bySpeaker || typeof bySpeaker !== "object") continue;
       for (const [s, id] of Object.entries(bySpeaker)) {
-        if (!(s in TAG) || typeof id !== "string" || !id.trim() || id.length > 200) continue;
+        if (!SLOT_RE.test(s) || typeof id !== "string" || !id.trim() || id.length > 200) continue;
         ((voices[p] ??= {})[loc] ??= {})[s] = id.trim();
       }
     }

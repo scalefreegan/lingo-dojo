@@ -13,6 +13,7 @@ import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
 import { REPO_ROOT } from "../content.mjs";
 
@@ -70,9 +71,10 @@ test("voiceKeys: the file fills in, the environment wins; configuredProviders ne
 test("voiceSystemPrompt: the pack first, then the adapter naming this mode's speakers", () => {
   const sys = voiceSystemPrompt("# Pack\nBe kind.", "adult");
   assert.ok(sys.startsWith("# Pack\nBe kind."));
-  assert.match(sys, /NARRATOR:, CHARACTER:/);
+  assert.match(sys, /NARRATOR-F:, CHARACTER-F:/);
+  assert.match(sys, /-F for a woman, -M for a man/);
   assert.doesNotMatch(sys, /SIDEKICK/);
-  assert.match(voiceAdapter("kids"), /NARRATOR:, SIDEKICK:, CHARACTER:/);
+  assert.match(voiceAdapter("kids"), /NARRATOR-F:, SIDEKICK-F:, CHARACTER-F:/);
   assert.match(sys, /normal script/, "asks for characters, not pinyin");
   assert.match(sys, /<t>…<\/t>/, "asks for target-language marks");
 });
@@ -132,6 +134,88 @@ CHARACTER: <t>¡Claro! ¿Algo más?`,
   assert.deepEqual(merged.segments, [{ lang: "target", text: "Hola. ¿Qué tal?" }]);
   // Replayed history puts the marks back.
   assert.match(voiceTurnPrompt([{ role: "master", lines: [narrator] }], "x"), /NARRATOR: The word for tomato is <t>jitomate<\/t> \. Try: <t>un kilo, por favor<\/t>/);
+});
+
+test("parseVoiceReply: gender tags in any punctuation; a gender change starts a new line", () => {
+  const lines = parseVoiceReply(
+    `NARRATOR-F: Welcome.
+**Character (M):** <t>¡Pásele!</t>
+CHARACTER/woman: <t>¿Y usted?</t>
+CHARACTER-F: <t>Bienvenida.</t>
+CHARACTER: untagged gender`,
+    "adult",
+  );
+  assert.deepEqual(lines.map((l) => [l.speaker, l.gender, l.text]), [
+    ["narrator", "female", "Welcome."],
+    ["character", "male", "¡Pásele!"],
+    ["character", "female", "¿Y usted? Bienvenida."],
+    ["character", null, "untagged gender"],
+  ]);
+  // The replay keeps the gender in the tag.
+  assert.match(voiceTurnPrompt([{ role: "master", lines }], "x"), /NARRATOR-F: Welcome\.\nCHARACTER-M: <t>¡Pásele!<\/t>\nCHARACTER-F:/);
+});
+
+test("splitLong: long segments break at sentence ends, under the cap", () => {
+  const sentence = "Esta es una oración bastante larga para la prueba. ";
+  const parts = splitLong(sentence.repeat(60).trim(), 300);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((p) => p.length <= 300 && p.endsWith(".")));
+  assert.equal(parts.join(" "), sentence.repeat(60).trim());
+  assert.deepEqual(splitLong("x".repeat(25), 10), ["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
+  const [line] = parseVoiceReply(`NARRATOR-F: ${sentence.repeat(60)}`, "adult");
+  assert.ok(line.segments.length > 1 && line.segments.every((g) => g.text.length <= 1200));
+});
+
+test("voiceSlots and voiceFor: gender beats role, older ungendered choices still work", () => {
+  assert.deepEqual(voiceSlots("adult"), ["narrator:female", "narrator:male", "character:female", "character:male"]);
+  assert.equal(voiceSlots("kids").length, 6);
+  const set = { "narrator:female": "NF", "narrator:male": "NM", "character:female": "CF" };
+  assert.equal(voiceFor(set, "character", "female"), "CF");
+  assert.equal(voiceFor(set, "character", "male"), "NM", "a man's voice from the narrator beats the character's woman's voice");
+  assert.equal(voiceFor({ "character:female": "CF" }, "character", "male"), "CF", "the other gender only when no man's voice exists");
+  assert.equal(voiceFor(set, "sidekick", null), "NF");
+  assert.equal(voiceFor({ narrator: "old" }, "character", "male"), "old");
+  assert.equal(voiceFor({}, "narrator", "female"), "");
+});
+
+test("library requests: native-locale search, sorting, and a guarded add", () => {
+  const { url, init } = elevenLibraryRequest({ key: "K", locale: "es-MX", gender: "female", search: "cálida", sort: "trending", page: 2 });
+  const u = new URL(url);
+  assert.equal(u.pathname, "/v1/shared-voices");
+  assert.equal(u.searchParams.get("language"), "es");
+  assert.equal(u.searchParams.get("locale"), "es-MX");
+  assert.equal(u.searchParams.get("gender"), "female");
+  assert.equal(u.searchParams.get("search"), "cálida");
+  assert.equal(u.searchParams.get("sort"), "trending");
+  assert.equal(u.searchParams.get("page"), "2");
+  assert.equal(init.headers["xi-api-key"], "K");
+  assert.equal(new URL(elevenLibraryRequest({ key: "K", sort: "bogus", gender: "x" }).url).searchParams.get("sort"), "usage_character_count_1y");
+  assert.equal(new URL(elevenLibraryRequest({ key: "K", gender: "x" }).url).searchParams.get("gender"), null);
+
+  const lib = elevenLibrary({
+    has_more: true,
+    total_count: 412,
+    voices: [
+      { voice_id: "JYyJjNPfmNJdaby8LdZs", public_owner_id: "owner123abc", name: "Marlene ", gender: "female", age: "young", accent: "mexican", use_case: "narrative_story",
+        description: " Bright. ", preview_url: "https://storage.example/p.mp3", usage_character_count_1y: 2062010298, cloned_by_count: 36944, is_added_by_user: false },
+      { voice_id: "x", public_owner_id: "y", preview_url: "javascript:alert(1)" },
+      { name: "no ids" },
+    ],
+  });
+  assert.equal(lib.hasMore, true);
+  assert.equal(lib.total, 412);
+  assert.equal(lib.voices.length, 2);
+  assert.deepEqual(
+    { ...lib.voices[0] },
+    { id: "JYyJjNPfmNJdaby8LdZs", ownerId: "owner123abc", name: "Marlene", description: "Bright.", accent: "mexican", gender: "female", age: "young",
+      useCase: "narrative story", locale: "", previewUrl: "https://storage.example/p.mp3", usage1y: 2062010298, usage7d: 0, clonedBy: 36944, added: false },
+  );
+  assert.equal(lib.voices[1].previewUrl, "", "only an https preview is played");
+
+  const add = elevenAddRequest({ key: "K", ownerId: "owner123abc", voiceId: "JYyJjNPfmNJdaby8LdZs", name: "Marlene" });
+  assert.equal(add.url, "https://api.elevenlabs.io/v1/voices/add/owner123abc/JYyJjNPfmNJdaby8LdZs");
+  assert.deepEqual(JSON.parse(add.init.body), { new_name: "Marlene" });
+  assert.throws(() => elevenAddRequest({ key: "K", ownerId: "../../x", voiceId: "JYyJjNPfmNJdaby8LdZs" }), /not an ElevenLabs voice id/);
 });
 
 test("speakable: drops stage directions and markdown, keeps the words", () => {
@@ -227,10 +311,13 @@ test("normalizeVoiceSettings: defaults, clamping, and junk in the voice map drop
     tts: "nope",
     silenceMs: 99_999,
     model: "claude-haiku-5-5",
-    voices: { elevenlabs: { "es-MX": { narrator: " v1 ", wizard: "v2", character: 7 }, "not a locale": { narrator: "x" } }, bogus: {} },
+    voices: {
+      elevenlabs: { "es-MX": { narrator: " v1 ", "character:female": "v3", "character:robot": "v4", wizard: "v2", character: 7 }, "not a locale": { narrator: "x" } },
+      bogus: {},
+    },
   });
   assert.equal(s.tts, "elevenlabs");
   assert.equal(s.silenceMs, SILENCE_MS.max);
   assert.equal(s.model, "claude-haiku-5-5");
-  assert.deepEqual(s.voices, { elevenlabs: { "es-MX": { narrator: "v1" } } });
+  assert.deepEqual(s.voices, { elevenlabs: { "es-MX": { narrator: "v1", "character:female": "v3" } } });
 });

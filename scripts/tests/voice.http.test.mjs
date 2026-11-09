@@ -51,6 +51,7 @@ test("GET settings: defaults, nothing configured, locales from the query", async
   assert.equal(r.body.configured.azure, false);
   assert.deepEqual(r.body.locales, { target: "zh-TW", native: "en-US" });
   assert.deepEqual(r.body.speakers.kids, ["narrator", "sidekick", "character"]);
+  assert.deepEqual(r.body.slots.adult, ["narrator:female", "narrator:male", "character:female", "character:male"]);
   assert.ok(r.body.models.some((m) => m.id === r.body.settings.model));
   const bare = await call("GET", "/api/voice/settings");
   assert.deepEqual(bare.body.locales, { target: null, native: null });
@@ -80,6 +81,9 @@ test("unconfigured providers answer 400 with where the key goes", async () => {
   assert.match(v.body.error, /ELEVENLABS_API_KEY/);
   const az = await call("GET", "/api/voice/voices?provider=azure&locale=es-MX");
   assert.match(az.body.error, /AZURE_SPEECH_KEY and AZURE_SPEECH_REGION/);
+  const lib = await call("GET", "/api/voice/library?locale=es-MX");
+  assert.equal(lib.status, 400);
+  assert.match(lib.body.error, /ELEVENLABS_API_KEY/);
   const t = await call("POST", "/api/voice/transcribe?locales=es-MX,en-US", new Uint8Array([1, 2, 3]), { "Content-Type": "audio/wav" });
   assert.equal(t.status, 400);
   assert.match(t.body.error, /not set up/);
@@ -97,6 +101,8 @@ test("input validation", async () => {
   assert.equal((await call("POST", "/api/voice/turn", { mode: "adult" })).status, 400);
   assert.equal((await call("GET", "/api/voice/turn")).status, 405);
   assert.equal((await call("GET", "/api/voice/nope")).status, 404);
+  assert.equal((await call("GET", "/api/voice/library?locale=spanish")).status, 400);
+  assert.equal((await call("GET", "/api/voice/library/add")).status, 405);
 });
 
 test("speak with the saved provider unconfigured says so; cross-origin is refused", async () => {

@@ -9,10 +9,10 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseVoiceReply, systemVoices, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, parseVoiceReply, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
-  Mode, SegmentLang, SttProvider, TranscribeReply, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -26,7 +26,9 @@ import { dataDir } from "./store.ts";
 //   GET     /api/voice/voices        ?provider=&locale= → the provider's voices
 //   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
 //   POST    /api/voice/turn          {mode, pack, history, message} → {lines}
-//   POST    /api/voice/speak         {speaker, text, locale} → audio bytes
+//   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
+//   GET     /api/voice/library       ElevenLabs Voice Library search
+//   POST    /api/voice/library/add   add a library voice to the account
 //
 // The server holds no session: the browser sends the history with every
 // turn. Provider keys come from the repo-root .env.local (scripts/voice.mjs
@@ -76,6 +78,7 @@ function settingsReply(req: IncomingMessage): VoiceSettingsReply {
     elevenModels: ELEVEN_MODELS,
     silence: SILENCE_MS,
     speakers: SPEAKERS_BY_MODE,
+    slots: { adult: voiceSlots("adult"), kids: voiceSlots("kids") },
     envFile: path.relative(REPO_ROOT, envFile()) || envFile(),
     locales: {
       target: target ? localeFor(target, q.get("variant") ?? "") : null,
@@ -203,8 +206,18 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
   const request = provider === "elevenlabs"
     ? elevenTranscribeRequest({ key: keys.elevenlabs, audio, mime })
     : azureTranscribeRequest({ key: keys.azureKey, region: keys.azureRegion, audio, locales, mime });
-  const json = await (await call(provider, request)).json();
-  sendJson(res, 200, { text: transcriptText(provider, json), provider } satisfies TranscribeReply);
+  // A paid call: stop it when the browser gives up (Stop, Close).
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    const json = await (await call(provider, request, ctrl.signal)).json();
+    sendJson(res, 200, { text: transcriptText(provider, json), provider } satisfies TranscribeReply);
+  } finally {
+    res.off("close", onClose);
+  }
 }
 
 /* ---------------------------------- turn ---------------------------------- */
@@ -228,7 +241,13 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
               .filter((g) => (g?.lang === "target" || g?.lang === "native") && typeof g.text === "string")
               .map((g) => ({ lang: g.lang as SegmentLang, text: (g.text as string).slice(0, 4000) }))
           : [];
-        lines.push({ speaker: line.speaker as VoiceSpeaker, text: line.text.slice(0, 4000), segments });
+        const gender = (line as { gender?: unknown }).gender;
+        lines.push({
+          speaker: line.speaker as VoiceSpeaker,
+          gender: gender === "female" || gender === "male" ? gender : null,
+          text: line.text.slice(0, 4000),
+          segments,
+        });
       }
       out.push({ role: "master", lines });
     }
@@ -310,6 +329,9 @@ function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buf
         }
       } else reject(new HttpError(502, `say failed${err.trim() ? `: ${err.trim()}` : ` (exit ${code})`}`));
     });
+    // `say` can exit before reading (a bad voice, an abort): the EPIPE that
+    // follows must not become an uncaught stream error that kills the server.
+    p.stdin.on("error", () => {});
     p.stdin.end(text);
   }).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
@@ -336,11 +358,12 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   const keys = keysFor(provider);
   // The speaker's own voice; a speaker without one borrows the narrator's,
   // so a half-set-up kids session still talks.
-  const set = settings.voices[provider]?.[locale] ?? {};
   // Always the speaker's own native voice, whatever language the text is in:
   // the frame's dojo master is a native speaker of the target variant who
-  // also speaks the learner's language. `lang` only steers pronunciation.
-  const voice = set[speaker as VoiceSpeaker] || set.narrator || "";
+  // also speaks the learner's language. `lang` only steers pronunciation;
+  // `gender` (the dojo master's -F/-M tag) picks the woman's or man's voice.
+  const gender: VoiceGender | null = body?.gender === "female" || body?.gender === "male" ? body.gender : null;
+  const voice = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
@@ -373,6 +396,40 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 }
 
+/* --------------------------------- library -------------------------------- */
+
+async function handleLibrary(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "GET") return methodNotAllowed(res, "GET");
+  const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const locale = q.get("locale") ?? "";
+  if (locale && !LOCALE_RE.test(locale)) throw new HttpError(400, "locale must look like es-MX");
+  const keys = keysFor("elevenlabs");
+  const request = elevenLibraryRequest({
+    key: keys.elevenlabs,
+    locale,
+    gender: q.get("gender") ?? "",
+    search: q.get("q") ?? "",
+    sort: q.get("sort") ?? "",
+    page: Number(q.get("page")) || 0,
+  });
+  sendJson(res, 200, elevenLibrary(await (await call("elevenlabs", request)).json()) satisfies LibraryReply);
+}
+
+async function handleLibraryAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  const body = await readJsonBody<Partial<LibraryAddRequest>>(req);
+  const keys = keysFor("elevenlabs");
+  let request;
+  try {
+    request = elevenAddRequest({ key: keys.elevenlabs, ownerId: String(body?.ownerId ?? ""), voiceId: String(body?.voiceId ?? ""), name: String(body?.name ?? "") });
+  } catch (e) {
+    throw new HttpError(400, String((e as Error).message));
+  }
+  const json = (await (await call("elevenlabs", request)).json()) as { voice_id?: unknown };
+  const voiceId = typeof json.voice_id === "string" ? json.voice_id : String(body?.voiceId);
+  sendJson(res, 200, { voiceId } satisfies LibraryAddReply);
+}
+
 /* --------------------------------- routes --------------------------------- */
 
 export async function handleVoice(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -382,5 +439,7 @@ export async function handleVoice(req: IncomingMessage, res: ServerResponse): Pr
   if (seg === "transcribe") return handleTranscribe(req, res);
   if (seg === "turn") return handleTurn(req, res);
   if (seg === "speak") return handleSpeak(req, res);
+  if (seg === "library") return handleLibrary(req, res);
+  if (seg === "library/add") return handleLibraryAdd(req, res);
   sendJson(res, 404, { error: "no such route" });
 }
