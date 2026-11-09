@@ -65,6 +65,15 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   dojo master's last two turns, the thing you were just asked to say, go
   along as Scribe `keyterms` (at most 100, each up to 5 words), so "¿a
   cómo?" isn't heard as "ah, ¿cómo?". Azure gets both locales as candidates.
+- **Timing**: lines are separated by a short pause, 0.4 s between people in
+  the scene, 0.2 s for the same speaker, and 0.8 s whenever the narrator and
+  the scene hand over (never less than 0.6 s there, and never an overlap).
+  The dojo master can set its own: `<pause 1.2>` before a line waits first
+  (a vendor weighing tomatoes), and `<overlap 0.4>` starts it before the
+  previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
+  for a pause). The server resolves each line's `pauseMs`
+  (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
+  next clip early with both playing. Segments within a line run back to back.
 - **Speak**: one call per segment; the browser plays one while the next is
   being made. Segments are cached for ▶ replay.
 - **Your turn ends** when you tap Done (the default, best for thinking out loud
