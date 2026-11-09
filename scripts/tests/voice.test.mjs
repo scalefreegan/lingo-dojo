@@ -11,7 +11,7 @@ import path from "node:path";
 import YAML from "yaml";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
-  elevenTranscribeRequest, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
+  elevenTranscribeRequest, keytermsFrom, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
@@ -263,6 +263,16 @@ test("library requests: native-locale search, sorting, and a guarded add", () =>
   assert.throws(() => elevenAddRequest({ key: "K", ownerId: "../../x", voiceId: "JYyJjNPfmNJdaby8LdZs" }), /not an ElevenLabs voice id/);
 });
 
+test("keytermsFrom: target phrases cut to Scribe's limits, deduplicated, capped", () => {
+  assert.deepEqual(
+    keytermsFrom(["¡Buenas! ¿A cómo el kilo de jitomate?", "un kilo de jitomates, por favor", "A cómo el kilo de jitomate", "esta frase tiene muchas más de cinco palabras en total"]),
+    ["Buenas", "A cómo el kilo de", "jitomate", "un kilo de jitomates", "por favor", "esta frase tiene muchas más", "de cinco palabras en total"],
+  );
+  assert.deepEqual(keytermsFrom(["我要一公斤。謝謝！"]), ["我要一公斤", "謝謝"]);
+  assert.equal(keytermsFrom(Array.from({ length: 300 }, (_, i) => `palabra${i}`)).length, 100);
+  assert.deepEqual(keytermsFrom("nope"), []);
+});
+
 test("speakable: drops stage directions and markdown, keeps the words", () => {
   assert.equal(speakable("*smiles warmly* **¡Hola!** [pause] ¿Cómo estás?"), "¡Hola! ¿Cómo estás?");
   assert.equal(speakable("- # Say `gracias`"), "Say gracias");
@@ -286,6 +296,11 @@ test("transcribe requests: Scribe v2 for ElevenLabs, both locales as Azure candi
   assert.equal(el.url, "https://api.elevenlabs.io/v1/speech-to-text");
   assert.equal(el.init.body.get("model_id"), "scribe_v2");
   assert.equal((await el.init.body.get("file").arrayBuffer()).byteLength, 3);
+  assert.equal(el.init.body.get("language_code"), null, "no language: Scribe detects it");
+  const hinted = elevenTranscribeRequest({ key: "K", audio, language: "es-MX", keyterms: ["un kilo", "jitomate"] });
+  assert.equal(hinted.init.body.get("language_code"), "es");
+  assert.deepEqual(hinted.init.body.getAll("keyterms"), ["un kilo", "jitomate"]);
+  assert.equal(elevenTranscribeRequest({ key: "K", audio, language: "not a locale" }).init.body.get("language_code"), null);
   const az = azureTranscribeRequest({ key: "K", region: "eastus", audio, locales: ["es-MX", "en-US", "es-MX", "bogus"] });
   assert.match(az.url, /^https:\/\/eastus\.api\.cognitive\.microsoft\.com\/speechtotext\/transcriptions:transcribe\?api-version=/);
   assert.deepEqual(JSON.parse(az.init.body.get("definition")), { locales: ["es-MX", "en-US"] });

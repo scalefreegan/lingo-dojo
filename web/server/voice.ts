@@ -8,7 +8,7 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
-  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, elevenVoices, elevenVoicesRequest, envFile,
+  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
   normalizeVoiceSettings, parseVoiceReply, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
@@ -195,7 +195,12 @@ async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
 
 async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const locales = (new URL(req.url ?? "/", "http://localhost").searchParams.get("locales") ?? "")
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  // The first locale is the target: speech goes in as that language (English
+  // can always be typed). Terms are the target phrases the dojo master just
+  // used; keytermsFrom trims them to what Scribe accepts.
+  const keyterms = keytermsFrom(params.getAll("term").slice(0, 200));
+  const locales = (params.get("locales") ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => LOCALE_RE.test(s));
@@ -204,7 +209,7 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
   const keys = keysFor(provider);
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
   const request = provider === "elevenlabs"
-    ? elevenTranscribeRequest({ key: keys.elevenlabs, audio, mime })
+    ? elevenTranscribeRequest({ key: keys.elevenlabs, audio, mime, language: locales[0], keyterms })
     : azureTranscribeRequest({ key: keys.azureKey, region: keys.azureRegion, audio, locales, mime });
   // A paid call: stop it when the browser gives up (Stop, Close).
   const ctrl = new AbortController();

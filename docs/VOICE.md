@@ -59,6 +59,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   read by the same native target-language speaker (with their accent, as the
   frame asks). macOS voices take no language hint, so there the marks only
   highlight target words in the transcript.
+- **Listen**: speech is transcribed as the **target language** (Scribe's
+  `language_code`), not guessed per clip: accented Spanish was otherwise
+  heard as English. English can always be typed. The target phrases from the
+  dojo master's last two turns, the thing you were just asked to say, go
+  along as Scribe `keyterms` (at most 100, each up to 5 words), so "¿a
+  cómo?" isn't heard as "ah, ¿cómo?". Azure gets both locales as candidates.
 - **Speak**: one call per segment; the browser plays one while the next is
   being made. Segments are cached for ▶ replay.
 - **Your turn ends** when you tap Done (the default, best for thinking out loud

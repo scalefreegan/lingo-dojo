@@ -419,15 +419,59 @@ export function elevenVoicesRequest({ key }) {
 
 /** Scribe auto-detects the language, which is what a learner switching
  *  between English and the target language mid-sentence needs. */
-export function elevenTranscribeRequest({ key, audio, mime = "audio/wav" }) {
+/** Scribe v2. `language` (a locale like "es-MX") fixes the language instead
+ *  of letting Scribe guess per clip; a learner's accented Spanish otherwise
+ *  gets heard as English. `keyterms` are words to expect (the phrases the
+ *  dojo master just asked for), which Scribe favours when the audio is
+ *  ambiguous. */
+export function elevenTranscribeRequest({ key, audio, mime = "audio/wav", language, keyterms = [] }) {
   const form = new FormData();
   form.append("model_id", "scribe_v2");
   form.append("tag_audio_events", "false");
+  if (language && BCP47_RE.test(language)) form.append("language_code", language.split("-")[0].toLowerCase());
+  for (const t of keyterms.slice(0, MAX_KEYTERMS)) form.append("keyterms", t);
   form.append("file", new Blob([audio], { type: mime }), "turn.wav");
   return {
     url: "https://api.elevenlabs.io/v1/speech-to-text",
     init: { method: "POST", headers: { "xi-api-key": key }, body: form },
   };
+}
+
+/** Scribe's keyterm limits: 100 terms, each at most 5 words and under 50
+ *  characters. */
+export const MAX_KEYTERMS = 100;
+const KEYTERM_WORDS = 5;
+const KEYTERM_CHARS = 49;
+
+/** Target-language phrases (newest first) → Scribe keyterms: cut at
+ *  punctuation and into runs of at most 5 words, under 50 characters,
+ *  deduplicated, capped. The browser sends the target phrases of the dojo
+ *  master's latest turns: what the learner was just asked to say, repeat, or
+ *  answer with, so the clearest expectation there is. */
+export function keytermsFrom(phrases, max = MAX_KEYTERMS) {
+  const out = [];
+  const seen = new Set();
+  for (const phrase of Array.isArray(phrases) ? phrases : []) {
+    // A long phrase is still vocabulary worth hinting: take it in runs of
+    // five words rather than dropping it.
+    const pieces = String(phrase)
+      .split(/[.,;:!?¿¡…。！？、，"“”()]+/)
+      .flatMap((p) => {
+        const words = p.trim().split(/\s+/).filter(Boolean);
+        const runs = [];
+        for (let i = 0; i < words.length; i += KEYTERM_WORDS) runs.push(words.slice(i, i + KEYTERM_WORDS).join(" "));
+        return runs;
+      });
+    for (const t of pieces) {
+      if (!t || t.length > KEYTERM_CHARS) continue;
+      const k = t.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(t);
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
 }
 
 const xmlEscape = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
