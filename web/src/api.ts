@@ -11,7 +11,7 @@ import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
   ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, FolderRequest, Mode, PackDeleteReply, PackInput,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
-  TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence. */
@@ -241,4 +241,18 @@ export async function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): 
     /* non-JSON */
   }
   throw new ApiError(msg, res.status);
+}
+
+/** Search the ElevenLabs Voice Library (`locale` narrows to native speakers). */
+export function searchLibrary(
+  params: { locale: string; gender: string; q: string; sort: LibrarySort; page: number },
+  signal?: AbortSignal,
+): Promise<LibraryReply> {
+  const q = new URLSearchParams({ locale: params.locale, gender: params.gender, q: params.q, sort: params.sort, page: String(params.page) });
+  return req<LibraryReply>(`/api/voice/library?${q}`, { signal });
+}
+
+/** Add a library voice to the ElevenLabs account; resolves to the id to use. */
+export function addLibraryVoice(body: LibraryAddRequest): Promise<LibraryAddReply> {
+  return req<LibraryAddReply>("/api/voice/library/add", json(body));
 }

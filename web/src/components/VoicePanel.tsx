@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getVoiceSettings, listVoices, saveVoiceSettings, speakLine, transcribe, voiceTurn, type VoiceLanguages } from "../api";
+import {
+  ApiError, addLibraryVoice, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
+} from "../api";
 import { startRecording, type Recording } from "../recorder";
 import type {
-  Mode, PackInput, TtsProvider, VoiceChoice, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings, VoiceSettingsReply, VoiceSpeaker,
+  LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -14,7 +17,7 @@ import { Button, Card, Chevron, inputClass } from "./ui";
  * backtracking never get talked over. The session lives in this component;
  * nothing is saved. */
 
-type Phase = "idle" | "recording" | "transcribing" | "thinking" | "speaking";
+type Phase = "idle" | "opening" | "recording" | "transcribing" | "thinking" | "speaking";
 
 const SPEAKER_LABEL: Record<VoiceSpeaker, string> = { narrator: "Narrator", character: "Character", sidekick: "Sidekick" };
 const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", azure: "Azure Speech", system: "macOS voices (free)" };
@@ -38,7 +41,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
-  const [phase, setPhase] = useState<Phase>("idle");
+  const [phase, setPhaseState] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [composer, setComposer] = useState("");
@@ -57,6 +60,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const urls = useRef(new Map<string, Promise<string>>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  // The phase as the async flows see it (state lags a render behind).
+  const phaseRef = useRef<Phase>("idle");
 
   const settings = reply?.settings ?? null;
   useEffect(() => {
@@ -64,7 +69,12 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   }, [settings]);
   const locale = reply?.locales.target ?? null;
   const nativeLocale = reply?.locales.native ?? null;
-  const speakers = reply?.speakers[mode] ?? ["narrator", "character"];
+  const slots = reply?.slots[mode] ?? (["narrator:female", "narrator:male", "character:female", "character:male"] as VoiceSlot[]);
+
+  const setPhase = (p: Phase) => {
+    phaseRef.current = p;
+    setPhaseState(p);
+  };
 
   const setSession = (next: VoiceHistoryItem[]) => {
     entriesRef.current = next;
@@ -93,10 +103,19 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     };
   }, [phase]);
 
+  // Every async flow (open mic → record → transcribe → turn → speak) captures
+  // this generation when it starts and gives up after any await that finds it
+  // changed. Stop, Restart and Close bump it, so nothing in flight — a mic
+  // still opening, a WAV still encoding — can carry on after the learner has
+  // moved on: no orphaned mic, no paid call or audio with no UI behind it.
+  const genRef = useRef(0);
+
   // Leaving the panel stops everything: no mic left open, no audio playing on.
   useEffect(() => {
     const cache = urls.current;
+    const gen = genRef;
     return () => {
+      gen.current += 1;
       ctrlRef.current?.abort();
       recRef.current?.cancel();
       audioRef.current?.pause();
@@ -112,8 +131,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     [langs],
   );
 
-  /** Stop whatever is happening: the request in flight, the audio, the mic. */
+  /** Stop whatever is happening: the request in flight, the audio, the mic,
+   *  and anything still on its way to starting one of those. */
   function stopAll() {
+    genRef.current += 1;
     ctrlRef.current?.abort();
     ctrlRef.current = null;
     recRef.current?.cancel();
@@ -133,13 +154,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   }
 
   /** One segment's audio, fetched once and kept for replay. Each segment is
-   *  said in its own language (target or native) by the line's speaker. */
-  function audioFor(key: string, speaker: VoiceSpeaker, seg: VoiceSegment, signal: AbortSignal): Promise<string> {
+   *  said in its own language (target or native) by the line's voice. */
+  function audioFor(key: string, line: VoiceLine, seg: VoiceSegment, signal: AbortSignal): Promise<string> {
     let p = urls.current.get(key);
     if (!p) {
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
       setChars((c) => c + seg.text.length);
-      p = speakLine({ speaker, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined }, signal).then((b) => URL.createObjectURL(b));
+      p = speakLine(
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined },
+        signal,
+      ).then((b) => URL.createObjectURL(b));
       urls.current.set(key, p);
       p.catch(() => urls.current.delete(key));
     }
@@ -168,26 +192,26 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
     setPhase("speaking");
     const last = only ? from : lines.length - 1;
-    const queue: { key: string; line: string; speaker: VoiceSpeaker; seg: VoiceSegment }[] = [];
+    const queue: { key: string; lineKey: string; line: VoiceLine; seg: VoiceSegment }[] = [];
     for (let i = from; i <= last; i++) {
       const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
-      segs.forEach((seg, k) => queue.push({ key: `${entryIdx}:${i}:${k}`, line: `${entryIdx}:${i}`, speaker: lines[i].speaker, seg }));
+      segs.forEach((seg, k) => queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg }));
     }
     for (let q = 0; q < queue.length; q++) {
       if (signal.aborted) return;
       const cur = queue[q];
-      const url = await audioFor(cur.key, cur.speaker, cur.seg, signal);
+      const url = await audioFor(cur.key, cur.line, cur.seg, signal);
       const next = queue[q + 1];
-      if (next) void audioFor(next.key, next.speaker, next.seg, signal).catch(() => {});
+      if (next) void audioFor(next.key, next.line, next.seg, signal).catch(() => {});
       if (signal.aborted) return;
-      setPlaying(cur.line);
+      setPlaying(cur.lineKey);
       await playUrl(url, signal);
     }
     setPlaying(null);
   }
 
-  async function runTurn(message: string) {
-    if (!settingsRef.current) return;
+  async function runTurn(message: string, gen = genRef.current) {
+    if (!settingsRef.current || gen !== genRef.current) return;
     setError(null);
     setNotice(null);
     const before = entriesRef.current;
@@ -197,15 +221,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     setPhase("thinking");
     try {
       const r = await voiceTurn({ mode, pack, history: before, message }, ctrl.signal);
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
       setSession([...history, { role: "master", lines: r.lines }]);
       await playLines(idx, r.lines, ctrl.signal);
-      if (ctrl.signal.aborted) return;
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
       const s = settingsRef.current;
       if (s?.handsFree && s.turn === "pause") void startListening();
     } catch (e) {
-      if (ctrl.signal.aborted || isAbort(e)) return;
+      if (ctrl.signal.aborted || isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
       setError(errText(e));
     }
@@ -213,21 +238,34 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
 
   async function startListening() {
     const s = settingsRef.current;
-    if (!s || recRef.current) return;
+    // "opening" covers the await on the mic: a second Space or a double tap
+    // while the permission prompt is up must not open a second recording.
+    if (!s || recRef.current || phaseRef.current === "opening") return;
     // Talking over the dojo master is allowed: it stops them.
-    ctrlRef.current?.abort();
-    audioRef.current?.pause();
-    setPlaying(null);
+    stopAll();
+    const gen = genRef.current;
+    phaseRef.current = "opening";
+    setPhase("opening");
     setError(null);
     setNotice(null);
+    let mine: Recording | null = null;
     try {
-      recRef.current = await startRecording({
+      mine = await startRecording({
         silenceMs: s.turn === "pause" ? s.silenceMs : null,
         onLevel: setLevel,
-        onAutoStop: (why) => void finishListening(why),
+        // Only the recording that is current may end the turn.
+        onAutoStop: (why) => {
+          if (mine && recRef.current === mine) void finishListening(why);
+        },
       });
+      if (gen !== genRef.current) {
+        mine.cancel();
+        return;
+      }
+      recRef.current = mine;
       setPhase("recording");
     } catch (e) {
+      if (gen !== genRef.current) return;
       setPhase("idle");
       setError(`Could not open the microphone: ${errText(e)}`);
     }
@@ -237,10 +275,12 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     const rec = recRef.current;
     if (!rec) return;
     recRef.current = null;
+    const gen = genRef.current;
     setLevel(0);
     setPhase("transcribing");
     try {
       const { wav, spoke } = await rec.stop();
+      if (gen !== genRef.current) return;
       if (why === "idle" || (!spoke && why !== "tap")) {
         setPhase("idle");
         setNotice("Didn't hear anything — tap Talk when you're ready.");
@@ -248,6 +288,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       }
       const ctrl = freshCtrl();
       const { text } = await transcribe(wav, [locale, nativeLocale].filter((l): l is string => !!l), ctrl.signal);
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
       if (!text) {
         setPhase("idle");
         setNotice("Couldn't make out any words — try again.");
@@ -259,9 +300,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         window.setTimeout(() => composerRef.current?.focus(), 0);
         return;
       }
-      await runTurn(text);
+      await runTurn(text, gen);
     } catch (e) {
-      if (isAbort(e)) return;
+      if (isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
       setError(errText(e));
     }
@@ -279,13 +320,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
 
   async function replay(entryIdx: number, lineIdx: number, lines: VoiceLine[]) {
     stopAll();
+    const gen = genRef.current;
     const ctrl = freshCtrl();
     try {
       await playLines(entryIdx, lines, ctrl.signal, lineIdx, true);
     } catch (e) {
-      if (!ctrl.signal.aborted && !isAbort(e)) setError(errText(e));
+      if (!ctrl.signal.aborted && !isAbort(e) && gen === genRef.current) setError(errText(e));
     } finally {
-      if (!ctrl.signal.aborted) setPhase("idle");
+      if (!ctrl.signal.aborted && gen === genRef.current) setPhase("idle");
     }
   }
 
@@ -299,6 +341,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     setNotice(null);
   }
 
+  const provider = settings?.tts ?? "elevenlabs";
+  const ttsReady = !!reply?.configured[provider];
+  const sttReady = !!settings && !!reply?.configured[settings.stt];
+
   // Space toggles the mic (outside text fields and buttons, where it types or
   // clicks). Re-bound each render so it sees the current phase.
   useEffect(() => {
@@ -306,7 +352,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       if (e.code !== "Space" || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.closest("input, textarea, select, button, [contenteditable]") || t.isContentEditable)) return;
-      if (!entriesRef.current.length) return;
+      if (!entriesRef.current.length || !sttReady) return;
       e.preventDefault();
       if (phase === "recording") void finishListening("tap");
       else if (phase === "idle" || phase === "speaking") void startListening();
@@ -315,17 +361,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const provider = settings?.tts ?? "elevenlabs";
-  const ttsReady = !!reply?.configured[provider];
-  const sttReady = !!settings && !!reply?.configured[settings.stt];
-  const voiceSet = (settings && locale ? settings.voices[provider]?.[locale] : undefined) ?? {};
+  const voiceSet: Record<string, string | undefined> = (settings && locale ? settings.voices[provider]?.[locale] : undefined) ?? {};
   // A narrator voice is required even for macOS: the system default voice is
   // the Mac's own language, which would read Spanish with an English accent.
   // Until one is set the settings stay open, and the pickers fill it in.
-  const voicesReady = !!voiceSet.narrator;
+  const voicesReady = !!(voiceSet["narrator:female"] || voiceSet["narrator:male"] || voiceSet.narrator);
   const canStart = !!settings && !!locale && ttsReady && voicesReady;
   const started = entries.length > 0;
-  const busy = phase === "thinking" || phase === "transcribing";
+  const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
 
   return (
     <Card className="flex flex-col gap-4" data-testid="voice-panel">
@@ -366,7 +409,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       )}
 
       {reply && settings && (showSettings || !canStart) && (
-        <SettingsBlock reply={reply} settings={settings} locale={locale} speakers={speakers} onChange={update} />
+        <SettingsBlock reply={reply} settings={settings} locale={locale} slots={slots} onChange={update} />
       )}
 
       {canStart && !started && (
@@ -392,7 +435,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               <li key={i} className="flex flex-col gap-1">
                 {m.lines.map((l, j) => (
                   <div key={j} className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm ${playing === `${i}:${j}` ? "bg-raised" : ""}`}>
-                    <span className="w-20 shrink-0 pt-0.5 text-sm text-fg-3 sm:text-xs">{SPEAKER_LABEL[l.speaker]}</span>
+                    <span className="w-24 shrink-0 pt-0.5 text-sm text-fg-3 sm:text-xs">{lineLabel(l)}</span>
                     <span className="flex-1 text-fg">
                       {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                         <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
@@ -422,6 +465,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               Listening{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
             </>
           )}
+          {phase === "opening" && "Opening the microphone…"}
           {phase === "transcribing" && "Transcribing…"}
           {phase === "thinking" && `The dojo master is thinking… ${thinkingSecs}s`}
           {phase === "speaking" && "Speaking…"}
@@ -489,9 +533,20 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   );
 }
 
+const GENDER_LABEL: Record<VoiceGender, string> = { female: "woman", male: "man" };
+
+function lineLabel(l: VoiceLine): string {
+  return l.gender ? `${SPEAKER_LABEL[l.speaker]} · ${GENDER_LABEL[l.gender]}` : SPEAKER_LABEL[l.speaker];
+}
+
+function slotLabel(slot: VoiceSlot): string {
+  const [speaker, gender] = slot.split(":") as [VoiceSpeaker, VoiceGender];
+  return `${SPEAKER_LABEL[speaker]} · ${GENDER_LABEL[gender]}`;
+}
+
 function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${m.text}` : m.lines.map((l) => `${SPEAKER_LABEL[l.speaker]}: ${l.text}`).join("\n")))
+    .map((m) => (m.role === "learner" ? `Me: ${m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
     .join("\n\n");
 }
 
@@ -501,13 +556,13 @@ function SettingsBlock({
   reply,
   settings,
   locale,
-  speakers,
+  slots,
   onChange,
 }: {
   reply: VoiceSettingsReply;
   settings: VoiceSettings;
   locale: string | null;
-  speakers: VoiceSpeaker[];
+  slots: VoiceSlot[];
   onChange: (patch: Partial<VoiceSettings>) => void;
 }) {
   const { configured } = reply;
@@ -563,7 +618,7 @@ function SettingsBlock({
       </div>
 
       {locale && configured[settings.tts] && (
-        <VoicePickers provider={settings.tts} locale={locale} speakers={speakers} settings={settings} onChange={onChange} />
+        <VoicePickers provider={settings.tts} locale={locale} slots={slots} settings={settings} onChange={onChange} />
       )}
 
       <fieldset className="flex flex-col gap-2 text-sm text-fg-2">
@@ -608,39 +663,43 @@ function SettingsBlock({
   );
 }
 
-/** One voice select per speaker, from the provider's list for the target
- *  locale. Speakers without a voice get distinct defaults the first time the
- *  list loads, natives first, so a fresh setup can start right away. */
+/** One voice select per slot (each speaker as a woman and as a man), from
+ *  the provider's list for the target locale. Empty slots get defaults the
+ *  first time the list loads — natives first, matching gender, all distinct —
+ *  so a fresh setup can start right away. ElevenLabs adds a browser for the
+ *  whole Voice Library. */
 function VoicePickers({
   provider,
   locale,
-  speakers,
+  slots,
   settings,
   onChange,
 }: {
   provider: TtsProvider;
   locale: string;
-  speakers: VoiceSpeaker[];
+  slots: VoiceSlot[];
   settings: VoiceSettings;
   onChange: (patch: Partial<VoiceSettings>) => void;
 }) {
   const [voices, setVoices] = useState<VoiceChoice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const current = settings.voices[provider]?.[locale] ?? {};
+  const [browsing, setBrowsing] = useState(false);
+  // Bumped after a library voice is added, to re-list the account's voices.
+  const [listVersion, setListVersion] = useState(0);
+  const current: Record<string, string | undefined> = settings.voices[provider]?.[locale] ?? {};
 
   useEffect(() => {
     const ctrl = new AbortController();
-    setVoices(null);
     setError(null);
     listVoices(provider, locale, ctrl.signal).then(
       (r) => setVoices(r.voices),
       (e) => !ctrl.signal.aborted && setError(errText(e)),
     );
     return () => ctrl.abort();
-  }, [provider, locale]);
+  }, [provider, locale, listVersion]);
 
   const setVoice = useCallback(
-    (patch: Partial<Record<VoiceSpeaker, string>>) => {
+    (patch: Record<string, string>) => {
       const byLocale = { ...(settings.voices[provider] ?? {}) };
       byLocale[locale] = { ...(byLocale[locale] ?? {}), ...patch };
       onChange({ voices: { ...settings.voices, [provider]: byLocale } });
@@ -648,18 +707,25 @@ function VoicePickers({
     [settings.voices, provider, locale, onChange],
   );
 
-  // First load with gaps: fill them with distinct voices, natives first.
+  // First load with gaps: fill them, natives first, the slot's gender when
+  // the provider says, and distinct where the list allows.
   useEffect(() => {
     if (!voices?.length) return;
-    const unset = speakers.filter((s) => !current[s]);
+    const unset = slots.filter((s) => !current[s]);
     if (!unset.length) return;
     const taken = new Set(Object.values(current));
-    const pool = voices.filter((v) => !taken.has(v.id));
-    const patch: Partial<Record<VoiceSpeaker, string>> = {};
-    unset.forEach((s, i) => {
-      const v = pool[i] ?? voices[0];
-      if (v) patch[s] = v.id;
-    });
+    const patch: Record<string, string> = {};
+    for (const slot of unset) {
+      const gender = slot.split(":")[1];
+      const fits = (v: VoiceChoice) => !v.gender || v.gender.toLowerCase() === gender;
+      const pick =
+        voices.find((v) => v.match && fits(v) && !taken.has(v.id)) ??
+        voices.find((v) => fits(v) && !taken.has(v.id)) ??
+        voices.find((v) => !taken.has(v.id)) ??
+        voices[0];
+      patch[slot] = pick.id;
+      taken.add(pick.id);
+    }
     setVoice(patch);
     // Only when the list arrives: a later manual change is the user's.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -667,17 +733,6 @@ function VoicePickers({
 
   if (error) return <p className="text-sm text-err">Could not list voices: {error}</p>;
   if (!voices) return <p className="text-sm text-fg-3">Loading voices…</p>;
-  if (!voices.length) {
-    return (
-      <p className="text-sm text-warn">
-        {provider === "system"
-          ? `No macOS voice for ${locale} is installed. Add one in System Settings → Accessibility → Spoken Content → System voice → Manage Voices.`
-          : provider === "elevenlabs"
-            ? "Your ElevenLabs account has no voices yet. Add some from the Voice Library at elevenlabs.io (search by language and accent), then reopen these settings."
-            : `Azure has no voices for ${locale}.`}
-      </p>
-    );
-  }
   const natives = voices.filter((v) => v.match);
   const others = voices.filter((v) => !v.match);
   const option = (v: VoiceChoice) => (
@@ -688,22 +743,241 @@ function VoicePickers({
     </option>
   );
   return (
-    <div className="grid gap-3 sm:grid-cols-3" data-testid="voice-pickers">
-      {speakers.map((s) => (
-        <label key={s} className="flex flex-col gap-1 text-sm text-fg-2">
-          {SPEAKER_LABEL[s]} voice
-          <select className={inputClass} value={current[s] ?? ""} onChange={(e) => setVoice({ [s]: e.target.value })}>
-            {!current[s] && <option value="">Choose…</option>}
-            {natives.length > 0 && <optgroup label={`Speaks ${locale}`}>{natives.map(option)}</optgroup>}
-            {others.length > 0 && <optgroup label={natives.length ? "Other voices" : "Voices"}>{others.map(option)}</optgroup>}
-            {current[s] && !voices.some((v) => v.id === current[s]) && <option value={current[s]}>{current[s]} (saved)</option>}
-          </select>
-        </label>
-      ))}
-      {provider === "elevenlabs" && natives.length === 0 && (
-        <p className="text-sm text-fg-3 sm:col-span-3 sm:text-xs">
-          None of your ElevenLabs voices is tagged as a native {locale} speaker. Add native voices from the Voice Library for the best accent.
+    <div className="flex flex-col gap-3">
+      {voices.length === 0 ? (
+        <p className="text-sm text-warn">
+          {provider === "system"
+            ? `No macOS voice for ${locale} is installed. Add one in System Settings → Accessibility → Spoken Content → System voice → Manage Voices.`
+            : provider === "elevenlabs"
+              ? "Your ElevenLabs account has no voices yet — browse the Voice Library below."
+              : `Azure has no voices for ${locale}.`}
         </p>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2" data-testid="voice-pickers">
+          {slots.map((slot) => (
+            <label key={slot} className="flex flex-col gap-1 text-sm text-fg-2">
+              {slotLabel(slot)}
+              <select className={inputClass} value={current[slot] ?? ""} onChange={(e) => setVoice({ [slot]: e.target.value })}>
+                {!current[slot] && <option value="">Choose…</option>}
+                {natives.length > 0 && <optgroup label={`Speaks ${locale}`}>{natives.map(option)}</optgroup>}
+                {others.length > 0 && <optgroup label={natives.length ? "Other voices" : "Voices"}>{others.map(option)}</optgroup>}
+                {current[slot] && !voices.some((v) => v.id === current[slot]) && <option value={current[slot]}>{current[slot]} (saved)</option>}
+              </select>
+            </label>
+          ))}
+        </div>
+      )}
+      {provider === "elevenlabs" && (
+        <>
+          <Button className="self-start" onClick={() => setBrowsing((b) => !b)} aria-expanded={browsing} data-testid="library-toggle">
+            {browsing ? "Hide the Voice Library" : `Browse the Voice Library for ${locale} voices`}
+          </Button>
+          {browsing && (
+            <LibraryBrowser
+              locale={locale}
+              slots={slots}
+              current={current}
+              onUse={(slot, voiceId) => {
+                setVoice({ [slot]: voiceId });
+                setListVersion((n) => n + 1);
+              }}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+const compact = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
+
+const SORTS: { id: LibrarySort; label: string }[] = [
+  { id: "usage_character_count_1y", label: "Most used this year" },
+  { id: "trending", label: "Trending" },
+  { id: "cloned_by_count", label: "Most added" },
+  { id: "created_date", label: "Newest" },
+];
+
+/** The ElevenLabs Voice Library, narrowed to native speakers of the target
+ *  locale: search, gender, popularity, a description and a preview for each,
+ *  and "Use as…" a slot — which adds the voice to the ElevenLabs account
+ *  (that is how the API lets you synthesize with a library voice). */
+function LibraryBrowser({
+  locale,
+  slots,
+  current,
+  onUse,
+}: {
+  locale: string;
+  slots: VoiceSlot[];
+  current: Record<string, string | undefined>;
+  onUse: (slot: VoiceSlot, voiceId: string) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
+  const [gender, setGender] = useState("");
+  const [sort, setSort] = useState<LibrarySort>("usage_character_count_1y");
+  const [page, setPage] = useState(0);
+  const [rows, setRows] = useState<LibraryVoice[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState<string | null>(null);
+  const previewRef = useRef<HTMLAudioElement | null>(null);
+
+  // A new search starts over; "More" appends the next page. "Loading" is
+  // derived: the search on screen is not yet the one that has answered.
+  const searchKey = JSON.stringify([locale, gender, query, sort, page]);
+  const [answered, setAnswered] = useState<string | null>(null);
+  const loading = answered !== searchKey;
+  useEffect(() => {
+    const ctrl = new AbortController();
+    searchLibrary({ locale, gender, q: query, sort, page }, ctrl.signal).then(
+      (r) => {
+        setRows((prev) => (page === 0 ? r.voices : [...prev, ...r.voices]));
+        setHasMore(r.hasMore);
+        setTotal(r.total);
+        setError(null);
+        setAnswered(searchKey);
+      },
+      (e) => {
+        if (ctrl.signal.aborted) return;
+        setError(errText(e));
+        setAnswered(searchKey);
+      },
+    );
+    return () => ctrl.abort();
+  }, [locale, gender, query, sort, page, searchKey]);
+
+  useEffect(() => () => previewRef.current?.pause(), []);
+
+  function restartWith(fn: () => void) {
+    fn();
+    setPage(0);
+  }
+
+  function preview(v: LibraryVoice) {
+    previewRef.current?.pause();
+    if (previewing === v.id || !v.previewUrl) {
+      setPreviewing(null);
+      return;
+    }
+    const a = new Audio(v.previewUrl);
+    previewRef.current = a;
+    a.onended = () => setPreviewing(null);
+    setPreviewing(v.id);
+    a.play().catch(() => setPreviewing(null));
+  }
+
+  async function use(v: LibraryVoice, slot: VoiceSlot) {
+    setBusyId(v.id);
+    setStatus(null);
+    try {
+      const id = v.added ? v.id : (await addLibraryVoice({ ownerId: v.ownerId, voiceId: v.id, name: v.name })).voiceId;
+      setRows((rs) => rs.map((r) => (r.id === v.id ? { ...r, added: true } : r)));
+      onUse(slot, id);
+      setStatus(`${slotLabel(slot)} now speaks as ${v.name}${v.added ? "" : " (added to your ElevenLabs voices)"}.`);
+    } catch (e) {
+      setStatus(`Could not use ${v.name}: ${errText(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const inUse = new Map<string, string[]>();
+  for (const slot of slots) {
+    const id = current[slot];
+    if (id) inUse.set(id, [...(inUse.get(id) ?? []), slotLabel(slot)]);
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-line p-3" data-testid="library">
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          restartWith(() => setQuery(q.trim()));
+        }}
+      >
+        <input className={`${inputClass} min-w-40 flex-1`} placeholder="Search: warm, older, storyteller…" aria-label="Search voices" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className={`${inputClass} w-auto`} aria-label="Gender" value={gender} onChange={(e) => restartWith(() => setGender(e.target.value))}>
+          <option value="">Women and men</option>
+          <option value="female">Women</option>
+          <option value="male">Men</option>
+        </select>
+        <select className={`${inputClass} w-auto`} aria-label="Sort" value={sort} onChange={(e) => restartWith(() => setSort(e.target.value as LibrarySort))}>
+          {SORTS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+        <Button type="submit">Search</Button>
+      </form>
+      <p className="text-sm text-fg-3 sm:text-xs">
+        Native {locale} speakers from the ElevenLabs Voice Library{total != null ? ` · ${total.toLocaleString()} voices` : ""}. ▶ plays the sharer's sample; "Use as" adds the voice to your
+        ElevenLabs account.
+      </p>
+      {status && (
+        <p className="text-sm text-accent" role="status">
+          {status}
+        </p>
+      )}
+      {error && <p className="text-sm text-err">Could not search the library: {error}</p>}
+      <ul className="flex max-h-[32rem] flex-col divide-y divide-line overflow-y-auto" aria-label="Library voices">
+        {rows.map((v) => (
+          <li key={v.id} className="flex flex-col gap-1 py-2" data-testid="library-voice">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="shrink-0 rounded border border-line px-2 py-0.5 text-sm text-fg-2 hover:bg-raised disabled:opacity-40"
+                onClick={() => preview(v)}
+                disabled={!v.previewUrl}
+                aria-label={previewing === v.id ? `Stop the sample of ${v.name}` : `Play a sample of ${v.name}`}
+              >
+                {previewing === v.id ? "■" : "▶"}
+              </button>
+              <span className="font-medium text-fg">{v.name}</span>
+              <span className="text-sm text-fg-3 sm:text-xs">
+                {[v.gender, v.age, v.accent, v.useCase].filter(Boolean).join(" · ")}
+              </span>
+              <span className="flex-1" />
+              <span className="text-sm text-fg-3 tabular-nums sm:text-xs" title={`${v.usage1y.toLocaleString()} characters this year · ${v.clonedBy.toLocaleString()} adds`}>
+                {compact.format(v.usage1y)} chars/yr · {compact.format(v.clonedBy)} adds
+              </span>
+            </div>
+            {v.description && <p className="line-clamp-2 text-sm text-fg-2">{v.description}</p>}
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className={`${inputClass} w-auto`}
+                aria-label={`Use ${v.name} as`}
+                value=""
+                disabled={busyId === v.id}
+                onChange={(e) => e.target.value && void use(v, e.target.value as VoiceSlot)}
+              >
+                <option value="">{busyId === v.id ? "Adding…" : "Use as…"}</option>
+                {[...slots]
+                  .sort((a, b) => Number(b.endsWith(`:${v.gender}`)) - Number(a.endsWith(`:${v.gender}`)))
+                  .map((slot) => (
+                    <option key={slot} value={slot}>
+                      {slotLabel(slot)}
+                    </option>
+                  ))}
+              </select>
+              {inUse.has(v.id) && <span className="text-sm text-accent sm:text-xs">In use: {inUse.get(v.id)!.join(", ")}</span>}
+              {v.added && !inUse.has(v.id) && <span className="text-sm text-fg-3 sm:text-xs">In your voices</span>}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {loading && <p className="text-sm text-fg-3">Loading…</p>}
+      {!loading && rows.length === 0 && !error && <p className="text-sm text-fg-3">No voices match.</p>}
+      {hasMore && !loading && (
+        <Button className="self-start" onClick={() => setPage((p) => p + 1)}>
+          More voices
+        </Button>
       )}
     </div>
   );

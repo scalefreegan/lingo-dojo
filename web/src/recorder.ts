@@ -46,16 +46,28 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
-  const ctx = new AudioContext();
-  const analyser = ctx.createAnalyser();
-  analyser.fftSize = 1024;
-  ctx.createMediaStreamSource(stream).connect(analyser);
-  const recorder = new MediaRecorder(stream);
+  // The mic is live from here: if any setup step throws, release it rather
+  // than leave the browser's recording indicator on with nothing behind it.
+  let ctx: AudioContext | null = null;
+  let analyser: AnalyserNode;
+  let recorder: MediaRecorder;
   const chunks: Blob[] = [];
-  recorder.ondataavailable = (e) => {
-    if (e.data.size) chunks.push(e.data);
-  };
-  recorder.start(250);
+  try {
+    ctx = new AudioContext();
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => {
+      if (e.data.size) chunks.push(e.data);
+    };
+    recorder.start(250);
+  } catch (e) {
+    for (const t of stream.getTracks()) t.stop();
+    void ctx?.close();
+    throw e;
+  }
+  const audio = ctx;
 
   const started = performance.now();
   const samples = new Float32Array(analyser.fftSize);
@@ -109,7 +121,7 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
     done = true;
     window.clearInterval(timer);
     for (const t of stream.getTracks()) t.stop();
-    void ctx.close();
+    void audio.close();
   };
 
   return {

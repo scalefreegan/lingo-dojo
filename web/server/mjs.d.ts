@@ -134,6 +134,14 @@ declare module "*/scripts/voice.mjs" {
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
+  export function voiceSlots(mode: Mode): import("../shared/wire.ts").VoiceSlot[];
+  /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
+  export function voiceFor(set: Record<string, string> | undefined, speaker: VoiceSpeaker, gender: import("../shared/wire.ts").VoiceGender | null | undefined): string;
+  export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];
+  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; search?: string; sort?: string; page?: number }): Req;
+  export function elevenLibrary(json: unknown): import("../shared/wire.ts").LibraryReply;
+  /** Throws on an id that isn't an ElevenLabs id. */
+  export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;
   export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string }): Req;
   export function elevenVoicesRequest(o: { key: string }): Req;
   export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string }): Req;

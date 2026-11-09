@@ -371,6 +371,11 @@ export type TtsProvider = "elevenlabs" | "azure" | "system";
 export type SttProvider = "elevenlabs" | "azure";
 /** The voices a frame names; kids mode adds the sidekick. */
 export type VoiceSpeaker = "narrator" | "character" | "sidekick";
+/** Whose voice a line is: the dojo master tags it (-F / -M). */
+export type VoiceGender = "female" | "male";
+/** A voice choice: a speaker as a woman or a man, e.g. "character:female".
+ *  (A bare speaker id is an older, ungendered choice, still honoured.) */
+export type VoiceSlot = `${VoiceSpeaker}:${VoiceGender}`;
 /** "tap": the learner stops the recording themselves. "pause": it stops
  *  after `silenceMs` of quiet once they have started talking. */
 export type TurnTaking = "tap" | "pause";
@@ -389,8 +394,8 @@ export interface VoiceSettings {
   review: boolean;
   /** Start listening again as soon as the dojo master finishes. */
   handsFree: boolean;
-  /** provider → locale (BCP-47) → speaker → provider voice id. */
-  voices: Partial<Record<TtsProvider, Record<string, Partial<Record<VoiceSpeaker, string>>>>>;
+  /** provider → locale (BCP-47) → slot ("character:female") → voice id. */
+  voices: Partial<Record<TtsProvider, Record<string, Partial<Record<VoiceSlot | VoiceSpeaker, string>>>>>;
 }
 
 export interface VoiceOption {
@@ -409,6 +414,8 @@ export interface VoiceSettingsReply {
   elevenModels: VoiceOption[];
   silence: { min: number; max: number; default: number };
   speakers: Record<Mode, VoiceSpeaker[]>;
+  /** Each mode's voice slots, in picker order. */
+  slots: Record<Mode, VoiceSlot[]>;
   /** Where the keys go, repo-relative, for the setup hint. */
   envFile: string;
   /** BCP-47 locales for the session languages named in the query
@@ -449,6 +456,8 @@ export interface VoiceSegment {
  *  display and copying. */
 export interface VoiceLine {
   speaker: VoiceSpeaker;
+  /** null when the dojo master didn't say. */
+  gender: VoiceGender | null;
   text: string;
   segments: VoiceSegment[];
 }
@@ -487,6 +496,49 @@ export interface VoiceSpeakRequest {
   lang?: SegmentLang;
   /** The learner's native locale, for "native" text. */
   nativeLocale?: string;
+  /** Picks the woman's or man's voice for the speaker. */
+  gender?: VoiceGender | null;
+}
+
+/** One voice from the ElevenLabs Voice Library. */
+export interface LibraryVoice {
+  id: string;
+  /** The sharer's public id; needed to add the voice to the account. */
+  ownerId: string;
+  name: string;
+  description: string;
+  accent: string;
+  gender: string;
+  age: string;
+  useCase: string;
+  locale: string;
+  previewUrl: string;
+  /** Characters generated with it in the last year / week: popularity. */
+  usage1y: number;
+  usage7d: number;
+  clonedBy: number;
+  /** Already in the account. */
+  added: boolean;
+}
+
+export type LibrarySort = "usage_character_count_1y" | "trending" | "cloned_by_count" | "created_date";
+
+/** GET /api/voice/library?locale=&gender=&q=&sort=&page= */
+export interface LibraryReply {
+  voices: LibraryVoice[];
+  hasMore: boolean;
+  total: number | null;
+}
+
+/** POST /api/voice/library/add — adds a library voice to the ElevenLabs
+ *  account and answers with the id to synthesize with. */
+export interface LibraryAddRequest {
+  ownerId: string;
+  voiceId: string;
+  name: string;
+}
+export interface LibraryAddReply {
+  voiceId: string;
 }
 
 /** POST /api/voice/transcribe?locales=en-US,zh-CN with a WAV body. */
