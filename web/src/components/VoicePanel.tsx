@@ -123,10 +123,18 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     };
   }, []);
 
+  // Saves can overlap (a slider sends one per step); only the newest one's
+  // answer may replace the settings, or an older answer arriving last would
+  // undo a later change on screen and then, via the next merge, on disk.
+  const saveSeq = useRef(0);
   const update = useCallback(
     (patch: Partial<VoiceSettings>) => {
+      const seq = ++saveSeq.current;
       setReply((r) => (r ? { ...r, settings: { ...r.settings, ...patch } } : r));
-      saveVoiceSettings(patch, langs).then(setReply, (e) => setError(`Could not save the setting: ${errText(e)}`));
+      saveVoiceSettings(patch, langs).then(
+        (r) => seq === saveSeq.current && setReply(r),
+        (e) => setError(`Could not save the setting: ${errText(e)}`),
+      );
     },
     [langs],
   );
@@ -279,9 +287,12 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     setLevel(0);
     setPhase("transcribing");
     try {
-      const { wav, spoke } = await rec.stop();
+      const { wav, spoke, ms } = await rec.stop();
       if (gen !== genRef.current) return;
-      if (why === "idle" || (!spoke && why !== "tap")) {
+      // A tap ends the turn even when the level meter heard nothing (a soft
+      // voice can stay under it), but a short silent tap is a mis-tap: don't
+      // pay to transcribe it.
+      if (!wav || why === "idle" || (!spoke && (why !== "tap" || ms < 1500))) {
         setPhase("idle");
         setNotice("Didn't hear anything — tap Talk when you're ready.");
         return;

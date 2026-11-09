@@ -14,8 +14,9 @@
  * before the first word never ends the turn. */
 
 export interface Recording {
-  /** Stop and return the WAV, plus whether any speech was heard. */
-  stop(): Promise<{ wav: Blob; spoke: boolean; ms: number }>;
+  /** Stop and return the WAV, plus whether any speech was heard. `wav` is
+   *  null when there is nothing to send: a tap too short to hold audio. */
+  stop(): Promise<{ wav: Blob | null; spoke: boolean; ms: number }>;
   /** Stop and throw the audio away. */
   cancel(): void;
 }
@@ -40,6 +41,9 @@ const CALIBRATE_MS = 350;
 /** Speech must stay above the threshold this long to count as speech (a
  *  cough or a click does not arm the pause detector). */
 const SPEECH_MIN_MS = 200;
+/** Shorter than this is a slip of the finger, not a turn: MediaRecorder may
+ *  not even have written an audio frame yet. */
+const MIN_TURN_MS = 400;
 
 export async function startRecording(opts: RecordOptions): Promise<Recording> {
   const { silenceMs, maxMs = 60_000, idleMs = 20_000, onLevel, onAutoStop } = opts;
@@ -130,8 +134,15 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
       return new Promise((resolve, reject) => {
         recorder.onstop = () => {
           teardown();
+          if (ms < MIN_TURN_MS) return resolve({ wav: null, spoke: false, ms });
           const raw = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-          toWav(raw).then((wav) => resolve({ wav, spoke, ms }), reject);
+          // A short silent clip can be a container with no audio frames,
+          // which won't decode: that is "nothing heard", not an error. A
+          // decode failure on real speech still surfaces.
+          toWav(raw).then(
+            (wav) => resolve({ wav, spoke, ms }),
+            (e) => (!spoke && ms < 1500 ? resolve({ wav: null, spoke, ms }) : reject(e)),
+          );
         };
         if (recorder.state === "inactive") recorder.onstop(new Event("stop"));
         else recorder.stop();
