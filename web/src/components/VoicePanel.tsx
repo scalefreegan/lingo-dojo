@@ -34,12 +34,31 @@ const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Aske
 const DIRECT = "[direct]";
 const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
 
-export default function VoicePanel({ mode, pack, langs }: { mode: Mode; pack: PackInput; langs: VoiceLanguages }) {
-  const [open, setOpen] = useState(false);
+export default function VoicePanel({
+  mode,
+  pack,
+  langs,
+  openRequest = false,
+  onOpened,
+}: {
+  mode: Mode;
+  pack: PackInput;
+  langs: VoiceLanguages;
+  /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
+  openRequest?: boolean;
+  onOpened?: () => void;
+}) {
+  const [open, setOpen] = useState(openRequest);
+  // A request while closed opens it during render (React's pattern for state
+  // that follows a prop); the effect then tells the parent it's handled.
+  if (openRequest && !open) setOpen(true);
+  useEffect(() => {
+    if (openRequest) onOpened?.();
+  }, [openRequest, onOpened]);
   if (!open) {
     return (
-      <Button className="self-stretch justify-center sm:self-start" onClick={() => setOpen(true)} data-testid="voice-open">
-        Practice here by voice
+      <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => setOpen(true)} data-testid="voice-open">
+        🥋 Practice in the dojo
       </Button>
     );
   }

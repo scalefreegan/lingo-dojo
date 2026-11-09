@@ -18,6 +18,7 @@ export default function SummaryBar({
   result,
   pending,
   onTab,
+  onPractice,
 }: {
   content: ContentReply;
   draft: Draft;
@@ -26,6 +27,8 @@ export default function SummaryBar({
   result: AssembleResult | null;
   pending: boolean;
   onTab: (t: Tab) => void;
+  /** Open the voice session on the Go tab. */
+  onPractice: () => void;
 }) {
   const changedCount = useMemo(() => changedSlots(content, draft).size, [content, draft]);
   const warningsCount = result?.warnings.length ?? 0;
@@ -50,8 +53,20 @@ export default function SummaryBar({
           </button>
         )}
       </div>
-      <Button variant="primary" className="shrink-0" onClick={() => copy(markdown)} disabled={!markdown}>
-        {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy"}
+      {/* Practising in the dojo is the main action; copying the prompt for
+          another voice app is the alternative, an icon. */}
+      <button
+        type="button"
+        className="shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
+        onClick={() => copy(markdown)}
+        disabled={!markdown}
+        aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
+        title="Copy the prompt, to paste into ChatGPT or Claude voice instead"
+      >
+        {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
+      </button>
+      <Button variant="primary" className="shrink-0" onClick={onPractice} disabled={!markdown}>
+        🥋 Practice
       </Button>
     </div>
   );
