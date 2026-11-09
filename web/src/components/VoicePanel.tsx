@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getVoiceSettings, listVoices, saveVoiceSettings, speakLine, transcribe, voiceTurn, type VoiceLanguages } from "../api";
 import { startRecording, type Recording } from "../recorder";
-import type { Mode, PackInput, TtsProvider, VoiceChoice, VoiceHistoryItem, VoiceLine, VoiceSettings, VoiceSettingsReply, VoiceSpeaker } from "../types";
+import type {
+  Mode, PackInput, TtsProvider, VoiceChoice, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings, VoiceSettingsReply, VoiceSpeaker,
+} from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
@@ -130,13 +132,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     return c;
   }
 
-  /** A line's audio, fetched once and kept for replay. */
-  function audioFor(key: string, line: VoiceLine, signal: AbortSignal): Promise<string> {
+  /** One segment's audio, fetched once and kept for replay. Each segment is
+   *  said in its own language (target or native) by the line's speaker. */
+  function audioFor(key: string, speaker: VoiceSpeaker, seg: VoiceSegment, signal: AbortSignal): Promise<string> {
     let p = urls.current.get(key);
     if (!p) {
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
-      setChars((c) => c + line.text.length);
-      p = speakLine({ speaker: line.speaker, text: line.text, locale }, signal).then((b) => URL.createObjectURL(b));
+      setChars((c) => c + seg.text.length);
+      p = speakLine({ speaker, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined }, signal).then((b) => URL.createObjectURL(b));
       urls.current.set(key, p);
       p.catch(() => urls.current.delete(key));
     }
@@ -159,17 +162,25 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     });
   }
 
-  /** Speak lines in order, fetching the next while the current one plays. */
+  /** Speak lines in order, segment by segment, fetching the next segment
+   *  while the current one plays. A line from before segments existed (or
+   *  with none) is spoken whole as the target language. */
   async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
     setPhase("speaking");
     const last = only ? from : lines.length - 1;
+    const queue: { key: string; line: string; speaker: VoiceSpeaker; seg: VoiceSegment }[] = [];
     for (let i = from; i <= last; i++) {
+      const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
+      segs.forEach((seg, k) => queue.push({ key: `${entryIdx}:${i}:${k}`, line: `${entryIdx}:${i}`, speaker: lines[i].speaker, seg }));
+    }
+    for (let q = 0; q < queue.length; q++) {
       if (signal.aborted) return;
-      const key = `${entryIdx}:${i}`;
-      const url = await audioFor(key, lines[i], signal);
-      if (i < last) void audioFor(`${entryIdx}:${i + 1}`, lines[i + 1], signal).catch(() => {});
+      const cur = queue[q];
+      const url = await audioFor(cur.key, cur.speaker, cur.seg, signal);
+      const next = queue[q + 1];
+      if (next) void audioFor(next.key, next.speaker, next.seg, signal).catch(() => {});
       if (signal.aborted) return;
-      setPlaying(key);
+      setPlaying(cur.line);
       await playUrl(url, signal);
     }
     setPlaying(null);
@@ -382,7 +393,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                 {m.lines.map((l, j) => (
                   <div key={j} className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm ${playing === `${i}:${j}` ? "bg-raised" : ""}`}>
                     <span className="w-20 shrink-0 pt-0.5 text-sm text-fg-3 sm:text-xs">{SPEAKER_LABEL[l.speaker]}</span>
-                    <span className="flex-1 text-fg">{l.text}</span>
+                    <span className="flex-1 text-fg">
+                      {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
+                        <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
+                          {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
+                          {g.text}
+                        </span>
+                      ))}
+                    </span>
                     <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => void replay(i, j, m.lines)}>
                       ▶
                     </button>
@@ -424,8 +442,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                 Done
               </Button>
             ) : (
-              <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void startListening()} disabled={!sttReady || busy} title={sttReady ? "Space also works" : "Set up a speech-to-text provider first"}>
-                Talk
+              <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void startListening()} disabled={!sttReady || busy} title={sttReady ? "Records your answer — Space also works" : "Set up a speech-to-text provider first"}>
+                🎙 Talk
               </Button>
             )}
             {(phase === "speaking" || phase === "thinking" || phase === "recording") && (

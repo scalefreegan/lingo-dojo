@@ -185,7 +185,10 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 
 - Start every line with a speaker tag: ${tags} (${who}). One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
 - Write only words to be spoken aloud: no markdown, lists, emoji, stage directions, or descriptions of tone or actions in brackets or asterisks.
-- Write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so the voice pronounces it natively. Add a romanization only when you are explicitly teaching it.
+- Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
+  NARRATOR: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
+  CHARACTER: <t>¡Claro que sí, güero! ¿Algo más?</t>
+- Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
 - The first message is "[session start]": open the session the way your instructions say.`;
@@ -200,11 +203,12 @@ export function voiceSystemPrompt(markdown, mode = "adult") {
 export const SESSION_START = "[session start]";
 
 /** The transcript replayed as the prompt (the chat agent's pattern): the
- *  learner's lines as heard, the dojo master's as the tagged lines spoken. */
+ *  learner's lines as heard, the dojo master's as the tagged lines spoken —
+ *  with their <t> marks put back, so the model keeps seeing the format. */
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${TAG[l.speaker] ?? "NARRATOR"}: ${l.text}`).join("\n")}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${TAG[l.speaker] ?? "NARRATOR"}: ${markedText(l)}`).join("\n")}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
   return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master, in tagged lines only.`;
@@ -228,10 +232,44 @@ export function speakable(text) {
     .trim();
 }
 
-/** The model's reply as `{speaker, text}` lines, in order. An untagged line
- *  continues the speaker before it (narrator at the top); a speaker the mode
- *  doesn't have falls back to the narrator; consecutive lines by the same
- *  speaker merge so each becomes one synthesis call. */
+/** Segments back into one display string: a space between pieces, except
+ *  before closing punctuation ("jitomate." not "jitomate ."). */
+export function joinSegments(segments) {
+  return segments.reduce((acc, g, i) => (i === 0 || /^[.,;:!?)\]»…]/.test(g.text) ? acc + g.text : `${acc} ${g.text}`), "");
+}
+
+/** A line back in the model's own notation: target segments in <t>. */
+export function markedText(line) {
+  const segs = Array.isArray(line?.segments) && line.segments.length ? line.segments : [{ lang: "native", text: line?.text ?? "" }];
+  return segs.map((g) => (g.lang === "target" ? `<t>${g.text}</t>` : g.text)).join(" ");
+}
+
+/** One line's text → language segments. <t>…</t> is the target language;
+ *  an unclosed <t> runs to the end of the line (a model that forgets to close
+ *  a whole-line wrap still gets it right). Each segment is made speakable;
+ *  empty ones drop. */
+export function splitSegments(text) {
+  const out = [];
+  const push = (lang, raw) => {
+    const said = speakable(raw);
+    if (said) out.push({ lang, text: said });
+  };
+  const re = /<t>([\s\S]*?)(?:<\/t>|$)/gi;
+  let last = 0;
+  for (const m of String(text).matchAll(re)) {
+    push("native", String(text).slice(last, m.index));
+    push("target", m[1]);
+    last = m.index + m[0].length;
+  }
+  push("native", String(text).slice(last).replace(/<\/?t>/gi, " "));
+  return out;
+}
+
+/** The model's reply as `{speaker, text, segments}` lines, in order. An
+ *  untagged line continues the speaker before it (narrator at the top); a
+ *  speaker the mode doesn't have falls back to the narrator; consecutive
+ *  lines by the same speaker merge, and so do adjacent segments in the same
+ *  language — each segment is one synthesis call. */
 export function parseVoiceReply(text, mode = "adult") {
   const allowed = new Set(speakersFor(mode));
   const out = [];
@@ -245,11 +283,19 @@ export function parseVoiceReply(text, mode = "adult") {
       current = allowed.has(tag) ? tag : "narrator";
       line = raw.slice(m[0].length);
     }
-    const said = speakable(line);
-    if (!said) continue;
-    const last = out[out.length - 1];
-    if (last && last.speaker === current) last.text = `${last.text} ${said}`;
-    else out.push({ speaker: current, text: said });
+    const segments = splitSegments(line);
+    if (!segments.length) continue;
+    let target = out[out.length - 1];
+    if (!target || target.speaker !== current) {
+      target = { speaker: current, text: "", segments: [] };
+      out.push(target);
+    }
+    for (const g of segments) {
+      const prev = target.segments[target.segments.length - 1];
+      if (prev && prev.lang === g.lang) prev.text = `${prev.text} ${g.text}`;
+      else target.segments.push({ ...g });
+    }
+    target.text = joinSegments(target.segments);
   }
   return out;
 }
@@ -300,10 +346,17 @@ const xmlEscape = (s) => String(s).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">
  *  ones with a colon (`en-US-Ava:DragonHDLatestNeural`). */
 export const AZURE_VOICE_RE = /^[A-Za-z]{2,3}-[A-Za-z0-9]{2,4}-[A-Za-z0-9:]+$/;
 
+/** `locale` is the language this text is in. A multilingual voice speaks
+ *  it inside <lang> (same voice, that language's pronunciation); any other
+ *  voice speaks only its own language, so the text goes in as-is. */
 export function azureSsml({ voice, text, locale }) {
   if (!AZURE_VOICE_RE.test(voice)) throw new Error(`not an Azure voice name: ${JSON.stringify(voice)}`);
-  const lang = locale && BCP47_RE.test(locale) ? locale : voice.split("-").slice(0, 2).join("-");
-  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="${lang}"><voice name="${voice}">${xmlEscape(text)}</voice></speak>`;
+  const own = voice.split("-").slice(0, 2).join("-");
+  const body = xmlEscape(text);
+  const inner = locale && BCP47_RE.test(locale) && locale !== own && /Multilingual/i.test(voice)
+    ? `<lang xml:lang="${locale}">${body}</lang>`
+    : body;
+  return `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${own}"><voice name="${voice}">${inner}</voice></speak>`;
 }
 
 const REGION_RE = /^[a-z0-9]+$/;

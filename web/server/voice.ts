@@ -12,8 +12,8 @@ import {
   normalizeVoiceSettings, parseVoiceReply, systemVoices, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
-  Mode, SttProvider, TranscribeReply, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
-  VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  Mode, SegmentLang, SttProvider, TranscribeReply, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
+  VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { dataDir } from "./store.ts";
@@ -219,10 +219,17 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   for (const m of raw) {
     if (m?.role === "learner" && typeof m.text === "string") out.push({ role: "learner", text: m.text.slice(0, 4000) });
     else if (m?.role === "master" && Array.isArray(m.lines)) {
-      const lines = m.lines
-        .filter((l: unknown): l is { speaker: VoiceSpeaker; text: string } =>
-          !!l && typeof (l as { text?: unknown }).text === "string" && typeof (l as { speaker?: unknown }).speaker === "string")
-        .map((l: { speaker: VoiceSpeaker; text: string }) => ({ speaker: l.speaker, text: l.text.slice(0, 4000) }));
+      const lines: VoiceLine[] = [];
+      for (const l of m.lines as unknown[]) {
+        const line = l as { speaker?: unknown; text?: unknown; segments?: unknown };
+        if (typeof line?.speaker !== "string" || typeof line.text !== "string") continue;
+        const segments = Array.isArray(line.segments)
+          ? (line.segments as { lang?: unknown; text?: unknown }[])
+              .filter((g) => (g?.lang === "target" || g?.lang === "native") && typeof g.text === "string")
+              .map((g) => ({ lang: g.lang as SegmentLang, text: (g.text as string).slice(0, 4000) }))
+          : [];
+        lines.push({ speaker: line.speaker as VoiceSpeaker, text: line.text.slice(0, 4000), segments });
+      }
       out.push({ role: "master", lines });
     }
   }
@@ -315,6 +322,11 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   if (text.length > MAX_SPEAK_CHARS) throw new HttpError(413, `a line is capped at ${MAX_SPEAK_CHARS} characters`);
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");
+  // The language of this text: target words are said with the target
+  // locale's pronunciation, native ones with the learner's — same voice.
+  const lang: SegmentLang = body?.lang === "native" ? "native" : "target";
+  const nativeLocale = typeof body?.nativeLocale === "string" && LOCALE_RE.test(body.nativeLocale) ? body.nativeLocale : "";
+  const textLocale = lang === "native" && nativeLocale ? nativeLocale : locale;
   const speaker = body?.speaker;
   if (typeof speaker !== "string" || !["narrator", "character", "sidekick"].includes(speaker)) {
     throw new HttpError(400, "speaker must be narrator, character or sidekick");
@@ -325,7 +337,12 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // The speaker's own voice; a speaker without one borrows the narrator's,
   // so a half-set-up kids session still talks.
   const set = settings.voices[provider]?.[locale] ?? {};
-  const voice = set[speaker as VoiceSpeaker] || set.narrator || "";
+  let voice = set[speaker as VoiceSpeaker] || set.narrator || "";
+  // macOS voices speak one language each: native-language text goes to the
+  // voice picked for that locale, else the system default (the Mac's own).
+  if (provider === "system" && lang === "native" && nativeLocale) {
+    voice = settings.voices.system?.[nativeLocale]?.[speaker as VoiceSpeaker] || settings.voices.system?.[nativeLocale]?.narrator || "";
+  }
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
@@ -337,12 +354,12 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
     let audio: Buffer;
     let type = "audio/mpeg";
     if (provider === "elevenlabs") {
-      const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model: settings.elevenModel, locale }), ctrl.signal);
+      const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
       audio = Buffer.from(await r.arrayBuffer());
     } else if (provider === "azure") {
       let request;
       try {
-        request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale });
+        request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale: textLocale });
       } catch (e) {
         throw new HttpError(400, String((e as Error).message));
       }

@@ -435,10 +435,22 @@ export interface VoicesReply {
   voices: VoiceChoice[];
 }
 
-/** One spoken line of a dojo-master turn. */
+/** Which language a piece of a line is in: the session's target or the
+ *  learner's native language. The dojo master marks target words; each piece
+ *  is synthesized in its own language by the speaker's one voice. */
+export type SegmentLang = "target" | "native";
+
+export interface VoiceSegment {
+  lang: SegmentLang;
+  text: string;
+}
+
+/** One spoken line of a dojo-master turn. `text` is the segments joined, for
+ *  display and copying. */
 export interface VoiceLine {
   speaker: VoiceSpeaker;
   text: string;
+  segments: VoiceSegment[];
 }
 
 /** The session so far, as the client holds it (the server keeps none). */
@@ -471,6 +483,10 @@ export interface VoiceSpeakRequest {
   text: string;
   /** The session's target locale; picks the voice set. */
   locale: string;
+  /** The language this text is in; "target" when absent. */
+  lang?: SegmentLang;
+  /** The learner's native locale, for "native" text. */
+  nativeLocale?: string;
 }
 
 /** POST /api/voice/transcribe?locales=en-US,zh-CN with a WAV body. */

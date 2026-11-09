@@ -74,6 +74,7 @@ test("voiceSystemPrompt: the pack first, then the adapter naming this mode's spe
   assert.doesNotMatch(sys, /SIDEKICK/);
   assert.match(voiceAdapter("kids"), /NARRATOR:, SIDEKICK:, CHARACTER:/);
   assert.match(sys, /normal script/, "asks for characters, not pinyin");
+  assert.match(sys, /<t>…<\/t>/, "asks for target-language marks");
 });
 
 test("voiceTurnPrompt: replays the session and opens with the start marker", () => {
@@ -90,6 +91,8 @@ test("voiceTurnPrompt: replays the session and opens with the start marker", () 
 
 /* ---------------------------------- reply ---------------------------------- */
 
+const plain = (lines) => lines.map(({ speaker, text }) => ({ speaker, text }));
+
 test("parseVoiceReply: tags, continuation, merging, and unknown speakers", () => {
   const lines = parseVoiceReply(
     `NARRATOR: Let's begin.
@@ -100,14 +103,35 @@ SIDEKICK: (not in adult mode)
 Plain line after.`,
     "adult",
   );
-  assert.deepEqual(lines, [
+  assert.deepEqual(plain(lines), [
     { speaker: "narrator", text: "Let's begin. We're at the market." },
     { speaker: "character", text: "¡Buenos días! ¿Qué le doy?" },
     { speaker: "narrator", text: "(not in adult mode) Plain line after." },
   ]);
-  assert.deepEqual(parseVoiceReply("Hello there", "adult"), [{ speaker: "narrator", text: "Hello there" }]);
-  assert.deepEqual(parseVoiceReply("HELPER: Boing!", "kids"), [{ speaker: "sidekick", text: "Boing!" }]);
+  assert.deepEqual(plain(parseVoiceReply("Hello there", "adult")), [{ speaker: "narrator", text: "Hello there" }]);
+  assert.deepEqual(plain(parseVoiceReply("HELPER: Boing!", "kids")), [{ speaker: "sidekick", text: "Boing!" }]);
   assert.deepEqual(parseVoiceReply("\n\n", "adult"), []);
+});
+
+test("parseVoiceReply: <t> marks split a line into target and native segments", () => {
+  const [narrator, character] = parseVoiceReply(
+    `NARRATOR: The word for tomato is <t>jitomate</t>. Try: <t>un kilo, por favor</t>
+CHARACTER: <t>¡Claro! ¿Algo más?`,
+    "adult",
+  );
+  assert.deepEqual(narrator.segments, [
+    { lang: "native", text: "The word for tomato is" },
+    { lang: "target", text: "jitomate" },
+    { lang: "native", text: ". Try:" },
+    { lang: "target", text: "un kilo, por favor" },
+  ]);
+  assert.equal(narrator.text, "The word for tomato is jitomate. Try: un kilo, por favor");
+  assert.deepEqual(character.segments, [{ lang: "target", text: "¡Claro! ¿Algo más?" }], "an unclosed <t> runs to the end of the line");
+  // Same-speaker lines merge, and so do touching same-language segments.
+  const [merged] = parseVoiceReply("CHARACTER: <t>Hola.</t>\n<t>¿Qué tal?</t>", "adult");
+  assert.deepEqual(merged.segments, [{ lang: "target", text: "Hola. ¿Qué tal?" }]);
+  // Replayed history puts the marks back.
+  assert.match(voiceTurnPrompt([{ role: "master", lines: [narrator] }], "x"), /NARRATOR: The word for tomato is <t>jitomate<\/t> \. Try: <t>un kilo, por favor<\/t>/);
 });
 
 test("speakable: drops stage directions and markdown, keeps the words", () => {
@@ -140,9 +164,12 @@ test("transcribe requests: Scribe v2 for ElevenLabs, both locales as Azure candi
   assert.throws(() => azureTranscribeRequest({ key: "K", region: "evil.com/x", audio, locales: [] }), /region/);
 });
 
-test("azureSsml: escapes the text and refuses a voice name that could break out", () => {
-  const ssml = azureSsml({ voice: "zh-CN-XiaoxiaoMultilingualNeural", text: `<b>"5 & 6"</b>`, locale: "zh-CN" });
-  assert.match(ssml, /xml:lang="zh-CN"><voice name="zh-CN-XiaoxiaoMultilingualNeural">&lt;b&gt;&quot;5 &amp; 6&quot;&lt;\/b&gt;<\/voice>/);
+test("azureSsml: escapes the text, switches language only on multilingual voices, refuses a bad voice name", () => {
+  const ssml = azureSsml({ voice: "zh-CN-XiaoxiaoNeural", text: `<b>"5 & 6"</b>`, locale: "zh-CN" });
+  assert.match(ssml, /xml:lang="zh-CN"><voice name="zh-CN-XiaoxiaoNeural">&lt;b&gt;&quot;5 &amp; 6&quot;&lt;\/b&gt;<\/voice>/);
+  const multi = azureSsml({ voice: "es-MX-DaliaMultilingualNeural", text: "the market", locale: "en-US" });
+  assert.match(multi, /xml:lang="es-MX"><voice name="es-MX-DaliaMultilingualNeural"><lang xml:lang="en-US">the market<\/lang>/);
+  assert.doesNotMatch(azureSsml({ voice: "es-MX-JorgeNeural", text: "hi", locale: "en-US" }), /<lang/, "a single-language voice gets no <lang>");
   assert.doesNotThrow(() => azureSsml({ voice: "en-US-Ava:DragonHDLatestNeural", text: "hi" }));
   assert.throws(() => azureSsml({ voice: `x"><audio src="y`, text: "hi" }), /not an Azure voice/);
   const req = azureSpeechRequest({ key: "K", region: "westeurope", voice: "es-MX-DaliaNeural", text: "Hola" });
