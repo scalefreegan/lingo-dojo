@@ -11,7 +11,7 @@ import path from "node:path";
 import YAML from "yaml";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
-  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
+  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
@@ -75,6 +75,7 @@ test("voiceSystemPrompt: the pack first, then the adapter naming this mode's spe
   assert.match(sys, /-F for a woman, -M for a man/);
   assert.ok(sys.includes(`"${SKIP}"`), "the adapter explains the Skip button's message");
   assert.ok(sys.includes(`"${HELP}"`), "and the Help button's");
+  assert.ok(sys.includes(`"${DIRECT}"`), "and a direct request's prefix");
   assert.doesNotMatch(sys, /SIDEKICK/);
   assert.match(voiceAdapter("kids"), /NARRATOR-F:, SIDEKICK-F:, CHARACTER-F:/);
   assert.match(sys, /normal script/, "asks for characters, not pinyin");

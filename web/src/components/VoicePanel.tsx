@@ -30,6 +30,9 @@ const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instan
 const SKIP = "[skip]";
 const HELP = "[help]";
 const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help" };
+/** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
+const DIRECT = "[direct]";
+const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
 
 export default function VoicePanel({ mode, pack, langs }: { mode: Mode; pack: PackInput; langs: VoiceLanguages }) {
   const [open, setOpen] = useState(false);
@@ -51,6 +54,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [composer, setComposer] = useState("");
+  // The composer (and the recording behind it) speaks straight to the dojo
+  // master, in the native language, rather than answering the practice.
+  const [direct, setDirect] = useState(false);
+  const directRef = useRef(false);
   const [level, setLevel] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [chars, setChars] = useState(0);
@@ -250,13 +257,15 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     }
   }
 
-  async function startListening() {
+  async function startListening(toMaster = false) {
     const s = settingsRef.current;
     // "opening" covers the await on the mic: a second Space or a double tap
     // while the permission prompt is up must not open a second recording.
     if (!s || recRef.current || phaseRef.current === "opening") return;
     // Talking over the dojo master is allowed: it stops them.
     stopAll();
+    directRef.current = toMaster;
+    setDirect(toMaster);
     const gen = genRef.current;
     phaseRef.current = "opening";
     setPhase("opening");
@@ -304,7 +313,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         return;
       }
       const ctrl = freshCtrl();
-      const { text } = await transcribe(wav, [locale, nativeLocale].filter((l): l is string => !!l), ctrl.signal, expectedPhrases(entriesRef.current));
+      const toMaster = directRef.current;
+      // Practice speech is taken as the target language with the expected
+      // phrases as hints; a direct request is the native language, no hints.
+      const locales = (toMaster ? [nativeLocale] : [locale, nativeLocale]).filter((l): l is string => !!l);
+      const { text } = await transcribe(wav, locales, ctrl.signal, toMaster ? [] : expectedPhrases(entriesRef.current));
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       if (!text) {
         setPhase("idle");
@@ -317,7 +330,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         window.setTimeout(() => composerRef.current?.focus(), 0);
         return;
       }
-      await runTurn(text, gen);
+      setDirect(false);
+      await runTurn(toMaster ? `${DIRECT} ${text}` : text, gen);
     } catch (e) {
       if (isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
@@ -341,7 +355,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     if (!text || (phase !== "idle" && phase !== "speaking")) return;
     if (phase === "speaking") stopAll();
     setComposer("");
-    void runTurn(text);
+    setDirect(false);
+    void runTurn(direct ? `${DIRECT} ${text}` : text);
   }
 
   async function replay(entryIdx: number, lineIdx: number, lines: VoiceLine[]) {
@@ -455,7 +470,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
           {entries.map((m, i) =>
             m.role === "learner" ? (
               <li key={i} className="self-end rounded-lg bg-accent-soft px-3 py-2 text-sm text-fg">
-                {CONTROL_LABEL[m.text] ? <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span> : m.text}
+                {CONTROL_LABEL[m.text] ? (
+                  <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
+                ) : directText(m.text) != null ? (
+                  <>
+                    <span className="text-fg-3 italic">To the dojo master: </span>
+                    {directText(m.text)}
+                  </>
+                ) : (
+                  m.text
+                )}
               </li>
             ) : (
               <li key={i} className="flex flex-col gap-1">
@@ -488,7 +512,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               <span className="inline-block h-2 w-16 overflow-hidden rounded bg-raised" aria-hidden="true">
                 <span className="block h-full bg-accent transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
               </span>
-              Listening{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
+              {direct ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
             </>
           )}
           {phase === "opening" && "Opening the microphone…"}
@@ -514,6 +538,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             ) : (
               <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void startListening()} disabled={!sttReady || busy} title={sttReady ? "Records your answer — Space also works" : "Set up a speech-to-text provider first"}>
                 🎙 Talk
+              </Button>
+            )}
+            {phase !== "recording" && (
+              <Button
+                onClick={() => void startListening(true)}
+                disabled={!sttReady || busy}
+                title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`}
+                data-testid="voice-direct"
+              >
+                💬 {langs.native || "Native"}
               </Button>
             )}
             {(phase === "speaking" || phase === "thinking" || phase === "recording") && (
@@ -555,7 +589,13 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               aria-label="Your answer"
               className={`${inputClass} min-h-10 flex-1`}
               rows={1}
-              placeholder={settings?.review ? "Your words land here to check before sending — or type" : "Type an answer instead"}
+              placeholder={
+                direct
+                  ? `To the dojo master, in ${langs.native || "your language"}: change the scene, redo that, slower please…`
+                  : settings?.review
+                    ? "Your words land here to check before sending — or type"
+                    : "Type an answer instead"
+              }
               value={composer}
               onChange={(e) => setComposer(e.target.value)}
               onKeyDown={(e) => {
@@ -565,6 +605,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                 }
               }}
             />
+            <button
+              type="button"
+              aria-pressed={direct}
+              onClick={() => setDirect((d) => !d)}
+              title="Send this straight to the dojo master instead of as a practice answer"
+              className={`shrink-0 rounded-md border px-2 py-2 text-sm ${direct ? "border-accent bg-accent-soft text-fg" : "border-line text-fg-3 hover:bg-raised"}`}
+              data-testid="voice-direct-toggle"
+            >
+              💬 To the master
+            </button>
             <Button type="submit" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} data-testid="voice-send">
               Send
             </Button>
@@ -588,7 +638,7 @@ function slotLabel(slot: VoiceSlot): string {
 
 function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
+    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
     .join("\n\n");
 }
 
