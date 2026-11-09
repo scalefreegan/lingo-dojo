@@ -73,6 +73,13 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   "Check what it heard before sending" puts the transcript in the box to fix
   first. Talking or sending while the dojo master speaks cuts them off.
   Space toggles the mic.
+- **Help 💡 and Skip ⏭**: Help sends `[help]`. The dojo master steps out
+  as the narrator, says in one sentence what you're being asked, and gives a
+  hint, not the answer. Pressing it again gives a bigger hint, and the third
+  time the full answer to repeat. Skip sends `[skip]`, and the dojo master
+  moves on to the next step. Both cut off speech like Talk does, and show as
+  "Asked for help" / "Skipped" in the transcript. The adapter in
+  `scripts/voice.mjs` defines both messages (`HELP`, `SKIP`).
 
 ## Settings
 

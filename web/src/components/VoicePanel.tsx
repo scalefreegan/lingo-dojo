@@ -25,6 +25,12 @@ const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
 
+/** The Skip and Help buttons' messages; scripts/voice.mjs SKIP and HELP
+ *  must match (the adapter tells the dojo master what each means). */
+const SKIP = "[skip]";
+const HELP = "[help]";
+const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help" };
+
 export default function VoicePanel({ mode, pack, langs }: { mode: Mode; pack: PackInput; langs: VoiceLanguages }) {
   const [open, setOpen] = useState(false);
   if (!open) {
@@ -319,6 +325,15 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     }
   }
 
+  /** Skip ("[skip]": move on) or Help ("[help]": what's asked, plus a
+   *  hint that grows each time). Like Send, either cuts off speech, and it
+   *  drops a recording in progress. */
+  function control(message: string) {
+    if (phase !== "idle" && phase !== "speaking" && phase !== "recording") return;
+    if (phase !== "idle") stopAll();
+    void runTurn(message);
+  }
+
   /** Sending while the dojo master is still talking cuts them off, the
    *  same as Talk does: the learner never has to wait out a long line. */
   function sendComposer() {
@@ -440,7 +455,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
           {entries.map((m, i) =>
             m.role === "learner" ? (
               <li key={i} className="self-end rounded-lg bg-accent-soft px-3 py-2 text-sm text-fg">
-                {m.text}
+                {CONTROL_LABEL[m.text] ? <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span> : m.text}
               </li>
             ) : (
               <li key={i} className="flex flex-col gap-1">
@@ -504,6 +519,22 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             {(phase === "speaking" || phase === "thinking" || phase === "recording") && (
               <Button onClick={stopAll}>{phase === "recording" ? "Cancel" : "Stop"}</Button>
             )}
+            <Button
+              onClick={() => control(HELP)}
+              disabled={phase !== "idle" && phase !== "speaking" && phase !== "recording"}
+              title="What am I being asked? Get a hint — ask again for a bigger one"
+              data-testid="voice-help"
+            >
+              Help 💡
+            </Button>
+            <Button
+              onClick={() => control(SKIP)}
+              disabled={phase !== "idle" && phase !== "speaking" && phase !== "recording"}
+              title="Skip this exercise and move on"
+              data-testid="voice-skip"
+            >
+              Skip ⏭
+            </Button>
             <span className="flex-1" />
             <Button variant="ghost" onClick={() => copy(transcriptText(entries))}>
               {copyStatus === "copied" ? "Copied" : "Copy transcript"}
@@ -557,7 +588,7 @@ function slotLabel(slot: VoiceSlot): string {
 
 function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
+    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
     .join("\n\n");
 }
 
