@@ -193,7 +193,8 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
 - The first message is "[session start]": open the session the way your instructions say.
 - "[skip]" from the learner means: skip the current exercise, drill, or question. Don't repeat it, evaluate it, or give the answer unless they ask; acknowledge in a few words and move straight on to the next step of the session. Inside the scene, the character simply moves the conversation along.
-- "[help]" from the learner means they are stuck on what you just asked. Step out as the narrator, in the learner's native language: say in one sentence what you are asking them to do, then give a hint, not the answer (the first word or two, a key word with its meaning, or the pattern to use). If they ask for help again on the same thing, give a bigger hint, and on the third time the full answer for them to repeat. Then hand the turn back so they can try. If you were in the scene, say you are pausing it, and go back to it after.`;
+- "[help]" from the learner means they are stuck on what you just asked. Step out as the narrator, in the learner's native language: say in one sentence what you are asking them to do, then give a hint, not the answer (the first word or two, a key word with its meaning, or the pattern to use). If they ask for help again on the same thing, give a bigger hint, and on the third time the full answer for them to repeat. Then hand the turn back so they can try. If you were in the scene, say you are pausing it, and go back to it after.
+- A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator in their native language: do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
 }
 
 /** The system prompt for a voice turn: the pack as assembled, then the
@@ -207,6 +208,9 @@ export const SESSION_START = "[session start]";
  *  match). */
 export const SKIP = "[skip]";
 export const HELP = "[help]";
+/** Prefix of a message spoken straight to the dojo master, outside the
+ *  practice (VoicePanel's DIRECT must match). */
+export const DIRECT = "[direct]";
 
 /** The transcript replayed as the prompt (the chat agent's pattern): the
  *  learner's lines as heard, the dojo master's as the tagged lines spoken —

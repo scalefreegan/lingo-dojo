@@ -80,6 +80,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   moves on to the next step. Both cut off speech like Talk does, and show as
   "Asked for help" / "Skipped" in the transcript. The adapter in
   `scripts/voice.mjs` defines both messages (`HELP`, `SKIP`).
+- **💬 English** (your native language) is a direct line to the dojo master,
+  outside the practice: "switch the scene to a taco stand", "redo that one",
+  "slower please". It records in your native language with no target hints,
+  and the message goes as `[direct] …`, which the adapter says is a request
+  to act on, not an answer to grade. The **💬 To the master** toggle by the
+  text box does the same for typed messages.
 
 ## Settings
 
