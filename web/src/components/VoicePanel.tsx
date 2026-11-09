@@ -687,6 +687,12 @@ function VoicePickers({
   // Bumped after a library voice is added, to re-list the account's voices.
   const [listVersion, setListVersion] = useState(0);
   const current: Record<string, string | undefined> = settings.voices[provider]?.[locale] ?? {};
+  // The latest voices, for merges that land after an await (a library add):
+  // the render that started it may be older than a pick made meanwhile.
+  const voicesRef = useRef(settings.voices);
+  useEffect(() => {
+    voicesRef.current = settings.voices;
+  }, [settings.voices]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -700,11 +706,15 @@ function VoicePickers({
 
   const setVoice = useCallback(
     (patch: Record<string, string>) => {
-      const byLocale = { ...(settings.voices[provider] ?? {}) };
+      const all = voicesRef.current;
+      const byLocale = { ...(all[provider] ?? {}) };
       byLocale[locale] = { ...(byLocale[locale] ?? {}), ...patch };
-      onChange({ voices: { ...settings.voices, [provider]: byLocale } });
+      const next = { ...all, [provider]: byLocale };
+      // Update the ref now too, so two merges in one tick both survive.
+      voicesRef.current = next;
+      onChange({ voices: next });
     },
-    [settings.voices, provider, locale, onChange],
+    [provider, locale, onChange],
   );
 
   // First load with gaps: fill them, natives first, the slot's gender when
@@ -774,6 +784,7 @@ function VoicePickers({
           </Button>
           {browsing && (
             <LibraryBrowser
+              key={locale}
               locale={locale}
               slots={slots}
               current={current}
@@ -823,7 +834,9 @@ function LibraryBrowser({
   const [total, setTotal] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Voices being added, by id: each row stays busy until its own add settles.
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+  const busyRef = useRef(new Set<string>());
   const [previewing, setPreviewing] = useState<string | null>(null);
   const previewRef = useRef<HTMLAudioElement | null>(null);
 
@@ -845,6 +858,10 @@ function LibraryBrowser({
       (e) => {
         if (ctrl.signal.aborted) return;
         setError(errText(e));
+        // A failed first page leaves no rows from the previous search for
+        // "More voices" to append to; a failed later page keeps what loaded.
+        if (page === 0) setRows([]);
+        setHasMore(false);
         setAnswered(searchKey);
       },
     );
@@ -859,20 +876,30 @@ function LibraryBrowser({
   }
 
   function preview(v: LibraryVoice) {
-    previewRef.current?.pause();
+    const old = previewRef.current;
+    if (old) {
+      old.onended = null;
+      old.pause();
+    }
+    previewRef.current = null;
     if (previewing === v.id || !v.previewUrl) {
       setPreviewing(null);
       return;
     }
     const a = new Audio(v.previewUrl);
     previewRef.current = a;
-    a.onended = () => setPreviewing(null);
+    // Pausing a sample that is still loading rejects its play() with an
+    // AbortError; only the sample that is still current may reset the button.
+    const done = () => previewRef.current === a && setPreviewing(null);
+    a.onended = done;
     setPreviewing(v.id);
-    a.play().catch(() => setPreviewing(null));
+    a.play().catch(done);
   }
 
   async function use(v: LibraryVoice, slot: VoiceSlot) {
-    setBusyId(v.id);
+    if (busyRef.current.has(v.id)) return;
+    busyRef.current.add(v.id);
+    setBusy(new Set(busyRef.current));
     setStatus(null);
     try {
       const id = v.added ? v.id : (await addLibraryVoice({ ownerId: v.ownerId, voiceId: v.id, name: v.name })).voiceId;
@@ -882,7 +909,8 @@ function LibraryBrowser({
     } catch (e) {
       setStatus(`Could not use ${v.name}: ${errText(e)}`);
     } finally {
-      setBusyId(null);
+      busyRef.current.delete(v.id);
+      setBusy(new Set(busyRef.current));
     }
   }
 
@@ -954,10 +982,10 @@ function LibraryBrowser({
                 className={`${inputClass} w-auto`}
                 aria-label={`Use ${v.name} as`}
                 value=""
-                disabled={busyId === v.id}
+                disabled={busy.has(v.id)}
                 onChange={(e) => e.target.value && void use(v, e.target.value as VoiceSlot)}
               >
-                <option value="">{busyId === v.id ? "Adding…" : "Use as…"}</option>
+                <option value="">{busy.has(v.id) ? "Adding…" : "Use as…"}</option>
                 {[...slots]
                   .sort((a, b) => Number(b.endsWith(`:${v.gender}`)) - Number(a.endsWith(`:${v.gender}`)))
                   .map((slot) => (

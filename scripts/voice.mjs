@@ -282,15 +282,18 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
   if (text.length <= max) return [text];
   const out = [];
   let cur = "";
-  for (const sentence of text.split(/(?<=[.!?。！？…])\s+/)) {
-    const next = cur ? `${cur} ${sentence}` : sentence;
-    if (next.length <= max) { cur = next; continue; }
-    if (cur) out.push(cur);
+  // Split at zero-width points so no character is lost or added: after a
+  // Latin sentence end and its space (so "3.5" stays whole), or right after a
+  // CJK full stop, which is not followed by a space.
+  for (const sentence of text.split(/(?<=[.!?…]\s+)(?=\S)|(?<=[。！？])(?=\S)/)) {
+    const next = cur + sentence;
+    if (next.trim().length <= max) { cur = next; continue; }
+    if (cur.trim()) out.push(cur.trim());
     let rest = sentence;
-    while (rest.length > max) { out.push(rest.slice(0, max)); rest = rest.slice(max); }
+    while (rest.trim().length > max) { out.push(rest.slice(0, max).trim()); rest = rest.slice(max); }
     cur = rest;
   }
-  if (cur) out.push(cur);
+  if (cur.trim()) out.push(cur.trim());
   return out;
 }
 
@@ -617,6 +620,19 @@ export function normalizeVoiceSettings(raw) {
       for (const [s, id] of Object.entries(bySpeaker)) {
         if (!SLOT_RE.test(s) || typeof id !== "string" || !id.trim() || id.length > 200) continue;
         ((voices[p] ??= {})[loc] ??= {})[s] = id.trim();
+      }
+    }
+  }
+  // A choice saved before voices were split by gender ("narrator") spoke
+  // every narrator line, so it becomes both gendered slots unless one is
+  // already set. Migrating here (rather than only falling back in voiceFor)
+  // means the pickers see the slots as filled and never auto-pick over it.
+  for (const byLocale of Object.values(voices)) {
+    for (const set of Object.values(byLocale)) {
+      for (const key of Object.keys(set)) {
+        if (key.includes(":")) continue;
+        for (const g of GENDERS) set[`${key}:${g}`] ??= set[key];
+        delete set[key];
       }
     }
   }
