@@ -259,21 +259,30 @@ export function markedText(line) {
  *  a whole-line wrap still gets it right). Each segment is made speakable;
  *  empty ones drop. */
 export function splitSegments(text) {
-  const out = [];
-  const push = (lang, raw) => {
+  return segmentsFrom(text, false).segments;
+}
+
+/** splitSegments with the <t> state carried in and out, so a wrap that
+ *  opens on one line and closes on a later one marks every line between. */
+function segmentsFrom(text, inside) {
+  const segments = [];
+  const push = (raw) => {
     const said = speakable(raw);
-    if (said) out.push({ lang, text: said });
+    if (said) segments.push({ lang: inside ? "target" : "native", text: said });
   };
-  const re = /<t>([\s\S]*?)(?:<\/t>|$)/gi;
   let last = 0;
-  for (const m of String(text).matchAll(re)) {
-    push("native", String(text).slice(last, m.index));
-    push("target", m[1]);
+  for (const m of String(text).matchAll(/<(\/?)t>/gi)) {
+    push(String(text).slice(last, m.index));
+    inside = !m[1];
     last = m.index + m[0].length;
   }
-  push("native", String(text).slice(last).replace(/<\/?t>/gi, " "));
-  return out;
+  push(String(text).slice(last));
+  return { segments, inside };
 }
+
+/** Punctuation that belongs to the words before it, never a segment (and so
+ *  never a synthesis call) of its own: "<t>jitomate</t>." */
+const LEADING_PUNCT_RE = /^[\s.,;:!?…)\]»。！？、，]+/;
 
 /** A segment longer than a synthesis call should carry, split at sentence
  *  ends (a hard cut only for one enormous sentence). */
@@ -308,6 +317,7 @@ export function parseVoiceReply(text, mode = "adult") {
   const out = [];
   let current = "narrator";
   let gender = null;
+  let inside = false;
   for (const raw of String(text).split(/\r?\n/)) {
     if (!raw.trim()) continue;
     let line = raw;
@@ -317,8 +327,12 @@ export function parseVoiceReply(text, mode = "adult") {
       current = allowed.has(tag) ? tag : "narrator";
       gender = m[2] ? GENDER_OF[m[2].toLowerCase()] : null;
       line = raw.slice(m[0].length);
+      // A new speaker starts outside any wrap: a <t> the previous speaker
+      // never closed must not turn this one's English into Spanish.
+      inside = false;
     }
-    const segments = splitSegments(line);
+    let segments;
+    ({ segments, inside } = segmentsFrom(line, inside));
     if (!segments.length) continue;
     let target = out[out.length - 1];
     if (!target || target.speaker !== current || target.gender !== gender) {
@@ -327,8 +341,19 @@ export function parseVoiceReply(text, mode = "adult") {
     }
     for (const g of segments) {
       const prev = target.segments[target.segments.length - 1];
-      if (prev && prev.lang === g.lang) prev.text = `${prev.text} ${g.text}`;
-      else target.segments.push({ ...g });
+      let text = g.text;
+      if (prev && prev.lang !== g.lang) {
+        // "<t>jitomate</t>. Try…": the period ends the Spanish, so it goes
+        // with it rather than becoming an English call of its own.
+        const punct = text.match(LEADING_PUNCT_RE)?.[0] ?? "";
+        if (punct) {
+          prev.text += punct.trim();
+          text = text.slice(punct.length).trim();
+          if (!text) continue;
+        }
+      }
+      if (prev && prev.lang === g.lang) prev.text = `${prev.text} ${text}`;
+      else target.segments.push({ lang: g.lang, text });
     }
   }
   for (const l of out) {

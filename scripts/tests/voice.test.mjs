@@ -123,8 +123,8 @@ CHARACTER: <t>¡Claro! ¿Algo más?`,
   );
   assert.deepEqual(narrator.segments, [
     { lang: "native", text: "The word for tomato is" },
-    { lang: "target", text: "jitomate" },
-    { lang: "native", text: ". Try:" },
+    { lang: "target", text: "jitomate." },
+    { lang: "native", text: "Try:" },
     { lang: "target", text: "un kilo, por favor" },
   ]);
   assert.equal(narrator.text, "The word for tomato is jitomate. Try: un kilo, por favor");
@@ -133,7 +133,7 @@ CHARACTER: <t>¡Claro! ¿Algo más?`,
   const [merged] = parseVoiceReply("CHARACTER: <t>Hola.</t>\n<t>¿Qué tal?</t>", "adult");
   assert.deepEqual(merged.segments, [{ lang: "target", text: "Hola. ¿Qué tal?" }]);
   // Replayed history puts the marks back.
-  assert.match(voiceTurnPrompt([{ role: "master", lines: [narrator] }], "x"), /NARRATOR: The word for tomato is <t>jitomate<\/t> \. Try: <t>un kilo, por favor<\/t>/);
+  assert.match(voiceTurnPrompt([{ role: "master", lines: [narrator] }], "x"), /NARRATOR: The word for tomato is <t>jitomate\.<\/t> Try: <t>un kilo, por favor<\/t>/);
 });
 
 test("parseVoiceReply: gender tags in any punctuation; a gender change starts a new line", () => {
@@ -153,6 +153,32 @@ CHARACTER: untagged gender`,
   ]);
   // The replay keeps the gender in the tag.
   assert.match(voiceTurnPrompt([{ role: "master", lines }], "x"), /NARRATOR-F: Welcome\.\nCHARACTER-M: <t>¡Pásele!<\/t>\nCHARACTER-F:/);
+});
+
+test("parseVoiceReply: a <t> wrap may span lines, but never crosses into a new speaker", () => {
+  const segs = (t) => parseVoiceReply(t, "adult").map((l) => l.segments);
+  assert.deepEqual(segs("CHARACTER-M: <t>¡Hola!\n¿Qué te doy?</t>\nOkay."), [
+    [{ lang: "target", text: "¡Hola! ¿Qué te doy?" }, { lang: "native", text: "Okay." }],
+  ]);
+  assert.deepEqual(segs("CHARACTER-F: <t>¡Pásele!\nNARRATOR-F: Now you answer."), [
+    [{ lang: "target", text: "¡Pásele!" }],
+    [{ lang: "native", text: "Now you answer." }],
+  ]);
+});
+
+test("parseVoiceReply: punctuation after a target phrase stays with it, never a call of its own", () => {
+  const [line] = parseVoiceReply(
+    "NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.",
+    "adult",
+  );
+  assert.deepEqual(line.segments, [
+    { lang: "native", text: "The word for tomato here is" },
+    { lang: "target", text: "jitomate." },
+    { lang: "native", text: "Try asking for a kilo:" },
+    { lang: "target", text: "un kilo de jitomates, por favor." },
+  ]);
+  assert.equal(line.text, "The word for tomato here is jitomate. Try asking for a kilo: un kilo de jitomates, por favor.");
+  assert.deepEqual(parseVoiceReply("CHARACTER-F: <t>你好</t>。", "adult")[0].segments, [{ lang: "target", text: "你好。" }]);
 });
 
 test("splitLong: long segments break at sentence ends, under the cap", () => {
