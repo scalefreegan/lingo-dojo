@@ -61,12 +61,12 @@ test("PUT settings: merges, normalizes, and lands in data/voice.json", async () 
   const r = await call("PUT", "/api/voice/settings", {
     turn: "pause",
     silenceMs: 50,
-    voices: { elevenlabs: { "es-MX": { narrator: "abc", wizard: "x" } } },
+    voices: { elevenlabs: { "es-MX": { "narrator:female": "abc", wizard: "x" } } },
   });
   assert.equal(r.status, 200);
   assert.equal(r.body.settings.turn, "pause");
   assert.equal(r.body.settings.silenceMs, r.body.silence.min, "clamped");
-  assert.deepEqual(r.body.settings.voices, { elevenlabs: { "es-MX": { narrator: "abc" } } });
+  assert.deepEqual(r.body.settings.voices, { elevenlabs: { "es-MX": { "narrator:female": "abc" } } });
   const disk = JSON.parse(fs.readFileSync(path.join(dataDir, "voice.json"), "utf8"));
   assert.equal(disk.turn, "pause");
   const again = await call("PUT", "/api/voice/settings", { review: false });

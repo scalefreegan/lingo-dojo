@@ -166,6 +166,25 @@ test("splitLong: long segments break at sentence ends, under the cap", () => {
   assert.ok(line.segments.length > 1 && line.segments.every((g) => g.text.length <= 1200));
 });
 
+test("normalizeVoiceSettings: older ungendered choices fill only the empty gendered slots", () => {
+  const s = normalizeVoiceSettings({
+    voices: { system: { "es-MX": { narrator: "Eddy", character: "Flo", "character:male": "Reed" }, "zh-TW": { sidekick: "Flo" } } },
+  });
+  assert.deepEqual(s.voices.system["es-MX"], { "narrator:female": "Eddy", "narrator:male": "Eddy", "character:female": "Flo", "character:male": "Reed" });
+  assert.deepEqual(s.voices.system["zh-TW"], { "sidekick:female": "Flo", "sidekick:male": "Flo" });
+  // Idempotent: a second pass changes nothing.
+  assert.deepEqual(normalizeVoiceSettings(s).voices, s.voices);
+});
+
+test("splitLong: Chinese and Japanese break at their full stops, with nothing added or lost", () => {
+  const zh = "我想買一公斤番茄。".repeat(40);
+  const parts = splitLong(zh, 100);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every((p) => p.length <= 100 && p.endsWith("。")));
+  assert.equal(parts.join(""), zh);
+  assert.deepEqual(splitLong("Cuesta 3.5 pesos. ".repeat(3).trim(), 20), ["Cuesta 3.5 pesos.", "Cuesta 3.5 pesos.", "Cuesta 3.5 pesos."]);
+});
+
 test("voiceSlots and voiceFor: gender beats role, older ungendered choices still work", () => {
   assert.deepEqual(voiceSlots("adult"), ["narrator:female", "narrator:male", "character:female", "character:male"]);
   assert.equal(voiceSlots("kids").length, 6);
@@ -319,5 +338,6 @@ test("normalizeVoiceSettings: defaults, clamping, and junk in the voice map drop
   assert.equal(s.tts, "elevenlabs");
   assert.equal(s.silenceMs, SILENCE_MS.max);
   assert.equal(s.model, "claude-haiku-5-5");
-  assert.deepEqual(s.voices, { elevenlabs: { "es-MX": { narrator: "v1", "character:female": "v3" } } });
+  // The ungendered (pre-gender) narrator choice becomes both narrator slots.
+  assert.deepEqual(s.voices, { elevenlabs: { "es-MX": { "narrator:female": "v1", "narrator:male": "v1", "character:female": "v3" } } });
 });
