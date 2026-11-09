@@ -41,8 +41,16 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   session history every turn (the server keeps none). The reply comes back as
   `NARRATOR:` / `CHARACTER:` / `SIDEKICK:` lines, one voice each. A tool-less
   turn takes about 4 s.
-- **Speak**: one call per line; the browser plays line 1 while line 2 is being
-  made. Lines are cached for ▶ replay.
+- **Language marks**: the dojo master wraps every target-language word or
+  phrase in `<t>…</t>` (a whole in-scene line included). Each line is split into
+  target and native segments, and every segment is spoken by the **same
+  speaker's voice** with that language's pronunciation: ElevenLabs gets
+  `language_code` per segment, a multilingual Azure voice gets an SSML
+  `<lang xml:lang>`, and macOS (one language per voice) uses the target voice
+  for target text and the native locale's voice, else the system default, for
+  the rest. Target words show highlighted in the transcript.
+- **Speak**: one call per segment; the browser plays one while the next is
+  being made. Segments are cached for ▶ replay.
 - **Your turn ends** when you tap Done (the default, best for thinking out loud
   and for kids) or after a pause you choose (0.5–5 s). The pause only counts
   once you've started talking, so a long think before the first word is fine.

@@ -133,6 +133,7 @@ declare module "*/scripts/voice.mjs" {
   export function voiceSystemPrompt(markdown: string, mode: Mode): string;
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
+  export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
   export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string }): Req;
   export function elevenVoicesRequest(o: { key: string }): Req;
   export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string }): Req;
