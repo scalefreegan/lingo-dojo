@@ -3,6 +3,7 @@ import type { Plugin } from "vite";
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePacks, handleProfile } from "./content.ts";
 import { HttpError, sendJson } from "./sse.ts";
+import { handleVoice } from "./voice.ts";
 
 // The whole "backend": dev-server-only middleware on the Vite server.
 // Single-user, localhost — no auth by design. Copied from Atlas.
@@ -72,6 +73,8 @@ export function apiPlugins(): Plugin {
       // its model setting.
       server.middlewares.use("/api/chat", wrap(handleChat));
       server.middlewares.use("/api/settings", wrap(handleSettings));
+      // Voice practice: transcribe, one dojo-master turn, speak (voice.ts).
+      server.middlewares.use("/api/voice", wrap(handleVoice));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" })));

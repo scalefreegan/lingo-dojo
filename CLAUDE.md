@@ -16,7 +16,11 @@ and YAML under `content/`, tracked by git. Read `docs/PRD.md` first, then
   API key). It may Read the repo and Write/Edit **only under `content/`**. After
   every agent turn the server commits any `content/` change (`agent: <summary>`)
   so it can be reverted with git. Agents never touch `web/`, `scripts/`, or `.beads/`.
-- Runtime state (chat history, model setting) is JSON under `data/` (gitignored).
+- Voice practice (Go tab) is a push-to-talk loop: `/api/voice/*` in
+  `web/server/voice.ts`, pure helpers in `scripts/voice.mjs`; see `docs/VOICE.md`.
+  Provider keys live only in the gitignored repo-root `.env.local` and never
+  reach the browser. Voice turns spawn `claude -p` with **no tools**.
+- Runtime state (chat history, model setting, voice settings) is JSON under `data/` (gitignored).
   Exports go to `exports/` (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.
