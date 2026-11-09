@@ -7,9 +7,10 @@ import { Button, Card, FolderSelect, inputClass } from "./ui";
 import type { PackStatus, SaveOutcome } from "./shared";
 import VoicePanel from "./VoicePanel";
 
-/* Go tab: the calm, final screen. What you're about to paste, the ways to
- * keep it (save, export), and the one way to check your work — the literal
- * markdown — hidden behind a toggle until you ask for it. */
+/* Go tab: the calm, final screen. Practising here in the dojo is the main
+ * action; copying the prompt to paste into another voice app is the
+ * alternative, a small copy icon on the scene card. Then the ways to keep it
+ * (save, export), and the literal markdown behind a toggle. */
 export default function GoTab({
   content,
   pack,
@@ -28,6 +29,8 @@ export default function GoTab({
   saveRequest,
   onSave,
   langs,
+  practiceRequest = false,
+  onPracticeOpened,
 }: {
   content: ContentReply;
   pack: PackInput;
@@ -49,6 +52,9 @@ export default function GoTab({
   onSave: (title: string, folder: string, overwrite: boolean) => Promise<SaveOutcome>;
   /** The session languages, for the voice panel's locale. */
   langs: VoiceLanguages;
+  /** Open the voice session straight away (the sticky bar's Practice). */
+  practiceRequest?: boolean;
+  onPracticeOpened?: () => void;
 }) {
   const [copyStatus, copy] = useCopyStatus();
   const [showPrompt, setShowPrompt] = useState(false);
@@ -73,7 +79,20 @@ export default function GoTab({
   return (
     <div className="flex flex-col gap-6">
       <Card className="flex flex-col gap-1">
-        <h2 className="text-base font-medium text-fg">{sceneTitle || "No scene"}</h2>
+        <div className="flex items-start gap-2">
+          <h2 className="flex-1 text-base font-medium text-fg">{sceneTitle || "No scene"}</h2>
+          <button
+            type="button"
+            className="-mt-1 -mr-1 shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
+            onClick={() => copy(markdown)}
+            disabled={!markdown}
+            aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
+            title="Copy the prompt, to paste into ChatGPT or Claude voice instead"
+            data-testid="copy-prompt"
+          >
+            {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
+          </button>
+        </div>
         <p className="text-sm text-fg-2">{learnerLine || "Learner not set"}</p>
         <p className="text-sm text-fg-3 tabular-nums">
           {pack.units.length} unit{pack.units.length === 1 ? "" : "s"}
@@ -93,12 +112,8 @@ export default function GoTab({
 
       <NotesDisclosure notes={notes} onChange={onNotes} />
 
-      <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => copy(markdown)} disabled={!markdown}>
-        {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
-      </Button>
-
-      {/* Or skip the paste: run the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} />
+      {/* The main event: the session here, with native voices. */}
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} openRequest={practiceRequest} onOpened={onPracticeOpened} />
 
       <div className="flex flex-wrap items-center gap-2">
         <SaveButton

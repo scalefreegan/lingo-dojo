@@ -77,6 +77,9 @@ export default function App() {
   // only ever sets state from its async callbacks.
   const [settled, setSettled] = useState<{ pack: PackInput; version: number } | null>(null);
   const [saveRequest, setSaveRequest] = useState<{ title: string; folder: string; seq: number } | null>(null);
+  // The sticky bar's Practice: go to the Go tab with the voice session open.
+  // Cleared once the panel has opened, so a later visit to Go doesn't reopen it.
+  const [practiceRequest, setPracticeRequest] = useState(false);
   const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(mode));
 
   const setTab = useCallback(
@@ -352,7 +355,12 @@ export default function App() {
         onSaveDefaults={saveDefaults}
       />
       {ready && draft && pack && (
-        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={result} pending={assembling} onTab={setTab} />
+        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={result} pending={assembling} onTab={setTab}
+          onPractice={() => {
+            setPracticeRequest(true);
+            setTab("go");
+          }}
+        />
       )}
 
       {loadError && <p className="bg-err-soft px-4 py-2 text-sm text-err">Could not load content: {loadError}</p>}
@@ -385,6 +393,8 @@ export default function App() {
                 saveRequest={saveRequest}
                 onSave={save}
                 langs={voiceLangs}
+                practiceRequest={practiceRequest}
+                onPracticeOpened={() => setPracticeRequest(false)}
               />
             )}
             {tab === "library" && (
