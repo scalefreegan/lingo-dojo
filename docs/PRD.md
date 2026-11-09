@@ -2,9 +2,10 @@
 
 Personal, single-user, localhost, no auth. A **composable prompt-pack builder** for
 language-practice sessions run elsewhere as a real-time voice conversation with an
-AI "dojo master". Lingo Dojo does not do the voice session. It organizes the
-instruction material, lets you pick and combine it, and hands you one markdown
-prompt to paste into whatever voice tool you use.
+AI "dojo master". It organizes the instruction material, lets you pick and
+combine it, and hands you one markdown prompt to paste into whatever voice tool
+you use — or, since 2026-11-09, runs the session itself by voice on the Go tab
+with native-speaker voices per speaker (docs/VOICE.md).
 
 Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
@@ -19,6 +20,7 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 | Modes | Two libraries with the same file format: `content/` (adult) and `content/kids/` (kids: its own schema, frame, profile, units, scenarios, packs). The Profile popover switches modes; every tree-scoped API route takes `?mode=`; kids exports go to `exports/kids/` |
 | Packs | Saved as `content/packs/<date>-<slug>.yaml`; seed library in Spanish (Oaxaca scenarios) |
 | Voice target | ChatGPT voice mode and Claude voice in practice (2026-10-19); export stays tool-agnostic markdown with a length readout. The frame fixes the voice: every speaker is a native speaker of the target variant, in both languages |
+| In-app voice (2026-11-09) | Push-to-talk loop on the Go tab: speech to text (ElevenLabs Scribe or Azure) → one tool-less `claude -p` turn → text to speech per speaker (ElevenLabs, Azure, or free macOS voices). The learner ends each turn (tap, or a pause length they set). Keys in gitignored `.env.local`. See docs/VOICE.md |
 
 ## Vocabulary
 
@@ -53,7 +55,8 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 ## Non-goals (v1)
 
-- Running the voice session, transcripts, or a feedback loop from the session.
+- A feedback loop from the session (debrief saved, progress tracked). The
+  in-app voice session itself landed 2026-11-09; its transcript is copy-only.
 - In-app rich editing of unit bodies (agent or editor does that; follow-up bead).
 - JSON bundle export for a programmatic voice pipeline (follow-up bead).
 - Mimir/Obsidian export (follow-up bead).

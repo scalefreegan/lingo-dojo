@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { exportPack } from "../api";
+import { exportPack, type VoiceLanguages } from "../api";
 import { splitPackId } from "../draft";
 import type { AssembleResult, ContentReply, ExportResult, PackInput } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
 import type { PackStatus, SaveOutcome } from "./shared";
+import VoicePanel from "./VoicePanel";
 
 /* Go tab: the calm, final screen. What you're about to paste, the ways to
  * keep it (save, export), and the one way to check your work — the literal
@@ -26,6 +27,7 @@ export default function GoTab({
   packStatus,
   saveRequest,
   onSave,
+  langs,
 }: {
   content: ContentReply;
   pack: PackInput;
@@ -45,6 +47,8 @@ export default function GoTab({
   /** Bumped by the parent to open the save form with a suggested title and folder (Clone). */
   saveRequest: { title: string; folder: string; seq: number } | null;
   onSave: (title: string, folder: string, overwrite: boolean) => Promise<SaveOutcome>;
+  /** The session languages, for the voice panel's locale. */
+  langs: VoiceLanguages;
 }) {
   const [copyStatus, copy] = useCopyStatus();
   const [showPrompt, setShowPrompt] = useState(false);
@@ -92,6 +96,9 @@ export default function GoTab({
       <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => copy(markdown)} disabled={!markdown}>
         {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
       </Button>
+
+      {/* Or skip the paste: run the session here, with native voices. */}
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} />
 
       <div className="flex flex-wrap items-center gap-2">
         <SaveButton

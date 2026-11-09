@@ -104,3 +104,18 @@ test("classifyExit: success envelope, is_error envelope, non-zero exit", () => {
   assert.equal(login.ok, false);
   assert.match(login.message, /sign-in has expired/);
 });
+
+test("argv: the voice turn's profile has no tools and grants nothing", () => {
+  // A spoken reply needs no file access: `--tools ""` removes every built-in,
+  // and no --allowedTools grant (not even Read) goes out. The rest of the
+  // sandbox — restricted, no prompts, the denials — stays.
+  const args = buildArgs({ prompt: "hi", model: "claude-haiku-5-5", tools: "none", maxTurns: 1 });
+  assert.deepEqual(valuesOf(args, "--tools"), [""]);
+  assert.ok(!args.includes("--allowedTools"));
+  assert.ok(!args.some((a) => /^(Edit|Write)\(/.test(a)));
+  assert.ok(args.includes("--restricted"));
+  assert.deepEqual(valuesOf(args, "--permission-prompts"), ["none"]);
+  assert.deepEqual(valuesOf(args, "--max-turns"), ["1"]);
+  assert.ok(args.includes("--disallowedTools"));
+  assert.throws(() => buildArgs({ prompt: "x", tools: "all" }), /unknown tool profile/);
+});

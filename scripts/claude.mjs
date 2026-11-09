@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { REPO_ROOT, contentRoot } from "./content.mjs";
+import { VOICE_MODELS } from "./voice.mjs";
 
 /* -------------------------------- models --------------------------------- */
 
@@ -29,6 +30,12 @@ export const DEFAULT_MODEL = "claude-sonnet-5-5";
 
 export function isAgentModel(id) {
   return AGENT_MODELS.some((m) => m.id === id);
+}
+
+/** Any model a run may name: the agent's list plus the voice turns' (which
+ *  adds Haiku — fine for a one-line spoken reply, too light for editing). */
+export function isKnownModel(id) {
+  return isAgentModel(id) || VOICE_MODELS.some((m) => m.id === id);
 }
 
 /* ------------------------------ failure hints ----------------------------- */
@@ -123,8 +130,15 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
  *                          nothing to resume, so nothing written under
  *                          ~/.claude/projects per run.
  */
-export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot }) {
-  if (!isAgentModel(model)) throw new Error(`unknown model: ${model}`);
+export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content" }) {
+  if (!isKnownModel(model)) throw new Error(`unknown model: ${model}`);
+  if (tools !== "content" && tools !== "none") throw new Error(`unknown tool profile: ${tools}`);
+  // "none" is the voice turn: a spoken reply needs no file access at all, so
+  // `--tools ""` removes every built-in tool and nothing is granted. Fewer
+  // tool definitions in the prompt is also a faster first token.
+  const toolArgs = tools === "none"
+    ? ["--tools", ""]
+    : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot)];
   const args = [
     "-p", prompt,
     "--output-format", "json",
@@ -133,8 +147,7 @@ export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurn
     "--restricted",
     "--permission-prompts", "none",
     "--no-session-persistence",
-    "--tools", TOOLS.join(","),
-    "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot),
+    ...toolArgs,
     "--disallowedTools", ...DENIED,
   ];
   if (systemPrompt) args.push("--append-system-prompt", systemPrompt);
@@ -216,11 +229,11 @@ function armReaper() {
  * json envelope), and `kill()` SIGKILLs the process group. `signal` (an
  * AbortSignal) does the same when it fires — wire it to request-close.
  */
-export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600 }) {
+export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content" }) {
   const chosen = model ?? DEFAULT_MODEL;
   // Say which model actually went out: a setting that silently failed to
   // apply is otherwise invisible until the bill.
-  console.log(`[lingo-dojo] claude: spawning ${chosen} (max ${maxTurns} turns, ${timeoutSec}s timeout)`);
+  console.log(`[lingo-dojo] claude: spawning ${chosen} (${tools === "none" ? "no tools" : "content tools"}, max ${maxTurns} turns, ${timeoutSec}s timeout)`);
 
   // An EMPTY MCP config under --strict-mcp-config: see buildArgs.
   let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-mcp-"));
@@ -233,7 +246,7 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* tmp, it can wait for the OS */ }
   };
 
-  const args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath });
+  const args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools });
   const proc = spawn("claude", args, {
     cwd,
     env: childEnv(),

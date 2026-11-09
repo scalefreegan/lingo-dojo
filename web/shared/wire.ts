@@ -359,3 +359,122 @@ export interface SettingsReply {
 export interface SettingsRequest {
   model: string;
 }
+
+/* --------------------------------- voice --------------------------------- */
+// Practice a pack by voice inside the app (web/server/voice.ts): record →
+// transcribe → one dojo-master turn → speak each line. Provider keys stay on
+// the server (repo-root .env.local); nothing below carries one.
+
+/** Who synthesizes speech. "system" is macOS `say`: free and offline. */
+export type TtsProvider = "elevenlabs" | "azure" | "system";
+/** Who transcribes the learner. */
+export type SttProvider = "elevenlabs" | "azure";
+/** The voices a frame names; kids mode adds the sidekick. */
+export type VoiceSpeaker = "narrator" | "character" | "sidekick";
+/** "tap": the learner stops the recording themselves. "pause": it stops
+ *  after `silenceMs` of quiet once they have started talking. */
+export type TurnTaking = "tap" | "pause";
+
+/** data/voice.json, always complete (the server normalizes what it reads). */
+export interface VoiceSettings {
+  tts: TtsProvider;
+  stt: SttProvider;
+  /** ElevenLabs synthesis model id. */
+  elevenModel: string;
+  /** Claude model for the dojo master's turns. */
+  model: string;
+  turn: TurnTaking;
+  silenceMs: number;
+  /** Show the transcript for a check (and an edit) before it is sent. */
+  review: boolean;
+  /** Start listening again as soon as the dojo master finishes. */
+  handsFree: boolean;
+  /** provider → locale (BCP-47) → speaker → provider voice id. */
+  voices: Partial<Record<TtsProvider, Record<string, Partial<Record<VoiceSpeaker, string>>>>>;
+}
+
+export interface VoiceOption {
+  id: string;
+  label: string;
+  note: string;
+}
+
+/** GET/PUT /api/voice/settings. PUT takes a partial VoiceSettings (`voices`
+ *  replaces the whole map) and answers with this shape. */
+export interface VoiceSettingsReply {
+  settings: VoiceSettings;
+  /** Which providers have what they need (a key; macOS for "system"). */
+  configured: Record<TtsProvider, boolean>;
+  models: VoiceOption[];
+  elevenModels: VoiceOption[];
+  silence: { min: number; max: number; default: number };
+  speakers: Record<Mode, VoiceSpeaker[]>;
+  /** Where the keys go, repo-relative, for the setup hint. */
+  envFile: string;
+  /** BCP-47 locales for the session languages named in the query
+   *  (?target=&variant=&native=); null when unknown or not asked. */
+  locales: { target: string | null; native: string | null };
+}
+
+export type VoiceSettingsRequest = Partial<VoiceSettings>;
+
+/** One entry of a provider's voice list. `match`: it speaks the locale asked
+ *  for natively (listed first). */
+export interface VoiceChoice {
+  id: string;
+  name: string;
+  gender: string;
+  note: string;
+  match: boolean;
+}
+
+/** GET /api/voice/voices?provider=&locale= */
+export interface VoicesReply {
+  provider: TtsProvider;
+  locale: string;
+  voices: VoiceChoice[];
+}
+
+/** One spoken line of a dojo-master turn. */
+export interface VoiceLine {
+  speaker: VoiceSpeaker;
+  text: string;
+}
+
+/** The session so far, as the client holds it (the server keeps none). */
+export type VoiceHistoryItem =
+  | { role: "learner"; text: string }
+  | { role: "master"; lines: VoiceLine[] };
+
+/** POST /api/voice/turn — an empty `message` opens the session. 409 while
+ *  another turn is running. */
+export interface VoiceTurnRequest {
+  mode: Mode;
+  pack: PackInput;
+  history: VoiceHistoryItem[];
+  message: string;
+}
+
+export interface VoiceTurnReply {
+  lines: VoiceLine[];
+  model: string;
+  durationMs: number | null;
+  costUsd: number | null;
+  /** The assembler's warnings for the pack, so a broken pack is visible. */
+  warnings: string[];
+}
+
+/** POST /api/voice/speak → audio bytes (audio/mpeg, or audio/wav for
+ *  "system"). The provider and voice come from the saved settings. */
+export interface VoiceSpeakRequest {
+  speaker: VoiceSpeaker;
+  text: string;
+  /** The session's target locale; picks the voice set. */
+  locale: string;
+}
+
+/** POST /api/voice/transcribe?locales=en-US,zh-CN with a WAV body. */
+export interface TranscribeReply {
+  text: string;
+  provider: SttProvider;
+}

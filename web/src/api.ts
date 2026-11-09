@@ -11,6 +11,7 @@ import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
   ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, FolderRequest, Mode, PackDeleteReply, PackInput,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
+  TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence. */
@@ -185,4 +186,59 @@ export function getSettings(): Promise<SettingsReply> {
 
 export function setModel(model: string): Promise<SettingsReply> {
   return req<SettingsReply>("/api/settings", json({ model } satisfies SettingsRequest, "PUT"));
+}
+
+/* --------------------------------- voice --------------------------------- */
+
+/** The session languages, so the reply carries their locales. */
+export interface VoiceLanguages {
+  target: string;
+  variant: string;
+  native: string;
+}
+
+function voiceSettingsUrl(langs?: VoiceLanguages): string {
+  if (!langs) return "/api/voice/settings";
+  const q = new URLSearchParams({ target: langs.target, variant: langs.variant, native: langs.native });
+  return `/api/voice/settings?${q}`;
+}
+
+export function getVoiceSettings(langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
+  return req<VoiceSettingsReply>(voiceSettingsUrl(langs));
+}
+
+/** Merges into data/voice.json; `voices` replaces the whole map. */
+export function saveVoiceSettings(patch: VoiceSettingsRequest, langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
+  return req<VoiceSettingsReply>(voiceSettingsUrl(langs), json(patch, "PUT"));
+}
+
+export function listVoices(provider: TtsProvider, locale: string, signal?: AbortSignal): Promise<VoicesReply> {
+  const q = new URLSearchParams({ provider, locale });
+  return req<VoicesReply>(`/api/voice/voices?${q}`, { signal });
+}
+
+/** A WAV recording → what the learner said. `locales` are candidates (Azure
+ *  uses them; ElevenLabs detects the language itself). */
+export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal): Promise<TranscribeReply> {
+  const q = new URLSearchParams({ locales: locales.join(",") });
+  return req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal });
+}
+
+export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise<VoiceTurnReply> {
+  return req<VoiceTurnReply>("/api/voice/turn", { ...json(body), signal });
+}
+
+/** One line → playable audio. Errors come back as the usual {error}. */
+export async function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
+  const res = await fetch("/api/voice/speak", { ...json(body), signal });
+  if (res.ok) return res.blob();
+  const text = await res.text();
+  let msg = text.slice(0, 200) || `${res.status} ${res.statusText}`;
+  try {
+    const j = JSON.parse(text) as { error?: unknown };
+    if (typeof j.error === "string") msg = j.error;
+  } catch {
+    /* non-JSON */
+  }
+  throw new ApiError(msg, res.status);
 }

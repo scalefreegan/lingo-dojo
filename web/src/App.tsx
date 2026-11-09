@@ -190,6 +190,14 @@ export default function App() {
     return content.scenarios.find((s) => s.id === pack.scenario)?.title ?? "";
   }, [content, pack]);
 
+  // The voice panel's languages, memoized so its settings fetch reruns only
+  // when the target or native language actually changes.
+  const voiceTarget = content && draft ? sessionValues(draft, content.profile) : null;
+  const vt = voiceTarget?.target_language ?? "";
+  const vv = voiceTarget?.target_variant ?? "";
+  const vn = voiceTarget?.native_language ?? "";
+  const voiceLangs = useMemo(() => ({ target: vt, variant: vv, native: vn }), [vt, vv, vn]);
+
   const learnerLine = useMemo(() => {
     if (!content || !draft) return "";
     const s = sessionValues(draft, content.profile);
@@ -376,6 +384,7 @@ export default function App() {
                 packStatus={packStatus}
                 saveRequest={saveRequest}
                 onSave={save}
+                langs={voiceLangs}
               />
             )}
             {tab === "library" && (

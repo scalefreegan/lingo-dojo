@@ -78,6 +78,8 @@ declare module "*/scripts/claude.mjs" {
   export const AGENT_MODELS: import("../shared/wire.ts").AgentModel[];
   export const DEFAULT_MODEL: string;
   export function isAgentModel(id: unknown): id is string;
+  /** An agent model or a voice-turn model. */
+  export function isKnownModel(id: unknown): id is string;
   /** A sentence for a known headless-CLI failure (sign-in, usage limit,
    *  overload), or null. */
   export function failureHint(text: string): string | null;
@@ -101,7 +103,47 @@ declare module "*/scripts/claude.mjs" {
     signal?: AbortSignal;
     maxTurns?: number;
     timeoutSec?: number;
+    /** "content" (the editing agent's sandbox, the default) or "none" (a
+     *  voice turn: no tools at all). */
+    tools?: "content" | "none";
   }): { result: Promise<ClaudeResult>; kill: () => void };
+}
+
+declare module "*/scripts/voice.mjs" {
+  type Mode = import("../shared/wire.ts").Mode;
+  type TtsProvider = import("../shared/wire.ts").TtsProvider;
+  type SttProvider = import("../shared/wire.ts").SttProvider;
+  type VoiceChoice = import("../shared/wire.ts").VoiceChoice;
+  type VoiceLine = import("../shared/wire.ts").VoiceLine;
+  type VoiceSpeaker = import("../shared/wire.ts").VoiceSpeaker;
+  type Req = { url: string; init: RequestInit };
+  export const TTS_PROVIDERS: TtsProvider[];
+  export const STT_PROVIDERS: SttProvider[];
+  export const ELEVEN_MODELS: import("../shared/wire.ts").VoiceOption[];
+  export const VOICE_MODELS: import("../shared/wire.ts").VoiceOption[];
+  export const SILENCE_MS: { min: number; max: number; default: number };
+  export const SPEAKERS_BY_MODE: Record<Mode, VoiceSpeaker[]>;
+  export const AZURE_VOICE_RE: RegExp;
+  export const SESSION_START: string;
+  export function speakersFor(mode: Mode): VoiceSpeaker[];
+  export function localeFor(language: unknown, variant?: unknown): string | null;
+  export function envFile(): string;
+  export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string };
+  export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
+  export function voiceSystemPrompt(markdown: string, mode: Mode): string;
+  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
+  export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
+  export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string }): Req;
+  export function elevenVoicesRequest(o: { key: string }): Req;
+  export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string }): Req;
+  export function azureSpeechRequest(o: { key: string; region: string; voice: string; text: string; locale?: string }): Req;
+  export function azureVoicesRequest(o: { key: string; region: string }): Req;
+  export function azureTranscribeRequest(o: { key: string; region: string; audio: Uint8Array; locales: string[]; mime?: string }): Req;
+  export function elevenVoices(json: unknown, locale: string): VoiceChoice[];
+  export function azureVoices(json: unknown, locale: string): VoiceChoice[];
+  export function systemVoices(text: string, locale: string): VoiceChoice[];
+  export function transcriptText(provider: SttProvider, json: unknown): string;
+  export function normalizeVoiceSettings(raw: unknown): import("../shared/wire.ts").VoiceSettings;
 }
 
 // Everything else: untyped.

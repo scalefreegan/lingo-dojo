@@ -1,0 +1,76 @@
+# Voice practice
+
+The Go tab can run a pack as a spoken session in the app, instead of pasting
+the prompt into ChatGPT or Claude voice mode. Each speaker the frame names
+(narrator, character, and in kids mode the sidekick) gets their own
+native-speaker voice, and **you** decide when your turn is over.
+
+## Set up
+
+Keys live in `.env.local` at the repo root. It is gitignored (`.env.*` and
+`*.local`), read on every request (no restart needed), and never sent to the
+browser.
+
+```sh
+# ElevenLabs: voices and speech to text
+ELEVENLABS_API_KEY=...
+# Azure Speech: voices and speech to text (both lines needed)
+AZURE_SPEECH_KEY=...
+AZURE_SPEECH_REGION=eastus
+```
+
+`npx -y @elevenlabs/cli@latest onboard connect --env-path .env.local` writes the
+ElevenLabs key for you. With no key at all, **macOS voices** (free, offline)
+still work for listening, and you can type your answers.
+
+ElevenLabs only offers the voices in your account. For the best accent, add
+native speakers of your target variant from the Voice Library (search by
+language and accent, e.g. "Mexican Spanish"); the picker lists voices whose
+primary language is the target first.
+
+## How a turn works
+
+```
+browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLabs Scribe v2 / Azure fast transcription
+                                                              │
+         ◀── audio per line ◀─ POST /api/voice/speak ◀─ lines ◀─ POST /api/voice/turn (claude -p, no tools)
+```
+
+- **Turn**: the assembled pack plus a short delivery adapter
+  (`scripts/voice.mjs` `voiceAdapter`) is the system prompt; the client sends the
+  session history every turn (the server keeps none). The reply comes back as
+  `NARRATOR:` / `CHARACTER:` / `SIDEKICK:` lines, one voice each. A tool-less
+  turn takes about 4 s.
+- **Speak**: one call per line; the browser plays line 1 while line 2 is being
+  made. Lines are cached for ▶ replay.
+- **Your turn ends** when you tap Done (the default, best for thinking out loud
+  and for kids) or after a pause you choose (0.5–5 s). The pause only counts
+  once you've started talking, so a long think before the first word is fine.
+  "Check what it heard before sending" puts the transcript in the box to fix
+  first. Talking or sending while the dojo master speaks cuts them off.
+  Space toggles the mic.
+
+## Settings
+
+Saved in `data/voice.json` (gitignored): voice provider, speech-to-text
+provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
+cheapest), Claude model for the dojo master, turn-taking, and a voice per
+speaker **per locale**, so a Mandarin voice choice survives a switch to a
+Spanish pack and back. Languages map to locales in `scripts/voice.mjs`
+`localeFor`; a test fails if a language in `content/languages.yaml` has no
+locale.
+
+## Cost (rough, Nov 2026)
+
+The header shows characters spoken this session. ElevenLabs Eleven v4 runs about
+$0.10 per 1,000 characters (Flash about half); Azure neural voices about $15 per
+million. A 20-minute session is roughly 9,000 characters. Claude turns run on
+your Claude Code login.
+
+## Limits
+
+- Speech-to-text tends to quietly correct mispronunciations, so the dojo
+  master can't judge *how* something sounded (the adapter tells it so).
+  Pronunciation scoring (Azure pronunciation assessment) is a follow-up.
+- Not streaming: each reply arrives whole, then plays line by line.
+- Nothing is saved; Copy transcript is the way to keep a session.
