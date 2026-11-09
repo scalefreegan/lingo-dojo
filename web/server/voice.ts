@@ -337,12 +337,10 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // The speaker's own voice; a speaker without one borrows the narrator's,
   // so a half-set-up kids session still talks.
   const set = settings.voices[provider]?.[locale] ?? {};
-  let voice = set[speaker as VoiceSpeaker] || set.narrator || "";
-  // macOS voices speak one language each: native-language text goes to the
-  // voice picked for that locale, else the system default (the Mac's own).
-  if (provider === "system" && lang === "native" && nativeLocale) {
-    voice = settings.voices.system?.[nativeLocale]?.[speaker as VoiceSpeaker] || settings.voices.system?.[nativeLocale]?.narrator || "";
-  }
+  // Always the speaker's own native voice, whatever language the text is in:
+  // the frame's dojo master is a native speaker of the target variant who
+  // also speaks the learner's language. `lang` only steers pronunciation.
+  const voice = set[speaker as VoiceSpeaker] || set.narrator || "";
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
