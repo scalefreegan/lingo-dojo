@@ -194,13 +194,15 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
   GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
-- GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order, each on its own line with its label in capitals and no speaker tag.
+- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, how old they are (child, young, middle-aged or old), and a few words on who they are. The app picks a voice of that age. It is shown, not spoken. For example:
+  CAST: CHARACTER-F old, Doña Carmen, the fruit vendor
+- CAST lines go just before the line they introduce; GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order. Each is on its own line with its label in capitals and no speaker tag.
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
 - The first message is "[session start]": open the session the way your instructions say.
 - "[skip]" from the learner means: skip the current exercise, drill, or question. Don't repeat it, evaluate it, or give the answer unless they ask; acknowledge in a few words and move straight on to the next step of the session. Inside the scene, the character simply moves the conversation along.
-- "[help]" from the learner means they are stuck on what you just asked. Step out as the narrator, in the learner's native language: say in one sentence what you are asking them to do, then give a hint, not the answer (the first word or two, a key word with its meaning, or the pattern to use). If they ask for help again on the same thing, give a bigger hint, and on the third time the full answer for them to repeat. Then hand the turn back so they can try. If you were in the scene, say you are pausing it, and go back to it after.
-- "[explain]" from the learner means they want more about what was just said. Step out as the narrator, in the learner's native language, and in two or three short sentences explain it: what it means, the key word or structure in it, and any local or cultural note that helps. Don't ask them to repeat it. Then hand back to where you were, back in the scene if that is where you were.
+- "[help]" from the learner means they are stuck on what you just asked. Step out as the narrator, in the language your instructions say to guide in (the learner's native language unless they say otherwise): say in one sentence what you are asking them to do, then give a hint, not the answer (the first word or two, a key word with its meaning, or the pattern to use). If they ask for help again on the same thing, give a bigger hint, and on the third time the full answer for them to repeat. Then hand the turn back so they can try. If you were in the scene, say you are pausing it, and go back to it after.
+- "[explain]" from the learner means they want more about what was just said. Step out as the narrator, in the language your instructions say to guide in (the learner's native language unless they say otherwise), and in two or three short sentences explain it: what it means, the key word or structure in it, and any local or cultural note that helps. Don't ask them to repeat it. Then hand back to where you were, back in the scene if that is where you were.
 - When you ask the learner how the session should go (whether to keep going, go slower, try something harder, or change the scene), not when you ask a practice question, end the turn with one CHOICES line offering two to four short answers in their native language, which the app shows as buttons. It is shown, not spoken. For example:
   CHOICES: Keep going | Slow down | A harder version
   A tapped choice reaches you as "[direct]" followed by its words.
@@ -233,7 +235,7 @@ export const JUMP = "[jump]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}${typeof m.stage === "string" && m.stage ? `\nSTAGE: ${m.stage}` : ""}`;
+    : `[DOJO MASTER]\n${castLines(m.castNotes)}${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}${typeof m.stage === "string" && m.stage ? `\nSTAGE: ${m.stage}` : ""}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
   return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines first, then any GLOSS, CHOICES and STAGE lines, in that order.`;
@@ -243,16 +245,22 @@ export function voiceTurnPrompt(history, message) {
 
 // `NARRATOR:`, `CHARACTER-F:`, `**Character (M):**`, `SIDEKICK/woman:` — the
 // tag, then an optional gender, in whatever punctuation the model reached for.
-const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
+const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
 
 /** A timing mark: `<pause 1.5>` waits that many seconds before the line;
  *  `<overlap 0.4>` starts it that much before the previous one ends (people
  *  talking over each other). Asked for before the tag, but found anywhere in
  *  the line (after the tag, inside **bold**, with a decimal comma), so a
  *  misplaced mark is never read out. */
-// Written so no two \s* runs sit side by side: a long run of spaces must
-// not make it backtrack.
-const TIMING_RE = /<\s*(pause|overlap)(?:\s*(\d+(?:[.,]\d+)?))?\s*(?:s\s*)?(?:\/\s*)?>/gi;
+// Any spelling of the mark: "<pause 1.5>", "<pause 1.5 seconds>",
+// "<pause: 1.5>", "<pause=1.5>"; the number is the first one inside. Bounded
+// so it can't run away on a long line.
+const TIMING_RE = /<\s{0,3}(pause|overlap)\b([^<>\n]{0,40})>/gi;
+const TIMING_NUM = /(\d+(?:[.,]\d+)?)/;
+/** Runs of spaces and tabs → one space: every pattern below then sees at
+ *  most one blank between tokens, so none of them can backtrack for long on
+ *  a line padded with spaces. */
+const squeeze = (s) => String(s).replace(/[^\S\r\n]+/g, " ");
 
 /** Gaps between lines, in ms. A switch between the narrator and anyone in
  *  the scene always gets a slight delay (never an overlap), so the learner
@@ -380,21 +388,21 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // The tag is matched in any case, as TAG_RE does ("Narrator-F:"); only the
 // label itself must be upper case. A bullet, and timing marks (bold or not)
 // before or after the tag, are allowed too. The lines are trimmed and
-// capped before matching (metaLine), and the pattern avoids runs of
-// adjacent \s*, so a line of spaces can't make it backtrack for seconds.
+// squeezed (one blank between tokens) and capped before matching
+// (metaRest), so a line of spaces can't make it backtrack.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const TIMING_MARKS = `(?:(?:\\*\\*)?<[ \\t]?(?:${ci("pause")}|${ci("overlap")})[^>]{0,20}>[ \\t]*(?:\\*\\*)?[ \\t]*)*`;
+const TIMING_MARKS = `(?:(?:\\*\\*)?<\\s{0,3}(?:${ci("pause")}|${ci("overlap")})[^<>]{0,40}>[ \\t]*(?:\\*\\*)?[ \\t]*)*`;
 const META_TAG = `^(?:[-•][ \\t]+)?${TIMING_MARKS}(?:\\*\\*)?[ \\t]*(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?:\\s*[-/(]\\s*(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")})\\s*\\)?)?[ \\t]*(?:\\*\\*)?[ \\t]*:[ \\t]*(?:\\*\\*)?[ \\t]*)?${TIMING_MARKS}`;
 const metaRe = (label) => new RegExp(`${META_TAG}(?:\\*\\*)?\\s*${label}\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?`);
 /** The text after a shown-not-spoken label, or null when `rawLine` isn't
  *  that line. Matched on the line's trimmed start so leading spaces never
  *  reach the pattern. */
 function metaRest(re, rawLine) {
-  const line = String(rawLine).trimStart();
+  const line = squeeze(rawLine).trimStart();
   const m = line.slice(0, 200).match(re);
   return m ? line.slice(m[0].length) : null;
 }
-const isMeta = (rawLine) => [GLOSS_RE, CHOICES_RE, STAGE_RE].some((re) => metaRest(re, rawLine) != null);
+const isMeta = (rawLine) => [GLOSS_RE, CHOICES_RE, STAGE_RE, CAST_RE].some((re) => metaRest(re, rawLine) != null);
 const GLOSS_RE = metaRe("GLOSS(?:ES)?");
 export const MAX_GLOSSES = 16;
 const GLOSS_TERM_CHARS = 200;
@@ -449,6 +457,63 @@ export function parseChoices(text) {
 
 // Where the session is, for the timeline: one part id from the plan.
 const STAGE_RE = metaRe("STAGE");
+
+// Who a voice tag now is, so the app can give it a voice of the right age.
+const CAST_RE = metaRe("CAST");
+const CAST_TAG_RE = /^(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s?[-/(]\s?(F|M|FEMALE|MALE|WOMAN|MAN)\s?\)?)?/i;
+const CAST_WHO_CHARS = 80;
+
+/** How old a voice sounds or a character is, from a provider label or the
+ *  dojo master's word: "child", "young", "middle" or "old"; "" when it
+ *  doesn't say. */
+export function ageOf(label) {
+  const w = String(label ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  if (/^(child|kid|little|boy|girl|toddler|baby)\b/.test(w)) return "child";
+  if (/^(young|teen|teenager|teenage|youthful)\b/.test(w)) return "young";
+  if (/^(middle aged|middle|adult|mature)\b/.test(w)) return "middle";
+  if (/^(old|elderly|older|senior|aged)\b/.test(w)) return "old";
+  return "";
+}
+const AGE_RANK = { child: 0, young: 1, middle: 2, old: 3 };
+
+/** The CAST lines of a reply as {slot, age, who}: "CAST: CHARACTER-F old,
+ *  Doña Carmen, the fruit vendor". A tag without a gender, a speaker the
+ *  mode doesn't have, or an age it can't read is dropped; a later line for
+ *  the same slot wins. */
+export function parseCast(text, mode = "adult") {
+  const allowed = new Set(speakersFor(mode));
+  const out = new Map();
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const rest = metaRest(CAST_RE, rawLine);
+    if (rest == null) continue;
+    const body = rest.replace(/\*\*/g, "").trim();
+    const t = body.match(CAST_TAG_RE);
+    if (!t || !t[2]) continue;
+    const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
+    if (!allowed.has(speaker)) continue;
+    const after = body.slice(t[0].length).replace(/^[\s,|:–—-]+/, "");
+    const a = after.match(/^([A-Za-z]+(?:[\s_-]aged)?)/);
+    const age = a ? ageOf(a[1]) : "";
+    if (!age) continue;
+    const who = oneLine(after.slice(a[0].length).replace(/^[\s,|:–—-]+/, "")).slice(0, CAST_WHO_CHARS);
+    const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
+    out.delete(slot);
+    out.set(slot, { slot, age, who });
+  }
+  return [...out.values()];
+}
+
+/** A turn's cast notes as the CAST lines it came with, for the replay. */
+function castLines(notes) {
+  if (!Array.isArray(notes)) return "";
+  return notes
+    .map((n) => {
+      const [speaker, gender] = String(n?.slot ?? "").split(":");
+      if (!TAG[speaker] || (gender !== "female" && gender !== "male") || !AGE_RANK.hasOwnProperty(n.age)) return "";
+      return `CAST: ${TAG[speaker]}-${gender === "female" ? "F" : "M"} ${n.age === "middle" ? "middle-aged" : n.age}${n.who ? `, ${oneLine(n.who)}` : ""}\n`;
+    })
+    .join("");
+}
 
 /** The STAGE line's part id, if it names one of `ids`; the last valid one
  *  wins (a turn that moves on ends in the later part). */
@@ -518,7 +583,7 @@ export function sessionPlan(content, pack, mode = "adult") {
 export function planDirective(plan) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in. Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
 }
 
 /** Replayed text from the browser, on one line: glosses and choices go back
@@ -548,12 +613,12 @@ export function parseVoiceReply(text, mode = "adult") {
   let gap = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
     if (!rawLine.trim() || isMeta(rawLine)) continue;
-    let raw = rawLine;
+    let raw = squeeze(rawLine);
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
       // The first mark with a number wins; all of them come out of the text.
-      const t = marks.find((x) => x[2]);
-      if (t) gap = (t[1].toLowerCase() === "overlap" ? -1 : 1) * Number(t[2].replace(",", "."));
+      const t = marks.map((x) => [x[1], x[2].match(TIMING_NUM)?.[1]]).find((x) => x[1]);
+      if (t) gap = (t[0].toLowerCase() === "overlap" ? -1 : 1) * Number(t[1].replace(",", "."));
       raw = raw.replace(TIMING_RE, " ").replace(/\*\*\s+/, "**");
       if (!raw.replace(/\*/g, "").trim()) continue;
     }
@@ -799,8 +864,10 @@ export function elevenVoices(json, locale) {
           id: v.voice_id,
           name: String(v.name ?? v.voice_id),
           gender: labels.gender ? String(labels.gender) : "",
-          note: [labels.accent || "", labels.descriptive || labels.description || "", v.category === "premade" ? "premade" : ""].filter(Boolean).join(" · "),
+          note: [labels.accent || "", labels.age ? String(labels.age).replace(/_/g, " ") : "", labels.descriptive || labels.description || "", v.category === "premade" ? "premade" : ""].filter(Boolean).join(" · "),
           match: native,
+          age: ageOf(labels.age),
+          premade: v.category === "premade",
         },
         rank: (native ? 1 : 0) + (exact ? 1 : 0),
       };
@@ -848,7 +915,8 @@ export function systemVoices(text, locale) {
     const m = line.match(/^(.+?)\s+([a-z]{2,3}_[A-Z0-9]{2,3})\s+#\s?(.*)$/);
     if (!m || m[2] !== want) continue;
     const name = m[1].trim();
-    rows.push({ id: name, name, gender: SYSTEM_VOICE_GENDER.get(name.replace(/\s*\(.*$/, "")) ?? "", note: m[3].trim(), match: true });
+    const base = name.replace(/\s*\(.*$/, "");
+    rows.push({ id: name, name, gender: SYSTEM_VOICE_GENDER.get(base) ?? "", note: m[3].trim(), match: true, age: base === "Grandma" || base === "Grandpa" ? "old" : "" });
   }
   return rows;
 }
@@ -873,13 +941,15 @@ export function transcriptText(provider, json) {
 
 export const LIBRARY_SORTS = ["usage_character_count_1y", "trending", "cloned_by_count", "created_date"];
 
-export function elevenLibraryRequest({ key, locale, gender, search, sort, page = 0, pageSize = 30 }) {
+const LIBRARY_AGE = { child: "young", young: "young", middle: "middle_aged", old: "old" };
+export function elevenLibraryRequest({ key, locale, gender, age, search, sort, page = 0, pageSize = 30 }) {
   const q = new URLSearchParams({ page_size: String(pageSize), page: String(Math.max(0, page | 0)) });
   if (locale) {
     q.set("language", languageOf(locale));
     q.set("locale", locale);
   }
   if (gender === "female" || gender === "male") q.set("gender", gender);
+  if (LIBRARY_AGE[age]) q.set("age", LIBRARY_AGE[age]);
   if (search) q.set("search", String(search).slice(0, 100));
   q.set("sort", LIBRARY_SORTS.includes(sort) ? sort : LIBRARY_SORTS[0]);
   return { url: `https://api.elevenlabs.io/v1/shared-voices?${q}`, init: { method: "GET", headers: { "xi-api-key": key } } };
@@ -933,22 +1003,69 @@ export function elevenAddRequest({ key, ownerId, voiceId, name }) {
  *  labelled with that gender, then native voices with no label (which may
  *  be either), then labelled voices for other locales, then unlabelled ones.
  *  "novelty" and other labels never count. `skip` holds ids to leave out. */
-export function poolFor(list, gender, skip = new Set()) {
+export function poolFor(list, gender, skip = new Set(), age = "") {
   const ok = (Array.isArray(list) ? list : []).filter((v) => !skip.has(v.id));
   const labelled = ok.filter((v) => String(v.gender).toLowerCase() === gender);
   const unlabelled = ok.filter((v) => !v.gender);
   const tiers = [labelled.filter((v) => v.match), unlabelled.filter((v) => v.match), labelled, unlabelled];
-  return (tiers.find((t) => t.length) ?? []).map((v) => ({ id: v.id, name: v.name }));
+  let pool = tiers.find((t) => t.length) ?? [];
+  // An age asked for: within that tier, the voices nearest it (a voice with
+  // no age label counts as a step and a half away, so a real neighbour wins).
+  if (AGE_RANK.hasOwnProperty(age) && pool.length) {
+    const dist = (v) => (AGE_RANK.hasOwnProperty(v.age) ? Math.abs(AGE_RANK[v.age] - AGE_RANK[age]) : 1.5);
+    const best = Math.min(...pool.map(dist));
+    pool = pool.filter((v) => dist(v) === best);
+  }
+  return pool.map((v) => ({ id: v.id, name: v.name, age: v.age ?? "" }));
+}
+
+/** The voices a /speak line uses: `first` to try, and `retry` for when the
+ *  provider refuses a cast voice ("" when there is no retry). The retry is
+ *  the learner's voice for this exact slot, else the cast's account
+ *  fallback for it, else whatever voiceFor borrows from other slots — so a
+ *  refused man's line never borrows the narrator woman's voice while a
+ *  man's fallback exists. A cast voice refused before goes straight to the
+ *  retry voice. Without a cast, the saved choice (borrowing), else the
+ *  fallback. */
+export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", refused = new Set() }) {
+  const borrowed = voiceFor(set, speaker, gender);
+  if (!cast) return { first: borrowed || fallback || "", retry: "" };
+  const exact = gender === "female" || gender === "male" ? set?.[`${speaker}:${gender}`] ?? "" : "";
+  const retry = exact || fallback || borrowed || "";
+  if (!retry || retry === cast) return { first: cast, retry: "" };
+  return refused.has(cast) ? { first: retry, retry: "" } : { first: cast, retry };
+}
+
+/** For ElevenLabs: each slot's fallback, a distinct account voice of its
+ *  gender (two women never share one while the account has two). Premade
+ *  voices come first (any plan can speak with them; voices added from the
+ *  library may be refused like the library itself), then natives. Voices
+ *  the learner set for a slot are left for that slot. → slot → id. */
+export function castFallbacks(own, slots, set = {}) {
+  const taken = new Set(Object.values(set ?? {}).filter(Boolean));
+  const list = Array.isArray(own) ? own : [];
+  const rank = (v) => (v.premade ? 0 : 2) + (v.match ? 0 : 1);
+  const out = {};
+  for (const slot of slots) {
+    const gender = slot.split(":")[1];
+    const labelled = list.filter((v) => String(v.gender).toLowerCase() === gender);
+    const from = (labelled.length ? labelled : list.filter((v) => !v.gender)).slice().sort((a, b) => rank(a) - rank(b));
+    const pick = from.find((v) => !taken.has(v.id)) ?? from[0];
+    if (!pick) continue;
+    out[slot] = pick.id;
+    taken.add(pick.id);
+  }
+  return out;
 }
 
 /** Whether a provider's refusal of a cast voice is worth one retry in
- *  another voice: a client error about the request (402 no library access,
- *  403, 404 removed voice, 400/422 a voice the plan can't use), but not a
- *  bad key or spent credits (401) or a rate limit (429), which another
- *  voice won't fix. The voice is only marked refused once the retry
+ *  another voice: 402 no library access, 403, 404 a removed voice, 400/422 a
+ *  voice the plan can't use. Not a bad key or spent credits (401), a rate
+ *  limit (429), or a transient 408/409, which another voice won't fix. The voice is only marked refused once the retry
  *  succeeds, so an error that isn't about the voice never sticks to it. */
+const VOICE_REFUSALS = new Set([400, 402, 403, 404, 422]);
 export function retryInOtherVoice(status) {
-  return Number.isInteger(status) && status >= 400 && status < 500 && status !== 401 && status !== 429;
+  return VOICE_REFUSALS.has(status);
 }
 
 /** The narrator's gender when the pack fixes it (narrator-female,
@@ -974,27 +1091,32 @@ export function narratorDirective(gender) {
 
 /** One session's voices: every slot the learner set keeps its voice; every
  *  other slot (Random) draws from the pool for its gender, without repeats
- *  where the pool allows. `pools` is gender → [{id, name}], best first;
- *  `rand` is injectable for tests. → slot → {id, name}. */
-export function pickCast({ slots, set = {}, pools = {}, names = {}, rand = Math.random }) {
+ *  where the pool allows. `pools` is gender → [{id, name, age?}], or a slot
+ *  → its own pool (a recast for an age); `ages` is id → age for set voices;
+ *  `avoid` holds ids playing other slots; `rand` is injectable for tests.
+ *  → slot → {id, name, age}. */
+// The age only when known, so a cast without ages keeps its old shape.
+const withAge = (v, age) => (age ? { ...v, age } : v);
+export function pickCast({ slots, set = {}, pools = {}, names = {}, ages = {}, avoid = [], rand = Math.random }) {
   const cast = {};
-  const taken = new Set();
+  const taken = new Set(avoid);
   for (const slot of slots) {
     const id = set[slot];
     if (id) {
-      cast[slot] = { id, name: names[id] ?? id };
+      cast[slot] = withAge({ id, name: names[id] ?? id }, ages[id]);
       taken.add(id);
     }
   }
   for (const slot of slots) {
     if (cast[slot]) continue;
     const gender = slot.split(":")[1];
-    const pool = pools[gender]?.length ? pools[gender] : [...(pools.female ?? []), ...(pools.male ?? [])];
+    // A pool drawn for this very slot (an age was asked for) comes first.
+    const pool = pools[slot]?.length ? pools[slot] : pools[gender]?.length ? pools[gender] : [...(pools.female ?? []), ...(pools.male ?? [])];
     if (!pool.length) continue;
     const fresh = pool.filter((v) => !taken.has(v.id));
     const from = fresh.length ? fresh : pool;
     const pick = from[Math.floor(rand() * from.length)];
-    cast[slot] = { id: pick.id, name: pick.name };
+    cast[slot] = withAge({ id: pick.id, name: pick.name }, pick.age || ages[pick.id]);
     taken.add(pick.id);
   }
   return cast;

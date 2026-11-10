@@ -42,12 +42,14 @@ export default function TopBar({
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-panel/90 px-4 backdrop-blur sm:pr-10">
-      <h1 className="mr-1 flex shrink-0 items-center gap-1.5 text-lg font-semibold text-fg">
+    // On a phone everything is a little tighter, so the Kids tag still
+    // leaves room for all three tabs (Go was pushed out of sight).
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line bg-panel/90 px-3 backdrop-blur sm:gap-2 sm:px-4 sm:pr-10">
+      <h1 className="flex shrink-0 items-center gap-1 text-lg font-semibold text-fg sm:mr-1 sm:gap-1.5">
         <Mochi size={30} />
         <span className="sr-only sm:not-sr-only">Lingo Dojo</span>
         {mode === "kids" && (
-          <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium leading-none text-accent" data-testid="mode-tag">
+          <span className="rounded-full bg-accent-soft px-1 py-0.5 text-[10px] font-medium leading-none text-accent sm:px-1.5 sm:text-[11px]" data-testid="mode-tag">
             Kids
           </span>
         )}
@@ -76,7 +78,7 @@ function TabButton({ label, active, onClick, className = "" }: { label: string; 
       type="button"
       aria-current={active ? "page" : undefined}
       onClick={onClick}
-      className={`flex shrink-0 items-center rounded-full px-3.5 py-1 font-[family-name:var(--font-display)] text-sm font-medium transition-colors ${
+      className={`flex shrink-0 items-center rounded-full px-2.5 py-1 font-[family-name:var(--font-display)] text-sm font-medium transition-colors sm:px-3.5 ${
         active ? "bg-panel text-accent shadow-[0_1px_2px_rgb(26_28_58/0.12)]" : "text-fg-3 hover:text-fg"
       } ${className}`}
     >

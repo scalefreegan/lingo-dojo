@@ -638,3 +638,159 @@ test("systemVoices: known macOS voices carry their gender", () => {
   assert.deepEqual(systemVoices(list, "es-MX").map((v) => [v.name, v.gender]), [["Paulina", "female"], ["Eddy (Spanish (Mexico))", "male"], ["Novelty", ""]]);
   assert.equal(systemVoices("Albert              en_US    # Hello", "en-US")[0].gender, "novelty", "a sound-effect voice is never a man's or woman's voice");
 });
+
+/* ------------------------- round 7: written first -------------------------- */
+
+import { ageOf, castFallbacks, parseCast, speechVoices } from "../voice.mjs";
+
+const fast = (fn, ms = 250) => {
+  const t0 = performance.now();
+  fn();
+  const took = performance.now() - t0;
+  assert.ok(took < ms, `took ${Math.round(took)} ms`);
+};
+
+test("reply parsing stays fast on lines padded with spaces (the costly shapes)", () => {
+  const sp = (n) => " ".repeat(n);
+  const reply = Array.from({ length: 10 }, () => `<pause 1>${sp(190)}x`).join("\n");
+  fast(() => {
+    parseVoiceReply(reply);
+    parseGlosses(reply);
+    parseChoices(reply);
+    parseStage(reply, ["scene"]);
+    parseCast(reply);
+  });
+  fast(() => parseVoiceReply(`NARRATOR-F${sp(5000)}x`));
+  fast(() => parseVoiceReply(`**<pause 1>${sp(300)}**${sp(300)}NARRATOR${sp(300)}x`));
+});
+
+test("hidden lines: wider timing marks before the label are still hidden", () => {
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<  pause 1> GLOSS: hola = hi").map((l) => l.text), ["Hi"]);
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<pause 1.5 while she weighs them> STAGE: scene").map((l) => l.text), ["Hi"]);
+});
+
+test("a bulleted speaker tag is still a tag, before or after a timing mark", () => {
+  const a = parseVoiceReply("CHARACTER-M: <t>Hola</t>\n- NARRATOR-F: Now you try.");
+  assert.deepEqual(a.map((l) => [l.speaker, l.gender, l.text]), [["character", "male", "Hola"], ["narrator", "female", "Now you try."]]);
+  const b = parseVoiceReply("NARRATOR-F: Hi\n- <pause 1.5> CHARACTER-M: <t>Hola</t>");
+  assert.deepEqual(b.map((l) => [l.speaker, l.text]), [["narrator", "Hi"], ["character", "Hola"]]);
+});
+
+test("timing marks in other spellings are never read out", () => {
+  for (const mark of ["<pause 1.5 seconds>", "<pause: 1.5>", "<pause=1.5>"]) {
+    const [, line] = parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`);
+    assert.equal(line.text, "Hola", mark);
+    assert.equal(line.gap, 1.5, mark);
+  }
+});
+
+test("retryInOtherVoice: only the statuses that mean this voice can't be used", () => {
+  for (const s of [408, 409, 413]) assert.equal(retryInOtherVoice(s), false, String(s));
+});
+
+test("planDirective: a scene with no beats is reported as the scene", () => {
+  assert.match(planDirective([{ id: "scene", title: "S", kind: "scene" }]), /or scene/);
+});
+
+test("speechVoices: a refused cast voice falls back to the exact saved slot, then the cast fallback, then a borrowed voice", () => {
+  const refused = new Set();
+  // Only a narrator woman saved: a male vendor's refused line goes to the
+  // man's account fallback, not the narrator's voice.
+  const set = { "narrator:female": "NARR_F" };
+  assert.deepEqual(speechVoices({ set, speaker: "character", gender: "male", cast: "LIB_M", fallback: "ACC_M", refused }), { first: "LIB_M", retry: "ACC_M" });
+  // The exact slot saved wins over the fallback.
+  assert.deepEqual(speechVoices({ set: { "character:male": "MINE" }, speaker: "character", gender: "male", cast: "LIB_M", fallback: "ACC_M", refused }), { first: "LIB_M", retry: "MINE" });
+  // Nothing exact and no fallback: borrow, as before.
+  assert.deepEqual(speechVoices({ set, speaker: "character", gender: "male", cast: "LIB_M", fallback: "", refused }), { first: "LIB_M", retry: "NARR_F" });
+  // Once refused, straight to the retry voice, with no second retry.
+  assert.deepEqual(speechVoices({ set, speaker: "character", gender: "male", cast: "LIB_M", fallback: "ACC_M", refused: new Set(["LIB_M"]) }), { first: "ACC_M", retry: "" });
+  // No cast: the saved voice (borrowing), else the fallback; nothing to retry.
+  assert.deepEqual(speechVoices({ set, speaker: "character", gender: "male", cast: null, fallback: "ACC_M", refused }), { first: "NARR_F", retry: "" });
+  assert.deepEqual(speechVoices({ set: {}, speaker: "character", gender: "male", cast: null, fallback: "ACC_M", refused }), { first: "ACC_M", retry: "" });
+});
+
+test("castFallbacks: a distinct account voice per slot, premade first, set voices kept out", () => {
+  const own = [
+    { id: "lib_f", name: "Added Carmen", gender: "female", match: true, premade: false, age: "" },
+    { id: "pre_f1", name: "Sarah", gender: "female", match: false, premade: true, age: "young" },
+    { id: "pre_f2", name: "Lily", gender: "female", match: false, premade: true, age: "middle" },
+    { id: "pre_m", name: "George", gender: "male", match: false, premade: true, age: "middle" },
+  ];
+  const fb = castFallbacks(own, ["narrator:female", "character:female", "narrator:male", "character:male"], {});
+  assert.ok(["pre_f1", "pre_f2"].includes(fb["narrator:female"]));
+  assert.ok(["pre_f1", "pre_f2"].includes(fb["character:female"]));
+  assert.notEqual(fb["narrator:female"], fb["character:female"], "two women never share a fallback when the account has two");
+  assert.equal(fb["narrator:male"], "pre_m");
+  const kept = castFallbacks(own, ["character:female"], { "narrator:female": "pre_f1" });
+  assert.equal(kept["character:female"], "pre_f2", "a voice the learner set for another slot isn't reused");
+});
+
+test("ageOf: provider labels to the four ages", () => {
+  assert.equal(ageOf("young"), "young");
+  assert.equal(ageOf("middle aged"), "middle");
+  assert.equal(ageOf("middle_aged"), "middle");
+  assert.equal(ageOf("Old"), "old");
+  assert.equal(ageOf("child"), "child");
+  assert.equal(ageOf("elderly"), "old");
+  assert.equal(ageOf(""), "");
+  assert.equal(ageOf("whatever"), "");
+});
+
+test("poolFor with an age: that age first, then the nearest, never dropping the gender rule", () => {
+  const list = [
+    { id: "y", name: "Y", gender: "female", match: true, age: "young" },
+    { id: "m", name: "M", gender: "female", match: true, age: "middle" },
+    { id: "o", name: "O", gender: "female", match: true, age: "old" },
+    { id: "om", name: "OM", gender: "male", match: true, age: "old" },
+  ];
+  assert.deepEqual(poolFor(list, "female", new Set(), "old").map((v) => v.id), ["o"]);
+  assert.deepEqual(poolFor(list.filter((v) => v.id !== "o"), "female", new Set(), "old").map((v) => v.id), ["m"], "nearest age when none is old");
+  assert.deepEqual(poolFor(list, "female", new Set(), "child").map((v) => v.id), ["y"], "a child is matched by the youngest voices");
+  assert.equal(poolFor(list, "female", new Set(), "old")[0].age, "old", "the pool keeps the age");
+});
+
+test("parseCast: CAST lines say who each tag now is; never spoken", () => {
+  const reply = [
+    "NARRATOR-F: Let's go to the market.",
+    "CAST: CHARACTER-F old, Doña Carmen, the fruit vendor",
+    "**CAST:** character-m | young | Beto, her grandson",
+    "CAST: SIDEKICK-F middle-aged, a neighbour",
+    "CAST: CHARACTER teenager, no gender so ignored",
+    "CHARACTER-F: <t>¡Pásele!</t>",
+  ].join("\n");
+  assert.deepEqual(parseCast(reply, "adult"), [
+    { slot: "character:female", age: "old", who: "Doña Carmen, the fruit vendor" },
+    { slot: "character:male", age: "young", who: "Beto, her grandson" },
+  ], "a sidekick doesn't exist in adult mode; a tag without a gender is dropped");
+  assert.equal(parseCast(reply, "kids").find((n) => n.slot === "sidekick:female").age, "middle");
+  assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["Let's go to the market.", "¡Pásele!"]);
+  // A later note for the same slot wins; ages in words map too.
+  assert.deepEqual(parseCast("CAST: CHARACTER-F young, A\nCAST: CHARACTER-F elderly, B"), [{ slot: "character:female", age: "old", who: "B" }]);
+});
+
+test("the CAST line goes back in the replay, and the adapter asks for it", () => {
+  const prompt = voiceTurnPrompt([{ role: "master", lines: parseVoiceReply("CHARACTER-F: <t>Hola</t>"), castNotes: [{ slot: "character:female", age: "old", who: "Doña Carmen" }] }], "x");
+  assert.match(prompt, /\nCAST: CHARACTER-F old, Doña Carmen\n/);
+  assert.match(voiceAdapter("adult"), /CAST: CHARACTER-F old, Doña Carmen/);
+});
+
+test("voice lists carry ages where the provider says", () => {
+  const json = { voices: [{ voice_id: "a1", name: "Rosa", category: "premade", labels: { gender: "female", age: "old", language: "es" } }] };
+  const [row] = elevenVoices(json, "es-MX");
+  assert.equal(row.age, "old");
+  assert.equal(row.premade, true);
+  assert.equal(systemVoices("Grandma (Spanish (Mexico)) es_MX    # Hola", "es-MX")[0].age, "old");
+  assert.equal(elevenLibraryRequest({ key: "k", locale: "es-MX", age: "old" }).url.includes("age=old"), true);
+  assert.equal(elevenLibraryRequest({ key: "k", locale: "es-MX", age: "middle" }).url.includes("age=middle_aged"), true);
+});
+
+test("pickCast for a recast: the slot's own aged pool, avoiding voices playing other slots", () => {
+  const pools = {
+    female: [{ id: "F1", name: "Ana" }],
+    "character:female": [{ id: "OLD1", name: "Doña", age: "old" }, { id: "OLD2", name: "Abuela", age: "old" }],
+  };
+  const first = () => 0;
+  assert.deepEqual(pickCast({ slots: ["character:female"], pools, avoid: ["OLD1"], rand: first }), { "character:female": { id: "OLD2", name: "Abuela", age: "old" } });
+  // A voice the learner set keeps it, with its age when the list knows it.
+  assert.deepEqual(pickCast({ slots: ["character:female"], set: { "character:female": "MINE" }, pools, names: { MINE: "Mía" }, ages: { MINE: "young" } }), { "character:female": { id: "MINE", name: "Mía", age: "young" } });
+});
