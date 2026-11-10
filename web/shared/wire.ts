@@ -373,6 +373,20 @@ export type SttProvider = "elevenlabs" | "azure";
 export type VoiceSpeaker = "narrator" | "character" | "sidekick";
 /** Whose voice a line is: the dojo master tags it (-F / -M). */
 export type VoiceGender = "female" | "male";
+/** How old a voice sounds, and how old the dojo master says a character
+ *  is (a CAST line). ElevenLabs labels library voices young, middle_aged or
+ *  old; "child" is only ever asked for, and matched by the youngest voices. */
+export type VoiceAge = "child" | "young" | "middle" | "old";
+
+/** A CAST line: who the dojo master says now speaks with one voice tag, so
+ *  the app can give that tag a voice of the right age. Shown, not spoken. */
+export interface VoiceCastNote {
+  /** "character:female", "narrator:male", "sidekick:female"… */
+  slot: string;
+  age: VoiceAge;
+  /** A few words on who it is ("Doña Carmen, the fruit vendor"). */
+  who: string;
+}
 /** A voice choice: a speaker as a woman or a man, e.g. "character:female".
  *  (A bare speaker id is an older, ungendered choice, still honoured.) */
 export type VoiceSlot = `${VoiceSpeaker}:${VoiceGender}`;
@@ -433,6 +447,10 @@ export interface VoiceChoice {
   gender: string;
   note: string;
   match: boolean;
+  /** How old it sounds, when the provider labels it. */
+  age?: VoiceAge | "";
+  /** An ElevenLabs premade voice (usable on any plan). */
+  premade?: boolean;
 }
 
 /** GET /api/voice/voices?provider=&locale= */
@@ -479,7 +497,7 @@ export interface VoiceGloss {
 
 export type VoiceHistoryItem =
   | { role: "learner"; text: string }
-  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[]; choices?: string[]; stage?: string };
+  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[]; choices?: string[]; stage?: string; castNotes?: VoiceCastNote[] };
 
 /** One part of a session, for the timeline (scripts/voice.mjs sessionPlan):
  *  "intro", "warmup:<unit>", "scene", "beat:<n>", "debrief:<unit>", and in
@@ -513,6 +531,10 @@ export interface VoiceTurnReply {
   plan: VoicePlanItem[];
   /** The part this turn ended in (a plan id), or null when it didn't say. */
   stage: string | null;
+  /** Who this turn says each voice tag now is ([] when nobody new came in).
+   *  A Random slot whose voice is the wrong age gets recast (/cast with
+   *  `ages`) before the turn plays. */
+  castNotes: VoiceCastNote[];
   model: string;
   durationMs: number | null;
   costUsd: number | null;
@@ -549,13 +571,21 @@ export interface VoiceCastRequest {
   locale: string;
   /** The pack's unit ids: a narrator-female/-male unit fixes the gender. */
   units: string[];
+  /** Slot → the age wanted; a slot without one takes any age. */
+  ages?: Record<string, VoiceAge>;
+  /** Draw only these slots (a recast mid-session); all when absent. */
+  slots?: string[];
+  /** Voice ids already playing other slots, to avoid when drawing. */
+  avoid?: string[];
 }
 
 export interface VoiceCastReply {
   provider: TtsProvider;
   locale: string;
-  /** Slot ("narrator:female") → the voice playing it this session. */
-  cast: Record<string, { id: string; name: string }>;
+  /** Slot ("narrator:female") → the voice playing it this session, with
+   *  how old it sounds when the provider says ("" when unknown). Only the
+   *  requested `slots` on a recast. */
+  cast: Record<string, { id: string; name: string; age?: VoiceAge | "" }>;
   narratorGender: VoiceGender;
   /** True when the pack fixed the narrator's gender. */
   pinned: boolean;

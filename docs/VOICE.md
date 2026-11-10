@@ -159,13 +159,27 @@ account), and for Azure and macOS, from their own voices for the locale:
 native voices of that gender, then native voices with no gender label, and
 only then other locales' voices; macOS sound-effect voices (Albert,
 Bubbles, …) are labelled "novelty" and never drawn. If ElevenLabs refuses a
-drawn library voice (a client error another voice could fix: not a bad key
-or spent credits, 401, nor a rate limit, 429), the line is said in your
-saved voice, or, with nothing saved (all Random, e.g. on a free plan), in the
-account voice of that gender that `/cast` named as the slot's fallback.
-Once that retry works the library voice counts as refused: later lines go
-straight to the fallback, and later casts skip it, for the rest of the
-server's run. The
+drawn library voice (400, 402, 403, 404 or 422: statuses that mean this
+voice can't be used, not a bad key, spent credits, a rate limit or a
+transient error), the line is retried in your voice for that exact slot,
+else in the slot's fallback, else in a voice borrowed from another slot
+(`speechVoices`). For ElevenLabs `/cast` names a distinct account voice of
+the slot's gender as each slot's fallback, premade voices first, since any
+plan can speak with those (`castFallbacks`). Once a retry works the library
+voice counts as refused: later lines go straight to the retry voice, and
+later casts skip it, for the rest of the server's run.
+
+**Ages.** The dojo master writes a `CAST:` line (shown, never spoken;
+`parseCast`) whenever someone speaks for the first time or a different
+person takes over a voice tag: `CAST: CHARACTER-F old, Doña Carmen, the
+fruit vendor`. The turn reply carries these as `castNotes`, and they go back
+in the replay. When a Random slot's voice is the wrong age, the browser
+recasts just that slot (`/cast` with `ages`, `slots` and `avoid`) before the
+turn plays: for ElevenLabs a library search filtered by age (young, middle
+aged, old; a child takes the youngest), else the provider's own voices
+nearest that age (`poolFor`). Voice lists carry ages where the provider
+labels them (ElevenLabs; macOS Grandma and Grandpa). A slot you set keeps
+its voice. The
 cast holds for the whole session, so each character keeps one voice. Restart
 draws again, and the header lists who is playing whom.
 

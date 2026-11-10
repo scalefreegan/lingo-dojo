@@ -139,8 +139,12 @@ declare module "*/scripts/voice.mjs" {
   export function parseStage(text: string, ids: string[]): string | null;
   export function oneLine(s: string): string;
   export function replayStage(v: unknown): string;
-  export function poolFor(list: { id: string; name: string; gender: string; match: boolean }[], gender: string, skip?: Set<string>): { id: string; name: string }[];
+  export function poolFor(list: { id: string; name: string; gender: string; match: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
   export function retryInOtherVoice(status: number): boolean;
+  export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
+  export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
+  export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
+  export function castFallbacks(own: { id: string; gender: string; match: boolean; premade?: boolean }[], slots: string[], set?: Record<string, string | undefined>): Record<string, string>;
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
@@ -149,16 +153,18 @@ declare module "*/scripts/voice.mjs" {
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
   export function voiceFor(set: Record<string, string> | undefined, speaker: VoiceSpeaker, gender: import("../shared/wire.ts").VoiceGender | null | undefined): string;
   export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];
-  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; search?: string; sort?: string; page?: number; pageSize?: number }): Req;
+  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; age?: string; search?: string; sort?: string; page?: number; pageSize?: number }): Req;
   export function pinnedNarratorGender(units: unknown): import("../shared/wire.ts").VoiceGender | null;
   export function narratorDirective(gender: unknown): string;
   export function pickCast(o: {
     slots: string[];
     set?: Record<string, string | undefined>;
-    pools?: Record<string, { id: string; name: string }[]>;
+    pools?: Record<string, { id: string; name: string; age?: string }[]>;
     names?: Record<string, string>;
+    ages?: Record<string, string>;
+    avoid?: string[];
     rand?: () => number;
-  }): Record<string, { id: string; name: string }>;
+  }): Record<string, { id: string; name: string; age?: import("../shared/wire.ts").VoiceAge }>;
   export function elevenLibrary(json: unknown): import("../shared/wire.ts").LibraryReply;
   /** Throws on an id that isn't an ElevenLabs id. */
   export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;

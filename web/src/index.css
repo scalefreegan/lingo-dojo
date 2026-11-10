@@ -19,6 +19,10 @@
      the top, SummaryBar under it, about 51px tall on one row), with a
      little room. Change it with those bars. */
   --below-bars: 7rem;
+  /* Room under the sticky timeline for what follows the session at the
+     page's end (save, export, the prompt toggle, the page's bottom padding),
+     so at the very end it isn't pushed up under the bars. */
+  --below-session: 13rem;
   color-scheme: light dark;
   --ground: #eef1f8;
   --panel: #ffffff;

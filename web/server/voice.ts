@@ -9,10 +9,10 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, oneLine, replayStage, poolFor, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, ageOf, castFallbacks, parseCast, speechVoices, oneLine, replayStage, poolFor, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
-  VoiceCastReply, VoiceCastRequest,
+  VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
   LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
@@ -276,7 +276,15 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
       // The part the turn ended in goes back as its STAGE line, so the dojo
       // master keeps writing one; only an id-shaped value survives.
       const stage = replayStage(m.stage);
-      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}) });
+      // Who each voice tag is goes back as CAST lines, so the dojo master
+      // keeps its characters (and their ages) straight.
+      const castNotes: VoiceCastNote[] = Array.isArray(m.castNotes)
+        ? (m.castNotes as { slot?: unknown; age?: unknown; who?: unknown }[])
+            .filter((n) => typeof n?.slot === "string" && /^(narrator|character|sidekick):(female|male)$/.test(n.slot) && !!ageOf(n.age))
+            .slice(0, 6)
+            .map((n) => ({ slot: n.slot as string, age: ageOf(n.age) as VoiceAge, who: typeof n.who === "string" ? oneLine(n.who).slice(0, 80) : "" }))
+        : [];
+      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}), ...(castNotes.length ? { castNotes } : {}) });
     }
   }
   return out.slice(-HISTORY_WINDOW);
@@ -334,7 +342,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
+    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
   } finally {
     turning = false;
     res.off("close", onClose);
@@ -403,11 +411,13 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // A cast drawn for another provider (the provider changed mid-session;
   // settings are shared by every window) names voices this one can't use.
   const cast = body?.provider === provider ? castVoice(provider, body?.voice) : null;
-  // What a refused cast voice falls back to: the learner's saved voice, else
-  // the account voice /cast named for the slot (all-Random on a free plan
-  // has no saved voice, and library voices are refused there).
-  const saved = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender) || (body?.provider === provider ? (castVoice(provider, body?.fallback) ?? "") : "");
-  const voice = cast ?? saved;
+  // What a refused cast voice falls back to (speechVoices): the learner's
+  // voice for this exact slot, else the account voice /cast named for it
+  // (all-Random on a free plan has no saved voice, and library voices are
+  // refused there), else a voice borrowed from another slot.
+  const fallback = body?.provider === provider ? (castVoice(provider, body?.fallback) ?? "") : "";
+  const { first, retry } = speechVoices({ set: settings.voices[provider]?.[locale] ?? {}, speaker, gender, cast, fallback, refused: refusedVoices });
+  const voice = first;
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
@@ -420,9 +430,8 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
     let type = "audio/mpeg";
     if (provider === "elevenlabs") {
       let r;
-      // A cast voice refused once goes straight to the saved one after that,
-      // so a free plan doesn't pay two calls for every line.
-      const first = cast && saved && refusedVoices.has(cast) ? saved : voice;
+      // A cast voice refused once goes straight to the retry voice after
+      // that (speechVoices), so a free plan doesn't pay two calls a line.
       try {
         r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: first, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
       } catch (e) {
@@ -432,8 +441,8 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
         // error another voice could fix. Say the line in the fallback rather
         // than lose it.
         const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
-        if (first !== cast || !cast || !saved || cast === saved || !retryInOtherVoice(status)) throw e;
-        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: saved, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+        if (!cast || !retry || !retryInOtherVoice(status)) throw e;
+        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: retry, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
         // The other voice worked, so it was the cast voice: skip it from now on.
         if (refusedVoices.size >= 200) refusedVoices.clear();
         refusedVoices.add(cast);
@@ -495,11 +504,14 @@ function castVoice(provider: TtsProvider, v: unknown): string | null {
  *  wide pick for variety, still voices people actually use. */
 const CAST_POOL = 40;
 
-/** POST /api/voice/cast {mode, locale, units} → this session's voices and
- *  narrator gender. Slots the learner set keep their voice; Random ones draw
- *  from native speakers of their gender: for ElevenLabs the Voice Library
- *  (usable by id on a paid plan, nothing added to the account), else the
- *  provider's own list for the locale. */
+/** POST /api/voice/cast {mode, locale, units, ages?, slots?, avoid?} → this
+ *  session's voices and narrator gender. Slots the learner set keep their
+ *  voice; Random ones draw from native speakers of their gender, and of the
+ *  age asked for when the dojo master named one (a CAST line): for
+ *  ElevenLabs the Voice Library (usable by id on a paid plan, nothing added
+ *  to the account), else the provider's own list for the locale. With
+ *  `slots` only those are drawn (a recast mid-session), avoiding `avoid`;
+ *  the client then keeps its narrator gender. */
 async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceCastRequest>>(req);
@@ -507,48 +519,60 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
   if (!isMode(mode)) throw new HttpError(400, `unknown mode ${JSON.stringify(body?.mode)}`);
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");
+  const all: string[] = voiceSlots(mode);
+  const slots = Array.isArray(body?.slots) ? all.filter((x) => (body.slots as unknown[]).includes(x)) : all;
+  const ages: Record<string, VoiceAge> = {};
+  if (body?.ages && typeof body.ages === "object") {
+    for (const [slot, a] of Object.entries(body.ages)) {
+      const age = ageOf(a);
+      if (all.includes(slot) && age) ages[slot] = age;
+    }
+  }
   const settings = readVoiceSettings();
   const provider = settings.tts;
   const keys = keysFor(provider);
-  const pools: Record<string, { id: string; name: string }[]> = { female: [], male: [] };
+  const avoid = Array.isArray(body?.avoid) ? (body.avoid as unknown[]).slice(0, 20).map((v) => castVoice(provider, v)).filter((v): v is string => !!v) : [];
+  const set: Record<string, string | undefined> = settings.voices[provider]?.[locale] ?? {};
+  // Pools by gender, and by "slot" for a slot that wants an age.
+  const pools: Record<string, { id: string; name: string; age?: string }[]> = { female: [], male: [] };
   const names: Record<string, string> = {};
+  const voiceAges: Record<string, string> = {};
   // The provider's own list names the voices the learner chose, and is the
   // pool for Azure and macOS (and for ElevenLabs when the library fails).
-  let own: { id: string; name: string; gender: string; match: boolean }[] = [];
+  let own: VoiceChoice[] = [];
   if (provider === "elevenlabs") own = elevenVoices(await (await call(provider, elevenVoicesRequest({ key: keys.elevenlabs }))).json(), locale);
   else if (provider === "azure") own = azureVoices(await (await call(provider, azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion }))).json(), locale);
   else own = systemVoices(await sayList(), locale);
-  for (const v of own) names[v.id] = v.name;
+  for (const v of own) {
+    names[v.id] = v.name;
+    if (v.age) voiceAges[v.id] = v.age;
+  }
+  const random = slots.filter((x) => !set[x]);
+  const genders = [...new Set(random.filter((x) => !ages[x]).map((x) => x.split(":")[1]))];
+  const aged = random.filter((x) => ages[x]);
   if (provider === "elevenlabs") {
-    await Promise.all(
-      (["female", "male"] as const).map(async (g) => {
-        try {
-          const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender: g, sort: "usage_character_count_1y", pageSize: CAST_POOL });
-          pools[g] = elevenLibrary(await (await call(provider, r)).json())
-            .voices.filter((v) => !refusedVoices.has(v.id))
-            .map((v) => ({ id: v.id, name: v.name }));
-        } catch {
-          pools[g] = [];
-        }
-      }),
-    );
+    const library = async (gender: string, age?: VoiceAge) => {
+      try {
+        const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender, age, sort: "usage_character_count_1y", pageSize: CAST_POOL });
+        return elevenLibrary(await (await call(provider, r)).json())
+          .voices.filter((v) => !refusedVoices.has(v.id))
+          .map((v) => ({ id: v.id, name: v.name, age: ageOf(v.age) }));
+      } catch {
+        return [];
+      }
+    };
+    await Promise.all([
+      ...genders.map(async (g) => (pools[g] = await library(g))),
+      ...aged.map(async (slot) => (pools[slot] = await library(slot.split(":")[1], ages[slot]))),
+    ]);
   }
-  for (const g of ["female", "male"] as const) {
-    if (pools[g].length) continue;
-    pools[g] = poolFor(own, g);
-  }
+  for (const g of ["female", "male"]) if (!pools[g].length) pools[g] = poolFor(own, g);
+  for (const slot of aged) if (!pools[slot]?.length) pools[slot] = poolFor(own, slot.split(":")[1], new Set(), ages[slot]);
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;
-  const set = settings.voices[provider]?.[locale] ?? {};
-  const cast = pickCast({ slots: voiceSlots(mode), set, pools, names });
+  const cast = pickCast({ slots, set, pools, names, ages: voiceAges, avoid });
   // ElevenLabs casts from the library, which a free plan can't speak with;
-  // each slot gets the account's best voice of its gender to fall back on.
-  const fallbacks: Record<string, string> = {};
-  if (provider === "elevenlabs") {
-    for (const slot of voiceSlots(mode)) {
-      const v = poolFor(own, slot.split(":")[1] === "male" ? "male" : "female")[0];
-      if (v) fallbacks[slot] = v.id;
-    }
-  }
+  // each slot gets a distinct account voice of its gender to fall back on.
+  const fallbacks = provider === "elevenlabs" ? castFallbacks(own, slots, set) : {};
   const pinned = pinnedNarratorGender(Array.isArray(body?.units) ? body.units : []);
   const narratorGender: VoiceGender = pinned ?? (Math.random() < 0.5 ? "female" : "male");
   sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) } satisfies VoiceCastReply);

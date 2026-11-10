@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
@@ -9,7 +9,7 @@ import { SessionTimeline } from "./SessionTimeline";
 import { isSentence, sentenceGlosses } from "../gloss";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
-  VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
+  VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -187,6 +187,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const counted = useRef(new Set<string>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
   // The tag and the box's text as of the latest render, for code that runs
   // after an await (the hands-free re-listen, a transcript landing) and must
   // not see the values from the render that started it.
@@ -200,10 +201,22 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   // measure forces a layout.
   useLayoutEffect(() => {
     const el = composerRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
+    if (el) fitComposer(el);
   }, [composer, direct, hasEntries, reviewOn]);
+  // …and when its width changes (Talk becomes Cancel + Done, a resize, a
+  // phone turned sideways): the same text may need another line.
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      fitComposer(el);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [hasEntries]);
   // The phase as the async flows see it (state lags a render behind).
   const phaseRef = useRef<Phase>("idle");
 
@@ -237,6 +250,16 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     [entries, glosses, locale],
   );
   const anyTranslation = translations.some((ls) => ls.some(Boolean));
+  // Who each voice tag is now, from the dojo master's CAST lines (the latest
+  // note for a slot wins), for the header.
+  const castWho = useMemo(() => {
+    const out: Record<string, VoiceCastNote> = {};
+    for (const e of entries) if (e.role === "master") for (const n of e.castNotes ?? []) out[n.slot] = n;
+    return out;
+  }, [entries]);
+  // The age each slot was last recast for, so a "child" the provider can
+  // only match with a young voice isn't asked for again every turn.
+  const askedAges = useRef(new Map<string, VoiceAge>());
   const slots = reply?.slots[mode] ?? (["narrator:female", "narrator:male", "character:female", "character:male"] as VoiceSlot[]);
 
   const setPhase = (p: Phase) => {
@@ -292,11 +315,19 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     };
   }, []);
 
-  // Another tab opened: the session stays (Go is only hidden), but the
-  // dojo master stops talking and the mic closes. A turn already on its way
-  // is stopped too, so nothing starts speaking behind the learner's back.
+  // Another tab opened: the session stays (Go is only hidden), the dojo
+  // master stops talking and the mic closes. Work already paid for is kept:
+  // a turn on its way lands in the transcript without playing (runTurn), and
+  // a transcription lands in the box instead of being sent (finishListening).
+  const activeRef = useRef(active);
   useEffect(() => {
-    if (!active) stopAll();
+    activeRef.current = active;
+    if (active) return;
+    const p = phaseRef.current;
+    if (p === "recording" || p === "opening") {
+      stopAll();
+      setNotice("The recording stopped when you left Go — tap the wave to try again.");
+    } else if (p === "speaking") stopAll();
     // stopAll only touches refs and setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
@@ -483,25 +514,77 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // The first turn draws the cast; later turns reuse it, unless the voice
       // provider changed mid-session (settings are shared by every open
       // window), whose voices the old cast can't name.
-      if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts)) {
-        castRef.current = await getCast({ mode, locale, units: pack.units }, ctrl.signal);
+      // The target language changed mid-session too (Go stays mounted while
+      // the learner changes it on another tab): the old voices speak the old
+      // locale. A redraw keeps the ages the dojo master asked for.
+      if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts || castRef.current.locale !== locale)) {
+        const ages = Object.fromEntries(askedAges.current);
+        castRef.current = await getCast({ mode, locale, units: pack.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         setCast(castRef.current);
       }
       const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
-      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}) }]);
+      const notes = r.castNotes ?? [];
+      setSession([
+        ...history,
+        { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}), ...(notes.length ? { castNotes: notes } : {}) },
+      ]);
       if (r.plan?.length) setPlan(r.plan);
+      // Someone new in the scene: give their tag a voice of the right age
+      // before they speak.
+      if (notes.length) await recastFor(notes, ctrl.signal, gen);
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // The learner left Go while this turn was on its way: keep it, don't
+      // start talking on a hidden tab.
+      if (!activeRef.current) {
+        setPhase("idle");
+        setNotice("A reply arrived while you were away — tap ▶ to hear it.");
+        return;
+      }
       await playLines(idx, r.lines, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
       const s = settingsRef.current;
-      if (s?.handsFree && s.turn === "pause") void startListening();
+      if (s?.handsFree && s.turn === "pause" && activeRef.current) void startListening();
     } catch (e) {
       if (ctrl.signal.aborted || isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
       setError(errText(e));
+    }
+  }
+
+  /** Redraw the Random voices whose age doesn't fit who the dojo master says
+   *  now speaks with them (its CAST lines). Only when the provider labels
+   *  ages at all (ElevenLabs' library does; macOS and Azure mostly don't),
+   *  and only once per age asked for a slot. A failed redraw keeps the old
+   *  voices: the turn still plays. */
+  async function recastFor(notes: VoiceCastNote[], signal: AbortSignal, gen: number) {
+    const cur = castRef.current;
+    if (!cur || !locale) return;
+    const labelled = Object.values(cur.cast).some((v) => v.age);
+    if (!labelled) return;
+    const ages: Record<string, VoiceAge> = {};
+    for (const n of notes) {
+      if (!cur.cast[n.slot]) continue;
+      if (cur.cast[n.slot].age === n.age || askedAges.current.get(n.slot) === n.age) continue;
+      ages[n.slot] = n.age;
+    }
+    const slotsToDraw = Object.keys(ages);
+    if (!slotsToDraw.length) return;
+    for (const [slot, age] of Object.entries(ages)) askedAges.current.set(slot, age);
+    const avoid = Object.entries(cur.cast)
+      .filter(([slot]) => !ages[slot])
+      .map(([, v]) => v.id);
+    try {
+      const r = await getCast({ mode, locale, units: pack.units, ages, slots: slotsToDraw, avoid }, signal);
+      if (signal.aborted || gen !== genRef.current || castRef.current !== cur) return;
+      castRef.current = { ...cur, cast: { ...cur.cast, ...r.cast }, fallbacks: { ...(cur.fallbacks ?? {}), ...(r.fallbacks ?? {}) } };
+      setCast(castRef.current);
+    } catch (e) {
+      if (signal.aborted || isAbort(e)) return;
+      setNotice("Couldn't find a better-matched voice; keeping this one.");
     }
   }
 
@@ -577,12 +660,16 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // in the box goes straight out: the tag covers the whole box, so
       // joining them would send the draft to the dojo master too.
       const draft = composerTextRef.current.trim();
-      const intoBox = settingsRef.current?.review && !(toMaster && draft && !directTagRef.current);
+      // Left Go while it was transcribing: the words wait in the box rather
+      // than starting a turn on a hidden tab.
+      const away = !activeRef.current;
+      const intoBox = away || (settingsRef.current?.review && !(toMaster && draft && !directTagRef.current));
       if (intoBox) {
         setComposer((c) => (c.trim() ? `${c.trim()} ${text}` : text));
         if (toMaster) setDirect(true);
         setPhase("idle");
-        window.setTimeout(() => composerRef.current?.focus(), 0);
+        if (away) setNotice("Your words are in the box — send them when you're ready.");
+        else window.setTimeout(() => composerRef.current?.focus(), 0);
         return;
       }
       if (!draft || !toMaster) setDirect(false);
@@ -617,12 +704,14 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
 
   /** A tapped check-in answer ("Keep going") goes to the dojo master as a
    *  direct request, not as a practice answer to correct. */
-  function choose(label: string) {
+  function choose(label: string, byKeyboard: boolean) {
     if (!canAct) return;
     if (phase !== "idle") stopAll();
-    // The choices disappear with this turn; focus goes somewhere on purpose
-    // rather than falling to the page.
-    composerRef.current?.focus();
+    // The choices disappear with this turn. A keyboard user's focus goes
+    // somewhere that stays (Help) rather than falling to the page; a tap
+    // moves no focus, since focusing the text box would pop up a phone's
+    // keyboard just as the dojo master starts talking.
+    if (byKeyboard) toolbarRef.current?.querySelector<HTMLElement>('[data-testid="voice-help"]')?.focus();
     void runTurn(`${DIRECT} ${label}`);
   }
 
@@ -678,6 +767,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     stopAll();
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});
     urls.current.clear();
+    // "Characters spoken" is per session; keys start from 0 again.
+    counted.current.clear();
+    setChars(0);
+    askedAges.current.clear();
+    setDirect(false);
     // A new session draws a new cast.
     castRef.current = null;
     setCast(null);
@@ -730,7 +824,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     // reading width rather than stretching across a wide screen.
     <div className={`flex flex-col gap-3 lg:flex-row lg:items-start ${started ? "" : "mx-auto w-full max-w-3xl"}`}>
     {started && plan.length > 0 && (
-      <aside className={`shrink-0 lg:sticky lg:top-(--below-bars) lg:flex lg:max-h-[calc(100dvh-var(--below-bars)-1rem)] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
+      // Sticky only works within the session's row. The column is kept
+      // short enough that, scrolled to the page's end (save and export sit
+      // below the session), it still clears the top bars rather than being
+      // pushed up under them; its list scrolls on its own.
+      <aside className={`shrink-0 lg:sticky lg:top-(--below-bars) lg:flex lg:max-h-[calc(100dvh-var(--below-bars)-var(--below-session))] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
         <SessionTimeline plan={plan} stage={stage} open={timelineOpen} onToggle={toggleTimeline} onJump={jump} disabled={!canAct} />
       </aside>
     )}
@@ -747,7 +845,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
             {chars > 0 && ` · ${chars.toLocaleString()} characters spoken`}
             {cast && Object.keys(cast.cast).length > 0 && (
               <span className="block" data-testid="voice-cast" title="Random slots draw new voices each session; Restart draws again">
-                Voices this session: {castSummary(cast)}
+                Voices this session: {castSummary(cast, castWho)}
               </span>
             )}
           </span>
@@ -815,7 +913,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       {lastChoices.length > 0 && canAct && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
           {lastChoices.map((c, k) => (
-            <QuickButton key={`${k}:${c}`} variant="choice" onClick={() => choose(c)}>
+            <QuickButton key={`${k}:${c}`} variant="choice" onClick={(e) => choose(c, e.detail === 0)}>
               {c}
             </QuickButton>
           ))}
@@ -857,7 +955,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         <div className="flex flex-col gap-2">
           {/* Quick requests: one tap each, no recording needed (except the
               dojo master, which opens the mic after its "yes?"). */}
-          <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Quick requests">
+          <div ref={toolbarRef} className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Quick requests">
             <QuickButton onClick={() => void askMaster()} disabled={!sttReady || !canAct} title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`} testid="voice-direct">
               <Mochi size={18} /> Dojo master
             </QuickButton>
@@ -870,11 +968,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
             <QuickButton onClick={() => control(SKIP)} disabled={!canAct} title="Skip this exercise and move on" testid="voice-skip">
               ⏭ Skip
             </QuickButton>
-            {(phase === "speaking" || phase === "thinking") && (
-              <QuickButton onClick={stopAll} title="Stop the dojo master" testid="voice-stop">
-                ■ Stop
-              </QuickButton>
-            )}
+            {/* Always there (aria-disabled when there's nothing to stop): a
+                button that vanished once used would drop keyboard focus. */}
+            <QuickButton onClick={stopAll} disabled={phase !== "speaking" && phase !== "thinking"} title="Stop the dojo master" testid="voice-stop">
+              ■ Stop
+            </QuickButton>
             <span className="flex-1" />
             <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))}>
               {copyStatus === "copied" ? "Copied" : "Copy transcript"}
@@ -1466,18 +1564,30 @@ function castFallbackFor(cast: VoiceCastReply | null, line: VoiceLine): string |
   return slot ? cast?.fallbacks?.[slot] : undefined;
 }
 
-/** "Narrator Marlene · Character (woman) Regina · Character (man) Alejandro":
- *  the narrator for the gender this session uses, then the scene's voices. */
-function castSummary(cast: VoiceCastReply): string {
+const AGE_LABEL: Record<VoiceAge, string> = { child: "a child", young: "young", middle: "middle-aged", old: "old" };
+
+/** "Narrator Marlene · Character (woman) Doña Carmen, old: voice Rosa ·
+ *  Character (man) Alejandro": the narrator for the gender this session
+ *  uses, then the scene's voices, with who the dojo master says each one is
+ *  (its CAST lines) when it has said. */
+function castSummary(cast: VoiceCastReply, who: Record<string, VoiceCastNote> = {}): string {
   const parts: string[] = [];
   const narrator = cast.cast[`narrator:${cast.narratorGender}`];
   if (narrator) parts.push(`Narrator ${narrator.name}`);
   for (const [slot, v] of Object.entries(cast.cast)) {
     const [speaker, gender] = slot.split(":");
     if (speaker === "narrator") continue;
-    parts.push(`${speaker[0].toUpperCase()}${speaker.slice(1)} (${gender === "female" ? "woman" : "man"}) ${v.name}`);
+    const role = `${speaker[0].toUpperCase()}${speaker.slice(1)} (${gender === "female" ? "woman" : "man"})`;
+    const n = who[slot];
+    parts.push(n ? `${role} ${[n.who, AGE_LABEL[n.age]].filter(Boolean).join(", ")}: voice ${v.name}` : `${role} ${v.name}`);
   }
   return parts.join(" · ");
+}
+
+/** Size the composer to its text (up to its max height, then it scrolls). */
+function fitComposer(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
 }
 
 /** Sensei Mochi follows the session: talking while lines play, listening
@@ -1529,10 +1639,11 @@ type LineTranslation = { gloss: VoiceGloss; whole: boolean } | null;
 
 /** The session's transcript. Memoised: the session re-renders for things
  *  that don't touch it (the thinking counter, the composer), and every
- *  glossed line is laid out again on each render. It follows the session:
- *  a new turn scrolls into view when the learner was already at the bottom
- *  (not when they had scrolled up to reread), and the line being spoken is
- *  kept in view. Both move only the list's own scroll, never the page. */
+ *  glossed line is laid out again on each render. It follows the session
+ *  while the learner lets it: a new turn and the line being spoken are
+ *  scrolled into view, until the learner scrolls away to reread. Scrolling
+ *  back to the bottom, sending something or tapping ▶ follows again. Only
+ *  the list's own scroll moves, never the page. */
 const Transcript = memo(function Transcript({
   entries,
   plan,
@@ -1559,33 +1670,41 @@ const Transcript = memo(function Transcript({
   onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
-  const atBottom = useRef(true);
+  const following = useRef(true);
+  // Where our own last scroll left the list: a scroll event landing there is
+  // ours, not the learner's, and must not stop the following.
+  const ownTop = useRef<number | null>(null);
+  const scrollTo = (el: HTMLElement, top: number) => {
+    el.scrollTop = top;
+    ownTop.current = el.scrollTop;
+  };
   const onScroll = () => {
     const el = olRef.current;
-    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (!el) return;
+    if (ownTop.current != null && Math.abs(el.scrollTop - ownTop.current) < 2) return;
+    ownTop.current = null;
+    following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   };
   const count = entries.length;
   useLayoutEffect(() => {
     const el = olRef.current;
     if (!el) return;
     // The learner's own message always comes into view: they just sent it.
-    if (atBottom.current || entries[count - 1]?.role === "learner") {
-      el.scrollTop = el.scrollHeight;
-      atBottom.current = true;
-    }
+    if (entries[count - 1]?.role === "learner") following.current = true;
+    if (following.current) scrollTo(el, el.scrollHeight);
     // Only a new entry moves the list, not a re-render of the same ones.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [count]);
   useLayoutEffect(() => {
     const el = olRef.current;
-    if (!el || !playing) return;
+    if (!el || !playing || !following.current) return;
     const row = el.querySelector<HTMLElement>(`[data-line="${playing}"]`);
     if (!row) return;
     const box = el.getBoundingClientRect();
     const r = row.getBoundingClientRect();
     const pad = 8;
-    if (r.top < box.top + pad || r.height > box.height) el.scrollTop += r.top - box.top - pad;
-    else if (r.bottom > box.bottom - pad) el.scrollTop += r.bottom - box.bottom + pad;
+    if (r.top < box.top + pad || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - pad);
+    else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
   }, [playing]);
   return (
 <ol ref={olRef} onScroll={onScroll} className="flex max-h-[min(28rem,calc(100dvh-22rem))] min-h-48 min-w-0 flex-1 lg:max-h-[max(28rem,calc(100dvh-26rem))] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
@@ -1631,6 +1750,9 @@ const Transcript = memo(function Transcript({
                 </span>
               )}
             </span>
+            {/* A fixed slot for the translate button, so every line's ▶
+                sits in the same column whether it has one or not. */}
+            <span className="flex w-7 shrink-0 justify-center">
             {(() => {
               // The line's translation: every glossed sentence (or
               // phrase that isn't a button) in it, one tap, and the
@@ -1640,12 +1762,23 @@ const Transcript = memo(function Transcript({
               const { gloss, whole } = tr;
               const what = whole ? "this line" : "this phrase";
               return (
-                <button type="button" className="shrink-0 rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
+                <button type="button" className="rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
                   {trLabel}
                 </button>
               );
             })()}
-            <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
+            </span>
+            <button
+              type="button"
+              className="shrink-0 text-fg-3 hover:text-fg"
+              aria-label="Replay line"
+              title="Replay"
+              onClick={() => {
+                // Asking to hear a line is asking to follow it.
+                following.current = true;
+                onReplay(i, j, m.lines);
+              }}
+            >
               ▶
             </button>
           </div>
@@ -1658,7 +1791,7 @@ const Transcript = memo(function Transcript({
 });
 
 /** A quick-request chip above the composer, or a check-in answer. */
-function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: () => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
+function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: (e: MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
   const look = variant === "choice"
     ? "border-accent bg-accent-soft text-fg hover:bg-accent hover:text-accent-ink"
     : "border-line bg-panel text-fg-2 hover:bg-raised hover:text-fg";
@@ -1668,8 +1801,8 @@ function QuickButton({ onClick, disabled, title, testid, variant = "quick", chil
       className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-[family-name:var(--font-display)] text-sm transition-colors aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${look}`}
       // aria-disabled, not disabled: a disabled button drops keyboard focus
       // to the page while a turn runs, and the next Space would open the mic.
-      onClick={() => {
-        if (!disabled) onClick();
+      onClick={(e) => {
+        if (!disabled) onClick(e);
       }}
       aria-disabled={disabled || undefined}
       title={title}
@@ -1691,9 +1824,18 @@ function RoundButton({ onClick, disabled, label, testid, type = "button", varian
   return (
     <button
       type={type}
-      className={`mb-[3px] inline-flex size-11 shrink-0 items-center justify-center rounded-full border transition-[background-color,transform,box-shadow] duration-75 disabled:cursor-not-allowed disabled:opacity-50 ${look}`}
-      onClick={onClick}
-      disabled={disabled}
+      className={`mb-[3px] inline-flex size-11 shrink-0 items-center justify-center rounded-full border transition-[background-color,transform,box-shadow] duration-75 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${look}`}
+      // aria-disabled, not disabled: a disabled button drops keyboard focus
+      // to the page (after Send, say), and the next Space would open the mic
+      // over the dojo master. A submit that is "disabled" doesn't submit.
+      onClick={(e) => {
+        if (disabled) {
+          e.preventDefault();
+          return;
+        }
+        onClick?.();
+      }}
+      aria-disabled={disabled || undefined}
       aria-label={label}
       title={label}
       data-testid={testid}
