@@ -250,7 +250,9 @@ const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\
  *  talking over each other). Asked for before the tag, but found anywhere in
  *  the line (after the tag, inside **bold**, with a decimal comma), so a
  *  misplaced mark is never read out. */
-const TIMING_RE = /<\s*(pause|overlap)\s*(\d+(?:[.,]\d+)?)?\s*s?\s*\/?\s*>/gi;
+// Written so no two \s* runs sit side by side: a long run of spaces must
+// not make it backtrack.
+const TIMING_RE = /<\s*(pause|overlap)(?:\s*(\d+(?:[.,]\d+)?))?\s*(?:s\s*)?(?:\/\s*)?>/gi;
 
 /** Gaps between lines, in ms. A switch between the narrator and anyone in
  *  the scene always gets a slight delay (never an overlap), so the learner
@@ -376,10 +378,23 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // spoken "Gloss: …" or "Options: …" stays speech. A speaker tag in front
 // (the adapter's "every line starts with a tag" pulls that way) is allowed.
 // The tag is matched in any case, as TAG_RE does ("Narrator-F:"); only the
-// label itself must be upper case. A timing mark in front is allowed too.
+// label itself must be upper case. A bullet, and timing marks (bold or not)
+// before or after the tag, are allowed too. The lines are trimmed and
+// capped before matching (metaLine), and the pattern avoids runs of
+// adjacent \s*, so a line of spaces can't make it backtrack for seconds.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const META_TAG = `^\\s*(?:<\\s*(?:${ci("pause")}|${ci("overlap")})[^>]*>\\s*)*(?:\\*\\*)?\\s*(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?:\\s*[-/(]\\s*(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")})\\s*\\)?)?\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*)?(?:<\\s*(?:${ci("pause")}|${ci("overlap")})[^>]*>\\s*)*`;
+const TIMING_MARKS = `(?:(?:\\*\\*)?<[ \\t]?(?:${ci("pause")}|${ci("overlap")})[^>]{0,20}>[ \\t]*(?:\\*\\*)?[ \\t]*)*`;
+const META_TAG = `^(?:[-•][ \\t]+)?${TIMING_MARKS}(?:\\*\\*)?[ \\t]*(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?:\\s*[-/(]\\s*(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")})\\s*\\)?)?[ \\t]*(?:\\*\\*)?[ \\t]*:[ \\t]*(?:\\*\\*)?[ \\t]*)?${TIMING_MARKS}`;
 const metaRe = (label) => new RegExp(`${META_TAG}(?:\\*\\*)?\\s*${label}\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?`);
+/** The text after a shown-not-spoken label, or null when `rawLine` isn't
+ *  that line. Matched on the line's trimmed start so leading spaces never
+ *  reach the pattern. */
+function metaRest(re, rawLine) {
+  const line = String(rawLine).trimStart();
+  const m = line.slice(0, 200).match(re);
+  return m ? line.slice(m[0].length) : null;
+}
+const isMeta = (rawLine) => [GLOSS_RE, CHOICES_RE, STAGE_RE].some((re) => metaRest(re, rawLine) != null);
 const GLOSS_RE = metaRe("GLOSS(?:ES)?");
 export const MAX_GLOSSES = 16;
 const GLOSS_TERM_CHARS = 200;
@@ -393,9 +408,9 @@ export function parseGlosses(text) {
   const out = [];
   const seen = new Set();
   for (const rawLine of String(text).split(/\r?\n/)) {
-    const m = rawLine.match(GLOSS_RE);
-    if (!m) continue;
-    for (const entry of rawLine.slice(m[0].length).split("|")) {
+    const rest = metaRest(GLOSS_RE, rawLine);
+    if (rest == null) continue;
+    for (const entry of rest.split("|")) {
       const eq = entry.indexOf("=");
       if (eq < 0) continue;
       const clean = (x) => x.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim();
@@ -421,9 +436,9 @@ const CHOICE_CHARS = 60;
 export function parseChoices(text) {
   const out = [];
   for (const rawLine of String(text).split(/\r?\n/)) {
-    const m = rawLine.match(CHOICES_RE);
-    if (!m) continue;
-    for (const c of rawLine.slice(m[0].length).split("|")) {
+    const rest = metaRest(CHOICES_RE, rawLine);
+    if (rest == null) continue;
+    for (const c of rest.split("|")) {
       const label = c.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim().slice(0, CHOICE_CHARS);
       if (label && !out.some((o) => o.toLowerCase() === label.toLowerCase())) out.push(label);
       if (out.length >= MAX_CHOICES) return out;
@@ -441,10 +456,10 @@ export function parseStage(text, ids) {
   const known = new Set(ids);
   let out = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
-    const m = rawLine.match(STAGE_RE);
-    if (!m) continue;
+    const rest = metaRest(STAGE_RE, rawLine);
+    if (rest == null) continue;
     // "scene.", "`scene`", "**scene**": the id without what's around it.
-    const id = (rawLine.slice(m[0].length).replace(/[*`"'“”]/g, "").trim().split(/\s+/)[0] ?? "").replace(/[.,;:!?)]+$/, "");
+    const id = (rest.replace(/[*`"'“”]/g, "").trim().split(/\s+/)[0] ?? "").replace(/[.,;:!?)]+$/, "");
     if (known.has(id)) out = id;
   }
   return out;
@@ -503,8 +518,18 @@ export function sessionPlan(content, pack, mode = "adult") {
 export function planDirective(plan) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in. Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
 }
+
+/** Replayed text from the browser, on one line: glosses and choices go back
+ *  inside one line each ("GLOSS: a = b | …"), and every line is one tagged
+ *  line, so a newline or "|" would forge replay structure (a fake GLOSS or
+ *  STAGE line). */
+export const oneLine = (s) => String(s).replace(/[\r\n|]+/g, " ").trim();
+
+/** A replayed turn's stage, if it is id-shaped (part ids are unit ids with
+ *  a slot prefix); anything else is dropped. */
+export const replayStage = (v) => (typeof v === "string" && /^[A-Za-z0-9:_.-]{1,80}$/.test(v) ? v : "");
 
 /** A turn's glosses as the GLOSS line it came with, for the replay. */
 function glossLine(glosses) {
@@ -522,7 +547,7 @@ export function parseVoiceReply(text, mode = "adult") {
   // line of its own).
   let gap = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
-    if (!rawLine.trim() || GLOSS_RE.test(rawLine) || CHOICES_RE.test(rawLine) || STAGE_RE.test(rawLine)) continue;
+    if (!rawLine.trim() || isMeta(rawLine)) continue;
     let raw = rawLine;
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
@@ -902,6 +927,29 @@ export function elevenAddRequest({ key, ownerId, voiceId, name }) {
 }
 
 /* ---------------------------------- cast ----------------------------------- */
+
+/** A Random slot's pool from the provider's own voice list for one gender
+ *  (`list` is the picker's shape: {id, name, gender, match}): native voices
+ *  labelled with that gender, then native voices with no label (which may
+ *  be either), then labelled voices for other locales, then unlabelled ones.
+ *  "novelty" and other labels never count. `skip` holds ids to leave out. */
+export function poolFor(list, gender, skip = new Set()) {
+  const ok = (Array.isArray(list) ? list : []).filter((v) => !skip.has(v.id));
+  const labelled = ok.filter((v) => String(v.gender).toLowerCase() === gender);
+  const unlabelled = ok.filter((v) => !v.gender);
+  const tiers = [labelled.filter((v) => v.match), unlabelled.filter((v) => v.match), labelled, unlabelled];
+  return (tiers.find((t) => t.length) ?? []).map((v) => ({ id: v.id, name: v.name }));
+}
+
+/** Whether a provider's refusal of a cast voice is worth one retry in
+ *  another voice: a client error about the request (402 no library access,
+ *  403, 404 removed voice, 400/422 a voice the plan can't use), but not a
+ *  bad key or spent credits (401) or a rate limit (429), which another
+ *  voice won't fix. The voice is only marked refused once the retry
+ *  succeeds, so an error that isn't about the voice never sticks to it. */
+export function retryInOtherVoice(status) {
+  return Number.isInteger(status) && status >= 400 && status < 500 && status !== 401 && status !== 429;
+}
 
 /** The narrator's gender when the pack fixes it (narrator-female,
  *  narrator-kids-male, …); null when it leaves it open, as the default

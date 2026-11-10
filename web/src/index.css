@@ -15,6 +15,10 @@
    ============================================================ */
 
 :root {
+  /* Where a sticky column starts below the two sticky bars (TopBar h-14 at
+     the top, SummaryBar under it, about 51px tall on one row), with a
+     little room. Change it with those bars. */
+  --below-bars: 7rem;
   color-scheme: light dark;
   --ground: #eef1f8;
   --panel: #ffffff;

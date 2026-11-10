@@ -16,6 +16,7 @@ in two short sentences of {{native_language}}, name the game
 ({{scenario_title}}) and promise that every new {{target_language}} word
 will be said slowly and more than once. Have the helper say the first
 {{target_language}} word of the day (a greeting works well), invite
-{{learner_name}} to copy it, celebrate the attempt, and begin the story.
+{{learner_name}} to copy it, celebrate the attempt, and then start the
+first game if there is one before the story, or else begin the story.
 Keep the whole opening under a minute; a child's patience for setup is
 short.

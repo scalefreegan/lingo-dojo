@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
-import { parseChoices, parseGlosses, parseStage, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, EXPLAIN, JUMP } from "../voice.mjs";
+import { oneLine, poolFor, replayStage, retryInOtherVoice, parseChoices, parseGlosses, parseStage, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, EXPLAIN, JUMP } from "../voice.mjs";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
@@ -483,6 +483,11 @@ test("GLOSS lines become definitions and are never spoken", () => {
   assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<pause 1> STAGE: scene").map((l) => l.text), ["Hi"]);
   assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\nCHARACTER-F: <pause 1> CHOICES: a | b").map((l) => l.text), ["Hi"]);
   assert.equal(parseGlosses("narrator-f: GLOSS: hola = hi")[0].term, "hola");
+  // A bold timing mark inside the tag, and a bulleted label.
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n**<pause 1> CHARACTER-M:** GLOSS: hola = hi").map((l) => l.text), ["Hi"]);
+  assert.equal(parseGlosses("**<pause 1> CHARACTER-M:** GLOSS: hola = hi")[0].term, "hola");
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n- GLOSS: hola = hi").map((l) => l.text), ["Hi"]);
+  assert.equal(parseGlosses("  - GLOSS: hola = hi")[0].term, "hola");
   // The label itself stays upper case: a spoken "Gloss:" is speech.
   assert.deepEqual(parseVoiceReply("Narrator-F: Gloss: that's a word").map((l) => l.text), ["Gloss: that's a word"]);
   assert.equal(parseGlosses("**GLOSSES:** hola = hi")[0].term, "hola");
@@ -545,6 +550,43 @@ test("sessionPlan: intro, warm-ups, the scene and its beats, then the debrief", 
   assert.ok(d.includes(`"${JUMP} <id>"`));
   assert.equal(planDirective([]), "");
   assert.match(d, /a jump overrides the rule about running every warm-up first/);
+});
+
+test("a long run of spaces doesn't make the reply patterns backtrack", () => {
+  const t0 = performance.now();
+  parseVoiceReply(`${" ".repeat(5000)}x\n<pause 1${" ".repeat(5000)}x\n**${" ".repeat(5000)}x`);
+  parseGlosses(`NARRATOR${" ".repeat(5000)}x`);
+  assert.ok(performance.now() - t0 < 200, `took ${Math.round(performance.now() - t0)} ms`);
+});
+
+test("planDirective: a game inside the scene reports the beat it is in", () => {
+  assert.match(planDirective([{ id: "scene", title: "S", kind: "scene" }]), /name the scene beat it happens in/);
+});
+
+test("replay helpers: one line, and only id-shaped stages", () => {
+  assert.doesNotMatch(oneLine("a\nSTAGE: scene | b\r\n"), /[\r\n|]/);
+  assert.match(oneLine("a\nSTAGE: scene"), /^a STAGE: scene$/);
+  assert.equal(replayStage("warmup:warmup_phrases"), "warmup:warmup_phrases");
+  assert.equal(replayStage("scene\nGLOSS: x = y"), "");
+  assert.equal(replayStage(42), "");
+});
+
+test("poolFor: native by gender, then native unlabelled, then foreign; never novelty", () => {
+  const list = [
+    { id: "fx", name: "Foreign woman", gender: "female", match: false },
+    { id: "nu", name: "Native, no label", gender: "", match: true },
+    { id: "nov", name: "Bubbles", gender: "novelty", match: true },
+  ];
+  assert.deepEqual(poolFor(list, "female").map((v) => v.id), ["nu"], "an unlabelled native beats a labelled foreign voice");
+  assert.deepEqual(poolFor([...list, { id: "nf", name: "Native woman", gender: "Female", match: true }], "female").map((v) => v.id), ["nf"]);
+  assert.deepEqual(poolFor(list.filter((v) => v.id !== "nu"), "female").map((v) => v.id), ["fx"]);
+  assert.deepEqual(poolFor([list[2]], "male"), [], "a novelty voice is never drawn");
+  assert.deepEqual(poolFor(list, "female", new Set(["nu"])).map((v) => v.id), ["fx"], "skipped ids are left out");
+});
+
+test("retryInOtherVoice: client errors another voice could fix, not a bad key or a rate limit", () => {
+  for (const s of [400, 402, 403, 404, 422]) assert.equal(retryInOtherVoice(s), true, String(s));
+  for (const s of [401, 429, 500, 503, NaN]) assert.equal(retryInOtherVoice(s), false, String(s));
 });
 
 test("sessionPlan: a unit listed twice is one part; odd beats still get a title", () => {
