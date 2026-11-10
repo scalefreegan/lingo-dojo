@@ -419,7 +419,12 @@ export default function App() {
         !loadError && <p className="p-6 text-sm text-fg-3">Loading content…</p>
       )}
 
-      <AgentDrawer mode={mode} onContentChanged={reloadContent} />
+      {/* The content agent writes units and packs; on the Go tab it would only
+          sit over the practice session, so it shows on the building tabs. */}
+      {/* Hidden, not unmounted: a turn in progress keeps streaming. */}
+      <div hidden={tab === "go"}>
+        <AgentDrawer mode={mode} onContentChanged={reloadContent} />
+      </div>
     </div>
   );
 }
