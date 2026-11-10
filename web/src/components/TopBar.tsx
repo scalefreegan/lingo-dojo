@@ -45,7 +45,7 @@ export default function TopBar({
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-panel/90 px-4 backdrop-blur sm:pr-10">
       <h1 className="mr-1 flex shrink-0 items-center gap-1.5 text-lg font-semibold text-fg">
         <Mochi size={30} />
-        <span className="hidden sm:inline">Lingo Dojo</span>
+        <span className="sr-only sm:not-sr-only">Lingo Dojo</span>
         {mode === "kids" && (
           <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium leading-none text-accent" data-testid="mode-tag">
             Kids

@@ -16,5 +16,5 @@ give a one-word or short gloss in {{native_language}}, then ask
 unintelligible, but don't dwell. After all the phrases, run one quick recall
 round: say each gloss in {{native_language}} in random order and have
 {{learner_name}} produce the {{target_language}} phrase from memory, without
-you saying it first. When the round is done, announce you're switching back
-into the scene and begin it.
+you saying it first. When the round is done, say what comes next, then move
+on to the next part of the session.

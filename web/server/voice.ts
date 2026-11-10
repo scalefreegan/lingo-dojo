@@ -9,7 +9,7 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseChoices, parseGlosses, parseVoiceReply, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceCastReply, VoiceCastRequest,
@@ -232,6 +232,10 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
 // the first would answer a conversation that is about to change under it.
 let turning = false;
 
+/** Glosses and choices are replayed inside one line each ("GLOSS: a = b |
+ *  …"): a newline or "|" from the browser would forge replay structure. */
+const oneLine = (s: string) => s.replace(/[\r\n|]+/g, " ").trim();
+
 function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   if (!Array.isArray(raw)) return [];
   const out: VoiceHistoryItem[] = [];
@@ -265,12 +269,15 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
         ? (m.glosses as { term?: unknown; meaning?: unknown }[])
             .filter((g) => typeof g?.term === "string" && typeof g.meaning === "string")
             .slice(0, MAX_GLOSSES)
-            .map((g) => ({ term: (g.term as string).slice(0, 200), meaning: (g.meaning as string).slice(0, 300) }))
+            .map((g) => ({ term: oneLine(g.term as string).slice(0, 200), meaning: oneLine(g.meaning as string).slice(0, 300) }))
         : [];
       const choices = Array.isArray(m.choices)
-        ? (m.choices as unknown[]).filter((c): c is string => typeof c === "string").slice(0, MAX_CHOICES).map((c) => c.slice(0, 60))
+        ? (m.choices as unknown[]).filter((c): c is string => typeof c === "string").slice(0, MAX_CHOICES).map((c) => oneLine(c).slice(0, 60))
         : [];
-      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}) });
+      // The part the turn ended in goes back as its STAGE line, so the dojo
+      // master keeps writing one; only an id-shaped value survives.
+      const stage = typeof m.stage === "string" && /^[a-z0-9:-]{1,80}$/.test(m.stage) ? m.stage : "";
+      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}) });
     }
   }
   return out.slice(-HISTORY_WINDOW);
@@ -296,7 +303,11 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
   };
   res.on("close", onClose);
   try {
-    const { markdown, warnings } = assemble(loadContent(modeRoot(mode)), body.pack);
+    const content = loadContent(modeRoot(mode));
+    const { markdown, warnings } = assemble(content, body.pack);
+    // The session's parts, for the timeline: named to the dojo master, which
+    // reports where it is with a STAGE line each turn.
+    const plan = sessionPlan(content, body.pack, mode);
     const settings = readVoiceSettings();
     const { result } = startClaude({
       prompt: voiceTurnPrompt(history, message),
@@ -304,7 +315,8 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
       // unless the pack's own narrator unit fixes it.
       systemPrompt:
         voiceSystemPrompt(markdown, mode) +
-        (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)),
+        (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)) +
+        planDirective(plan),
       model: settings.model,
       // No tools, so no file access is needed: an empty temp cwd keeps the
       // repo's CLAUDE.md (instructions for coding agents) out of the turn.
@@ -323,7 +335,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
+    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
   } finally {
     turning = false;
     res.off("close", onClose);
@@ -389,7 +401,11 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // `gender` (the dojo master's -F/-M tag) picks the woman's or man's voice.
   const gender: VoiceGender | null = body?.gender === "female" || body?.gender === "male" ? body.gender : null;
   // The session's cast names the voice; without one, the saved choice.
-  const voice = castVoice(provider, body?.voice) ?? voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
+  // A cast drawn for another provider (the provider changed mid-session;
+  // settings are shared by every window) names voices this one can't use.
+  const saved = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
+  const cast = body?.provider === provider ? castVoice(provider, body?.voice) : null;
+  const voice = cast ?? saved;
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
@@ -401,7 +417,16 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
     let audio: Buffer;
     let type = "audio/mpeg";
     if (provider === "elevenlabs") {
-      const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+      let r;
+      try {
+        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+      } catch (e) {
+        // A library voice drawn for the cast can be refused (a free plan
+        // gets 402 for library voices, a removed one 404): say the line in
+        // the saved voice rather than lose it.
+        if (!cast || !saved || cast === saved || !/answered (402|404)\b/.test(String((e as Error)?.message))) throw e;
+        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: saved, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+      }
       audio = Buffer.from(await r.arrayBuffer());
     } else if (provider === "azure") {
       let request;
@@ -493,8 +518,10 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
   for (const g of ["female", "male"] as const) {
     if (pools[g].length) continue;
-    // Natives of this gender first; a voice with no gender label counts for both.
-    const fits = own.filter((v) => !v.gender || v.gender.toLowerCase() === g);
+    // Voices known to be this gender; only when there are none, the ones
+    // with no gender label (which may be either).
+    const labelled = own.filter((v) => v.gender.toLowerCase() === g);
+    const fits = labelled.length ? labelled : own.filter((v) => !v.gender);
     pools[g] = (fits.some((v) => v.match) ? fits.filter((v) => v.match) : fits).map((v) => ({ id: v.id, name: v.name }));
   }
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;

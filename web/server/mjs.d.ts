@@ -136,6 +136,9 @@ declare module "*/scripts/voice.mjs" {
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;
   export function parseChoices(text: string): string[];
+  export function parseStage(text: string, ids: string[]): string | null;
+  export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
+  export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
   export function voiceSlots(mode: Mode): import("../shared/wire.ts").VoiceSlot[];

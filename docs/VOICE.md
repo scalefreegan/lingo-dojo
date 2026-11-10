@@ -100,6 +100,17 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   it ends the turn with a `CHOICES:` line (shown, never spoken;
   `parseChoices`). The latest turn's choices show as buttons, plus "🎙 I'll
   tell you". A tapped choice goes as `[direct] <choice>`.
+- **The session timeline** beside the transcript lists the session's parts
+  (`sessionPlan` in `scripts/voice.mjs`): the introduction, each warm-up, the
+  scene and its scenario beats, then the debrief (kids: the story, games and
+  ending). The turn route names them to the dojo master (`planDirective`),
+  which ends every turn with a `STAGE: <id>` line (shown, never spoken;
+  `parseStage` keeps only a known id). The timeline marks done, here and
+  ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
+  straight there. It collapses to a rail of dots (remembered per browser).
+- **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
+  their exact upper-case label, with or without a speaker tag in front, so
+  a spoken "Options: …" stays speech.
 - **Dojo master** (formerly 💬 English) is a direct line to the dojo master,
   outside the practice. The narrator first says a fixed "Yes? I'm
   listening." (English learners only; a cached clip, not a model turn), then

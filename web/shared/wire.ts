@@ -479,7 +479,18 @@ export interface VoiceGloss {
 
 export type VoiceHistoryItem =
   | { role: "learner"; text: string }
-  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[]; choices?: string[] };
+  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[]; choices?: string[]; stage?: string };
+
+/** One part of a session, for the timeline (scripts/voice.mjs sessionPlan):
+ *  "intro", "warmup:<unit>", "scene", "beat:<n>", "debrief:<unit>", and in
+ *  kids mode "games:<unit>" and "ending:<unit>". */
+export interface VoicePlanItem {
+  id: string;
+  title: string;
+  kind: string;
+  /** A scene beat's full text (the title is its first clause). */
+  detail?: string;
+}
 
 /** POST /api/voice/turn — an empty `message` opens the session. 409 while
  *  another turn is running. */
@@ -498,6 +509,10 @@ export interface VoiceTurnReply {
   glosses: VoiceGloss[];
   /** Quick answers to a check-in question, shown as buttons; [] for most turns. */
   choices: string[];
+  /** The session's parts, in order. */
+  plan: VoicePlanItem[];
+  /** The part this turn ended in (a plan id), or null when it didn't say. */
+  stage: string | null;
   model: string;
   durationMs: number | null;
   costUsd: number | null;
@@ -518,8 +533,11 @@ export interface VoiceSpeakRequest {
   nativeLocale?: string;
   /** Picks the woman's or man's voice for the speaker. */
   gender?: VoiceGender | null;
-  /** The session cast's voice for this line; overrides the saved choice. */
+  /** The session cast's voice for this line; overrides the saved choice
+   *  when `provider` is the one now in use. */
   voice?: string;
+  /** The provider the cast was drawn for. */
+  provider?: TtsProvider;
 }
 
 /** POST /api/voice/cast — this session's voices, drawn at session start. */

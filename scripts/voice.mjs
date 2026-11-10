@@ -194,6 +194,7 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
   GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
+- GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order, each on its own line with its label in capitals and no speaker tag.
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
 - The first message is "[session start]": open the session the way your instructions say.
@@ -222,6 +223,9 @@ export const HELP = "[help]";
 export const DIRECT = "[direct]";
 /** What the Explain button sends (VoicePanel's EXPLAIN must match). */
 export const EXPLAIN = "[explain]";
+/** Prefix of a timeline jump: "[jump] warmup:warmup-phrases" (VoicePanel's
+ *  JUMP must match). */
+export const JUMP = "[jump]";
 
 /** The transcript replayed as the prompt (the chat agent's pattern): the
  *  learner's lines as heard, the dojo master's as the tagged lines spoken —
@@ -229,10 +233,10 @@ export const EXPLAIN = "[explain]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}${typeof m.stage === "string" && m.stage ? `\nSTAGE: ${m.stage}` : ""}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
-  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines, then the GLOSS line.`;
+  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines first, then any GLOSS, CHOICES and STAGE lines, in that order.`;
 }
 
 /* ------------------------------ the reply side ----------------------------- */
@@ -368,7 +372,12 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
  *  in the same language — each segment is one synthesis call, so one longer
  *  than MAX_SEGMENT_CHARS is split at sentence ends. */
 // The turn's definitions: shown on tap, never spoken.
-const GLOSS_RE = /^\s*(?:\*\*)?\s*GLOSS(?:ES)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?/i;
+// Shown-not-spoken lines are matched by their exact upper-case label, so a
+// spoken "Gloss: …" or "Options: …" stays speech. A speaker tag in front
+// (the adapter's "every line starts with a tag" pulls that way) is allowed.
+const META_TAG = "^\\s*(?:\\*\\*)?\\s*(?:(?:NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\\s*[-/(]\\s*(?:F|M|FEMALE|MALE|WOMAN|MAN)\\s*\\)?)?\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*)?";
+const metaRe = (label) => new RegExp(`${META_TAG}(?:\\*\\*)?\\s*${label}\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?`);
+const GLOSS_RE = metaRe("GLOSS(?:ES)?");
 export const MAX_GLOSSES = 16;
 const GLOSS_TERM_CHARS = 200;
 const GLOSS_MEANING_CHARS = 300;
@@ -399,7 +408,7 @@ export function parseGlosses(text) {
 }
 
 // Quick answers to a check-in question ("keep going?"), shown as buttons.
-const CHOICES_RE = /^\s*(?:\*\*)?\s*(?:CHOICES|OPTIONS)\s*(?:\*\*)?\s*:\s*(?:\*\*)?/i;
+const CHOICES_RE = metaRe("CHOICES");
 export const MAX_CHOICES = 4;
 const CHOICE_CHARS = 60;
 
@@ -419,6 +428,65 @@ export function parseChoices(text) {
   return out;
 }
 
+// Where the session is, for the timeline: one part id from the plan.
+const STAGE_RE = metaRe("STAGE");
+
+/** The STAGE line's part id, if it names one of `ids`; the last valid one
+ *  wins (a turn that moves on ends in the later part). */
+export function parseStage(text, ids) {
+  const known = new Set(ids);
+  let out = null;
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const m = rawLine.match(STAGE_RE);
+    if (!m) continue;
+    const id = rawLine.slice(m[0].length).replace(/\*\*/g, "").trim().split(/\s+/)[0] ?? "";
+    if (known.has(id)) out = id;
+  }
+  return out;
+}
+
+/** The slots that make up a session's parts, around the scene, by mode. */
+const PLAN_SLOTS = {
+  adult: { intro: "intro", before: ["warmup"], after: ["debrief"] },
+  kids: { intro: "intro", before: [], during: ["games"], after: ["ending"] },
+};
+const BEAT_CHARS = 70;
+
+/** The session's parts in order, for the timeline and the adapter: the
+ *  introduction, each warm-up, the scene and its beats (the scenario's
+ *  beats list), then the debrief. `content` is loadContent's result and
+ *  `pack` the pack being practised; ids are stable within a session. */
+export function sessionPlan(content, pack, mode = "adult") {
+  const cfg = PLAN_SLOTS[mode] ?? PLAN_SLOTS.adult;
+  const byId = new Map((content?.units ?? []).map((u) => [u.id, u]));
+  const units = (Array.isArray(pack?.units) ? pack.units : []).map((id) => byId.get(id)).filter(Boolean);
+  const inSlot = (slot) => units.filter((u) => u.slot === slot);
+  const plan = [];
+  if (inSlot(cfg.intro).length) plan.push({ id: "intro", title: "Introduction", kind: "intro" });
+  for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
+  const title = scenario?.title || (pack?.quick_scenario ? "Quick scene" : "The scene");
+  plan.push({ id: "scene", title, kind: "scene" });
+  const beats = Array.isArray(scenario?.beats) ? scenario.beats : [];
+  beats.forEach((b, i) => {
+    const text = String(b).trim();
+    // The beat's first clause is its name: "Arriving at the stall; Doña
+    // Carmen calling out…" → "Arriving at the stall".
+    const short = text.split(/[;:—]/)[0].trim();
+    plan.push({ id: `beat:${i + 1}`, title: short.length > BEAT_CHARS ? `${short.slice(0, BEAT_CHARS - 1)}…` : short, kind: "beat", detail: text });
+  });
+  for (const slot of cfg.during ?? []) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  for (const slot of cfg.after) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  return plan;
+}
+
+/** The adapter's section naming this session's parts (none without a plan). */
+export function planDirective(plan) {
+  if (!Array.isArray(plan) || !plan.length) return "";
+  const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped; don't go back to them unless asked.`;
+}
+
 /** A turn's glosses as the GLOSS line it came with, for the replay. */
 function glossLine(glosses) {
   if (!Array.isArray(glosses) || !glosses.length) return "";
@@ -435,7 +503,7 @@ export function parseVoiceReply(text, mode = "adult") {
   // line of its own).
   let gap = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
-    if (!rawLine.trim() || GLOSS_RE.test(rawLine) || CHOICES_RE.test(rawLine)) continue;
+    if (!rawLine.trim() || GLOSS_RE.test(rawLine) || CHOICES_RE.test(rawLine) || STAGE_RE.test(rawLine)) continue;
     let raw = rawLine;
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
@@ -718,13 +786,22 @@ export function azureVoices(json, locale) {
 /** `say -v '?'` → the picker's shape for one locale. Lines look like
  *  `Tingting             zh_CN    # 你好！我叫婷婷。`; names can hold spaces and
  *  parentheses ("Eddy (Chinese (China mainland))"). */
+// `say -v ?` gives no gender, so the cast would hand a man's line to a
+// woman's voice. The macOS voices people actually get, by gender; one not
+// listed has no gender and is used only when no voice of a gender is known.
+const SYSTEM_VOICE_GENDER = new Map([
+  ...["Alice", "Alva", "Amélie", "Anna", "Ava", "Carmit", "Damayanti", "Ellen", "Flo", "Grandma", "Ioana", "Joana", "Kanya", "Karen", "Kathy", "Kyoko", "Lana", "Laura", "Lekha", "Luciana", "Mariska", "Marisol", "Meijia", "Melina", "Milena", "Moira", "Montse", "Mónica", "Nora", "Paulina", "Samantha", "Sandy", "Sara", "Satu", "Shelley", "Sinji", "Susan", "Tara", "Tessa", "Tingting", "Victoria", "Yelda", "Yuna", "Zoe", "Zosia", "Zuzana"].map((n) => [n, "female"]),
+  ...["Aaron", "Albert", "Alex", "Aman", "Arthur", "Carlos", "Daniel", "Diego", "Eddy", "Fred", "Grandpa", "Hattori", "Jacques", "Jorge", "Jordi", "Juan", "Junior", "Lee", "Luca", "Maged", "Martin", "Neel", "Oliver", "Otoya", "Ralph", "Reed", "Rishi", "Rocko", "Thomas", "Tom", "Xander", "Yuri"].map((n) => [n, "male"]),
+]);
+
 export function systemVoices(text, locale) {
   const want = String(locale ?? "").replace("-", "_");
   const rows = [];
   for (const line of String(text).split("\n")) {
     const m = line.match(/^(.+?)\s+([a-z]{2,3}_[A-Z0-9]{2,3})\s+#\s?(.*)$/);
     if (!m || m[2] !== want) continue;
-    rows.push({ id: m[1].trim(), name: m[1].trim(), gender: "", note: m[3].trim(), match: true });
+    const name = m[1].trim();
+    rows.push({ id: name, name, gender: SYSTEM_VOICE_GENDER.get(name.replace(/\s*\(.*$/, "")) ?? "", note: m[3].trim(), match: true });
   }
   return rows;
 }
@@ -741,8 +818,11 @@ export function transcriptText(provider, json) {
 
 // ElevenLabs' shared Voice Library: thousands of community and professional
 // voices with an accent, a description and usage numbers, searchable by
-// language and locale. A library voice is added to the account before use
-// (POST /v1/voices/add), which is what "Use" in the browser does.
+// language and locale. On a paid plan a library voice can be used by id
+// without adding it (the random cast relies on this; tested 2026-11); a free
+// plan gets HTTP 402, and /speak then falls back to the saved voice. "Use
+// as…" in the browser adds one to the account (POST /v1/voices/add) so it
+// shows up in the account's own list.
 
 export const LIBRARY_SORTS = ["usage_character_count_1y", "trending", "cloned_by_count", "created_date"];
 
@@ -806,7 +886,9 @@ export function elevenAddRequest({ key, ownerId, voiceId, name }) {
  *  narrator-native-rotating does. */
 export function pinnedNarratorGender(units) {
   for (const id of Array.isArray(units) ? units : []) {
-    const m = /^narrator(?:-kids)?-(female|male)$/.exec(String(id));
+    // narrator-female, narrator-kids-male, and user-made ones such as
+    // narrator-female-slow: a narrator unit whose id names one gender.
+    const m = /^narrator(?:-[a-z0-9]+)*?-(female|male)(?:-[a-z0-9]+)*$/.exec(String(id));
     if (m) return m[1];
   }
   return null;
