@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Mochi } from "./Mascots";
 import type { ContentReply, Mode, ProfileRequest } from "../types";
 import type { Draft } from "../draft";
 import { Button } from "./ui";
@@ -41,9 +42,10 @@ export default function TopBar({
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
 }) {
   return (
-    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-1 border-b border-line bg-panel px-4 sm:pr-10">
-      <h1 className="mr-2 flex shrink-0 items-center gap-1.5 text-base font-semibold text-fg">
-        Lingo Dojo
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-line bg-panel/90 px-4 backdrop-blur sm:pr-10">
+      <h1 className="mr-1 flex shrink-0 items-center gap-1.5 text-lg font-semibold text-fg">
+        <Mochi size={30} />
+        <span className="hidden sm:inline">Lingo Dojo</span>
         {mode === "kids" && (
           <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium leading-none text-accent" data-testid="mode-tag">
             Kids
@@ -52,7 +54,7 @@ export default function TopBar({
       </h1>
       {/* min-w-0 + overflow-x-auto: on a phone narrower than the three tabs
           the strip scrolls sideways by itself instead of widening the page. */}
-      <nav className="flex h-full min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none]" aria-label="Sections">
+      <nav className="flex min-w-0 items-center gap-0.5 overflow-x-auto overflow-y-hidden rounded-full bg-raised p-1 [scrollbar-width:none]" aria-label="Sections">
         <TabButton label="Scene" active={tab === "scene"} onClick={() => onTab("scene")} />
         <TabButton label="Customize" active={tab === "customize"} onClick={() => onTab("customize")} />
         <TabButton label="Go" active={tab === "go"} onClick={() => onTab("go")} />
@@ -74,8 +76,8 @@ function TabButton({ label, active, onClick, className = "" }: { label: string; 
       type="button"
       aria-current={active ? "page" : undefined}
       onClick={onClick}
-      className={`flex h-full shrink-0 items-center border-b-2 px-3 text-sm font-medium transition-colors ${
-        active ? "border-accent text-fg" : "border-transparent text-fg-3 hover:text-fg-2"
+      className={`flex shrink-0 items-center rounded-full px-3.5 py-1 font-[family-name:var(--font-display)] text-sm font-medium transition-colors ${
+        active ? "bg-panel text-accent shadow-[0_1px_2px_rgb(26_28_58/0.12)]" : "text-fg-3 hover:text-fg"
       } ${className}`}
     >
       {label}
@@ -114,7 +116,7 @@ function OverflowMenu({
         <>
           {/* Closes the menu on an outside click, without a ref or a document listener. */}
           <button type="button" aria-hidden="true" tabIndex={-1} className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} />
-          <div role="menu" className="absolute right-0 z-50 mt-1 flex w-44 flex-col overflow-hidden rounded-md border border-line bg-panel py-1 shadow-md">
+          <div role="menu" className="absolute right-0 z-50 mt-1 flex w-44 flex-col overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-lg">
             <button
               type="button"
               role="menuitem"

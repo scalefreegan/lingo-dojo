@@ -3,6 +3,7 @@ import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
+import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceCastReply, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
@@ -57,9 +58,16 @@ export default function VoicePanel({
   }, [openRequest, onOpened]);
   if (!open) {
     return (
-      <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => setOpen(true)} data-testid="voice-open">
-        🥋 Practice in the dojo
-      </Button>
+      <section className="tatami flex flex-col items-center gap-4 rounded-2xl border border-line-strong/60 px-5 py-6 text-center sm:flex-row sm:text-left">
+        <Mochi size={88} mood="idle" />
+        <div className="flex flex-1 flex-col gap-1">
+          <h2 className="text-xl font-semibold text-fg">Step onto the mat</h2>
+          <p className="text-sm text-fg-2">Sensei Mochi runs the scene out loud with native voices. Answer by talking, or type if you'd rather.</p>
+        </div>
+        <Button variant="primary" className="shrink-0 justify-center px-5 py-2.5 text-lg" onClick={() => setOpen(true)} data-testid="voice-open">
+          Practice in the dojo
+        </Button>
+      </section>
     );
   }
   return <VoiceSession mode={mode} pack={pack} langs={langs} onClose={() => setOpen(false)} />;
@@ -328,8 +336,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     const ctrl = freshCtrl();
     setPhase("thinking");
     try {
-      // The first turn draws the cast; later turns reuse it.
-      if (!castRef.current && locale) {
+      // The first turn draws the cast; later turns reuse it, unless the voice
+      // provider changed mid-session (settings are shared by every open
+      // window), whose voices the old cast can't name.
+      if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts)) {
         castRef.current = await getCast({ mode, locale, units: pack.units }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         setCast(castRef.current);
@@ -507,9 +517,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
 
   return (
-    <Card className="flex flex-col gap-4" data-testid="voice-panel">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-medium text-fg">Practice by voice</h2>
+    <Card className="tatami flex flex-col gap-4 border-line-strong/60" data-testid="voice-panel">
+      <div className="flex items-start gap-3">
+        <Mochi size={56} className="shrink-0" mood={mochiMood(phase, started)} title={`Sensei Mochi, ${MOOD_LABEL[mochiMood(phase, started)]}`} />
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-1">
+        <h2 className="text-xl font-semibold text-fg">Practice by voice</h2>
         {reply && (
           <span className="text-sm text-fg-3 sm:text-xs">
             {PROVIDER_LABEL[provider]}
@@ -522,10 +534,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             )}
           </span>
         )}
-        <span className="flex-1" />
+        </div>
+        <div className="flex shrink-0 items-center gap-1 pt-1">
         <button
           type="button"
-          className="inline-flex items-center gap-1 text-sm text-fg-2 hover:text-fg"
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-fg-2 hover:bg-panel/70 hover:text-fg"
           aria-expanded={showSettings}
           onClick={() => setShowSettings((o) => !o)}
         >
@@ -540,6 +553,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         >
           Close
         </Button>
+        </div>
       </div>
 
       {loadError && <p className="text-sm text-err">Could not load voice settings: {loadError}</p>}
@@ -566,10 +580,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       )}
 
       {started && (
-        <ol className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto" aria-label="Session transcript" data-testid="voice-transcript">
+        <ol className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
           {entries.map((m, i) =>
             m.role === "learner" ? (
-              <li key={i} className="self-end rounded-lg bg-accent-soft px-3 py-2 text-sm text-fg">
+              <li key={i} className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
                 {CONTROL_LABEL[m.text] ? (
                   <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
                 ) : directText(m.text) != null ? (
@@ -584,8 +598,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             ) : (
               <li key={i} className="flex flex-col gap-1">
                 {m.lines.map((l, j) => (
-                  <div key={j} className={`flex items-start gap-2 rounded-md px-2 py-1 text-sm ${playing === `${i}:${j}` ? "bg-raised" : ""}`}>
-                    <span className="w-24 shrink-0 pt-0.5 text-sm text-fg-3 sm:text-xs">{lineLabel(l)}</span>
+                  <div key={j} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
+                    <SpeakerCritter speaker={l.speaker} size={30} />
+                    <span className="w-24 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-sm text-fg-3 sm:text-xs">{lineLabel(l)}</span>
                     <span className="flex-1 text-fg">
                       {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                         <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
@@ -767,7 +782,7 @@ function SettingsBlock({
   const missing = (["elevenlabs", "azure"] as const).filter((p) => !configured[p]);
   const label = "flex flex-col gap-1 text-sm text-fg-2";
   return (
-    <div className="flex flex-col gap-4 rounded-md border border-line p-3" data-testid="voice-settings">
+    <div className="flex flex-col gap-4 rounded-2xl border border-line bg-panel p-4" data-testid="voice-settings">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className={label}>
           Voices
@@ -1237,3 +1252,21 @@ function castSummary(cast: VoiceCastReply): string {
   }
   return parts.join(" · ");
 }
+
+/** Sensei Mochi follows the session: talking while lines play, listening
+ *  while the mic is open, thinking while a turn or transcript is on its way,
+ *  and a calm bow otherwise. */
+function mochiMood(phase: string, started: boolean): MochiMood {
+  if (phase === "speaking") return "talking";
+  if (phase === "recording") return "listening";
+  if (phase === "thinking" || phase === "transcribing" || phase === "opening") return "thinking";
+  return started ? "happy" : "idle";
+}
+
+const MOOD_LABEL: Record<MochiMood, string> = {
+  idle: "ready to begin",
+  happy: "waiting for you",
+  thinking: "thinking",
+  talking: "speaking",
+  listening: "listening",
+};
