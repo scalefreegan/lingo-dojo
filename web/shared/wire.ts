@@ -480,6 +480,9 @@ export interface VoiceTurnRequest {
   pack: PackInput;
   history: VoiceHistoryItem[];
   message: string;
+  /** The session's narrator gender, drawn at session start (/cast); ignored
+   *  when the pack's narrator unit fixes it. */
+  narratorGender?: VoiceGender;
 }
 
 export interface VoiceTurnReply {
@@ -504,6 +507,26 @@ export interface VoiceSpeakRequest {
   nativeLocale?: string;
   /** Picks the woman's or man's voice for the speaker. */
   gender?: VoiceGender | null;
+  /** The session cast's voice for this line; overrides the saved choice. */
+  voice?: string;
+}
+
+/** POST /api/voice/cast — this session's voices, drawn at session start. */
+export interface VoiceCastRequest {
+  mode: Mode;
+  locale: string;
+  /** The pack's unit ids: a narrator-female/-male unit fixes the gender. */
+  units: string[];
+}
+
+export interface VoiceCastReply {
+  provider: TtsProvider;
+  locale: string;
+  /** Slot ("narrator:female") → the voice playing it this session. */
+  cast: Record<string, { id: string; name: string }>;
+  narratorGender: VoiceGender;
+  /** True when the pack fixed the narrator's gender. */
+  pinned: boolean;
 }
 
 /** One voice from the ElevenLabs Voice Library. */

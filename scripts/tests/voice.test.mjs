@@ -11,7 +11,7 @@ import path from "node:path";
 import YAML from "yaml";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
-  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
+  elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
@@ -321,6 +321,34 @@ test("keytermsFrom: target phrases cut to Scribe's limits, deduplicated, capped"
   assert.deepEqual(keytermsFrom(["我要一公斤。謝謝！"]), ["我要一公斤", "謝謝"]);
   assert.equal(keytermsFrom(Array.from({ length: 300 }, (_, i) => `palabra${i}`)).length, 100);
   assert.deepEqual(keytermsFrom("nope"), []);
+});
+
+test("cast: chosen voices stay, Random slots draw distinct voices of their gender", () => {
+  const slots = ["narrator:female", "narrator:male", "character:female", "character:male"];
+  const pools = { female: [{ id: "F1", name: "Ana" }, { id: "F2", name: "Bea" }], male: [{ id: "M1", name: "Ciro" }] };
+  const first = () => 0;
+  const cast = pickCast({ slots, set: { "narrator:female": "MINE" }, pools, names: { MINE: "Mía" }, rand: first });
+  assert.deepEqual(cast, {
+    "narrator:female": { id: "MINE", name: "Mía" },
+    "narrator:male": { id: "M1", name: "Ciro" },
+    "character:female": { id: "F1", name: "Ana" },
+    "character:male": { id: "M1", name: "Ciro" }, // only one man: repeats rather than switching gender
+  });
+  // Distinct where the pool allows; the draw depends on rand.
+  const last = () => 0.999;
+  assert.equal(pickCast({ slots: ["narrator:female", "character:female"], pools, rand: last })["character:female"].id, "F1");
+  // No pool for a gender: the other gender rather than silence.
+  assert.equal(pickCast({ slots: ["character:male"], pools: { female: pools.female }, rand: first })["character:male"].id, "F1");
+  assert.deepEqual(pickCast({ slots, pools: {} }), {});
+});
+
+test("narrator gender: a pinned unit wins, otherwise the app's draw is stated to the model", () => {
+  assert.equal(pinnedNarratorGender(["frame", "narrator-male", "x"]), "male");
+  assert.equal(pinnedNarratorGender(["narrator-kids-female"]), "female");
+  assert.equal(pinnedNarratorGender(["narrator-native-rotating"]), null);
+  assert.equal(pinnedNarratorGender(undefined), null);
+  assert.match(narratorDirective("male"), /narrator is a man: tag every narrator line NARRATOR-M/);
+  assert.equal(narratorDirective(null), "");
 });
 
 test("speakable: drops stage directions and markdown, keeps the words", () => {

@@ -733,6 +733,55 @@ export function elevenAddRequest({ key, ownerId, voiceId, name }) {
   };
 }
 
+/* ---------------------------------- cast ----------------------------------- */
+
+/** The narrator's gender when the pack fixes it (narrator-female,
+ *  narrator-kids-male, …); null when it leaves it open, as the default
+ *  narrator-native-rotating does. */
+export function pinnedNarratorGender(units) {
+  for (const id of Array.isArray(units) ? units : []) {
+    const m = /^narrator(?:-kids)?-(female|male)$/.exec(String(id));
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** The adapter's line fixing this session's narrator. The app draws the
+ *  gender (a model asked to "pick at random" picks the same one every time). */
+export function narratorDirective(gender) {
+  if (gender !== "female" && gender !== "male") return "";
+  const [who, tag] = gender === "female" ? ["a woman", "NARRATOR-F"] : ["a man", "NARRATOR-M"];
+  return `\n\n## This session's narrator\n\nFor this session the narrator is ${who}: tag every narrator line ${tag}, whatever your instructions say about choosing.`;
+}
+
+/** One session's voices: every slot the learner set keeps its voice; every
+ *  other slot (Random) draws from the pool for its gender, without repeats
+ *  where the pool allows. `pools` is gender → [{id, name}], best first;
+ *  `rand` is injectable for tests. → slot → {id, name}. */
+export function pickCast({ slots, set = {}, pools = {}, names = {}, rand = Math.random }) {
+  const cast = {};
+  const taken = new Set();
+  for (const slot of slots) {
+    const id = set[slot];
+    if (id) {
+      cast[slot] = { id, name: names[id] ?? id };
+      taken.add(id);
+    }
+  }
+  for (const slot of slots) {
+    if (cast[slot]) continue;
+    const gender = slot.split(":")[1];
+    const pool = pools[gender]?.length ? pools[gender] : [...(pools.female ?? []), ...(pools.male ?? [])];
+    if (!pool.length) continue;
+    const fresh = pool.filter((v) => !taken.has(v.id));
+    const from = fresh.length ? fresh : pool;
+    const pick = from[Math.floor(rand() * from.length)];
+    cast[slot] = { id: pick.id, name: pick.name };
+    taken.add(pick.id);
+  }
+  return cast;
+}
+
 /* --------------------------------- settings -------------------------------- */
 
 export const SILENCE_MS = { min: 500, max: 5000, default: 1600 };
