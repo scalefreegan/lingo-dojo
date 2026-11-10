@@ -93,8 +93,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   outside the practice: "switch the scene to a taco stand", "redo that one",
   "slower please". It records in your native language with no target hints,
   and the message goes as `[direct] …`, which the adapter says is a request
-  to act on, not an answer to grade. The **💬 To the master** toggle by the
-  text box does the same for typed messages.
+  to act on, not an answer to grade. With "check what it heard" on, the
+  words wait in the text box under a small **💬 To the dojo master** tag;
+  Send sends them, and the tag's × turns them into a practice answer.
 
 ## Settings
 
