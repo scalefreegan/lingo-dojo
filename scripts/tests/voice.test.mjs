@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
+import { parseGlosses, MAX_GLOSSES } from "../voice.mjs";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
@@ -90,7 +91,7 @@ test("voiceTurnPrompt: replays the session and opens with the start marker", () 
   );
   assert.match(p, /\[DOJO MASTER\]\nCHARACTER: ¡Hola!/);
   assert.match(p, /\[LEARNER\]\nhola/);
-  assert.ok(p.trimEnd().endsWith("Reply as the dojo master, in tagged lines only."));
+  assert.ok(p.trimEnd().endsWith("Reply as the dojo master: tagged lines, then the GLOSS line."));
   assert.match(p, /\[LEARNER\]\n¿cuánto cuesta\?\n\n\[DOJO MASTER\]/);
 });
 
@@ -459,4 +460,33 @@ test("normalizeVoiceSettings: defaults, clamping, and junk in the voice map drop
   assert.equal(s.model, "claude-haiku-5-5");
   // The ungendered (pre-gender) narrator choice becomes both narrator slots.
   assert.deepEqual(s.voices, { elevenlabs: { "es-MX": { "narrator:female": "v1", "narrator:male": "v1", "character:female": "v3" } } });
+});
+
+test("GLOSS lines become definitions and are never spoken", () => {
+  const reply = [
+    "CHARACTER-F: <t>¡Pásele, güero! ¿Qué le doy?</t>",
+    "GLOSS: <t>¡Pásele, güero! ¿Qué le doy?</t> = Come on in! What can I get you? | güero = blondie, a friendly nickname | no equals sign | Güero = a duplicate",
+  ].join("\n");
+  const lines = parseVoiceReply(reply);
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].text, "¡Pásele, güero! ¿Qué le doy?");
+  assert.deepEqual(parseGlosses(reply), [
+    { term: "¡Pásele, güero! ¿Qué le doy?", meaning: "Come on in! What can I get you?" },
+    { term: "güero", meaning: "blondie, a friendly nickname" },
+  ]);
+  // A bold or plural label is still a gloss line, not a narrator line.
+  assert.equal(parseVoiceReply("NARRATOR-M: Hi\n**Glosses:** hola = hi").length, 1);
+  assert.equal(parseGlosses("**Glosses:** hola = hi")[0].term, "hola");
+  assert.deepEqual(parseGlosses("NARRATOR-M: x = y"), []);
+  const many = `GLOSS: ${Array.from({ length: 40 }, (_, i) => `w${i} = m${i}`).join(" | ")}`;
+  assert.equal(parseGlosses(many).length, MAX_GLOSSES);
+});
+
+test("a turn's glosses go back into the replay", () => {
+  const prompt = voiceTurnPrompt(
+    [{ role: "master", lines: parseVoiceReply("CHARACTER-F: <t>¿Algo más?</t>"), glosses: [{ term: "¿Algo más?", meaning: "Anything else?" }] }],
+    "No, gracias",
+  );
+  assert.match(prompt, /CHARACTER-F: <t>¿Algo más\?<\/t>\nGLOSS: ¿Algo más\? = Anything else\?/);
+  assert.doesNotMatch(voiceTurnPrompt([{ role: "master", lines: parseVoiceReply("NARRATOR-M: Hi") }], "x"), /GLOSS:/);
 });
