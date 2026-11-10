@@ -10,7 +10,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 export function Card({ children, className = "", ...rest }: { children: ReactNode; className?: string } & Record<`data-${string}`, string>) {
   return (
-    <section className={`rounded-lg border border-line bg-panel p-4 ${className}`} {...rest}>
+    <section className={`rounded-2xl border border-line bg-panel p-4 ${className}`} {...rest}>
       {children}
     </section>
   );
@@ -26,16 +26,19 @@ const TONES: Record<Tone, string> = {
 
 export function Badge({ children, tone = "neutral", title }: { children: ReactNode; tone?: Tone; title?: string }) {
   return (
-    <span title={title} className={`inline-flex shrink-0 items-center rounded px-1.5 whitespace-nowrap py-0.5 text-sm leading-none font-medium sm:text-[11px] ${TONES[tone]}`}>
+    <span title={title} className={`inline-flex shrink-0 items-center rounded-full px-2 whitespace-nowrap py-0.5 text-sm leading-none font-semibold sm:text-[11px] ${TONES[tone]}`}>
       {children}
     </span>
   );
 }
 
+/* Buttons are game keys: primary and secondary sit on a 3px edge and
+ * press down into it; ghost is flat, for quiet actions. */
 type Variant = "primary" | "secondary" | "ghost";
+const PRESS = "shadow-[0_3px_0_var(--edge)] active:translate-y-[2px] active:shadow-[0_1px_0_var(--edge)] disabled:translate-y-0";
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-accent text-accent-ink hover:bg-accent-hover border-transparent",
-  secondary: "bg-panel text-fg border-line-strong hover:bg-raised",
+  primary: `bg-accent text-accent-ink hover:bg-accent-hover border-transparent [--edge:var(--accent-edge)] ${PRESS}`,
+  secondary: `bg-panel text-fg border-line-strong hover:bg-raised [--edge:var(--line-strong)] ${PRESS}`,
   ghost: "bg-transparent text-fg-2 border-transparent hover:bg-raised hover:text-fg",
 };
 
@@ -47,14 +50,14 @@ export function Button({
   return (
     <button
       type="button"
-      className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-1.5 font-[family-name:var(--font-display)] text-sm font-medium transition-[background-color,transform,box-shadow] duration-75 disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${className}`}
       {...rest}
     />
   );
 }
 
 export const inputClass =
-  "w-full rounded-md border border-line bg-panel px-2.5 py-1.5 text-sm text-fg placeholder:text-fg-3 focus:border-accent focus:outline-none";
+  "w-full rounded-xl border border-line-strong/70 bg-panel px-3 py-1.5 text-sm text-fg placeholder:text-fg-3 focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent-soft";
 
 /** The folder picker the Go tab's save form and a Library row's "Move to" share. */
 export function FolderSelect({

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { Mochi } from "./Mascots";
 import type { AssembleResult, ContentReply, PackInput } from "../types";
 import { changedSlots, type Draft } from "../draft";
 import { useCopyStatus } from "../useCopyStatus";
@@ -66,7 +67,7 @@ export default function SummaryBar({
         {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
       </button>
       <Button variant="primary" className="shrink-0" onClick={onPractice} disabled={!markdown}>
-        🥋 Practice
+        <Mochi size={20} /> Practice
       </Button>
     </div>
   );

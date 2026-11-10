@@ -1,11 +1,13 @@
 @import "tailwindcss";
 
 /* ============================================================
-   Lingo Dojo — calm and readable. Warm paper in light mode, warm
-   charcoal in dark (prefers-color-scheme), one jade accent for the
-   selected thing and the primary action. System fonts throughout;
-   the preview is monospace because it is the literal text that
-   gets pasted into the voice tool.
+   Lingo Dojo — a playful dojo. Cool rice-paper light mode and a
+   night-indigo dark mode, one aizome-indigo primary with a pressed
+   "edge" (buttons sit on it like game keys), and kiai yellow kept for
+   the mascot and for moments that go well. Kids mode swaps the belt:
+   tangerine. Fredoka (rounded, game-like) for headings, tabs and
+   buttons; Figtree for reading. The preview stays monospace because it
+   is the literal text that gets pasted into the voice tool.
 
    Raw values live on :root and flip with the colour scheme; the
    @theme inline block maps them to Tailwind utilities (bg-panel,
@@ -14,66 +16,77 @@
 
 :root {
   color-scheme: light dark;
-  --ground: #f6f4ef;
+  --ground: #eef1f8;
   --panel: #ffffff;
-  --raised: #efece5;
-  --line: #e1dcd2;
-  --line-strong: #c9c2b5;
-  --fg: #1f1d1a;
-  --fg-2: #4a463f;
-  --fg-3: #77716a;
-  --accent: #1f6f5c;
-  --accent-hover: #185a4a;
+  --raised: #e6eaf5;
+  --line: #d9deec;
+  --line-strong: #b9c0d6;
+  --fg: #1a1c3a;
+  --fg-2: #3f4366;
+  --fg-3: #6b7091;
+  --accent: #3442c6;
+  --accent-hover: #2b38b0;
+  --accent-edge: #222c8f;
   --accent-ink: #ffffff;
-  --accent-soft: #e2efea;
+  --accent-soft: #e3e6fb;
+  --kiai: #ffc83d;
+  --kiai-soft: #fff3cf;
+  --mat: #e9e4cf;
+  --mat-line: #e0d9bd;
+  --heri: color-mix(in oklab, #2f3a8f 70%, var(--mat));
   --warn: #8a5300;
   --warn-soft: #fbf1de;
-  --err: #b42318;
-  --err-soft: #fde9e7;
+  --err: #c0262d;
+  --err-soft: #fde8ea;
 }
 
-/* Kids mode (App sets data-mode on <html>): the same calm palette with a
-   warmer, sunnier accent, so a glance at the pill or a selected card says
-   which library is open. Nothing else changes. */
+/* Kids mode (App sets data-mode on <html>): same dojo, a tangerine belt,
+   so a glance at any button says which library is open. */
 :root[data-mode="kids"] {
-  --accent: #b8551e;
-  --accent-hover: #9c4616;
+  --accent: #e2611a;
+  --accent-hover: #cc5514;
+  --accent-edge: #a3420c;
   --accent-ink: #ffffff;
-  --accent-soft: #f8e7dc;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-mode="kids"] {
-    --accent: #f0a36a;
-    --accent-hover: #f5b886;
-    --accent-ink: #2a1708;
-    --accent-soft: #3a2719;
-  }
+  --accent-soft: #fde6d6;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ground: #141412;
-    --panel: #1c1c19;
-    --raised: #262622;
-    --line: #33322d;
-    --line-strong: #4a4840;
-    --fg: #ece8df;
-    --fg-2: #c3beb3;
-    --fg-3: #8f8a80;
-    --accent: #5cbf9f;
-    --accent-hover: #74d0b2;
-    --accent-ink: #0c1d18;
-    --accent-soft: #1b322b;
+    --ground: #121430;
+    --panel: #1b1e3b;
+    --raised: #252948;
+    --line: #2f3456;
+    --line-strong: #464c75;
+    --fg: #eceeff;
+    --fg-2: #c4c7e6;
+    --fg-3: #8d91b6;
+    --accent: #7d8bff;
+    --accent-hover: #96a1ff;
+    --accent-edge: #4b57c9;
+    --accent-ink: #0e1030;
+    --accent-soft: #272d5c;
+    --kiai: #ffcf52;
+    --kiai-soft: #3a3320;
+    --mat: #23264a;
+    --mat-line: #272b52;
+    --heri: #3a4290;
     --warn: #e6a94f;
     --warn-soft: #332818;
-    --err: #f0897c;
-    --err-soft: #3a1f1b;
+    --err: #ff8a8f;
+    --err-soft: #3c1f2a;
+  }
+  :root[data-mode="kids"] {
+    --accent: #ff9a52;
+    --accent-hover: #ffad70;
+    --accent-edge: #c4651f;
+    --accent-ink: #2a1306;
+    --accent-soft: #3d2a22;
   }
 }
 
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-sans: "Figtree", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Fredoka", "Figtree", ui-rounded, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --color-ground: var(--ground);
   --color-panel: var(--panel);
@@ -86,6 +99,9 @@
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-ink: var(--accent-ink);
+  --color-accent-edge: var(--accent-edge);
+  --color-kiai: var(--kiai);
+  --color-kiai-soft: var(--kiai-soft);
   --color-accent-soft: var(--accent-soft);
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
@@ -125,4 +141,49 @@ select {
       min-height: 2.5rem;
     }
   }
+}
+
+/* Headings speak in the dojo's voice. */
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  letter-spacing: 0.005em;
+}
+
+/* One visible focus ring everywhere, keyboard only. */
+:focus-visible {
+  outline: 2.5px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 0.6rem;
+}
+
+/* The practice mat, behind the voice session only: tatami's fine straw
+   running one way, and the cloth border (heri) along its long edges. */
+.tatami {
+  background-color: var(--mat);
+  background-image: repeating-linear-gradient(0deg, transparent 0 3px, var(--mat-line) 3px 4px);
+  box-shadow:
+    inset 0 5px 0 var(--heri),
+    inset 0 -5px 0 var(--heri);
+}
+
+/* Sensei Mochi's moods. Gentle, and only while something is happening. */
+@keyframes mochi-bob {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(-3px) scale(1.02, 0.98); }
+}
+@keyframes mochi-talk {
+  0%, 100% { transform: scaleY(0.45); }
+  50% { transform: scaleY(1); }
+}
+@keyframes mochi-dot {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+.mochi-bob { animation: mochi-bob 1.6s ease-in-out infinite; transform-origin: 50% 100%; }
+.mochi-talk { animation: mochi-talk 0.32s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.mochi-dot { animation: mochi-dot 1.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .mochi-bob, .mochi-talk, .mochi-dot { animation: none; }
 }
