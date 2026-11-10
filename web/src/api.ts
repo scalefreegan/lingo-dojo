@@ -11,6 +11,7 @@ import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
   ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, FolderRequest, Mode, PackDeleteReply, PackInput,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
+  VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
@@ -201,6 +202,11 @@ function voiceSettingsUrl(langs?: VoiceLanguages): string {
   if (!langs) return "/api/voice/settings";
   const q = new URLSearchParams({ target: langs.target, variant: langs.variant, native: langs.native });
   return `/api/voice/settings?${q}`;
+}
+
+/** This session's voices, drawn fresh: Random slots get a new voice each time. */
+export function getCast(body: VoiceCastRequest, signal?: AbortSignal): Promise<VoiceCastReply> {
+  return req<VoiceCastReply>("/api/voice/cast", { ...json(body), signal });
 }
 
 export function getVoiceSettings(langs?: VoiceLanguages): Promise<VoiceSettingsReply> {

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ApiError, addLibraryVoice, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
+  ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
-  VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
+  VoiceCastReply, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -85,6 +85,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const [level, setLevel] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [chars, setChars] = useState(0);
+  // This session's voices, drawn at Start (Random slots differ each session)
+  // and kept until Restart, so every character keeps one voice throughout.
+  const [cast, setCast] = useState<VoiceCastReply | null>(null);
+  const castRef = useRef<VoiceCastReply | null>(null);
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
@@ -208,7 +212,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
       setChars((c) => c + seg.text.length);
       p = speakLine(
-        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined },
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line) },
         signal,
       ).then((b) => URL.createObjectURL(b));
       urls.current.set(key, p);
@@ -324,7 +328,13 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     const ctrl = freshCtrl();
     setPhase("thinking");
     try {
-      const r = await voiceTurn({ mode, pack, history: before, message }, ctrl.signal);
+      // The first turn draws the cast; later turns reuse it.
+      if (!castRef.current && locale) {
+        castRef.current = await getCast({ mode, locale, units: pack.units }, ctrl.signal);
+        if (ctrl.signal.aborted || gen !== genRef.current) return;
+        setCast(castRef.current);
+      }
+      const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
       setSession([...history, { role: "master", lines: r.lines }]);
@@ -461,6 +471,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     stopAll();
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});
     urls.current.clear();
+    // A new session draws a new cast.
+    castRef.current = null;
+    setCast(null);
     setSession([]);
     setComposer("");
     setError(null);
@@ -487,12 +500,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const voiceSet: Record<string, string | undefined> = (settings && locale ? settings.voices[provider]?.[locale] : undefined) ?? {};
-  // A narrator voice is required even for macOS: the system default voice is
-  // the Mac's own language, which would read Spanish with an English accent.
-  // Until one is set the settings stay open, and the pickers fill it in.
-  const voicesReady = !!(voiceSet["narrator:female"] || voiceSet["narrator:male"] || voiceSet.narrator);
-  const canStart = !!settings && !!locale && ttsReady && voicesReady;
+  // No voice has to be chosen first: Random slots are filled by the cast at
+  // Start.
+  const canStart = !!settings && !!locale && ttsReady;
   const started = entries.length > 0;
   const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
 
@@ -505,6 +515,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             {PROVIDER_LABEL[provider]}
             {locale ? ` · ${locale}` : ""}
             {chars > 0 && ` · ${chars.toLocaleString()} characters spoken`}
+            {cast && Object.keys(cast.cast).length > 0 && (
+              <span className="block" data-testid="voice-cast" title="Random slots draw new voices each session; Restart draws again">
+                Voices this session: {castSummary(cast)}
+              </span>
+            )}
           </span>
         )}
         <span className="flex-1" />
@@ -879,9 +894,11 @@ function VoicePickers({
 
   useEffect(() => {
     const ctrl = new AbortController();
-    setError(null);
     listVoices(provider, locale, ctrl.signal).then(
-      (r) => setVoices(r.voices),
+      (r) => {
+        setError(null);
+        setVoices(r.voices);
+      },
       (e) => !ctrl.signal.aborted && setError(errText(e)),
     );
     return () => ctrl.abort();
@@ -900,29 +917,8 @@ function VoicePickers({
     [provider, locale, onChange],
   );
 
-  // First load with gaps: fill them, natives first, the slot's gender when
-  // the provider says, and distinct where the list allows.
-  useEffect(() => {
-    if (!voices?.length) return;
-    const unset = slots.filter((s) => !current[s]);
-    if (!unset.length) return;
-    const taken = new Set(Object.values(current));
-    const patch: Record<string, string> = {};
-    for (const slot of unset) {
-      const gender = slot.split(":")[1];
-      const fits = (v: VoiceChoice) => !v.gender || v.gender.toLowerCase() === gender;
-      const pick =
-        voices.find((v) => v.match && fits(v) && !taken.has(v.id)) ??
-        voices.find((v) => fits(v) && !taken.has(v.id)) ??
-        voices.find((v) => !taken.has(v.id)) ??
-        voices[0];
-      patch[slot] = pick.id;
-      taken.add(pick.id);
-    }
-    setVoice(patch);
-    // Only when the list arrives: a later manual change is the user's.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voices]);
+  // An empty slot is Random: the session's cast draws a native voice of that
+  // gender each time (/api/voice/cast), so nothing is auto-picked here.
 
   if (error) return <p className="text-sm text-err">Could not list voices: {error}</p>;
   if (!voices) return <p className="text-sm text-fg-3">Loading voices…</p>;
@@ -951,7 +947,7 @@ function VoicePickers({
             <label key={slot} className="flex flex-col gap-1 text-sm text-fg-2">
               {slotLabel(slot)}
               <select className={inputClass} value={current[slot] ?? ""} onChange={(e) => setVoice({ [slot]: e.target.value })}>
-                {!current[slot] && <option value="">Choose…</option>}
+                <option value="">🎲 Random — a new native voice each session</option>
                 {natives.length > 0 && <optgroup label={`Speaks ${locale}`}>{natives.map(option)}</optgroup>}
                 {others.length > 0 && <optgroup label={natives.length ? "Other voices" : "Voices"}>{others.map(option)}</optgroup>}
                 {current[slot] && !voices.some((v) => v.id === current[slot]) && <option value={current[slot]}>{current[slot]} (saved)</option>}
@@ -1216,4 +1212,28 @@ function expectedPhrases(history: VoiceHistoryItem[]): string[] {
     }
   }
   return out;
+}
+
+/** The voice id this session's cast gives a line: its speaker and gender's
+ *  slot. An untagged narrator line takes the session's narrator gender; an
+ *  untagged character line, whichever of the speaker's slots exists. */
+function castVoiceFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
+  if (!cast) return undefined;
+  const g = line.gender ?? (line.speaker === "narrator" ? cast.narratorGender : null);
+  const c = cast.cast;
+  return (g ? c[`${line.speaker}:${g}`] : (c[`${line.speaker}:female`] ?? c[`${line.speaker}:male`]))?.id;
+}
+
+/** "Narrator Marlene · Character (woman) Regina · Character (man) Alejandro":
+ *  the narrator for the gender this session uses, then the scene's voices. */
+function castSummary(cast: VoiceCastReply): string {
+  const parts: string[] = [];
+  const narrator = cast.cast[`narrator:${cast.narratorGender}`];
+  if (narrator) parts.push(`Narrator ${narrator.name}`);
+  for (const [slot, v] of Object.entries(cast.cast)) {
+    const [speaker, gender] = slot.split(":");
+    if (speaker === "narrator") continue;
+    parts.push(`${speaker[0].toUpperCase()}${speaker.slice(1)} (${gender === "female" ? "woman" : "man"}) ${v.name}`);
+  }
+  return parts.join(" · ");
 }

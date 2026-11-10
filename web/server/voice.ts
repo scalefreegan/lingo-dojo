@@ -9,9 +9,10 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseVoiceReply, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, parseVoiceReply, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
+  VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
@@ -288,7 +289,11 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     const settings = readVoiceSettings();
     const { result } = startClaude({
       prompt: voiceTurnPrompt(history, message),
-      systemPrompt: voiceSystemPrompt(markdown, mode),
+      // The session's narrator gender, drawn by the client at session start,
+      // unless the pack's own narrator unit fixes it.
+      systemPrompt:
+        voiceSystemPrompt(markdown, mode) +
+        (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)),
       model: settings.model,
       // No tools, so no file access is needed: an empty temp cwd keeps the
       // repo's CLAUDE.md (instructions for coding agents) out of the turn.
@@ -372,7 +377,8 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // also speaks the learner's language. `lang` only steers pronunciation;
   // `gender` (the dojo master's -F/-M tag) picks the woman's or man's voice.
   const gender: VoiceGender | null = body?.gender === "female" || body?.gender === "male" ? body.gender : null;
-  const voice = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
+  // The session's cast names the voice; without one, the saved choice.
+  const voice = castVoice(provider, body?.voice) ?? voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
@@ -424,6 +430,70 @@ async function handleLibrary(req: IncomingMessage, res: ServerResponse): Promise
   sendJson(res, 200, elevenLibrary(await (await call("elevenlabs", request)).json()) satisfies LibraryReply);
 }
 
+/** A voice named by the client's cast, if it has the provider's shape. It
+ *  reaches the provider's API path or `say -v` (spawned without a shell),
+ *  so anything else is ignored rather than passed through. */
+function castVoice(provider: TtsProvider, v: unknown): string | null {
+  if (typeof v !== "string" || !v) return null;
+  if (provider === "elevenlabs") return /^[A-Za-z0-9]{8,64}$/.test(v) ? v : null;
+  if (provider === "azure") return AZURE_VOICE_RE.test(v) ? v : null;
+  return /^[\p{L}\p{N} ().'_-]{1,100}$/u.test(v) ? v : null;
+}
+
+/** How many of the most-used library voices a Random slot draws from: a
+ *  wide pick for variety, still voices people actually use. */
+const CAST_POOL = 40;
+
+/** POST /api/voice/cast {mode, locale, units} → this session's voices and
+ *  narrator gender. Slots the learner set keep their voice; Random ones draw
+ *  from native speakers of their gender: for ElevenLabs the Voice Library
+ *  (usable by id on a paid plan, nothing added to the account), else the
+ *  provider's own list for the locale. */
+async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  const body = await readJsonBody<Partial<VoiceCastRequest>>(req);
+  const mode: Mode = body?.mode == null ? "adult" : (body.mode as Mode);
+  if (!isMode(mode)) throw new HttpError(400, `unknown mode ${JSON.stringify(body?.mode)}`);
+  const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
+  if (!locale) throw new HttpError(400, "locale must look like es-MX");
+  const settings = readVoiceSettings();
+  const provider = settings.tts;
+  const keys = keysFor(provider);
+  const pools: Record<string, { id: string; name: string }[]> = { female: [], male: [] };
+  const names: Record<string, string> = {};
+  // The provider's own list names the voices the learner chose, and is the
+  // pool for Azure and macOS (and for ElevenLabs when the library fails).
+  let own: { id: string; name: string; gender: string; match: boolean }[] = [];
+  if (provider === "elevenlabs") own = elevenVoices(await (await call(provider, elevenVoicesRequest({ key: keys.elevenlabs }))).json(), locale);
+  else if (provider === "azure") own = azureVoices(await (await call(provider, azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion }))).json(), locale);
+  else own = systemVoices(await sayList(), locale);
+  for (const v of own) names[v.id] = v.name;
+  if (provider === "elevenlabs") {
+    await Promise.all(
+      (["female", "male"] as const).map(async (g) => {
+        try {
+          const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender: g, sort: "usage_character_count_1y", pageSize: CAST_POOL });
+          pools[g] = elevenLibrary(await (await call(provider, r)).json()).voices.map((v) => ({ id: v.id, name: v.name }));
+        } catch {
+          pools[g] = [];
+        }
+      }),
+    );
+  }
+  for (const g of ["female", "male"] as const) {
+    if (pools[g].length) continue;
+    // Natives of this gender first; a voice with no gender label counts for both.
+    const fits = own.filter((v) => !v.gender || v.gender.toLowerCase() === g);
+    pools[g] = (fits.some((v) => v.match) ? fits.filter((v) => v.match) : fits).map((v) => ({ id: v.id, name: v.name }));
+  }
+  for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;
+  const set = settings.voices[provider]?.[locale] ?? {};
+  const cast = pickCast({ slots: voiceSlots(mode), set, pools, names });
+  const pinned = pinnedNarratorGender(Array.isArray(body?.units) ? body.units : []);
+  const narratorGender: VoiceGender = pinned ?? (Math.random() < 0.5 ? "female" : "male");
+  sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned } satisfies VoiceCastReply);
+}
+
 async function handleLibraryAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<LibraryAddRequest>>(req);
@@ -449,6 +519,7 @@ export async function handleVoice(req: IncomingMessage, res: ServerResponse): Pr
   if (seg === "turn") return handleTurn(req, res);
   if (seg === "speak") return handleSpeak(req, res);
   if (seg === "library") return handleLibrary(req, res);
+  if (seg === "cast") return handleCast(req, res);
   if (seg === "library/add") return handleLibraryAdd(req, res);
   sendJson(res, 404, { error: "no such route" });
 }

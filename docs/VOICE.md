@@ -103,13 +103,28 @@ Saved in `data/voice.json` (gitignored): voice provider, speech-to-text
 provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
 cheapest), Claude model for the dojo master, turn-taking, and a voice per
 **slot per locale**. A slot is a speaker and a gender (Narrator · woman,
-Character · man, …); empty slots are filled with a sensible default, matching
-gender first. If a slot is still empty when a line needs it, the narrator's
-voice of the same gender is used before any voice of the other gender. Voices
-are kept per locale, so a Mandarin voice choice survives a switch to a
+Character · man, …). Each slot is **🎲 Random** (the default) or a voice you
+chose. Voices are kept per locale, so a Mandarin voice choice survives a switch to a
 Spanish pack and back. Languages map to locales in `scripts/voice.mjs`
 `localeFor`; a test fails if a language in `content/languages.yaml` has no
 locale.
+
+## The cast: new voices every session
+
+At Start, `POST /api/voice/cast` draws the session's voices
+(`scripts/voice.mjs` `pickCast`). A slot you set keeps its voice. A Random
+slot draws a native speaker of its gender, distinct from the others where it
+can: for ElevenLabs, from the 40 most-used Voice Library voices for the locale
+(a paid plan can use library voices by id, so nothing is added to the
+account), and for Azure and macOS, from their own voices for the locale. The
+cast holds for the whole session, so each character keeps one voice. Restart
+draws again, and the header lists who is playing whom.
+
+The narrator's gender is drawn too, unless the pack's narrator unit fixes it
+(`narrator-female`, `narrator-kids-male`, …). The default
+`narrator-native-rotating` asks the model to "pick at random", but a model
+picks the same gender every time, so the app makes the draw and states it in
+the system prompt (`narratorDirective`).
 
 ## Cost (rough, Nov 2026)
 

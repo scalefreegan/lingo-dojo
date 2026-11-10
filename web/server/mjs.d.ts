@@ -138,7 +138,16 @@ declare module "*/scripts/voice.mjs" {
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
   export function voiceFor(set: Record<string, string> | undefined, speaker: VoiceSpeaker, gender: import("../shared/wire.ts").VoiceGender | null | undefined): string;
   export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];
-  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; search?: string; sort?: string; page?: number }): Req;
+  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; search?: string; sort?: string; page?: number; pageSize?: number }): Req;
+  export function pinnedNarratorGender(units: unknown): import("../shared/wire.ts").VoiceGender | null;
+  export function narratorDirective(gender: unknown): string;
+  export function pickCast(o: {
+    slots: string[];
+    set?: Record<string, string | undefined>;
+    pools?: Record<string, { id: string; name: string }[]>;
+    names?: Record<string, string>;
+    rand?: () => number;
+  }): Record<string, { id: string; name: string }>;
   export function elevenLibrary(json: unknown): import("../shared/wire.ts").LibraryReply;
   /** Throws on an id that isn't an ElevenLabs id. */
   export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;

@@ -103,6 +103,9 @@ test("input validation", async () => {
   assert.equal((await call("GET", "/api/voice/nope")).status, 404);
   assert.equal((await call("GET", "/api/voice/library?locale=spanish")).status, 400);
   assert.equal((await call("GET", "/api/voice/library/add")).status, 405);
+  assert.equal((await call("GET", "/api/voice/cast")).status, 405);
+  assert.equal((await call("POST", "/api/voice/cast", { mode: "adult", locale: "spanish", units: [] })).status, 400);
+  assert.equal((await call("POST", "/api/voice/cast", { mode: "teen", locale: "es-MX", units: [] })).status, 400);
 });
 
 test("speak with the saved provider unconfigured says so; cross-origin is refused", async () => {
