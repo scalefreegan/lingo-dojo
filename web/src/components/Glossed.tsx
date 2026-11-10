@@ -1,17 +1,18 @@
 import type { ReactNode } from "react";
 import type { VoiceGloss } from "../../shared/wire";
-import { isSentence, layout } from "../gloss";
+import { isSpan, layout } from "../gloss";
 
 /* Tap-to-see definitions on the dojo master's target-language text.
  *
  * The dojo master glosses whole sentences and the key words inside them.
- * Words and short phrases are buttons (underlined); a whole sentence is not
- * a control of its own, because a button inside a button is unreachable to
- * assistive tech. Tapping the rest of a sentence still opens its
- * translation as a pointer convenience, and the line's own translate button
- * (VoicePanel, from `sentenceGlosses`) is the keyboard and screen-reader
- * way to it. One level of nesting is enough; a match that half-overlaps
- * another is dropped rather than guessed at. */
+ * Words and short phrases are buttons (underlined). A sentence, or a phrase
+ * with glossed words inside it, is not a control of its own (see isSpan),
+ * because a button inside a button is unreachable to assistive tech.
+ * Tapping the rest of it still opens its meaning as a pointer convenience,
+ * and the line's own translate button (VoicePanel, from `sentenceGlosses`)
+ * is the keyboard and screen-reader way to it. One level of nesting is
+ * enough; a match that half-overlaps another is dropped rather than
+ * guessed at. */
 
 function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: boolean; onPick: (g: VoiceGloss) => void; children: ReactNode }) {
   return (
@@ -19,7 +20,7 @@ function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: 
       type="button"
       aria-pressed={active}
       title={gloss.meaning}
-      className={`inline cursor-pointer rounded-sm p-0 text-left font-[inherit] text-inherit underline decoration-dotted decoration-1 underline-offset-4 hover:bg-accent-soft ${active ? "bg-accent-soft" : ""}`}
+      className={`inline min-h-0 cursor-pointer rounded-sm p-0 [overflow-wrap:anywhere] text-left font-[inherit] text-inherit underline decoration-dotted decoration-1 underline-offset-4 hover:bg-accent-soft ${active ? "bg-accent-soft" : ""}`}
       onClick={(e) => {
         e.stopPropagation();
         onPick(gloss);
@@ -39,7 +40,7 @@ export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: 
   let at = 0;
   for (const o of layout(text, glosses, locale)) {
     if (o.start > at) out.push(text.slice(at, o.start));
-    if (!isSentence(o.gloss) && !o.inner.length) {
+    if (!isSpan(o, locale)) {
       out.push(
         <Word key={o.start} gloss={o.gloss} active={picked === o.gloss} onPick={onPick}>
           {text.slice(o.start, o.end)}

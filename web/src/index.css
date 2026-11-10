@@ -132,7 +132,9 @@ select {
    tall. One base-layer rule rather than a min-h utility on each button,
    chip, link-button, input and select — so nothing can be forgotten, and
    utilities (a textarea's min-h-24, the tab strip's h-full) still win over
-   it because they sit in the utilities layer. Desktop keeps its denser sizes. */
+   it because they sit in the utilities layer; buttons that sit inside text
+   (a glossed word, a timeline dot) opt out with min-h-0. Desktop keeps its
+   denser sizes. */
 @layer base {
   @media (width < 40rem) {
     button,

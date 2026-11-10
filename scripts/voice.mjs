@@ -375,7 +375,10 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // Shown-not-spoken lines are matched by their exact upper-case label, so a
 // spoken "Gloss: …" or "Options: …" stays speech. A speaker tag in front
 // (the adapter's "every line starts with a tag" pulls that way) is allowed.
-const META_TAG = "^\\s*(?:\\*\\*)?\\s*(?:(?:NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\\s*[-/(]\\s*(?:F|M|FEMALE|MALE|WOMAN|MAN)\\s*\\)?)?\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*)?";
+// The tag is matched in any case, as TAG_RE does ("Narrator-F:"); only the
+// label itself must be upper case. A timing mark in front is allowed too.
+const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
+const META_TAG = `^\\s*(?:<\\s*(?:${ci("pause")}|${ci("overlap")})[^>]*>\\s*)*(?:\\*\\*)?\\s*(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?:\\s*[-/(]\\s*(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")})\\s*\\)?)?\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?\\s*)?(?:<\\s*(?:${ci("pause")}|${ci("overlap")})[^>]*>\\s*)*`;
 const metaRe = (label) => new RegExp(`${META_TAG}(?:\\*\\*)?\\s*${label}\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?`);
 const GLOSS_RE = metaRe("GLOSS(?:ES)?");
 export const MAX_GLOSSES = 16;
@@ -408,7 +411,8 @@ export function parseGlosses(text) {
 }
 
 // Quick answers to a check-in question ("keep going?"), shown as buttons.
-const CHOICES_RE = metaRe("CHOICES");
+// "OPTIONS:" is the older label for the same line.
+const CHOICES_RE = metaRe("(?:CHOICES|OPTIONS)");
 export const MAX_CHOICES = 4;
 const CHOICE_CHARS = 60;
 
@@ -439,16 +443,20 @@ export function parseStage(text, ids) {
   for (const rawLine of String(text).split(/\r?\n/)) {
     const m = rawLine.match(STAGE_RE);
     if (!m) continue;
-    const id = rawLine.slice(m[0].length).replace(/\*\*/g, "").trim().split(/\s+/)[0] ?? "";
+    // "scene.", "`scene`", "**scene**": the id without what's around it.
+    const id = (rawLine.slice(m[0].length).replace(/[*`"'“”]/g, "").trim().split(/\s+/)[0] ?? "").replace(/[.,;:!?)]+$/, "");
     if (known.has(id)) out = id;
   }
   return out;
 }
 
 /** The slots that make up a session's parts, around the scene, by mode. */
+// Kids games mostly run during the story, whenever a word needs repeating,
+// so they sit at its start; one tagged "opener" (the echo game) runs before
+// the story, so it sits before the scene.
 const PLAN_SLOTS = {
   adult: { intro: "intro", before: ["warmup"], after: ["debrief"] },
-  kids: { intro: "intro", before: [], during: ["games"], after: ["ending"] },
+  kids: { intro: "intro", before: [], during: ["games"], after: ["ending"], openerTag: "opener" },
 };
 const BEAT_CHARS = 70;
 
@@ -459,24 +467,35 @@ const BEAT_CHARS = 70;
 export function sessionPlan(content, pack, mode = "adult") {
   const cfg = PLAN_SLOTS[mode] ?? PLAN_SLOTS.adult;
   const byId = new Map((content?.units ?? []).map((u) => [u.id, u]));
-  const units = (Array.isArray(pack?.units) ? pack.units : []).map((id) => byId.get(id)).filter(Boolean);
+  // Each unit once, as assemble does: a pack listing one twice must not
+  // show (or run) it twice, and ids must stay unique.
+  const ids = [...new Set(Array.isArray(pack?.units) ? pack.units : [])];
+  const units = ids.map((id) => byId.get(id)).filter(Boolean);
   const inSlot = (slot) => units.filter((u) => u.slot === slot);
+  const opener = (u) => !!cfg.openerTag && Array.isArray(u.tags) && u.tags.includes(cfg.openerTag);
+  const part = (slot, u) => ({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
   const plan = [];
   if (inSlot(cfg.intro).length) plan.push({ id: "intro", title: "Introduction", kind: "intro" });
-  for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u));
+  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter(opener)) plan.push(part(slot, u));
   const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
   const title = scenario?.title || (pack?.quick_scenario ? "Quick scene" : "The scene");
   plan.push({ id: "scene", title, kind: "scene" });
+  // Games played during the story sit at its start: they begin with it and
+  // come back whenever a word needs repeating.
+  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter((u) => !opener(u))) plan.push(part(slot, u));
   const beats = Array.isArray(scenario?.beats) ? scenario.beats : [];
   beats.forEach((b, i) => {
-    const text = String(b).trim();
+    // One line: a beat written over several lines would break the
+    // adapter's list of parts.
+    const text = String(b).replace(/\s+/g, " ").trim();
     // The beat's first clause is its name: "Arriving at the stall; Doña
-    // Carmen calling out…" → "Arriving at the stall".
-    const short = text.split(/[;:—]/)[0].trim();
+    // Carmen calling out…" → "Arriving at the stall". Leading punctuation
+    // is not a clause.
+    const short = text.replace(/^[\s;:—–-]+/, "").split(/[;:—]/)[0].trim() || text;
     plan.push({ id: `beat:${i + 1}`, title: short.length > BEAT_CHARS ? `${short.slice(0, BEAT_CHARS - 1)}…` : short, kind: "beat", detail: text });
   });
-  for (const slot of cfg.during ?? []) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
-  for (const slot of cfg.after) for (const u of inSlot(slot)) plan.push({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  for (const slot of cfg.after) for (const u of inSlot(slot)) plan.push(part(slot, u));
   return plan;
 }
 
@@ -484,7 +503,7 @@ export function sessionPlan(content, pack, mode = "adult") {
 export function planDirective(plan) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped; don't go back to them unless asked.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
 }
 
 /** A turn's glosses as the GLOSS line it came with, for the replay. */
@@ -791,7 +810,10 @@ export function azureVoices(json, locale) {
 // listed has no gender and is used only when no voice of a gender is known.
 const SYSTEM_VOICE_GENDER = new Map([
   ...["Alice", "Alva", "Amélie", "Anna", "Ava", "Carmit", "Damayanti", "Ellen", "Flo", "Grandma", "Ioana", "Joana", "Kanya", "Karen", "Kathy", "Kyoko", "Lana", "Laura", "Lekha", "Luciana", "Mariska", "Marisol", "Meijia", "Melina", "Milena", "Moira", "Montse", "Mónica", "Nora", "Paulina", "Samantha", "Sandy", "Sara", "Satu", "Shelley", "Sinji", "Susan", "Tara", "Tessa", "Tingting", "Victoria", "Yelda", "Yuna", "Zoe", "Zosia", "Zuzana"].map((n) => [n, "female"]),
-  ...["Aaron", "Albert", "Alex", "Aman", "Arthur", "Carlos", "Daniel", "Diego", "Eddy", "Fred", "Grandpa", "Hattori", "Jacques", "Jorge", "Jordi", "Juan", "Junior", "Lee", "Luca", "Maged", "Martin", "Neel", "Oliver", "Otoya", "Ralph", "Reed", "Rishi", "Rocko", "Thomas", "Tom", "Xander", "Yuri"].map((n) => [n, "male"]),
+  ...["Aaron", "Alex", "Aman", "Arthur", "Carlos", "Daniel", "Diego", "Eddy", "Fred", "Grandpa", "Hattori", "Jacques", "Jorge", "Jordi", "Juan", "Junior", "Lee", "Luca", "Maged", "Martin", "Neel", "Oliver", "Otoya", "Ralph", "Reed", "Rishi", "Rocko", "Thomas", "Tom", "Xander", "Yuri"].map((n) => [n, "male"]),
+  // Sound-effect voices: shown in the picker as "novelty", never drawn for a
+  // Random slot (the cast pools only take "female", "male", or no label).
+  ...["Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Good News", "Jester", "Organ", "Superstar", "Trinoids", "Whisper", "Wobble", "Zarvox"].map((n) => [n, "novelty"]),
 ]);
 
 export function systemVoices(text, locale) {
