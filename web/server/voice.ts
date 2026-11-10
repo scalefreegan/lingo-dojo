@@ -247,11 +247,15 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
               .map((g) => ({ lang: g.lang as SegmentLang, text: (g.text as string).slice(0, 4000) }))
           : [];
         const gender = (line as { gender?: unknown }).gender;
+        // The dojo master's own timing marks go back in the replay (timingFor),
+        // so it keeps seeing the format it used.
+        const gap = (line as { gap?: unknown }).gap;
         lines.push({
           speaker: line.speaker as VoiceSpeaker,
           gender: gender === "female" || gender === "male" ? gender : null,
           text: line.text.slice(0, 4000),
           segments,
+          ...(typeof gap === "number" && Number.isFinite(gap) ? { gap: Math.max(-1.5, Math.min(4, gap)) } : {}),
         });
       }
       out.push({ role: "master", lines });

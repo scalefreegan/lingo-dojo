@@ -233,10 +233,12 @@ export function voiceTurnPrompt(history, message) {
 // tag, then an optional gender, in whatever punctuation the model reached for.
 const TAG_RE = /^\s*(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
 
-/** A timing mark at the start of a line, before its tag: `<pause 1.5>` waits
- *  that many seconds first; `<overlap 0.4>` starts the line that much before
- *  the previous one ends (people talking over each other). */
-const TIMING_RE = /^\s*<\s*(pause|overlap)\s+(\d+(?:\.\d+)?)\s*s?\s*\/?\s*>\s*/i;
+/** A timing mark: `<pause 1.5>` waits that many seconds before the line;
+ *  `<overlap 0.4>` starts it that much before the previous one ends (people
+ *  talking over each other). Asked for before the tag, but found anywhere in
+ *  the line (after the tag, inside **bold**, with a decimal comma), so a
+ *  misplaced mark is never read out. */
+const TIMING_RE = /<\s*(pause|overlap)\s*(\d+(?:[.,]\d+)?)?\s*s?\s*\/?\s*>/gi;
 
 /** Gaps between lines, in ms. A switch between the narrator and anyone in
  *  the scene always gets a slight delay (never an overlap), so the learner
@@ -369,11 +371,13 @@ export function parseVoiceReply(text, mode = "adult") {
   for (const rawLine of String(text).split(/\r?\n/)) {
     if (!rawLine.trim()) continue;
     let raw = rawLine;
-    const t = raw.match(TIMING_RE);
-    if (t) {
-      gap = (t[1].toLowerCase() === "overlap" ? -1 : 1) * Number(t[2]);
-      raw = raw.slice(t[0].length);
-      if (!raw.trim()) continue;
+    const marks = [...raw.matchAll(TIMING_RE)];
+    if (marks.length) {
+      // The first mark with a number wins; all of them come out of the text.
+      const t = marks.find((x) => x[2]);
+      if (t) gap = (t[1].toLowerCase() === "overlap" ? -1 : 1) * Number(t[2].replace(",", "."));
+      raw = raw.replace(TIMING_RE, " ").replace(/\*\*\s+/, "**");
+      if (!raw.replace(/\*/g, "").trim()) continue;
     }
     let line = raw;
     const m = raw.match(TAG_RE);

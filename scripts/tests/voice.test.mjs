@@ -210,6 +210,14 @@ CHARACTER-F: <t>¿Me atiende?</t>
   assert.match(replay, /<overlap 0\.4> CHARACTER-F:/);
 });
 
+test("timing: a misplaced mark is still a timing mark, never spoken", () => {
+  const one = (t) => parseVoiceReply(t, "adult").map((l) => [l.speaker, l.gap ?? null, l.text]);
+  assert.deepEqual(one("CHARACTER-M: <pause 1.2> <t>Mmm a ver</t>"), [["character", 1.2, "Mmm a ver"]]);
+  assert.deepEqual(one("**<pause 1.2> CHARACTER-M:** <t>Mmm a ver</t>"), [["character", 1.2, "Mmm a ver"]]);
+  assert.deepEqual(one("<pause 1,5> CHARACTER-M: <t>Hola</t>"), [["character", 1.5, "Hola"]]);
+  assert.deepEqual(one("CHARACTER-F: <t>Sí</t> <pause> claro"), [["character", null, "Sí claro"]]);
+});
+
 test("linePauseMs: defaults by who speaks, clamps what the model asks for", () => {
   const n = { speaker: "narrator", gender: "female" };
   const cm = { speaker: "character", gender: "male" };
