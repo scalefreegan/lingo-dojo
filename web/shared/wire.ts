@@ -469,9 +469,17 @@ export interface VoiceLine {
 }
 
 /** The session so far, as the client holds it (the server keeps none). */
+/** A tap-to-see definition from the dojo master's GLOSS line: `term` is the
+ *  target-language text as spoken (a word, a set phrase, or a whole
+ *  sentence), `meaning` its meaning in the learner's native language. */
+export interface VoiceGloss {
+  term: string;
+  meaning: string;
+}
+
 export type VoiceHistoryItem =
   | { role: "learner"; text: string }
-  | { role: "master"; lines: VoiceLine[] };
+  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[] };
 
 /** POST /api/voice/turn — an empty `message` opens the session. 409 while
  *  another turn is running. */
@@ -487,6 +495,7 @@ export interface VoiceTurnRequest {
 
 export interface VoiceTurnReply {
   lines: VoiceLine[];
+  glosses: VoiceGloss[];
   model: string;
   durationMs: number | null;
   costUsd: number | null;

@@ -96,6 +96,15 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   to act on, not an answer to grade. With "check what it heard" on, the
   words wait in the text box under a small **💬 To the dojo master** tag;
   Send sends them, and the tag's × turns them into a practice answer.
+- **Definitions.** Each turn ends with a `GLOSS:` line the app shows but
+  never speaks: `term = meaning` entries split by ` | `, a translation of
+  each whole target-language sentence plus up to six key words or set
+  phrases. `parseGlosses` reads it (capped at `MAX_GLOSSES`), and the
+  transcript makes each term tappable. Words and short phrases are
+  underlined, and a whole line opens its translation. A word glossed in an
+  earlier turn stays tappable later, because the dojo master doesn't gloss
+  it twice. Glosses go back in the replay, so the model keeps the format,
+  and Copy transcript includes them.
 
 ## Settings
 

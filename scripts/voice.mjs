@@ -192,6 +192,8 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
   NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
   CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
+- End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
+  GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
 - The first message is "[session start]": open the session the way your instructions say.
@@ -221,10 +223,10 @@ export const DIRECT = "[direct]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
-  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master, in tagged lines only.`;
+  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines, then the GLOSS line.`;
 }
 
 /* ------------------------------ the reply side ----------------------------- */
@@ -359,6 +361,43 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
  *  lines by the same speaker and gender merge, and so do adjacent segments
  *  in the same language — each segment is one synthesis call, so one longer
  *  than MAX_SEGMENT_CHARS is split at sentence ends. */
+// The turn's definitions: shown on tap, never spoken.
+const GLOSS_RE = /^\s*(?:\*\*)?\s*GLOSS(?:ES)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?/i;
+export const MAX_GLOSSES = 16;
+const GLOSS_TERM_CHARS = 200;
+const GLOSS_MEANING_CHARS = 300;
+
+/** The GLOSS line(s) of a reply as `{term, meaning}`: "term = meaning"
+ *  entries split on "|", <t> marks dropped, duplicates (by term, ignoring
+ *  case) dropped, capped at MAX_GLOSSES. A malformed entry is skipped, not
+ *  fatal: a missing definition costs nothing that matters. */
+export function parseGlosses(text) {
+  const out = [];
+  const seen = new Set();
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const m = rawLine.match(GLOSS_RE);
+    if (!m) continue;
+    for (const entry of rawLine.slice(m[0].length).split("|")) {
+      const eq = entry.indexOf("=");
+      if (eq < 0) continue;
+      const clean = (x) => x.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim();
+      const term = clean(entry.slice(0, eq)).replace(/^["“”']+|["“”']+$/g, "").trim().slice(0, GLOSS_TERM_CHARS);
+      const meaning = clean(entry.slice(eq + 1)).slice(0, GLOSS_MEANING_CHARS);
+      if (!term || !meaning || seen.has(term.toLowerCase())) continue;
+      seen.add(term.toLowerCase());
+      out.push({ term, meaning });
+      if (out.length >= MAX_GLOSSES) return out;
+    }
+  }
+  return out;
+}
+
+/** A turn's glosses as the GLOSS line it came with, for the replay. */
+function glossLine(glosses) {
+  if (!Array.isArray(glosses) || !glosses.length) return "";
+  return `\nGLOSS: ${glosses.map((g) => `${g.term} = ${g.meaning}`).join(" | ")}`;
+}
+
 export function parseVoiceReply(text, mode = "adult") {
   const allowed = new Set(speakersFor(mode));
   const out = [];
@@ -369,7 +408,7 @@ export function parseVoiceReply(text, mode = "adult") {
   // line of its own).
   let gap = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
-    if (!rawLine.trim()) continue;
+    if (!rawLine.trim() || GLOSS_RE.test(rawLine)) continue;
     let raw = rawLine;
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {

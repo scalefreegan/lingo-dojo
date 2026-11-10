@@ -9,11 +9,11 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseVoiceReply, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, parseGlosses, parseVoiceReply, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceCastReply, VoiceCastRequest,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -259,7 +259,15 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
           ...(typeof gap === "number" && Number.isFinite(gap) ? { gap: Math.max(-1.5, Math.min(4, gap)) } : {}),
         });
       }
-      out.push({ role: "master", lines });
+      // Glosses go back in the replay too, so the dojo master keeps writing
+      // its GLOSS line and knows which words it has already explained.
+      const glosses: VoiceGloss[] = Array.isArray(m.glosses)
+        ? (m.glosses as { term?: unknown; meaning?: unknown }[])
+            .filter((g) => typeof g?.term === "string" && typeof g.meaning === "string")
+            .slice(0, MAX_GLOSSES)
+            .map((g) => ({ term: (g.term as string).slice(0, 200), meaning: (g.meaning as string).slice(0, 300) }))
+        : [];
+      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}) });
     }
   }
   return out.slice(-HISTORY_WINDOW);
@@ -312,7 +320,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    sendJson(res, 200, { lines, model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
+    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
   } finally {
     turning = false;
     res.off("close", onClose);

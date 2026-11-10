@@ -133,6 +133,8 @@ declare module "*/scripts/voice.mjs" {
   export function voiceSystemPrompt(markdown: string, mode: Mode): string;
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
+  export const MAX_GLOSSES: number;
+  export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
   export function voiceSlots(mode: Mode): import("../shared/wire.ts").VoiceSlot[];
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */

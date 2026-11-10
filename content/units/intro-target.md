@@ -6,7 +6,8 @@ summary: Set the scene directly in the target language, spoken slowly with gestu
 tags: [intro, orientation, immersive]
 level: [A2, B1]
 ---
-Open the session speaking only {{target_language}}, slowly and clearly, at
+If this session has a warm-up, run it first, and use this opening when the
+scene begins. Open the scene speaking only {{target_language}}, slowly and clearly, at
 about three-quarters of your normal pace. Do not use {{native_language}} at
 all, even to explain what's happening. In two or three sentences, greet
 {{learner_name}} in character, and describe where you are and what you're

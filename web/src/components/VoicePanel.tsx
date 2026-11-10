@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
+import { Glossed } from "./Glossed";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
-  VoiceCastReply, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
+  VoiceCastReply, VoiceGloss, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -77,6 +78,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
+  // The definition open under one line ("turn:line"), from a tap on a
+  // glossed word or sentence; tapping it again closes it.
+  const [picked, setPicked] = useState<{ at: string; gloss: VoiceGloss } | null>(null);
+  const glosses = useMemo(() => sessionGlosses(entries), [entries]);
+  const pick = (at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss === gloss ? null : { at, gloss }));
   const [phase, setPhaseState] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -347,7 +353,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
-      setSession([...history, { role: "master", lines: r.lines }]);
+      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}) }]);
       await playLines(idx, r.lines, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
@@ -485,6 +491,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     castRef.current = null;
     setCast(null);
     setSession([]);
+    setPicked(null);
     setComposer("");
     setError(null);
     setNotice(null);
@@ -605,9 +612,21 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                       {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                         <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
                           {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
-                          {g.text}
+                          {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => pick(`${i}:${j}`, gl)} /> : g.text}
                         </span>
                       ))}
+                      {picked?.at === `${i}:${j}` && (
+                        <span className="mt-1.5 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg" role="status" data-testid="voice-gloss">
+                          <span className="flex-1">
+                            <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
+                            <span className="text-fg-3"> — </span>
+                            {picked.gloss.meaning}
+                          </span>
+                          <button type="button" className="text-fg-3 hover:text-fg" aria-label="Close definition" onClick={() => setPicked(null)}>
+                            ×
+                          </button>
+                        </span>
+                      )}
                     </span>
                     <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => void replay(i, j, m.lines)}>
                       ▶
@@ -618,6 +637,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             ),
           )}
         </ol>
+      )}
+      {glosses.length > 0 && (
+        <p className="text-xs text-fg-3">
+          Tap an underlined word for its meaning, or any line in {langs.target || "the target language"} for a translation.
+        </p>
       )}
 
       {(phase !== "idle" || notice) && (
@@ -652,7 +676,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               </Button>
             ) : (
               <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void startListening()} disabled={!sttReady || busy} title={sttReady ? "Records your answer — Space also works" : "Set up a speech-to-text provider first"}>
-                🎙 Talk
+                <VoiceWave /> Talk
               </Button>
             )}
             {phase !== "recording" && (
@@ -749,7 +773,10 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
 const GENDER_LABEL: Record<VoiceGender, string> = { female: "woman", male: "man" };
 
 function lineLabel(l: VoiceLine): string {
-  return l.gender ? `${SPEAKER_LABEL[l.speaker]} · ${GENDER_LABEL[l.gender]}` : SPEAKER_LABEL[l.speaker];
+  // The narrator is one voice for the whole session (the cast fixes it), so
+  // its line-by-line gender tag says nothing and can be wrong.
+  if (l.speaker === "narrator" || !l.gender) return SPEAKER_LABEL[l.speaker];
+  return `${SPEAKER_LABEL[l.speaker]} · ${GENDER_LABEL[l.gender]}`;
 }
 
 function slotLabel(slot: VoiceSlot): string {
@@ -759,7 +786,7 @@ function slotLabel(slot: VoiceSlot): string {
 
 function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n")))
+    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
     .join("\n\n");
 }
 
@@ -1234,7 +1261,9 @@ function expectedPhrases(history: VoiceHistoryItem[]): string[] {
  *  untagged character line, whichever of the speaker's slots exists. */
 function castVoiceFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
   if (!cast) return undefined;
-  const g = line.gender ?? (line.speaker === "narrator" ? cast.narratorGender : null);
+  // The narrator keeps the session's voice even when a line's tag says
+  // otherwise: one narrator, one voice.
+  const g = line.speaker === "narrator" ? cast.narratorGender : line.gender;
   const c = cast.cast;
   return (g ? c[`${line.speaker}:${g}`] : (c[`${line.speaker}:female`] ?? c[`${line.speaker}:male`]))?.id;
 }
@@ -1270,3 +1299,30 @@ const MOOD_LABEL: Record<MochiMood, string> = {
   talking: "speaking",
   listening: "listening",
 };
+
+/** The Talk button's icon: a sound wave, the usual mark for "talk to the
+ *  assistant" in voice apps, rather than a microphone. */
+function VoiceWave() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+      <path d="M3 8.5v3M7 5.5v9M11 3v14M15 6.5v7M19 9v2" />
+    </svg>
+  );
+}
+
+/** Every gloss in the session so far, the first wording of a term winning:
+ *  the dojo master doesn't re-gloss a word it already explained, so a word
+ *  from turn two must still be tappable in turn five. */
+function sessionGlosses(entries: { role: string; glosses?: VoiceGloss[] }[]): VoiceGloss[] {
+  const seen = new Set<string>();
+  const out: VoiceGloss[] = [];
+  for (const e of entries) {
+    for (const g of e.glosses ?? []) {
+      const k = g.term.toLocaleLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(g);
+    }
+  }
+  return out;
+}
