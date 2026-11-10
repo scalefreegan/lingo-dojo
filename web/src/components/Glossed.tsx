@@ -1,124 +1,69 @@
 import type { ReactNode } from "react";
 import type { VoiceGloss } from "../../shared/wire";
+import { isSentence, layout } from "../gloss";
 
 /* Tap-to-see definitions on the dojo master's target-language text.
  *
- * The dojo master glosses whole sentences and the key words inside them, so
- * matches nest: a sentence is one tappable span and its key words are
- * tappable spans inside it (tapping a word shows the word, tapping the rest
- * of the sentence shows the translation). One level of nesting is enough;
- * a match that half-overlaps another is dropped rather than guessed at. */
+ * The dojo master glosses whole sentences and the key words inside them.
+ * Words and short phrases are buttons (underlined); a whole sentence is not
+ * a control of its own, because a button inside a button is unreachable to
+ * assistive tech. Tapping the rest of a sentence still opens its
+ * translation as a pointer convenience, and the line's own translate button
+ * (VoicePanel, from `sentenceGlosses`) is the keyboard and screen-reader
+ * way to it. One level of nesting is enough; a match that half-overlaps
+ * another is dropped rather than guessed at. */
 
-interface Hit {
-  start: number;
-  end: number;
-  gloss: VoiceGloss;
-}
-
-// "¿A cómo?" should still match "¿a cómo es el kilo?": the term's own
-// opening and closing punctuation is not part of what has to match.
-const EDGE_PUNCT = /^[\s¿¡"“”'«(]+|[\s.,;:!?…"“”'»)。！？、，]+$/gu;
-const LETTER = /[\p{L}\p{N}]/u;
-// Scripts written without spaces have no word boundaries to check.
-const NO_SPACES = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u;
-
-const wordCount = (s: string) => s.trim().split(/\s+/).length;
-
-function findHits(text: string, glosses: VoiceGloss[]): Hit[] {
-  const hay = text.toLocaleLowerCase();
-  const all: Hit[] = [];
-  for (const gloss of glosses) {
-    const needle = gloss.term.replace(EDGE_PUNCT, "").toLocaleLowerCase();
-    // Lowercasing must not shift indices, or the spans would be cut wrong.
-    if (!needle || needle.length !== gloss.term.replace(EDGE_PUNCT, "").length || hay.length !== text.length) continue;
-    const bounded = !NO_SPACES.test(needle);
-    for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
-      const end = at + needle.length;
-      if (bounded && ((at > 0 && LETTER.test(hay[at - 1])) || (end < hay.length && LETTER.test(hay[end])))) continue;
-      // Take back the term's own ¿…? or ¡…! so the tap target looks whole.
-      let s = at;
-      let e = end;
-      while (s > 0 && /[¿¡]/.test(text[s - 1])) s--;
-      while (e < text.length && /[?!]/.test(text[e])) e++;
-      all.push({ start: s, end: e, gloss });
-    }
-  }
-  // Longest first, so an outer sentence claims its span before its words.
-  all.sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
-  return all;
-}
-
-interface Node extends Hit {
-  inner: Hit[];
-}
-
-function layout(text: string, glosses: VoiceGloss[]): Node[] {
-  const outer: Node[] = [];
-  for (const h of findHits(text, glosses)) {
-    const parent = outer.find((o) => h.start >= o.start && h.end <= o.end);
-    if (parent) {
-      if (parent.start === h.start && parent.end === h.end) continue;
-      if (parent.inner.some((i) => h.start < i.end && i.start < h.end)) continue;
-      parent.inner.push(h);
-    } else if (!outer.some((o) => h.start < o.end && o.start < h.end)) {
-      outer.push({ ...h, inner: [] });
-    }
-  }
-  outer.sort((a, b) => a.start - b.start);
-  for (const o of outer) o.inner.sort((a, b) => a.start - b.start);
-  return outer;
-}
-
-function Term({ gloss, active, onPick, underline, children }: { gloss: VoiceGloss; active: boolean; onPick: (g: VoiceGloss) => void; underline: boolean; children: ReactNode }) {
+function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: boolean; onPick: (g: VoiceGloss) => void; children: ReactNode }) {
   return (
-    <span
-      role="button"
-      tabIndex={0}
+    <button
+      type="button"
       aria-pressed={active}
       title={gloss.meaning}
-      className={`cursor-pointer rounded-sm hover:bg-accent-soft focus-visible:outline-2 ${underline ? "underline decoration-dotted decoration-1 underline-offset-4" : ""} ${active ? "bg-accent-soft" : ""}`}
+      className={`inline cursor-pointer rounded-sm p-0 text-left font-[inherit] text-inherit underline decoration-dotted decoration-1 underline-offset-4 hover:bg-accent-soft ${active ? "bg-accent-soft" : ""}`}
       onClick={(e) => {
-        e.stopPropagation();
-        onPick(gloss);
-      }}
-      onKeyDown={(e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        e.preventDefault();
         e.stopPropagation();
         onPick(gloss);
       }}
     >
       {children}
-    </span>
+    </button>
   );
 }
 
-/** `text` with every glossed word, phrase, or sentence tappable. */
-export function Glossed({ text, glosses, picked, onPick }: { text: string; glosses: VoiceGloss[]; picked: VoiceGloss | null; onPick: (g: VoiceGloss) => void }) {
+/** `text` with every glossed word or phrase a button, and every glossed
+ *  sentence opening its translation on a pointer tap. */
+export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: string; glosses: VoiceGloss[]; picked: VoiceGloss | null; onPick: (g: VoiceGloss) => void; locale?: string }) {
+  const text = raw.normalize("NFC");
   if (!glosses.length) return <>{text}</>;
   const out: ReactNode[] = [];
   let at = 0;
-  for (const o of layout(text, glosses)) {
+  for (const o of layout(text, glosses, locale)) {
     if (o.start > at) out.push(text.slice(at, o.start));
+    if (!isSentence(o.gloss) && !o.inner.length) {
+      out.push(
+        <Word key={o.start} gloss={o.gloss} active={picked === o.gloss} onPick={onPick}>
+          {text.slice(o.start, o.end)}
+        </Word>,
+      );
+      at = o.end;
+      continue;
+    }
     const parts: ReactNode[] = [];
     let i = o.start;
     for (const h of o.inner) {
       if (h.start > i) parts.push(text.slice(i, h.start));
       parts.push(
-        <Term key={h.start} gloss={h.gloss} active={picked === h.gloss} onPick={onPick} underline>
+        <Word key={h.start} gloss={h.gloss} active={picked === h.gloss} onPick={onPick}>
           {text.slice(h.start, h.end)}
-        </Term>,
+        </Word>,
       );
       i = h.end;
     }
     if (o.end > i) parts.push(text.slice(i, o.end));
-    // Words and short phrases are underlined; a whole sentence is tappable
-    // (for its translation) but not underlined, or every line of Spanish
-    // would be.
     out.push(
-      <Term key={o.start} gloss={o.gloss} active={picked === o.gloss} onPick={onPick} underline={!o.inner.length && wordCount(o.gloss.term) <= 3}>
+      <span key={o.start} className={`cursor-pointer rounded-sm hover:bg-accent-soft/60 ${picked === o.gloss ? "bg-accent-soft/60" : ""}`} onClick={() => onPick(o.gloss)}>
         {parts}
-      </Term>,
+      </span>,
     );
     at = o.end;
   }

@@ -5,9 +5,11 @@ import {
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
 import { Glossed } from "./Glossed";
+import { SessionTimeline } from "./SessionTimeline";
+import { sentenceGlosses } from "../gloss";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
-  VoiceCastReply, VoiceGloss, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
+  VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -32,9 +34,13 @@ const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instan
 const SKIP = "[skip]";
 const HELP = "[help]";
 const EXPLAIN = "[explain]";
+/** Prefix of a timeline jump; scripts/voice.mjs JUMP must match. */
+const JUMP = "[jump]";
 const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
 /** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
 const DIRECT = "[direct]";
+/** Whether the timeline beside the transcript is open (per browser). */
+const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
 const MASTER_ACK = "Yes? I'm listening.";
 const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
@@ -85,11 +91,41 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // glossed word or sentence; tapping it again closes it.
   const [picked, setPicked] = useState<{ at: string; gloss: VoiceGloss } | null>(null);
   const glosses = useMemo(() => sessionGlosses(entries), [entries]);
-  const pick = (at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss === gloss ? null : { at, gloss }));
+  // By term, not identity: a line's translate button builds its gloss fresh
+  // each render.
+  const pick = (at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss.term === gloss.term ? null : { at, gloss }));
+  // The session's parts (from the server, each turn) and where it is now.
+  const [plan, setPlan] = useState<VoicePlanItem[]>([]);
+  const stage = useMemo(() => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if (e.role === "master" && e.stage) return e.stage;
+    }
+    return null;
+  }, [entries]);
+  const [timelineOpen, setTimelineOpen] = useState(() => {
+    try {
+      return localStorage.getItem(TIMELINE_KEY) !== "closed";
+    } catch {
+      return true;
+    }
+  });
+  const toggleTimeline = () =>
+    setTimelineOpen((o) => {
+      try {
+        localStorage.setItem(TIMELINE_KEY, o ? "closed" : "open");
+      } catch {
+        /* a remembered panel state is a convenience */
+      }
+      return !o;
+    });
   const [phase, setPhaseState] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [composer, setComposer] = useState("");
+  useEffect(() => {
+    composerTextRef.current = composer;
+  }, [composer]);
   // The composer (and the recording behind it) speaks straight to the dojo
   // master, in the native language, rather than answering the practice.
   // `direct` is the composer's toggle. It changes only when the learner flips
@@ -97,6 +133,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // cancelled or unheard recording can't leave it on. The recording's own
   // mode is fixed when it starts (directRef, and recDirect for its label).
   const [direct, setDirect] = useState(false);
+  useEffect(() => {
+    directTagRef.current = direct;
+  }, [direct]);
   const directRef = useRef(false);
   const [recDirect, setRecDirect] = useState(false);
   const [level, setLevel] = useState(0);
@@ -119,6 +158,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const urls = useRef(new Map<string, Promise<string>>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  // The tag and the box's text as of the latest render, for code that runs
+  // after an await (the hands-free re-listen, a transcript landing) and must
+  // not see the values from the render that started it.
+  const directTagRef = useRef(false);
+  const composerTextRef = useRef("");
   // The box grows with what's in it (up to its max height, then scrolls).
   // Measured before paint so it never flickers a line short.
   useLayoutEffect(() => {
@@ -237,13 +281,25 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
       setChars((c) => c + seg.text.length);
       p = speakLine(
-        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line) },
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line), provider: castRef.current?.provider },
         signal,
       ).then((b) => URL.createObjectURL(b));
-      urls.current.set(key, p);
-      p.catch(() => urls.current.delete(key));
+      const mine = p;
+      urls.current.set(key, mine);
+      // A failed fetch leaves the cache (this handler runs before the
+      // caller's, so a retry below finds the slot empty).
+      mine.catch(() => {
+        if (urls.current.get(key) === mine) urls.current.delete(key);
+      });
     }
-    return p;
+    // The cached fetch carries the signal of whoever started it. When that
+    // caller was stopped (a prefetch cut off by tapping ▶, a "yes?" cut off
+    // by a second tap) but this one wasn't, fetch again rather than inherit
+    // their abort and play nothing.
+    return p.catch((e: unknown) => {
+      if (isAbort(e) && !signal.aborted) return audioFor(key, line, seg, signal);
+      throw e;
+    });
   }
 
   /** Play one clip. Resolves when it ends, or `leadMs` before it ends when
@@ -364,7 +420,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
-      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}) }]);
+      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}) }]);
+      if (r.plan?.length) setPlan(r.plan);
       await playLines(idx, r.lines, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
@@ -384,8 +441,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     if (!s || recRef.current || phaseRef.current === "opening") return;
     // Talking over the dojo master is allowed: it stops them.
     stopAll();
-    // Talk with the toggle on dictates to the master too, matching the toggle.
-    directRef.current = toMaster || direct;
+    // Talk with the tag on dictates to the master too, matching the tag.
+    directRef.current = toMaster || directTagRef.current;
     setRecDirect(directRef.current);
     const gen = genRef.current;
     phaseRef.current = "opening";
@@ -445,14 +502,19 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
         setNotice("Couldn't make out any words — try again.");
         return;
       }
-      if (settingsRef.current?.review) {
+      // A request to the dojo master with a practice answer already drafted
+      // in the box goes straight out: the tag covers the whole box, so
+      // joining them would send the draft to the dojo master too.
+      const draft = composerTextRef.current.trim();
+      const intoBox = settingsRef.current?.review && !(toMaster && draft && !directTagRef.current);
+      if (intoBox) {
         setComposer((c) => (c.trim() ? `${c.trim()} ${text}` : text));
         if (toMaster) setDirect(true);
         setPhase("idle");
         window.setTimeout(() => composerRef.current?.focus(), 0);
         return;
       }
-      setDirect(false);
+      if (!draft || !toMaster) setDirect(false);
       await runTurn(toMaster ? `${DIRECT} ${text}` : text, gen);
     } catch (e) {
       if (isAbort(e) || gen !== genRef.current) return;
@@ -461,8 +523,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     }
   }
 
-  /** Skip ("[skip]": move on) or Help ("[help]": what's asked, plus a
-   *  hint that grows each time). Like Send, either cuts off speech, and it
+  /** Skip ("[skip]": move on), Help ("[help]": what's asked, plus a hint
+   *  that grows each time) or Explain ("[explain]": more on what was just
+   *  said). Like Send, either cuts off speech, and it
    *  drops a recording in progress. */
   function control(message: string) {
     if (phase !== "idle" && phase !== "speaking" && phase !== "recording") return;
@@ -487,6 +550,15 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     if (!canAct) return;
     if (phase !== "idle") stopAll();
     void runTurn(`${DIRECT} ${label}`);
+  }
+
+  /** A part of the session tapped on the timeline: the dojo master goes
+   *  straight there ("[jump] <id>"). */
+  function jump(item: VoicePlanItem) {
+    if (!canAct || item.id === stage) return;
+    if (phase !== "idle") stopAll();
+    setPicked(null);
+    void runTurn(`${JUMP} ${item.id}`);
   }
 
   /** The Dojo master button: the narrator answers "yes?" in the learner's
@@ -537,6 +609,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     setCast(null);
     setSession([]);
     setPicked(null);
+    setPlan([]);
     setComposer("");
     setError(null);
     setNotice(null);
@@ -639,12 +712,16 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       )}
 
       {started && (
-        <ol className="flex max-h-[28rem] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+        {plan.length > 0 && <SessionTimeline plan={plan} stage={stage} open={timelineOpen} onToggle={toggleTimeline} onJump={jump} disabled={!canAct} />}
+        <ol className="flex max-h-[28rem] min-w-0 flex-1 flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
           {entries.map((m, i) =>
             m.role === "learner" ? (
               <li key={i} className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
                 {CONTROL_LABEL[m.text] ? (
                   <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
+                ) : jumpTarget(m.text) != null ? (
+                  <span className="text-fg-3 italic">Jumped to {planTitle(plan, jumpTarget(m.text) as string)}</span>
                 ) : directText(m.text) != null ? (
                   <>
                     <span className="text-fg-3 italic">To the dojo master: </span>
@@ -664,7 +741,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                       {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                         <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
                           {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
-                          {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => pick(`${i}:${j}`, gl)} /> : g.text}
+                          {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => pick(`${i}:${j}`, gl)} /> : g.text}
                         </span>
                       ))}
                       {picked?.at === `${i}:${j}` && (
@@ -680,6 +757,18 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                         </span>
                       )}
                     </span>
+                    {(() => {
+                      // The line's translation: every glossed sentence in it,
+                      // one tap (and the keyboard's way to them).
+                      const tr = sentenceGlosses(l.segments.filter((g) => g.lang === "target").map((g) => g.text), glosses, locale ?? undefined);
+                      if (!tr.length) return null;
+                      const gloss = tr.length === 1 ? tr[0] : { term: tr.map((t) => t.term).join(" "), meaning: tr.map((t) => t.meaning).join(" ") };
+                      return (
+                        <button type="button" className="shrink-0 rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label="Translate line" title="Translate" aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => pick(`${i}:${j}`, gloss)}>
+                          {langs.native ? langs.native.slice(0, 2).toUpperCase() : "Tr"}
+                        </button>
+                      );
+                    })()}
                     <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => void replay(i, j, m.lines)}>
                       ▶
                     </button>
@@ -689,11 +778,12 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             ),
           )}
         </ol>
+        </div>
       )}
       {lastChoices.length > 0 && canAct && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
-          {lastChoices.map((c) => (
-            <QuickButton key={c} variant="choice" onClick={() => choose(c)}>
+          {lastChoices.map((c, k) => (
+            <QuickButton key={`${k}:${c}`} variant="choice" onClick={() => choose(c)}>
               {c}
             </QuickButton>
           ))}
@@ -704,7 +794,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       )}
       {glosses.length > 0 && (
         <p className="text-xs text-fg-3">
-          Tap an underlined word for its meaning, or any line in {langs.target || "the target language"} for a translation.
+          Tap an underlined word for its meaning; {langs.native ? langs.native.slice(0, 2).toUpperCase() : "Tr"} beside a line translates it.
         </p>
       )}
 
@@ -797,7 +887,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                     : "Type an answer, or tap the wave to speak"
               }
               value={composer}
-              onChange={(e) => setComposer(e.target.value)}
+              onChange={(e) => {
+                setComposer(e.target.value);
+                // An emptied box is no longer a message to the dojo master.
+                if (!e.target.value.trim()) setDirect(false);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -845,7 +939,7 @@ function slotLabel(slot: VoiceSlot): string {
 
 function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
+    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : jumpTarget(m.text) != null ? `(jumped to ${jumpTarget(m.text)})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
     .join("\n\n");
 }
 
@@ -1443,4 +1537,13 @@ function SendIcon() {
       <path d="M5 3.5 17 10 5 16.5Z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
     </svg>
   );
+}
+
+/** The part id of a "[jump] <id>" message; null for anything else. */
+function jumpTarget(text: string): string | null {
+  return text.startsWith(`${JUMP} `) ? text.slice(JUMP.length + 1).trim() : null;
+}
+
+function planTitle(plan: VoicePlanItem[], id: string): string {
+  return plan.find((p) => p.id === id)?.title ?? id;
 }

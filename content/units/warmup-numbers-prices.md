@@ -15,4 +15,5 @@ at natural speed, ask {{learner_name}} to repeat it back, then ask them to
 produce it again from a prompt in {{native_language}} without you modeling
 it first. Mix in one or two questions like "how much is three of these?"
 that require simple addition or multiplication out loud. When you're done,
-tell {{learner_name}} you're switching back into the scene, then begin it.
+tell {{learner_name}} what comes next, then move on to the next part of the
+session.

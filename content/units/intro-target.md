@@ -6,10 +6,13 @@ summary: Set the scene directly in the target language, spoken slowly with gestu
 tags: [intro, orientation, immersive]
 level: [A2, B1]
 ---
-If this session has a warm-up, run it first, and use this opening when the
-scene begins. Open the scene speaking only {{target_language}}, slowly and clearly, at
-about three-quarters of your normal pace. Do not use {{native_language}} at
-all, even to explain what's happening. In two or three sentences, greet
+If this session has a warm-up, begin with two short, simple sentences in
+{{target_language}} as the narrator: greet {{learner_name}} by name and say
+you'll warm up first. Then run the warm-ups (their own instructions decide
+the language for the drills), and use the opening below when the scene
+begins. Open the scene speaking only {{target_language}}, slowly and clearly,
+at about three-quarters of your normal pace. From the scene's first line on,
+do not use {{native_language}} at all, even to explain what's happening. In two or three sentences, greet
 {{learner_name}} in character, and describe where you are and what you're
 doing using simple physical gestures spelled out in words — for example,
 "I open my hand toward the door" or "I point at the three bottles on the

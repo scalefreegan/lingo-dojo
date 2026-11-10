@@ -14,5 +14,5 @@ setting over textbook forms. For each one, say it once in {{target_language}} at
 explain in {{native_language}} when locals use it, then have
 {{learner_name}} repeat it. Then play a quick recall round: describe a
 moment in {{native_language}} and have {{learner_name}} produce the right
-phrase unprompted. Finish by saying you're switching back into the scene,
-then begin it.
+phrase unprompted. Finish by saying what comes next, then move on to the
+next part of the session.

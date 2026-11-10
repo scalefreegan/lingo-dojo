@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
-import { parseChoices, parseGlosses, MAX_CHOICES, MAX_GLOSSES, EXPLAIN } from "../voice.mjs";
+import { parseChoices, parseGlosses, parseStage, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, EXPLAIN, JUMP } from "../voice.mjs";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
@@ -91,7 +91,7 @@ test("voiceTurnPrompt: replays the session and opens with the start marker", () 
   );
   assert.match(p, /\[DOJO MASTER\]\nCHARACTER: ¡Hola!/);
   assert.match(p, /\[LEARNER\]\nhola/);
-  assert.ok(p.trimEnd().endsWith("Reply as the dojo master: tagged lines, then the GLOSS line."));
+  assert.ok(p.trimEnd().endsWith("Reply as the dojo master: tagged lines first, then any GLOSS, CHOICES and STAGE lines, in that order."));
   assert.match(p, /\[LEARNER\]\n¿cuánto cuesta\?\n\n\[DOJO MASTER\]/);
 });
 
@@ -474,9 +474,15 @@ test("GLOSS lines become definitions and are never spoken", () => {
     { term: "¡Pásele, güero! ¿Qué le doy?", meaning: "Come on in! What can I get you?" },
     { term: "güero", meaning: "blondie, a friendly nickname" },
   ]);
-  // A bold or plural label is still a gloss line, not a narrator line.
-  assert.equal(parseVoiceReply("NARRATOR-M: Hi\n**Glosses:** hola = hi").length, 1);
-  assert.equal(parseGlosses("**Glosses:** hola = hi")[0].term, "hola");
+  // A bold or plural label is still a gloss line, not a narrator line, and
+  // so is one with a speaker tag in front.
+  assert.equal(parseVoiceReply("NARRATOR-M: Hi\n**GLOSSES:** hola = hi").length, 1);
+  assert.equal(parseGlosses("**GLOSSES:** hola = hi")[0].term, "hola");
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\nNARRATOR-M: GLOSS: hola = hi").map((l) => l.text), ["Hi"]);
+  assert.equal(parseGlosses("NARRATOR-M: GLOSS: hola = hi")[0].term, "hola");
+  // Spoken words that merely start like a label stay speech.
+  assert.deepEqual(parseVoiceReply("NARRATOR-F: Two ways to answer.\nOptions: <t>sí</t> or <t>no</t>.\nGloss: that one means yes.").map((l) => l.text), ["Two ways to answer. Options: sí or no. Gloss: that one means yes."]);
+  assert.deepEqual(parseGlosses("Gloss: that = this"), []);
   assert.deepEqual(parseGlosses("NARRATOR-M: x = y"), []);
   const many = `GLOSS: ${Array.from({ length: 40 }, (_, i) => `w${i} = m${i}`).join(" | ")}`;
   assert.equal(parseGlosses(many).length, MAX_GLOSSES);
@@ -505,4 +511,49 @@ test("the adapter explains Explain and choices", () => {
   const a = voiceAdapter("adult");
   assert.ok(a.includes(`"${EXPLAIN}"`));
   assert.match(a, /CHOICES: Keep going \| Slow down/);
+});
+
+test("sessionPlan: intro, warm-ups, the scene and its beats, then the debrief", () => {
+  const content = {
+    units: [
+      { id: "intro-native", slot: "intro", title: "Open in the native language" },
+      { id: "warmup-phrases", slot: "warmup", title: "Phrase warm-up" },
+      { id: "warmup-greetings", slot: "warmup", title: "Greetings warm-up" },
+      { id: "correct-gently", slot: "corrections", title: "Gentle" },
+      { id: "debrief-top-three", slot: "debrief", title: "Top three" },
+    ],
+    scenarios: [{ id: "market", title: "The market", beats: ["Arriving at the stall; Doña Carmen calling out", "Paying and saying goodbye"] }],
+  };
+  const pack = { scenario: "market", units: ["correct-gently", "warmup-greetings", "intro-native", "warmup-phrases", "debrief-top-three", "missing"] };
+  const plan = sessionPlan(content, pack);
+  assert.deepEqual(plan.map((p) => p.id), ["intro", "warmup:warmup-greetings", "warmup:warmup-phrases", "scene", "beat:1", "beat:2", "debrief:debrief-top-three"]);
+  assert.equal(plan[4].title, "Arriving at the stall");
+  assert.equal(plan[4].detail, "Arriving at the stall; Doña Carmen calling out");
+  assert.equal(sessionPlan(content, { quick_scenario: "a taco stand", units: [] })[0].title, "Quick scene");
+  const d = planDirective(plan);
+  assert.match(d, /- beat:1: Arriving at the stall; Doña Carmen calling out/);
+  assert.match(d, /STAGE: intro/);
+  assert.ok(d.includes(`"${JUMP} <id>"`));
+  assert.equal(planDirective([]), "");
+});
+
+test("parseStage: only a known part id counts, the last one wins", () => {
+  const ids = ["intro", "warmup:warmup-phrases", "scene"];
+  assert.equal(parseStage("NARRATOR-F: Hi\nSTAGE: warmup:warmup-phrases", ids), "warmup:warmup-phrases");
+  assert.equal(parseStage("STAGE: intro\nSTAGE: **scene**", ids), "scene");
+  assert.equal(parseStage("STAGE: beat:9", ids), null);
+  assert.equal(parseStage("Stage: scene", ids), null, "a spoken 'Stage:' is not a stage line");
+  assert.deepEqual(parseVoiceReply("NARRATOR-F: Hi\nSTAGE: scene").map((l) => l.text), ["Hi"]);
+  assert.match(voiceTurnPrompt([{ role: "master", lines: parseVoiceReply("NARRATOR-F: Hi"), stage: "scene" }], "x"), /NARRATOR-F: Hi\nSTAGE: scene/);
+});
+
+test("pinnedNarratorGender: a user-made narrator unit naming a gender counts", () => {
+  assert.equal(pinnedNarratorGender(["narrator-female-slow"]), "female");
+  assert.equal(pinnedNarratorGender(["narrator-kids-male"]), "male");
+  assert.equal(pinnedNarratorGender(["narrator-native-rotating"]), null);
+});
+
+test("systemVoices: known macOS voices carry their gender", () => {
+  const list = "Paulina             es_MX    # Hola\nEddy (Spanish (Mexico)) es_MX    # Hola\nNovelty             es_MX    # Hola";
+  assert.deepEqual(systemVoices(list, "es-MX").map((v) => [v.name, v.gender]), [["Paulina", "female"], ["Eddy (Spanish (Mexico))", "male"], ["Novelty", ""]]);
 });

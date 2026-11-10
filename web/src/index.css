@@ -43,9 +43,11 @@
 /* Kids mode (App sets data-mode on <html>): same dojo, a tangerine belt,
    so a glance at any button says which library is open. */
 :root[data-mode="kids"] {
-  --accent: #e2611a;
-  --accent-hover: #cc5514;
-  --accent-edge: #a3420c;
+  /* Burnt tangerine: white button text and accent text on the soft tint
+     both stay above 4.5:1 (a brighter #e2611a gave 3.5:1). */
+  --accent: #ad4709;
+  --accent-hover: #963d07;
+  --accent-edge: #6f2c04;
   --accent-ink: #ffffff;
   --accent-soft: #fde6d6;
 }
@@ -151,11 +153,15 @@ h3 {
   letter-spacing: 0.005em;
 }
 
-/* One visible focus ring everywhere, keyboard only. */
-:focus-visible {
-  outline: 2.5px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 0.6rem;
+/* One visible focus ring everywhere, keyboard only. In the base layer so
+   a utility (focus:outline-none on inputs that draw their own ring) still
+   wins, and with no radius of its own: the ring follows each control's
+   shape, round buttons included. */
+@layer base {
+  :focus-visible {
+    outline: 2.5px solid var(--accent);
+    outline-offset: 2px;
+  }
 }
 
 /* The practice mat, behind the voice session only: tatami's fine straw
