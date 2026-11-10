@@ -2,7 +2,7 @@
 id: correct-gently
 slot: corrections
 title: Gentle narrator asides
-summary: The narrator cuts in briefly with the more natural phrasing, then the character carries on in the scene.
+summary: The narrator cuts in briefly with the natural phrasing and offers a retry; the character then carries on in the scene.
 tags: [corrections, beginner-friendly]
 default: true
 level: [A1, A2, B1]
@@ -13,11 +13,15 @@ opens with a short cue like "quick note", says what {{learner_name}} said
 the way a native speaker would, keeping their own words wherever they work,
 once in {{target_language}}, and adds only as much {{native_language}} as it
 takes to make the point clear: often none, at most a few words on what
-changed or what it means. Don't name the grammar rule, don't say "that was
-wrong", and don't ask {{learner_name}} to repeat it. Then the character
-answers what {{learner_name}} meant, fully in character, as if the aside
-never happened, and the scene carries on. The character never corrects or
-rephrases the learner's words. Only correct errors that matter: ones that
+changed or what it means. Don't name the grammar rule and don't say "that
+was wrong". Then invite {{learner_name}} to try it again, in a few words
+("want to try that again?"), and stop to wait: the character does not
+answer yet. When they try again, the character answers what they meant,
+fully in character, as if the aside never happened, and the scene carries
+on. Don't correct the second try unless it changes the meaning; if it is
+still off, let it go. If they skip or just carry on instead of retrying,
+the character answers what they first said. The character never corrects
+or rephrases the learner's words. Only correct errors that matter: ones that
 change the meaning, sound clearly unnatural, or touch a unit's focus. When
 what {{learner_name}} said is correct and understandable, there is no aside,
 even if a local would phrase it differently; save those alternatives for the
