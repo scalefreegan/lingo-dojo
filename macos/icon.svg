@@ -1,37 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Lingo Dojo app icon: a gold torii gate against a red sun, with a white
-     speech bubble between the pillars (a conversation inside the dojo), on a
-     deep indigo rounded tile. Flat shapes only; sips rasterizes via
-     CoreGraphics' basic SVG support, so no filters, no text. Rendered to
-     icon-1024.png by render-icon.sh. -->
+<!-- Lingo Dojo app icon: Sensei Mochi, the dojo master mascot (see
+     web/src/components/Mascots.tsx; the same drawing as favicon.svg), sitting
+     on a tatami mat with an indigo heri border, in the app's palette. Flat
+     shapes only; sips rasterizes via CoreGraphics' basic SVG support, so no
+     filters, no text. Rendered to icon-1024.png by render-icon.sh. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- tile -->
-  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#1b1f3a"/>
-  <!-- rising sun -->
-  <circle cx="512" cy="470" r="250" fill="#b8322b"/>
-  <!-- torii, gold -->
-  <g fill="#f2b949">
-    <!-- kasagi: top beam, ends sweep upward -->
-    <path d="M150 262 Q512 322 874 262 L874 338 Q512 398 150 338 Z"/>
-    <!-- pillars -->
-    <rect x="292" y="330" width="78" height="470"/>
-    <rect x="654" y="330" width="78" height="470"/>
-    <!-- nuki: lower beam -->
-    <rect x="232" y="430" width="560" height="54"/>
-    <!-- gakuzuka: centre tablet between beams -->
-    <rect x="487" y="368" width="50" height="62"/>
-    <!-- plinths -->
-    <rect x="264" y="800" width="134" height="40" rx="8"/>
-    <rect x="626" y="800" width="134" height="40" rx="8"/>
+  <!-- tile: the indigo heri (mat border) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#3442c6"/>
+  <!-- tatami mat -->
+  <rect x="74" y="74" width="876" height="876" rx="168" ry="168" fill="#e9e4cf"/>
+  <!-- the mat's weave -->
+  <g fill="#ded6b6">
+    <rect x="74" y="290" width="876" height="14"/>
+    <rect x="74" y="390" width="876" height="14"/>
+    <rect x="74" y="490" width="876" height="14"/>
+    <rect x="74" y="590" width="876" height="14"/>
+    <rect x="74" y="690" width="876" height="14"/>
   </g>
-  <!-- speech bubble between the pillars -->
-  <g fill="#f5f1e8">
-    <rect x="392" y="540" width="240" height="150" rx="44" ry="44"/>
-    <path d="M430 672 L418 736 L488 684 Z"/>
-  </g>
-  <g fill="#1b1f3a">
-    <circle cx="462" cy="615" r="19"/>
-    <circle cx="512" cy="615" r="19"/>
-    <circle cx="562" cy="615" r="19"/>
+  <!-- shadow under Mochi -->
+  <ellipse cx="512" cy="836" rx="330" ry="50" fill="#cfc59f"/>
+  <!-- Sensei Mochi: the 64-unit drawing at 13x, centred -->
+  <g transform="translate(96 52) scale(13)">
+    <path d="M7 45C7 25 19 13 32 13C45 13 57 25 57 45C57 55 46 59 32 59C18 59 7 55 7 45Z" fill="#fff8ec" stroke="#1a1c3a" stroke-width="2.4" stroke-linejoin="round"/>
+    <path d="M10.5 29.5C20 25.5 44 25.5 53.5 29.5L54.1 35.1C44 31.3 20 31.3 9.9 35.1Z" fill="#1a1c3a"/>
+    <path d="M53 31.5L60.5 28L58.5 34.5M53.5 33L59.5 37.5" fill="none" stroke="#1a1c3a" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <ellipse cx="19" cy="47" rx="4" ry="2.4" fill="#ff9db0"/>
+    <ellipse cx="45" cy="47" rx="4" ry="2.4" fill="#ff9db0"/>
+    <path d="M21.5 41.5Q24 38.9 26.5 41.5M37.5 41.5Q40 38.9 42.5 41.5M28.5 47.5Q32 50.9 35.5 47.5" fill="none" stroke="#1a1c3a" stroke-width="2.4" stroke-linecap="round"/>
   </g>
 </svg>
