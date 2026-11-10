@@ -368,7 +368,7 @@ export default function App() {
 
       {ready && draft && pack ? (
         <main className="flex-1 p-4">
-          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : "max-w-3xl"}`}>
+          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1600px]" : "max-w-3xl"}`}>
             {tab === "scene" && (
               <SceneTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
             )}

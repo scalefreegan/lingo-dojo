@@ -102,15 +102,19 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   tell you". A tapped choice goes as `[direct] <choice>`.
 - **The session timeline** beside the transcript lists the session's parts
   (`sessionPlan` in `scripts/voice.mjs`): the introduction, each warm-up, the
-  scene and its scenario beats, then the debrief (kids: the story, games and
-  ending). The turn route names them to the dojo master (`planDirective`),
+  scene and its scenario beats, then the debrief (kids: a game tagged
+  `opener`, like the echo game, before the story; the other games at the
+  story's start, since they come back throughout; then the ending). A unit
+  listed twice is one part. The turn route names them to the dojo master (`planDirective`),
   which ends every turn with a `STAGE: <id>` line (shown, never spoken;
   `parseStage` keeps only a known id). The timeline marks done, here and
   ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
-  straight there. It collapses to a rail of dots (remembered per browser).
+  straight there, skipping what's in between (the frame's "every warm-up
+  first" rule gives way to the learner asking). It collapses to a rail of dots (remembered per browser).
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
-  their exact upper-case label, with or without a speaker tag in front, so
-  a spoken "Options: …" stays speech.
+  their exact upper-case label (`OPTIONS:` is an older name for
+  `CHOICES:`), with or without a speaker tag (any case) or a timing mark in
+  front, so a spoken "Options: …" stays speech.
 - **Dojo master** (formerly 💬 English) is a direct line to the dojo master,
   outside the practice. The narrator first says a fixed "Yes? I'm
   listening." (English learners only; a cached clip, not a model turn), then
@@ -149,7 +153,13 @@ At Start, `POST /api/voice/cast` draws the session's voices
 slot draws a native speaker of its gender, distinct from the others where it
 can: for ElevenLabs, from the 40 most-used Voice Library voices for the locale
 (a paid plan can use library voices by id, so nothing is added to the
-account), and for Azure and macOS, from their own voices for the locale. The
+account), and for Azure and macOS, from their own voices for the locale:
+native voices of that gender, then native voices with no gender label, and
+only then other locales' voices; macOS sound-effect voices (Albert,
+Bubbles, …) are labelled "novelty" and never drawn. If ElevenLabs refuses a
+drawn library voice (a client error other than a rate limit), the line is
+said in your saved voice, and that voice goes straight to the saved one for
+the rest of the server's run. The
 cast holds for the whole session, so each character keeps one voice. Restart
 draws again, and the header lists who is playing whom.
 

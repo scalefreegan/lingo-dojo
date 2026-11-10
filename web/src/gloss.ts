@@ -19,9 +19,40 @@ const LETTER = /[\p{L}\p{M}\p{N}]/u;
 // Scripts written without spaces have no word boundaries to check.
 const NO_SPACES = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}]/u;
 
-const wordCount = (s: string) => s.trim().split(/\s+/).length;
+// Words by the language's own rules, so Chinese, Japanese and Thai (written
+// without spaces) count words too, not one per sentence. Falls back to
+// spaces where Intl.Segmenter is missing or the locale is unknown.
+const segmenters = new Map<string, Intl.Segmenter | null>();
+function segmenter(locale?: string): Intl.Segmenter | null {
+  const k = locale ?? "";
+  if (!segmenters.has(k)) {
+    let seg: Intl.Segmenter | null = null;
+    try {
+      if (typeof Intl.Segmenter === "function") seg = new Intl.Segmenter(locale || undefined, { granularity: "word" });
+    } catch {
+      seg = null;
+    }
+    segmenters.set(k, seg);
+  }
+  return segmenters.get(k) ?? null;
+}
+function wordCount(s: string, locale?: string): number {
+  const seg = segmenter(locale);
+  if (seg) {
+    let n = 0;
+    for (const w of seg.segment(s)) if (w.isWordLike) n++;
+    return n;
+  }
+  return s.trim().split(/\s+/).length;
+}
 /** A sentence-length gloss: a translation, not a word to define. */
-export const isSentence = (g: VoiceGloss) => wordCount(g.term) > 3;
+export const isSentence = (g: VoiceGloss, locale?: string) => wordCount(g.term, locale) > 3;
+
+/** A matched gloss that is not a button of its own: a sentence, or a short
+ *  phrase with glossed words inside it (a button can't hold buttons). Tapping
+ *  it opens its meaning as a pointer convenience; the line's translate button
+ *  is the keyboard and screen-reader way to it. */
+export const isSpan = (n: Node, locale?: string) => isSentence(n.gloss, locale) || n.inner.length > 0;
 
 function findHits(text: string, glosses: VoiceGloss[], locale?: string): Hit[] {
   const lower = (s: string) => {
@@ -80,14 +111,14 @@ export function layout(text: string, glosses: VoiceGloss[], locale?: string): No
   return outer;
 }
 
-/** The sentence translations that match somewhere in `texts` (a line's
- *  target-language segments), in order: what the line's translate button
- *  shows. */
+/** The meanings in `texts` (a line's target-language segments) that are
+ *  not buttons of their own (see isSpan), in order: what the line's
+ *  translate button shows. Laid out with every gloss, exactly as Glossed
+ *  lays the line out, so the two agree on what is a span. */
 export function sentenceGlosses(texts: string[], glosses: VoiceGloss[], locale?: string): VoiceGloss[] {
-  const sentences = glosses.filter(isSentence);
   const out: VoiceGloss[] = [];
   for (const t of texts) {
-    for (const o of layout(t.normalize("NFC"), sentences, locale)) if (!out.includes(o.gloss)) out.push(o.gloss);
+    for (const o of layout(t.normalize("NFC"), glosses, locale)) if (isSpan(o, locale) && !out.includes(o.gloss)) out.push(o.gloss);
   }
   return out;
 }

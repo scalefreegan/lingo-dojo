@@ -76,8 +76,12 @@ export default function GoTab({
     }
   }
 
+  // The voice session takes the tab's full width (wide screens give the
+  // transcript and its timeline room); everything else keeps a reading width.
+  const narrow = "mx-auto flex w-full max-w-3xl flex-col gap-6";
   return (
     <div className="flex flex-col gap-6">
+      <div className={narrow}>
       <Card className="flex flex-col gap-1">
         <div className="flex items-start gap-2">
           <h2 className="flex-1 text-base font-medium text-fg">{sceneTitle || "No scene"}</h2>
@@ -111,9 +115,12 @@ export default function GoTab({
       )}
 
       <NotesDisclosure notes={notes} onChange={onNotes} />
+      </div>
 
       {/* The main event: the session here, with native voices. */}
       <VoicePanel mode={content.mode} pack={pack} langs={langs} openRequest={practiceRequest} onOpened={onPracticeOpened} />
+
+      <div className={narrow}>
 
       <div className="flex flex-wrap items-center gap-2">
         <SaveButton
@@ -156,6 +163,7 @@ export default function GoTab({
             {markdown || (pending ? "Assembling…" : "")}
           </pre>
         )}
+      </div>
       </div>
     </div>
   );

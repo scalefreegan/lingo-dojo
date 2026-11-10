@@ -3,7 +3,7 @@ id: game-echo
 slot: games
 title: Echo game
 summary: Say a word slowly with a sound effect, have the child copy it, cheer every try.
-tags: [games, echo, drill]
+tags: [games, echo, drill, opener]
 default: true
 level: [First words, Getting going, Chatty]
 ---
