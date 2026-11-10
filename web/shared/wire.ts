@@ -479,7 +479,7 @@ export interface VoiceGloss {
 
 export type VoiceHistoryItem =
   | { role: "learner"; text: string }
-  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[] };
+  | { role: "master"; lines: VoiceLine[]; glosses?: VoiceGloss[]; choices?: string[] };
 
 /** POST /api/voice/turn — an empty `message` opens the session. 409 while
  *  another turn is running. */
@@ -496,6 +496,8 @@ export interface VoiceTurnRequest {
 export interface VoiceTurnReply {
   lines: VoiceLine[];
   glosses: VoiceGloss[];
+  /** Quick answers to a check-in question, shown as buttons; [] for most turns. */
+  choices: string[];
   model: string;
   durationMs: number | null;
   costUsd: number | null;

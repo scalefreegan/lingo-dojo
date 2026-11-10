@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
@@ -27,13 +27,16 @@ const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
 
-/** The Skip and Help buttons' messages; scripts/voice.mjs SKIP and HELP
- *  must match (the adapter tells the dojo master what each means). */
+/** The Skip, Help and Explain buttons' messages; scripts/voice.mjs SKIP,
+ *  HELP and EXPLAIN must match (the adapter tells the dojo master what each means). */
 const SKIP = "[skip]";
 const HELP = "[help]";
-const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help" };
+const EXPLAIN = "[explain]";
+const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
 /** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
 const DIRECT = "[direct]";
+/** What the narrator says when the Dojo master button is tapped. */
+const MASTER_ACK = "Yes? I'm listening.";
 const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
 
 export default function VoicePanel({
@@ -116,6 +119,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const urls = useRef(new Map<string, Promise<string>>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  // The box grows with what's in it (up to its max height, then scrolls).
+  // Measured before paint so it never flickers a line short.
+  useLayoutEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
+  });
   // The phase as the async flows see it (state lags a render behind).
   const phaseRef = useRef<Phase>("idle");
 
@@ -353,7 +364,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
-      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}) }]);
+      setSession([...history, { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}) }]);
       await playLines(idx, r.lines, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
@@ -419,7 +430,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       // pay to transcribe it.
       if (!wav || why === "idle" || (!spoke && (why !== "tap" || ms < 1500))) {
         setPhase("idle");
-        setNotice("Didn't hear anything — tap Talk when you're ready.");
+        setNotice("Didn't hear anything — tap the wave when you're ready.");
         return;
       }
       const ctrl = freshCtrl();
@@ -468,6 +479,40 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     setComposer("");
     setDirect(false);
     void runTurn(direct ? `${DIRECT} ${text}` : text);
+  }
+
+  /** A tapped check-in answer ("Keep going") goes to the dojo master as a
+   *  direct request, not as a practice answer to correct. */
+  function choose(label: string) {
+    if (!canAct) return;
+    if (phase !== "idle") stopAll();
+    void runTurn(`${DIRECT} ${label}`);
+  }
+
+  /** The Dojo master button: the narrator answers "yes?" in the learner's
+   *  own language, then the mic opens for a direct request. The "yes?" is a
+   *  fixed line in the narrator's voice (cached after the first time), not a
+   *  model turn: it has to be instant. With a native language other than
+   *  English there is no fixed line to say, so the mic just opens. */
+  async function askMaster() {
+    if (!canAct || !sttReady) return;
+    stopAll();
+    const gen = genRef.current;
+    if (/^english$/i.test(langs.native ?? "") && castRef.current) {
+      const ctrl = freshCtrl();
+      const line: VoiceLine = { speaker: "narrator", gender: castRef.current.narratorGender, text: MASTER_ACK, segments: [{ lang: "native", text: MASTER_ACK }] };
+      try {
+        setPhase("speaking");
+        const url = await audioFor(`ack:${castRef.current.provider}:${castRef.current.narratorGender}`, line, line.segments[0], ctrl.signal);
+        if (ctrl.signal.aborted || gen !== genRef.current) return;
+        await playUrl(url, ctrl.signal);
+      } catch {
+        // A "yes?" that can't be spoken is not worth an error: just listen.
+      }
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
+      setPhase("idle");
+    }
+    await startListening(true);
   }
 
   async function replay(entryIdx: number, lineIdx: number, lines: VoiceLine[]) {
@@ -522,6 +567,13 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const canStart = !!settings && !!locale && ttsReady;
   const started = entries.length > 0;
   const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
+  // Quick requests may cut off speech or a recording, like Talk does, but
+  // not a turn already on its way.
+  const canAct = phase === "idle" || phase === "speaking" || phase === "recording";
+  // Check-in answers belong to the latest turn only: once anything else is
+  // said, they are stale.
+  const lastEntry = entries[entries.length - 1];
+  const lastChoices = lastEntry?.role === "master" ? (lastEntry.choices ?? []) : [];
 
   return (
     <Card className="tatami flex flex-col gap-4 border-line-strong/60" data-testid="voice-panel">
@@ -580,7 +632,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             {phase === "thinking" ? "Starting…" : "Start session"}
           </Button>
           <p className="text-sm text-fg-3 sm:text-xs">
-            The dojo master speaks first. {settings?.turn === "pause" ? `Your turn ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet.` : "Tap Talk to answer and tap again when you're done."}
+            The dojo master speaks first. {settings?.turn === "pause" ? `Your turn ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet.` : "Tap the wave to answer, and ■ when you're done."}
             {!sttReady && " No speech-to-text provider is set up, so type your answers."}
           </p>
         </div>
@@ -638,6 +690,18 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
           )}
         </ol>
       )}
+      {lastChoices.length > 0 && canAct && (
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
+          {lastChoices.map((c) => (
+            <QuickButton key={c} variant="choice" onClick={() => choose(c)}>
+              {c}
+            </QuickButton>
+          ))}
+          <QuickButton variant="choice" onClick={() => void askMaster()} disabled={!sttReady}>
+            🎙 I'll tell you
+          </QuickButton>
+        </div>
+      )}
       {glosses.length > 0 && (
         <p className="text-xs text-fg-3">
           Tap an underlined word for its meaning, or any line in {langs.target || "the target language"} for a translation.
@@ -651,7 +715,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               <span className="inline-block h-2 w-16 overflow-hidden rounded bg-raised" aria-hidden="true">
                 <span className="block h-full bg-accent transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
               </span>
-              {recDirect ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
+              {recDirect ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : settings?.review ? " — tap ■ when you've finished" : " — tap ■ to send"}
             </>
           )}
           {phase === "opening" && "Opening the microphone…"}
@@ -669,55 +733,36 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
 
       {started && (
         <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {phase === "recording" ? (
-              <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void finishListening("tap")}>
-                Done
-              </Button>
-            ) : (
-              <Button variant="primary" className="px-5 py-2.5 text-base" onClick={() => void startListening()} disabled={!sttReady || busy} title={sttReady ? "Records your answer — Space also works" : "Set up a speech-to-text provider first"}>
-                <VoiceWave /> Talk
-              </Button>
+          {/* Quick requests: one tap each, no recording needed (except the
+              dojo master, which opens the mic after its "yes?"). */}
+          <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Quick requests">
+            <QuickButton onClick={() => void askMaster()} disabled={!sttReady || !canAct} title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`} testid="voice-direct">
+              <Mochi size={18} /> Dojo master
+            </QuickButton>
+            <QuickButton onClick={() => control(HELP)} disabled={!canAct} title="What am I being asked? Get a hint — ask again for a bigger one" testid="voice-help">
+              💡 Help
+            </QuickButton>
+            <QuickButton onClick={() => control(EXPLAIN)} disabled={!canAct} title="Explain what was just said: the meaning, the key words, any local note" testid="voice-explain">
+              🔎 Explain
+            </QuickButton>
+            <QuickButton onClick={() => control(SKIP)} disabled={!canAct} title="Skip this exercise and move on" testid="voice-skip">
+              ⏭ Skip
+            </QuickButton>
+            {(phase === "speaking" || phase === "thinking") && (
+              <QuickButton onClick={stopAll} title="Stop the dojo master" testid="voice-stop">
+                ■ Stop
+              </QuickButton>
             )}
-            {phase !== "recording" && (
-              <Button
-                onClick={() => void startListening(true)}
-                disabled={!sttReady || busy}
-                title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`}
-                data-testid="voice-direct"
-              >
-                💬 {langs.native || "Native"}
-              </Button>
-            )}
-            {(phase === "speaking" || phase === "thinking" || phase === "recording") && (
-              <Button onClick={stopAll}>{phase === "recording" ? "Cancel" : "Stop"}</Button>
-            )}
-            <Button
-              onClick={() => control(HELP)}
-              disabled={phase !== "idle" && phase !== "speaking" && phase !== "recording"}
-              title="What am I being asked? Get a hint — ask again for a bigger one"
-              data-testid="voice-help"
-            >
-              Help 💡
-            </Button>
-            <Button
-              onClick={() => control(SKIP)}
-              disabled={phase !== "idle" && phase !== "speaking" && phase !== "recording"}
-              title="Skip this exercise and move on"
-              data-testid="voice-skip"
-            >
-              Skip ⏭
-            </Button>
             <span className="flex-1" />
-            <Button variant="ghost" onClick={() => copy(transcriptText(entries))}>
+            <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))}>
               {copyStatus === "copied" ? "Copied" : "Copy transcript"}
             </Button>
-            <Button variant="ghost" onClick={restart}>
+            <Button variant="ghost" className="px-2 py-1" onClick={restart}>
               Restart
             </Button>
           </div>
-          {/* A message from 💬 waiting in the box is tagged, not a mode button:
-              Send sends it to the dojo master; × makes it a practice answer. */}
+          {/* A message for the dojo master waiting in the box is tagged, not
+              a mode: ▶ sends it to the dojo master; × makes it a practice answer. */}
           {direct && (
             <span className="flex items-center gap-1 self-start rounded-full bg-accent-soft py-0.5 pr-1 pl-2.5 text-sm text-fg sm:text-xs" data-testid="voice-direct-tag">
               💬 To the dojo master · {langs.native || "your language"}
@@ -742,14 +787,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
             <textarea
               ref={composerRef}
               aria-label="Your answer"
-              className={`${inputClass} min-h-10 flex-1`}
+              className={`${inputClass} max-h-48 min-h-11 flex-1 resize-none overflow-y-auto`}
               rows={1}
               placeholder={
                 direct
                   ? `To the dojo master, in ${langs.native || "your language"}: change the scene, redo that, slower please…`
                   : settings?.review
                     ? "Your words land here to check before sending — or type"
-                    : "Type an answer instead"
+                    : "Type an answer, or tap the wave to speak"
               }
               value={composer}
               onChange={(e) => setComposer(e.target.value)}
@@ -760,9 +805,23 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                 }
               }}
             />
-            <Button type="submit" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} data-testid="voice-send">
-              Send
-            </Button>
+            {phase === "recording" ? (
+              <>
+                <RoundButton variant="ghost" onClick={stopAll} label="Cancel the recording" testid="voice-cancel">
+                  ×
+                </RoundButton>
+                <RoundButton onClick={() => void finishListening("tap")} label={settings?.review ? "Done — put my words in the box" : "Done — send what I said"} testid="voice-done">
+                  <StopIcon />
+                </RoundButton>
+              </>
+            ) : (
+              <RoundButton onClick={() => void startListening()} disabled={!sttReady || busy} label={sttReady ? "Talk — Space also works" : "Set up a speech-to-text provider first"} testid="voice-talk">
+                <VoiceWave />
+              </RoundButton>
+            )}
+            <RoundButton type="submit" variant="secondary" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} label="Send what's in the box" testid="voice-send">
+              <SendIcon />
+            </RoundButton>
           </form>
         </div>
       )}
@@ -1325,4 +1384,63 @@ function sessionGlosses(entries: { role: string; glosses?: VoiceGloss[] }[]): Vo
     }
   }
   return out;
+}
+
+/** A quick-request chip above the composer, or a check-in answer. */
+function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: () => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
+  const look = variant === "choice"
+    ? "border-accent bg-accent-soft text-fg hover:bg-accent hover:text-accent-ink"
+    : "border-line bg-panel text-fg-2 hover:bg-raised hover:text-fg";
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-[family-name:var(--font-display)] text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${look}`}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      data-testid={testid}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Talk, Done and Send beside the composer: round icon buttons, like a
+ *  chat app's. The label is the accessible name and the tooltip. */
+function RoundButton({ onClick, disabled, label, testid, type = "button", variant = "primary", children }: { onClick?: () => void; disabled?: boolean; label: string; testid?: string; type?: "button" | "submit"; variant?: "primary" | "secondary" | "ghost"; children: ReactNode }) {
+  const look = {
+    primary: "border-accent-edge bg-accent text-accent-ink shadow-[0_3px_0_var(--accent-edge)] hover:bg-accent-hover active:translate-y-[2px] active:shadow-[0_1px_0_var(--accent-edge)]",
+    secondary: "border-line bg-panel text-fg shadow-[0_3px_0_var(--line)] hover:bg-raised active:translate-y-[2px] active:shadow-[0_1px_0_var(--line)]",
+    ghost: "border-transparent text-fg-3 hover:bg-raised hover:text-fg text-xl",
+  }[variant];
+  return (
+    <button
+      type={type}
+      className={`mb-[3px] inline-flex size-11 shrink-0 items-center justify-center rounded-full border transition-[background-color,transform,box-shadow] duration-75 disabled:cursor-not-allowed disabled:opacity-50 ${look}`}
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      data-testid={testid}
+    >
+      {children}
+    </button>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+      <rect x="4" y="4" width="12" height="12" rx="2.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** A right-facing triangle: send. */
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <path d="M5 3.5 17 10 5 16.5Z" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
 }

@@ -199,6 +199,10 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - The first message is "[session start]": open the session the way your instructions say.
 - "[skip]" from the learner means: skip the current exercise, drill, or question. Don't repeat it, evaluate it, or give the answer unless they ask; acknowledge in a few words and move straight on to the next step of the session. Inside the scene, the character simply moves the conversation along.
 - "[help]" from the learner means they are stuck on what you just asked. Step out as the narrator, in the learner's native language: say in one sentence what you are asking them to do, then give a hint, not the answer (the first word or two, a key word with its meaning, or the pattern to use). If they ask for help again on the same thing, give a bigger hint, and on the third time the full answer for them to repeat. Then hand the turn back so they can try. If you were in the scene, say you are pausing it, and go back to it after.
+- "[explain]" from the learner means they want more about what was just said. Step out as the narrator, in the learner's native language, and in two or three short sentences explain it: what it means, the key word or structure in it, and any local or cultural note that helps. Don't ask them to repeat it. Then hand back to where you were, back in the scene if that is where you were.
+- When you ask the learner how the session should go (whether to keep going, go slower, try something harder, or change the scene), not when you ask a practice question, end the turn with one CHOICES line offering two to four short answers in their native language, which the app shows as buttons. It is shown, not spoken. For example:
+  CHOICES: Keep going | Slow down | A harder version
+  A tapped choice reaches you as "[direct]" followed by its words.
 - A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator in their native language: do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
 }
 
@@ -216,6 +220,8 @@ export const HELP = "[help]";
 /** Prefix of a message spoken straight to the dojo master, outside the
  *  practice (VoicePanel's DIRECT must match). */
 export const DIRECT = "[direct]";
+/** What the Explain button sends (VoicePanel's EXPLAIN must match). */
+export const EXPLAIN = "[explain]";
 
 /** The transcript replayed as the prompt (the chat agent's pattern): the
  *  learner's lines as heard, the dojo master's as the tagged lines spoken —
@@ -223,7 +229,7 @@ export const DIRECT = "[direct]";
 export function voiceTurnPrompt(history, message) {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
-    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}`;
+    : `[DOJO MASTER]\n${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
   return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines, then the GLOSS line.`;
@@ -392,6 +398,27 @@ export function parseGlosses(text) {
   return out;
 }
 
+// Quick answers to a check-in question ("keep going?"), shown as buttons.
+const CHOICES_RE = /^\s*(?:\*\*)?\s*(?:CHOICES|OPTIONS)\s*(?:\*\*)?\s*:\s*(?:\*\*)?/i;
+export const MAX_CHOICES = 4;
+const CHOICE_CHARS = 60;
+
+/** The CHOICES line of a reply as button labels: split on "|", trimmed,
+ *  duplicates dropped, at most MAX_CHOICES. */
+export function parseChoices(text) {
+  const out = [];
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const m = rawLine.match(CHOICES_RE);
+    if (!m) continue;
+    for (const c of rawLine.slice(m[0].length).split("|")) {
+      const label = c.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim().slice(0, CHOICE_CHARS);
+      if (label && !out.some((o) => o.toLowerCase() === label.toLowerCase())) out.push(label);
+      if (out.length >= MAX_CHOICES) return out;
+    }
+  }
+  return out;
+}
+
 /** A turn's glosses as the GLOSS line it came with, for the replay. */
 function glossLine(glosses) {
   if (!Array.isArray(glosses) || !glosses.length) return "";
@@ -408,7 +435,7 @@ export function parseVoiceReply(text, mode = "adult") {
   // line of its own).
   let gap = null;
   for (const rawLine of String(text).split(/\r?\n/)) {
-    if (!rawLine.trim() || GLOSS_RE.test(rawLine)) continue;
+    if (!rawLine.trim() || GLOSS_RE.test(rawLine) || CHOICES_RE.test(rawLine)) continue;
     let raw = rawLine;
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
@@ -865,7 +892,7 @@ export function normalizeVoiceSettings(raw) {
     model: pick(r.model, VOICE_MODELS.map((m) => m.id), DEFAULT_VOICE_MODEL),
     turn: pick(r.turn, ["tap", "pause"], "tap"),
     silenceMs: Number.isFinite(ms) ? Math.min(SILENCE_MS.max, Math.max(SILENCE_MS.min, Math.round(ms))) : SILENCE_MS.default,
-    review: typeof r.review === "boolean" ? r.review : true,
+    review: typeof r.review === "boolean" ? r.review : false,
     handsFree: typeof r.handsFree === "boolean" ? r.handsFree : false,
     voices,
   };
