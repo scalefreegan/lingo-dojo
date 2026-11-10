@@ -662,6 +662,22 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               Restart
             </Button>
           </div>
+          {/* A message from 💬 waiting in the box is tagged, not a mode button:
+              Send sends it to the dojo master; × makes it a practice answer. */}
+          {direct && (
+            <span className="flex items-center gap-1 self-start rounded-full bg-accent-soft py-0.5 pr-1 pl-2.5 text-sm text-fg sm:text-xs" data-testid="voice-direct-tag">
+              💬 To the dojo master · {langs.native || "your language"}
+              <button
+                type="button"
+                className="rounded-full px-1.5 text-fg-3 hover:bg-raised hover:text-fg"
+                onClick={() => setDirect(false)}
+                aria-label="Send it as a practice answer instead"
+                title="Send it as a practice answer instead"
+              >
+                ×
+              </button>
+            </span>
+          )}
           <form
             className="flex items-end gap-2"
             onSubmit={(e) => {
@@ -690,16 +706,6 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
                 }
               }}
             />
-            <button
-              type="button"
-              aria-pressed={direct}
-              onClick={() => setDirect((d) => !d)}
-              title="Send this straight to the dojo master instead of as a practice answer"
-              className={`shrink-0 rounded-md border px-2 py-2 text-sm ${direct ? "border-accent bg-accent-soft text-fg" : "border-line text-fg-3 hover:bg-raised"}`}
-              data-testid="voice-direct-toggle"
-            >
-              💬 To the master
-            </button>
             <Button type="submit" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} data-testid="voice-send">
               Send
             </Button>
