@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import type { VoicePlanItem } from "../../shared/wire";
 
 /* The session's parts beside the transcript: where the session is, what's
@@ -41,9 +42,33 @@ export function SessionTimeline({
   const said = (i: number) => (state(i) === "here" ? "now" : state(i) === "done" ? "done" : "ahead");
   // The current part is not disabled, so it stays reachable and announced
   // (aria-current); jumping to where you already are is just a no-op.
+  // While a turn runs the parts are aria-disabled rather than disabled, so
+  // the one just tapped keeps keyboard focus.
   const pick = (p: VoicePlanItem, i: number) => {
-    if (state(i) !== "here") onJump(p);
+    if (!disabled && state(i) !== "here") onJump(p);
   };
+
+  // Keep "here" in view in the list's own scroll (never the page's, which
+  // scrollIntoView would also move).
+  const listRef = useRef<HTMLOListElement | null>(null);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list || here < 0) return;
+    const show = () => {
+      const row = list.children[here] as HTMLElement | undefined;
+      if (!row) return;
+      const box = list.getBoundingClientRect();
+      const r = row.getBoundingClientRect();
+      if (r.top < box.top) list.scrollTop += r.top - box.top - 4;
+      else if (r.bottom > box.bottom) list.scrollTop += r.bottom - box.bottom + 4;
+    };
+    show();
+    // Again when the list changes size (a phone turned, the window crossing
+    // the wide layout), which moves its rows.
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(show) : null;
+    ro?.observe(list);
+    return () => ro?.disconnect();
+  }, [here, open]);
 
   if (!open) {
     return (
@@ -51,15 +76,15 @@ export function SessionTimeline({
         <button type="button" className="rounded-md px-1 text-fg-3 hover:bg-raised hover:text-fg" onClick={onToggle} aria-expanded={false} aria-label="Show the session's parts" title="Show the session's parts">
           ☰
         </button>
-        <ol className="flex min-h-0 flex-row flex-wrap items-center lg:flex-col lg:flex-nowrap lg:overflow-y-auto">
+        <ol ref={listRef} className="flex min-h-0 flex-row flex-wrap items-center lg:flex-col lg:flex-nowrap lg:overflow-y-auto">
           {plan.map((p, i) => (
             <li key={`${i}:${p.id}`}>
               {/* A 24px target around a small dot. */}
               <button
                 type="button"
-                className="group grid size-6 min-h-0 place-items-center rounded-full hover:bg-raised disabled:cursor-not-allowed"
+                className="group grid size-6 min-h-0 place-items-center rounded-full hover:bg-raised aria-disabled:cursor-not-allowed"
                 onClick={() => pick(p, i)}
-                disabled={disabled}
+                aria-disabled={disabled || undefined}
                 aria-current={state(i) === "here" ? "step" : undefined}
                 aria-label={`${p.title} (${said(i)})${state(i) === "here" ? "" : ": jump here"}`}
                 title={`${p.title}${state(i) === "here" ? " — now" : " — jump here"}`}
@@ -81,16 +106,16 @@ export function SessionTimeline({
           «
         </button>
       </div>
-      <ol className="flex max-h-48 min-h-0 flex-col overflow-y-auto lg:max-h-none lg:flex-1">
+      <ol ref={listRef} className="flex max-h-48 min-h-0 flex-col overflow-y-auto lg:max-h-none lg:flex-1">
         {plan.map((p, i) => {
           const st = state(i);
           return (
             <li key={`${i}:${p.id}`}>
               <button
                 type="button"
-                className={`flex min-h-0 w-full items-start gap-2 rounded-lg py-1 pr-1.5 text-left text-sm transition-colors ${p.kind === "beat" ? "pl-6" : "pl-1.5"} ${st === "here" ? "cursor-default bg-accent-soft font-medium text-fg" : st === "done" ? "text-fg-3 hover:bg-raised" : "text-fg-2 hover:bg-raised"} disabled:cursor-not-allowed`}
+                className={`flex min-h-0 w-full items-start gap-2 rounded-lg py-1 pr-1.5 text-left text-sm transition-colors ${p.kind === "beat" ? "pl-6" : "pl-1.5"} ${st === "here" ? "cursor-default bg-accent-soft font-medium text-fg" : st === "done" ? "text-fg-3 hover:bg-raised" : "text-fg-2 hover:bg-raised"} aria-disabled:cursor-not-allowed`}
                 onClick={() => pick(p, i)}
-                disabled={disabled}
+                aria-disabled={disabled || undefined}
                 aria-current={st === "here" ? "step" : undefined}
                 title={st === "here" ? "You are here" : `Jump to ${p.detail ?? p.title}`}
               >

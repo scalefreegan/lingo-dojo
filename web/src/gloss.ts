@@ -74,14 +74,19 @@ function findHits(text: string, glosses: VoiceGloss[], locale?: string): Hit[] {
     if (!needle || (folded && needle.length !== bare.length)) continue;
     const src = folded ? hay : text;
     const bounded = !NO_SPACES.test(needle);
+    const marked = /[¿¡?!]/.test(gloss.term);
     for (let at = src.indexOf(needle); at >= 0; at = src.indexOf(needle, at + 1)) {
       const end = at + needle.length;
       if (bounded && ((at > 0 && LETTER.test(src[at - 1])) || (end < src.length && LETTER.test(src[end])))) continue;
-      // Take back the term's own ¿…? or ¡…! so the tap target looks whole.
+      // Take back the term's own ¿…? or ¡…! so the tap target looks whole,
+      // but only for a term written with them: "jitomate" at the end of
+      // "¿Tiene jitomate?" must not take the sentence's "?".
       let s = at;
       let e = end;
-      while (s > 0 && /[¿¡]/.test(text[s - 1])) s--;
-      while (e < text.length && /[?!]/.test(text[e])) e++;
+      if (marked) {
+        while (s > 0 && /[¿¡]/.test(text[s - 1])) s--;
+        while (e < text.length && /[?!]/.test(text[e])) e++;
+      }
       all.push({ start: s, end: e, gloss });
     }
   }

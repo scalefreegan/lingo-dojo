@@ -66,6 +66,10 @@ grammar unless the learner asks.
   are left as-is and reported as a warning. When the effective profile has no
   `target_variant`, `{{target_variant}}` renders as the target language name.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
+- Tags are free-form labels, with one that the app reads: in kids mode, a
+  `games` unit tagged `opener` (the echo game) is placed **before** the story
+  on the session timeline; other games sit at the story's start, since they
+  come back throughout. Dropping the tag moves the game into the story.
 
 ## `content/scenarios/<id>.md` — a scenario
 

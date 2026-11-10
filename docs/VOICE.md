@@ -107,7 +107,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   story's start, since they come back throughout; then the ending). A unit
   listed twice is one part. The turn route names them to the dojo master (`planDirective`),
   which ends every turn with a `STAGE: <id>` line (shown, never spoken;
-  `parseStage` keeps only a known id). The timeline marks done, here and
+  `parseStage` keeps only a known id; a game that comes back inside the
+  story is reported as the beat it happens in, so the timeline never runs
+  backwards). The timeline marks done, here and
   ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
   straight there, skipping what's in between (the frame's "every warm-up
   first" rule gives way to the learner asking). It collapses to a rail of dots (remembered per browser).
@@ -157,9 +159,13 @@ account), and for Azure and macOS, from their own voices for the locale:
 native voices of that gender, then native voices with no gender label, and
 only then other locales' voices; macOS sound-effect voices (Albert,
 Bubbles, …) are labelled "novelty" and never drawn. If ElevenLabs refuses a
-drawn library voice (a client error other than a rate limit), the line is
-said in your saved voice, and that voice goes straight to the saved one for
-the rest of the server's run. The
+drawn library voice (a client error another voice could fix: not a bad key
+or spent credits, 401, nor a rate limit, 429), the line is said in your
+saved voice, or, with nothing saved (all Random, e.g. on a free plan), in the
+account voice of that gender that `/cast` named as the slot's fallback.
+Once that retry works the library voice counts as refused: later lines go
+straight to the fallback, and later casts skip it, for the rest of the
+server's run. The
 cast holds for the whole session, so each character keeps one voice. Restart
 draws again, and the header lists who is playing whom.
 

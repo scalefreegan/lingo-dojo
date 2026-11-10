@@ -30,6 +30,7 @@ export default function GoTab({
   onSave,
   langs,
   practiceRequest = false,
+  active = true,
   onPracticeOpened,
 }: {
   content: ContentReply;
@@ -54,6 +55,8 @@ export default function GoTab({
   langs: VoiceLanguages;
   /** Open the voice session straight away (the sticky bar's Practice). */
   practiceRequest?: boolean;
+  /** False while another tab is showing (Go stays mounted, hidden). */
+  active?: boolean;
   onPracticeOpened?: () => void;
 }) {
   const [copyStatus, copy] = useCopyStatus();
@@ -118,7 +121,7 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} openRequest={practiceRequest} onOpened={onPracticeOpened} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} />
 
       <div className={narrow}>
 

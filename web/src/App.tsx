@@ -368,14 +368,18 @@ export default function App() {
 
       {ready && draft && pack ? (
         <main className="flex-1 p-4">
-          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1600px]" : "max-w-3xl"}`}>
+          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : "max-w-3xl"}`}>
             {tab === "scene" && (
               <SceneTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
             )}
             {tab === "customize" && <CustomizeTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("go")} />}
-            {tab === "go" && (
+            {/* Go stays mounted while another tab is open, so a practice
+                session survives a look at Scene or a word with the content
+                agent; leaving Go stops its audio and mic (`active`). */}
+            <div hidden={tab !== "go"}>
               <GoTab
                 key={mode}
+                active={tab === "go"}
                 content={ready}
                 pack={pack}
                 title={draft.title}
@@ -396,7 +400,7 @@ export default function App() {
                 practiceRequest={practiceRequest}
                 onPracticeOpened={() => setPracticeRequest(false)}
               />
-            )}
+            </div>
             {tab === "library" && (
               <LibraryTab
                 key={mode}

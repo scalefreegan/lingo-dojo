@@ -538,6 +538,9 @@ export interface VoiceSpeakRequest {
   voice?: string;
   /** The provider the cast was drawn for. */
   provider?: TtsProvider;
+  /** An account voice of the same gender (VoiceCastReply.fallbacks) for
+   *  when the provider refuses `voice` and no voice is saved. */
+  fallback?: string;
 }
 
 /** POST /api/voice/cast — this session's voices, drawn at session start. */
@@ -556,6 +559,10 @@ export interface VoiceCastReply {
   narratorGender: VoiceGender;
   /** True when the pack fixed the narrator's gender. */
   pinned: boolean;
+  /** Slot → an account voice of that gender, for ElevenLabs: what a line
+   *  falls back to when a drawn library voice is refused (a free plan) and
+   *  the learner saved no voice of their own. */
+  fallbacks?: Record<string, string>;
 }
 
 /** One voice from the ElevenLabs Voice Library. */

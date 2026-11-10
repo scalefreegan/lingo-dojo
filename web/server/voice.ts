@@ -9,7 +9,7 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, oneLine, replayStage, poolFor, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceCastReply, VoiceCastRequest,
@@ -232,9 +232,6 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
 // the first would answer a conversation that is about to change under it.
 let turning = false;
 
-/** Glosses and choices are replayed inside one line each ("GLOSS: a = b |
- *  …"): a newline or "|" from the browser would forge replay structure. */
-const oneLine = (s: string) => s.replace(/[\r\n|]+/g, " ").trim();
 
 function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   if (!Array.isArray(raw)) return [];
@@ -278,7 +275,7 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
         : [];
       // The part the turn ended in goes back as its STAGE line, so the dojo
       // master keeps writing one; only an id-shaped value survives.
-      const stage = typeof m.stage === "string" && /^[A-Za-z0-9:_.-]{1,80}$/.test(m.stage) ? m.stage : "";
+      const stage = replayStage(m.stage);
       out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}) });
     }
   }
@@ -405,8 +402,11 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   // The session's cast names the voice; without one, the saved choice.
   // A cast drawn for another provider (the provider changed mid-session;
   // settings are shared by every window) names voices this one can't use.
-  const saved = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender);
   const cast = body?.provider === provider ? castVoice(provider, body?.voice) : null;
+  // What a refused cast voice falls back to: the learner's saved voice, else
+  // the account voice /cast named for the slot (all-Random on a free plan
+  // has no saved voice, and library voices are refused there).
+  const saved = voiceFor(settings.voices[provider]?.[locale], speaker as VoiceSpeaker, gender) || (body?.provider === provider ? (castVoice(provider, body?.fallback) ?? "") : "");
   const voice = cast ?? saved;
   if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
@@ -428,14 +428,15 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
       } catch (e) {
         // A library voice drawn for the cast can be refused: a plan without
         // library access, or a voice since removed. Which status ElevenLabs
-        // uses for that isn't pinned down (402, 403, 404, or 400 with a
-        // voice error), so any client error but a rate limit counts. Say the
-        // line in the saved voice rather than lose it.
+        // uses isn't pinned down, so retryInOtherVoice takes any client
+        // error another voice could fix. Say the line in the fallback rather
+        // than lose it.
         const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
-        if (first !== cast || !cast || !saved || cast === saved || !(status >= 400 && status < 500 && status !== 429)) throw e;
+        if (first !== cast || !cast || !saved || cast === saved || !retryInOtherVoice(status)) throw e;
+        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: saved, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+        // The other voice worked, so it was the cast voice: skip it from now on.
         if (refusedVoices.size >= 200) refusedVoices.clear();
         refusedVoices.add(cast);
-        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: saved, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
       }
       audio = Buffer.from(await r.arrayBuffer());
     } else if (provider === "azure") {
@@ -523,7 +524,9 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
       (["female", "male"] as const).map(async (g) => {
         try {
           const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender: g, sort: "usage_character_count_1y", pageSize: CAST_POOL });
-          pools[g] = elevenLibrary(await (await call(provider, r)).json()).voices.map((v) => ({ id: v.id, name: v.name }));
+          pools[g] = elevenLibrary(await (await call(provider, r)).json())
+            .voices.filter((v) => !refusedVoices.has(v.id))
+            .map((v) => ({ id: v.id, name: v.name }));
         } catch {
           pools[g] = [];
         }
@@ -532,21 +535,23 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
   }
   for (const g of ["female", "male"] as const) {
     if (pools[g].length) continue;
-    // Voices known to be this gender; only when there are none, the ones
-    // with no gender label (which may be either).
-    // Native speakers first: labelled with this gender, then unlabelled
-    // (which may be either); only then voices for another locale.
-    const labelled = own.filter((v) => v.gender.toLowerCase() === g);
-    const unlabelled = own.filter((v) => !v.gender);
-    const tiers = [labelled.filter((v) => v.match), unlabelled.filter((v) => v.match), labelled, unlabelled];
-    pools[g] = (tiers.find((t) => t.length) ?? []).map((v) => ({ id: v.id, name: v.name }));
+    pools[g] = poolFor(own, g);
   }
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;
   const set = settings.voices[provider]?.[locale] ?? {};
   const cast = pickCast({ slots: voiceSlots(mode), set, pools, names });
+  // ElevenLabs casts from the library, which a free plan can't speak with;
+  // each slot gets the account's best voice of its gender to fall back on.
+  const fallbacks: Record<string, string> = {};
+  if (provider === "elevenlabs") {
+    for (const slot of voiceSlots(mode)) {
+      const v = poolFor(own, slot.split(":")[1] === "male" ? "male" : "female")[0];
+      if (v) fallbacks[slot] = v.id;
+    }
+  }
   const pinned = pinnedNarratorGender(Array.isArray(body?.units) ? body.units : []);
   const narratorGender: VoiceGender = pinned ?? (Math.random() < 0.5 ? "female" : "male");
-  sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned } satisfies VoiceCastReply);
+  sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) } satisfies VoiceCastReply);
 }
 
 async function handleLibraryAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {

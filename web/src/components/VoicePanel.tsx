@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
@@ -6,7 +6,7 @@ import { startRecording, type Recording } from "../recorder";
 import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
 import { Glossed } from "./Glossed";
 import { SessionTimeline } from "./SessionTimeline";
-import { sentenceGlosses } from "../gloss";
+import { isSentence, sentenceGlosses } from "../gloss";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
@@ -51,10 +51,13 @@ export default function VoicePanel({
   langs,
   openRequest = false,
   onOpened,
+  active = true,
 }: {
   mode: Mode;
   pack: PackInput;
   langs: VoiceLanguages;
+  /** False while the Go tab is hidden: nothing plays or listens then. */
+  active?: boolean;
   /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
   openRequest?: boolean;
   onOpened?: () => void;
@@ -80,10 +83,10 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} onClose={() => setOpen(false)} />;
 }
 
-function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -93,7 +96,15 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const glosses = useMemo(() => sessionGlosses(entries), [entries]);
   // By term, not identity: a line's translate button builds its gloss fresh
   // each render.
-  const pick = (at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss.term === gloss.term ? null : { at, gloss }));
+  const pick = useCallback((at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss.term === gloss.term ? null : { at, gloss })), []);
+  const closePick = useCallback(() => setPicked(null), []);
+  // Replay reads the session's latest state; the transcript gets a stable
+  // handle to it so its memo holds.
+  const replayRef = useRef<(i: number, j: number, lines: VoiceLine[]) => Promise<void>>(async () => {});
+  useEffect(() => {
+    replayRef.current = replay;
+  });
+  const onReplay = useCallback((i: number, j: number, lines: VoiceLine[]) => void replayRef.current(i, j, lines), []);
   // The session's parts (from the server, each turn) and where it is now.
   const [plan, setPlan] = useState<VoicePlanItem[]>([]);
   // A reply that answers a jump without naming its part is taken to be
@@ -147,7 +158,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   }, [direct]);
   const directRef = useRef(false);
   const [recDirect, setRecDirect] = useState(false);
-  const [level, setLevel] = useState(0);
+  // The mic level is written straight to the meter's width: it changes 20
+  // times a second while recording, and a state update would re-render the
+  // whole session (every glossed line) each time.
+  const levelElRef = useRef<HTMLSpanElement | null>(null);
+  const setLevel = useCallback((v: number) => {
+    const el = levelElRef.current;
+    if (el) el.style.width = `${Math.round(v * 100)}%`;
+  }, []);
   const [playing, setPlaying] = useState<string | null>(null);
   const [chars, setChars] = useState(0);
   // This session's voices, drawn at Start (Random slots differ each session)
@@ -165,6 +183,8 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // Every clip playing right now: usually one, two while lines overlap.
   const audiosRef = useRef(new Set<HTMLAudioElement>());
   const urls = useRef(new Map<string, Promise<string>>());
+  // Segment keys already counted in "characters spoken".
+  const counted = useRef(new Set<string>());
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   // The tag and the box's text as of the latest render, for code that runs
@@ -172,14 +192,18 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // not see the values from the render that started it.
   const directTagRef = useRef(false);
   const composerTextRef = useRef("");
+  const hasEntries = entries.length > 0;
+  const reviewOn = !!reply?.settings.review;
   // The box grows with what's in it (up to its max height, then scrolls).
-  // Measured before paint so it never flickers a line short.
+  // Measured before paint so it never flickers a line short; only when the
+  // text (or the placeholder that sizes an empty box) changes, since each
+  // measure forces a layout.
   useLayoutEffect(() => {
     const el = composerRef.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
-  });
+  }, [composer, direct, hasEntries, reviewOn]);
   // The phase as the async flows see it (state lags a render behind).
   const phaseRef = useRef<Phase>("idle");
 
@@ -202,7 +226,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
           ? m.lines.map((l) => {
               const tr = sentenceGlosses((l.segments ?? []).filter((g) => g.lang === "target").map((g) => g.text), glosses, locale ?? undefined);
               if (!tr.length) return null;
-              return tr.length === 1 ? tr[0] : { term: tr.map((t) => t.term).join(" "), meaning: tr.map((t) => t.meaning).join(" ") };
+              // "line" when a whole sentence is in it, else the phrase(s)
+              // it shows, so the button says which.
+              const whole = tr.some((t) => isSentence(t, locale ?? undefined));
+              const gloss = tr.length === 1 ? tr[0] : { term: tr.map((t) => t.term).join(" · "), meaning: tr.map((t) => t.meaning).join(" · ") };
+              return { gloss, whole };
             })
           : [],
       ),
@@ -264,6 +292,15 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     };
   }, []);
 
+  // Another tab opened: the session stays (Go is only hidden), but the
+  // dojo master stops talking and the mic closes. A turn already on its way
+  // is stopped too, so nothing starts speaking behind the learner's back.
+  useEffect(() => {
+    if (!active) stopAll();
+    // stopAll only touches refs and setters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
+
   // Saves can overlap (a slider sends one per step); only the newest one's
   // answer may replace the settings, or an older answer arriving last would
   // undo a later change on screen and then, via the next merge, on disk.
@@ -308,10 +345,14 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     let p = urls.current.get(key);
     if (!p) {
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
-      // A refetch after someone else's abort is the same line, not more of it.
-      if (!retry) setChars((c) => c + seg.text.length);
+      // A refetch (after someone else's abort, or a replay after a failed
+      // fetch left the cache) is the same line, not more of it.
+      if (!counted.current.has(key)) {
+        counted.current.add(key);
+        setChars((c) => c + seg.text.length);
+      }
       p = speakLine(
-        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line), provider: castRef.current?.provider },
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line), fallback: castFallbackFor(castRef.current, line), provider: castRef.current?.provider },
         signal,
       ).then((b) => URL.createObjectURL(b));
       const mine = p;
@@ -579,6 +620,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   function choose(label: string) {
     if (!canAct) return;
     if (phase !== "idle") stopAll();
+    // The choices disappear with this turn; focus goes somewhere on purpose
+    // rather than falling to the page.
+    composerRef.current?.focus();
     void runTurn(`${DIRECT} ${label}`);
   }
 
@@ -653,7 +697,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // clicks). Re-bound each render so it sees the current phase.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== "Space" || e.repeat) return;
+      if (!active || e.code !== "Space" || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.closest("input, textarea, select, button, [contenteditable]") || t.isContentEditable)) return;
       if (!entriesRef.current.length || !sttReady) return;
@@ -682,9 +726,11 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   // narrow screens), scrolling on its own, so it never squeezes or
   // lengthens the transcript.
   return (
-    <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+    // Before Start there is only a button and settings: they keep the page's
+    // reading width rather than stretching across a wide screen.
+    <div className={`flex flex-col gap-3 lg:flex-row lg:items-start ${started ? "" : "mx-auto w-full max-w-3xl"}`}>
     {started && plan.length > 0 && (
-      <aside className={`shrink-0 lg:sticky lg:top-28 lg:flex lg:max-h-[calc(100dvh-8rem)] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
+      <aside className={`shrink-0 lg:sticky lg:top-(--below-bars) lg:flex lg:max-h-[calc(100dvh-var(--below-bars)-1rem)] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
         <SessionTimeline plan={plan} stage={stage} open={timelineOpen} onToggle={toggleTimeline} onJump={jump} disabled={!canAct} />
       </aside>
     )}
@@ -752,70 +798,19 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       )}
 
       {started && (
-        <ol className="flex max-h-[28rem] min-w-0 flex-1 lg:max-h-[max(28rem,calc(100dvh-26rem))] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
-          {entries.map((m, i) =>
-            m.role === "learner" ? (
-              <li key={i} className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
-                {CONTROL_LABEL[m.text] ? (
-                  <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
-                ) : jumpTarget(m.text) != null ? (
-                  <span className="text-fg-3 italic">Jumped to {planTitle(plan, jumpTarget(m.text) as string)}</span>
-                ) : directText(m.text) != null ? (
-                  <>
-                    <span className="text-fg-3 italic">To the dojo master: </span>
-                    {directText(m.text)}
-                  </>
-                ) : (
-                  m.text
-                )}
-              </li>
-            ) : (
-              <li key={i} className="flex flex-col gap-1">
-                {m.lines.map((l, j) => (
-                  <div key={j} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
-                    <SpeakerCritter speaker={l.speaker} size={30} />
-                    <span className="w-24 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-sm text-fg-3 sm:text-xs">{lineLabel(l)}</span>
-                    <span className="flex-1 text-fg">
-                      {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
-                        <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
-                          {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
-                          {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => pick(`${i}:${j}`, gl)} /> : g.text}
-                        </span>
-                      ))}
-                      {picked?.at === `${i}:${j}` && (
-                        <span className="mt-1.5 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg" role="status" data-testid="voice-gloss">
-                          <span className="flex-1">
-                            <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
-                            <span className="text-fg-3"> — </span>
-                            {picked.gloss.meaning}
-                          </span>
-                          <button type="button" className="text-fg-3 hover:text-fg" aria-label="Close definition" onClick={() => setPicked(null)}>
-                            ×
-                          </button>
-                        </span>
-                      )}
-                    </span>
-                    {(() => {
-                      // The line's translation: every glossed sentence (or
-                      // phrase that isn't a button) in it, one tap, and the
-                      // keyboard's way to them.
-                      const gloss = translations[i]?.[j];
-                      if (!gloss) return null;
-                      return (
-                        <button type="button" className="shrink-0 rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label="Translate line" title="Translate" aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => pick(`${i}:${j}`, gloss)}>
-                          {trLabel}
-                        </button>
-                      );
-                    })()}
-                    <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => void replay(i, j, m.lines)}>
-                      ▶
-                    </button>
-                  </div>
-                ))}
-              </li>
-            ),
-          )}
-        </ol>
+        <Transcript
+          entries={entries}
+          plan={plan}
+          playing={playing}
+          picked={picked}
+          translations={translations}
+          glosses={glosses}
+          locale={locale}
+          trLabel={trLabel}
+          onPick={pick}
+          onClosePick={closePick}
+          onReplay={onReplay}
+        />
       )}
       {lastChoices.length > 0 && canAct && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
@@ -840,7 +835,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
           {phase === "recording" && (
             <>
               <span className="inline-block h-2 w-16 overflow-hidden rounded bg-raised" aria-hidden="true">
-                <span className="block h-full bg-accent transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
+                <span ref={levelElRef} className="block h-full bg-accent transition-[width]" style={{ width: "0%" }} />
               </span>
               {recDirect ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : settings?.review ? " — tap ■ when you've finished" : " — tap ■ to send"}
             </>
@@ -1450,13 +1445,25 @@ function expectedPhrases(history: VoiceHistoryItem[]): string[] {
 /** The voice id this session's cast gives a line: its speaker and gender's
  *  slot. An untagged narrator line takes the session's narrator gender; an
  *  untagged character line, whichever of the speaker's slots exists. */
-function castVoiceFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
+function castSlotFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
   if (!cast) return undefined;
   // The narrator keeps the session's voice even when a line's tag says
   // otherwise: one narrator, one voice.
   const g = line.speaker === "narrator" ? cast.narratorGender : line.gender;
-  const c = cast.cast;
-  return (g ? c[`${line.speaker}:${g}`] : (c[`${line.speaker}:female`] ?? c[`${line.speaker}:male`]))?.id;
+  if (g) return `${line.speaker}:${g}`;
+  return [`${line.speaker}:female`, `${line.speaker}:male`].find((k) => cast.cast[k]);
+}
+
+function castVoiceFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
+  const slot = castSlotFor(cast, line);
+  return slot ? cast?.cast[slot]?.id : undefined;
+}
+
+/** The account voice to say a line in if its cast voice is refused (a
+ *  free plan and a library voice). */
+function castFallbackFor(cast: VoiceCastReply | null, line: VoiceLine): string | undefined {
+  const slot = castSlotFor(cast, line);
+  return slot ? cast?.fallbacks?.[slot] : undefined;
 }
 
 /** "Narrator Marlene · Character (woman) Regina · Character (man) Alejandro":
@@ -1518,6 +1525,138 @@ function sessionGlosses(entries: { role: string; glosses?: VoiceGloss[] }[]): Vo
   return out;
 }
 
+type LineTranslation = { gloss: VoiceGloss; whole: boolean } | null;
+
+/** The session's transcript. Memoised: the session re-renders for things
+ *  that don't touch it (the thinking counter, the composer), and every
+ *  glossed line is laid out again on each render. It follows the session:
+ *  a new turn scrolls into view when the learner was already at the bottom
+ *  (not when they had scrolled up to reread), and the line being spoken is
+ *  kept in view. Both move only the list's own scroll, never the page. */
+const Transcript = memo(function Transcript({
+  entries,
+  plan,
+  playing,
+  picked,
+  translations,
+  glosses,
+  locale,
+  trLabel,
+  onPick,
+  onClosePick,
+  onReplay,
+}: {
+  entries: VoiceHistoryItem[];
+  plan: VoicePlanItem[];
+  playing: string | null;
+  picked: { at: string; gloss: VoiceGloss } | null;
+  translations: LineTranslation[][];
+  glosses: VoiceGloss[];
+  locale: string | null;
+  trLabel: string;
+  onPick: (at: string, gloss: VoiceGloss) => void;
+  onClosePick: () => void;
+  onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
+}) {
+  const olRef = useRef<HTMLOListElement | null>(null);
+  const atBottom = useRef(true);
+  const onScroll = () => {
+    const el = olRef.current;
+    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+  const count = entries.length;
+  useLayoutEffect(() => {
+    const el = olRef.current;
+    if (!el) return;
+    // The learner's own message always comes into view: they just sent it.
+    if (atBottom.current || entries[count - 1]?.role === "learner") {
+      el.scrollTop = el.scrollHeight;
+      atBottom.current = true;
+    }
+    // Only a new entry moves the list, not a re-render of the same ones.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [count]);
+  useLayoutEffect(() => {
+    const el = olRef.current;
+    if (!el || !playing) return;
+    const row = el.querySelector<HTMLElement>(`[data-line="${playing}"]`);
+    if (!row) return;
+    const box = el.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const pad = 8;
+    if (r.top < box.top + pad || r.height > box.height) el.scrollTop += r.top - box.top - pad;
+    else if (r.bottom > box.bottom - pad) el.scrollTop += r.bottom - box.bottom + pad;
+  }, [playing]);
+  return (
+<ol ref={olRef} onScroll={onScroll} className="flex max-h-[min(28rem,calc(100dvh-22rem))] min-h-48 min-w-0 flex-1 lg:max-h-[max(28rem,calc(100dvh-26rem))] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
+  {entries.map((m, i) =>
+    m.role === "learner" ? (
+      <li key={i} className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
+        {CONTROL_LABEL[m.text] ? (
+          <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
+        ) : jumpTarget(m.text) != null ? (
+          <span className="text-fg-3 italic">Jumped to {planTitle(plan, jumpTarget(m.text) as string)}</span>
+        ) : directText(m.text) != null ? (
+          <>
+            <span className="text-fg-3 italic">To the dojo master: </span>
+            {directText(m.text)}
+          </>
+        ) : (
+          m.text
+        )}
+      </li>
+    ) : (
+      <li key={i} className="flex flex-col gap-1">
+        {m.lines.map((l, j) => (
+          <div key={j} data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
+            <SpeakerCritter speaker={l.speaker} size={30} />
+            <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
+            <span className="min-w-0 max-w-[72ch] flex-1 text-fg [overflow-wrap:anywhere]">
+              {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
+                <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
+                  {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
+                  {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
+                </span>
+              ))}
+              {picked?.at === `${i}:${j}` && (
+                <span className="mt-1.5 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg" role="status" data-testid="voice-gloss">
+                  <span className="flex-1">
+                    <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
+                    <span className="text-fg-3"> — </span>
+                    {picked.gloss.meaning}
+                  </span>
+                  <button type="button" className="text-fg-3 hover:text-fg" aria-label="Close definition" onClick={onClosePick}>
+                    ×
+                  </button>
+                </span>
+              )}
+            </span>
+            {(() => {
+              // The line's translation: every glossed sentence (or
+              // phrase that isn't a button) in it, one tap, and the
+              // keyboard's way to them.
+              const tr = translations[i]?.[j];
+              if (!tr) return null;
+              const { gloss, whole } = tr;
+              const what = whole ? "this line" : "this phrase";
+              return (
+                <button type="button" className="shrink-0 rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
+                  {trLabel}
+                </button>
+              );
+            })()}
+            <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
+              ▶
+            </button>
+          </div>
+        ))}
+      </li>
+    ),
+  )}
+</ol>
+  );
+});
+
 /** A quick-request chip above the composer, or a check-in answer. */
 function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: () => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
   const look = variant === "choice"
@@ -1526,9 +1665,13 @@ function QuickButton({ onClick, disabled, title, testid, variant = "quick", chil
   return (
     <button
       type="button"
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-[family-name:var(--font-display)] text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${look}`}
-      onClick={onClick}
-      disabled={disabled}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 font-[family-name:var(--font-display)] text-sm transition-colors aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${look}`}
+      // aria-disabled, not disabled: a disabled button drops keyboard focus
+      // to the page while a turn runs, and the next Space would open the mic.
+      onClick={() => {
+        if (!disabled) onClick();
+      }}
+      aria-disabled={disabled || undefined}
       title={title}
       data-testid={testid}
     >
