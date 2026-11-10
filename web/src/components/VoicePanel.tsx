@@ -75,8 +75,13 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
   const [composer, setComposer] = useState("");
   // The composer (and the recording behind it) speaks straight to the dojo
   // master, in the native language, rather than answering the practice.
+  // `direct` is the composer's toggle. It changes only when the learner flips
+  // it, when a direct recording lands in the composer, and on send, so a
+  // cancelled or unheard recording can't leave it on. The recording's own
+  // mode is fixed when it starts (directRef, and recDirect for its label).
   const [direct, setDirect] = useState(false);
   const directRef = useRef(false);
+  const [recDirect, setRecDirect] = useState(false);
   const [level, setLevel] = useState(0);
   const [playing, setPlaying] = useState<string | null>(null);
   const [chars, setChars] = useState(0);
@@ -342,8 +347,9 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
     if (!s || recRef.current || phaseRef.current === "opening") return;
     // Talking over the dojo master is allowed: it stops them.
     stopAll();
-    directRef.current = toMaster;
-    setDirect(toMaster);
+    // Talk with the toggle on dictates to the master too, matching the toggle.
+    directRef.current = toMaster || direct;
+    setRecDirect(directRef.current);
     const gen = genRef.current;
     phaseRef.current = "opening";
     setPhase("opening");
@@ -404,6 +410,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
       }
       if (settingsRef.current?.review) {
         setComposer((c) => (c.trim() ? `${c.trim()} ${text}` : text));
+        if (toMaster) setDirect(true);
         setPhase("idle");
         window.setTimeout(() => composerRef.current?.focus(), 0);
         return;
@@ -590,7 +597,7 @@ function VoiceSession({ mode, pack, langs, onClose }: { mode: Mode; pack: PackIn
               <span className="inline-block h-2 w-16 overflow-hidden rounded bg-raised" aria-hidden="true">
                 <span className="block h-full bg-accent transition-[width]" style={{ width: `${Math.round(level * 100)}%` }} />
               </span>
-              {direct ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
+              {recDirect ? `Listening in ${langs.native || "your language"}, to the dojo master` : "Listening"}{settings?.turn === "pause" ? ` — ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet` : " — tap Done when you've finished"}
             </>
           )}
           {phase === "opening" && "Opening the microphone…"}
@@ -1186,10 +1193,20 @@ function LibraryBrowser({
  *  speech to text, capped so the URL stays short. */
 function expectedPhrases(history: VoiceHistoryItem[]): string[] {
   const out: string[] = [];
+  // The query string must stay well under Node's 16 KB header limit, and
+  // CJK text grows ~9x when URL-encoded: cap the encoded total, not a count.
+  let budget = 6000;
   const masters = history.filter((h): h is Extract<VoiceHistoryItem, { role: "master" }> => h.role === "master").slice(-2).reverse();
   for (const h of masters) {
     for (const line of h.lines) {
-      for (const g of line.segments ?? []) if (g.lang === "target" && out.length < 60) out.push(g.text.slice(0, 300));
+      for (const g of line.segments ?? []) {
+        if (g.lang !== "target") continue;
+        const phrase = g.text.slice(0, 300);
+        const cost = encodeURIComponent(phrase).length + 6;
+        if (cost > budget) return out;
+        budget -= cost;
+        out.push(phrase);
+      }
     }
   }
   return out;
