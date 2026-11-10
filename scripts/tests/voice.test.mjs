@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
-import { parseGlosses, MAX_GLOSSES } from "../voice.mjs";
+import { parseChoices, parseGlosses, MAX_CHOICES, MAX_GLOSSES, EXPLAIN } from "../voice.mjs";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
@@ -445,7 +445,7 @@ test("normalizeVoiceSettings: defaults, clamping, and junk in the voice map drop
   assert.equal(d.tts, "elevenlabs");
   assert.equal(d.turn, "tap");
   assert.equal(d.silenceMs, SILENCE_MS.default);
-  assert.equal(d.review, true);
+  assert.equal(d.review, false, "a spoken answer sends itself unless the learner asks to check it");
   const s = normalizeVoiceSettings({
     tts: "nope",
     silenceMs: 99_999,
@@ -489,4 +489,20 @@ test("a turn's glosses go back into the replay", () => {
   );
   assert.match(prompt, /CHARACTER-F: <t>¿Algo más\?<\/t>\nGLOSS: ¿Algo más\? = Anything else\?/);
   assert.doesNotMatch(voiceTurnPrompt([{ role: "master", lines: parseVoiceReply("NARRATOR-M: Hi") }], "x"), /GLOSS:/);
+});
+
+test("CHOICES lines become buttons, are never spoken, and replay", () => {
+  const reply = "NARRATOR-M: Nice work. Shall we keep going?\nCHOICES: Keep going | Slow down | keep going | Something harder | One more | Too many";
+  assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["Nice work. Shall we keep going?"]);
+  assert.deepEqual(parseChoices(reply), ["Keep going", "Slow down", "Something harder", "One more"]);
+  assert.equal(parseChoices(reply).length, MAX_CHOICES);
+  assert.deepEqual(parseChoices("NARRATOR-M: no choices here"), []);
+  const prompt = voiceTurnPrompt([{ role: "master", lines: parseVoiceReply(reply), choices: ["Keep going", "Slow down"] }], "[direct] Keep going");
+  assert.match(prompt, /\nCHOICES: Keep going \| Slow down\n/);
+});
+
+test("the adapter explains Explain and choices", () => {
+  const a = voiceAdapter("adult");
+  assert.ok(a.includes(`"${EXPLAIN}"`));
+  assert.match(a, /CHOICES: Keep going \| Slow down/);
 });

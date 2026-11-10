@@ -134,6 +134,8 @@ declare module "*/scripts/voice.mjs" {
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
   export const MAX_GLOSSES: number;
+  export const MAX_CHOICES: number;
+  export function parseChoices(text: string): string[];
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
   export function voiceSlots(mode: Mode): import("../shared/wire.ts").VoiceSlot[];

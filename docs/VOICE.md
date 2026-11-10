@@ -89,8 +89,21 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   moves on to the next step. Both cut off speech like Talk does, and show as
   "Asked for help" / "Skipped" in the transcript. The adapter in
   `scripts/voice.mjs` defines both messages (`HELP`, `SKIP`).
-- **💬 English** (your native language) is a direct line to the dojo master,
-  outside the practice: "switch the scene to a taco stand", "redo that one",
+- **The composer**: a text box that grows with its text, then the Talk
+  button (a sound wave, ■ while recording) and ▶ Send. A spoken answer is
+  sent when you tap ■, unless "let me check what it heard" is on, when it
+  lands in the box for ▶. Above it are quick requests: Dojo master, Help,
+  Explain, Skip (and Stop while the dojo master talks).
+- **🔎 Explain** sends `[explain]`: the narrator explains what was just said
+  (meaning, key word or structure, any local note) and hands back.
+- **Check-in choices.** When the dojo master asks how the session should go,
+  it ends the turn with a `CHOICES:` line (shown, never spoken;
+  `parseChoices`). The latest turn's choices show as buttons, plus "🎙 I'll
+  tell you". A tapped choice goes as `[direct] <choice>`.
+- **Dojo master** (formerly 💬 English) is a direct line to the dojo master,
+  outside the practice. The narrator first says a fixed "Yes? I'm
+  listening." (English learners only; a cached clip, not a model turn), then
+  the mic opens: "switch the scene to a taco stand", "redo that one",
   "slower please". It records in your native language with no target hints,
   and the message goes as `[direct] …`, which the adapter says is a request
   to act on, not an answer to grade. With "check what it heard" on, the

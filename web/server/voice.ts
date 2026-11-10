@@ -9,7 +9,7 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, parseGlosses, parseVoiceReply, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, parseChoices, parseGlosses, parseVoiceReply, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceFor, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceCastReply, VoiceCastRequest,
@@ -267,7 +267,10 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
             .slice(0, MAX_GLOSSES)
             .map((g) => ({ term: (g.term as string).slice(0, 200), meaning: (g.meaning as string).slice(0, 300) }))
         : [];
-      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}) });
+      const choices = Array.isArray(m.choices)
+        ? (m.choices as unknown[]).filter((c): c is string => typeof c === "string").slice(0, MAX_CHOICES).map((c) => c.slice(0, 60))
+        : [];
+      out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}) });
     }
   }
   return out.slice(-HISTORY_WINDOW);
@@ -320,7 +323,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
+    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
   } finally {
     turning = false;
     res.off("close", onClose);
