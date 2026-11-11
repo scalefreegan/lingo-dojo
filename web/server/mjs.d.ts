@@ -159,6 +159,7 @@ declare module "*/scripts/voice.mjs" {
     aged?: Record<string, { id: string; name: string; age?: string }[] | null>;
     own?: { id: string; name: string; gender: string; match: boolean; age?: string }[];
     recast?: boolean;
+    avoid?: string[];
   }): { pools: Record<string, { id: string; name: string; age?: string }[]>; omitted: string[] };
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
