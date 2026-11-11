@@ -880,3 +880,61 @@ test("castPools: an aged slot falls back to the library nearest that age, not an
 test("the [direct] reply follows the guidance language, as help and explain do", () => {
   assert.match(voiceAdapter("adult"), /\[direct\][^\n]*Reply as the narrator, in the language your instructions say to guide in/);
 });
+
+/* ------------------------- round 9: written first -------------------------- */
+
+test("castFallbacks as the server calls a recast (all + taken): the slot's own fallback, never another slot's", () => {
+  const own = [
+    { id: "f1", name: "F1", gender: "female", match: false, premade: true, age: "young" },
+    { id: "f2", name: "F2", gender: "female", match: false, premade: true, age: "old" },
+    { id: "m1", name: "M1", gender: "male", match: false, premade: true, age: "middle" },
+    { id: "m2", name: "M2", gender: "male", match: false, premade: true, age: "old" },
+  ];
+  const all = ["narrator:female", "narrator:male", "character:female", "character:male"];
+  const start = castFallbacks(own, all, {});
+  assert.equal(start["narrator:female"], "f1");
+  assert.equal(start["character:female"], "f2");
+  for (const age of ["young", "middle", "old"]) {
+    const fb = castFallbacks(own, ["character:female"], {}, { all, ages: { "character:female": age }, taken: ["f1"] });
+    assert.equal(fb["character:female"], "f2", `a ${age} recast keeps off the narrator's f1`);
+  }
+  // The only old man keeps the old character, as at Start.
+  const startOld = castFallbacks(own, all, {}, { ages: { "character:male": "old" } });
+  assert.equal(castFallbacks(own, ["character:male"], {}, { all, ages: { "character:male": "old" }, taken: [startOld["narrator:male"]] })["character:male"], "m2");
+});
+
+test("castPools: voices playing other slots are left out before narrowing by age", () => {
+  const library = { female: [{ id: "N", name: "N", age: "old" }, { id: "M", name: "M", age: "middle" }, { id: "Y", name: "Y", age: "young" }] };
+  const { pools } = castPools({ slots: ["character:female"], ages: { "character:female": "old" }, library, aged: { "character:female": [] }, own: [], recast: true, avoid: ["N"] });
+  assert.deepEqual(pools["character:female"].map((v) => v.id), ["M"], "the next-nearest free voice, not the narrator's");
+  const aged = castPools({ slots: ["character:female"], ages: { "character:female": "old" }, library, aged: { "character:female": [{ id: "N", name: "N", age: "old" }, { id: "O2", name: "O2", age: "old" }] }, own: [], avoid: ["N"] });
+  assert.deepEqual(aged.pools["character:female"].map((v) => v.id), ["O2"]);
+  const pick = pickCast({ slots: ["character:female"], pools, avoid: ["N"], rand: () => 0 });
+  assert.equal(pick["character:female"].id, "M");
+});
+
+test("parseCast: the age is the person's, not a word inside someone else's", () => {
+  const age = (s) => parseCast(`CAST: CHARACTER-F ${s}`)[0]?.age ?? "";
+  assert.equal(age("the girl's mother, Doña Ana"), "");
+  assert.equal(age("the boy's grandfather"), "");
+  assert.equal(age("Mr Young, the baker"), "");
+  assert.equal(age("an elderly woman, Doña Carmen"), "old");
+  assert.equal(age("a little girl, Sofía"), "child");
+  assert.equal(age("middle aged, the guide"), "middle");
+  assert.equal(age("old, Doña Carmen"), "old");
+  assert.deepEqual(parseCast("CAST: CHARACTER-F Little Red, a girl"), []);
+});
+
+test("parseCast stays fast on a long line with no commas", () => {
+  fast(() => parseCast(`CAST: CHARACTER-F ${"word ".repeat(16000)}`));
+});
+
+test("timing marks: milliseconds spelled out, thousands separators, long marks, pausa", () => {
+  const gap = (mark) => parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`).map((l) => [l.speaker, l.text, l.gap ?? null])[1];
+  assert.deepEqual(gap("<pause 500 milliseconds>"), ["character", "Hola", 0.5]);
+  assert.deepEqual(gap("<pause 500 msec>"), ["character", "Hola", 0.5]);
+  assert.deepEqual(gap("<pause 1,500ms>"), ["character", "Hola", 1.5]);
+  assert.deepEqual(gap("<pause 1.5 seconds while she weighs the tomatoes slowly>"), ["character", "Hola", 1.5]);
+  assert.deepEqual(gap("<pausa 1>"), ["character", "Hola", 1]);
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<pausa 1> STAGE: scene").map((l) => l.text), ["Hi"]);
+});

@@ -141,6 +141,12 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const [error, setError] = useState<string | null>(null);
   // A status line, sometimes with one thing to do about it (hear a reply
   // that arrived while Go was hidden, send a request that waited).
+  // Words for the dojo master that came back while Go was hidden, with a
+  // practice answer already drafted in the box: kept apart (a chip above the
+  // box) until sent or dismissed, never folded into the draft.
+  const [heldRequest, setHeldRequest] = useState<string | null>(null);
+  // The header's voices line, opened past its two lines on a phone.
+  const [castOpen, setCastOpen] = useState(false);
   const [notice, setNoticeState] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null);
   const setNotice = (text: string | null, action?: { label: string; run: () => void }) => setNoticeState(text ? { text, action } : null);
   const [composer, setComposer] = useState("");
@@ -247,7 +253,10 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const trLabel = nativeLocale?.split(/[-_]/)[0]?.toUpperCase() || "Tr";
   // Each master line's translation (what its translate button shows), worked
   // out once per transcript change rather than on every render: the level
-  // meter re-renders many times a second while recording.
+  // meter re-renders many times a second while recording. Every line is
+  // redone on a new turn (its glosses can match older lines), which is
+  // string matching only; the rows themselves re-render only when theirs
+  // change (Transcript).
   const translations = useMemo(
     () =>
       entries.map((m) =>
@@ -404,8 +413,13 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   }
 
   /** One segment's audio, fetched once and kept for replay. Each segment is
-   *  said in its own language (target or native) by the line's voice. */
-  function audioFor(key: string, line: VoiceLine, seg: VoiceSegment, signal: AbortSignal, retry = false): Promise<string> {
+   *  said in its own language (target or native) by `who`'s voice (the
+   *  line's slot in this session's cast when not given). The cache key
+   *  carries the voice, so a clip made before a voice was redrawn is never
+   *  replayed in place of the new one. */
+  function audioFor(base: string, line: VoiceLine, seg: VoiceSegment, signal: AbortSignal, who?: SpeakAs, retry = false): Promise<string> {
+    const as = who ?? { voice: castVoiceFor(castRef.current, line), fallback: castFallbackFor(castRef.current, line) };
+    const key = `${base}@${as.voice ?? ""}`;
     let p = urls.current.get(key);
     if (!p) {
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
@@ -416,7 +430,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         setChars((c) => c + seg.text.length);
       }
       p = speakLine(
-        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: castVoiceFor(castRef.current, line), fallback: castFallbackFor(castRef.current, line), provider: castRef.current?.provider },
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: as.voice, fallback: as.fallback, provider: castRef.current?.provider },
         signal,
       ).then((b) => URL.createObjectURL(b));
       const mine = p;
@@ -432,7 +446,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     // by a second tap) but this one wasn't, fetch again rather than inherit
     // their abort and play nothing. Once: a second abort is its own.
     return p.catch((e: unknown) => {
-      if (isAbort(e) && !signal.aborted && !retry) return audioFor(key, line, seg, signal, true);
+      if (isAbort(e) && !signal.aborted && !retry) return audioFor(base, line, seg, signal, as, true);
       throw e;
     });
   }
@@ -499,13 +513,36 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     });
   }
 
+  /** Who says a line of entry `entryIdx`: the person its slot's latest CAST
+   *  note names as of that entry (so a replay of an old line is still that
+   *  person, not whoever has the tag now), or undefined when the dojo master
+   *  never said. */
+  function personFor(notes: Record<string, VoiceCastNote>, line: VoiceLine): string | undefined {
+    const slot = castSlotFor(castRef.current, line);
+    const n = slot ? notes[slot] : undefined;
+    return n ? whoKey(n) : undefined;
+  }
+
+  /** The voice (and refusal fallback) a line is said in: its person's own,
+   *  else its slot's in this session's cast. */
+  function speakAs(person: string | undefined, line: VoiceLine): SpeakAs {
+    const held = person ? heldBy.current.get(person) : undefined;
+    const cur = castRef.current;
+    if (held) return { voice: held.voice.id, fallback: held.fallback ?? castFallbackFor(cur, line) };
+    return { voice: castVoiceFor(cur, line), fallback: castFallbackFor(cur, line) };
+  }
+
   /** Speak lines in order, segment by segment, fetching the next segment
    *  while the current one plays. A line from before segments existed (or
-   *  with none) is spoken whole as the target language. */
-  async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false, gate: PlayGate | null = null) {
-    // A line in a slot still being redrawn waits for its new voice (and
-    // isn't fetched ahead in the old one).
-    const gated = (line: VoiceLine) => !!gate && !gate.done && gate.slots.has(castSlotFor(castRef.current, line) ?? "");
+   *  with none) is spoken whole as the target language. A line whose person
+   *  is having a voice drawn waits for it (whichever way it was started: a
+   *  turn, ▶, or "Play the reply"), and isn't fetched ahead in the old one. */
+  async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
+    const notes = latestCast(entriesRef.current.slice(0, entryIdx + 1));
+    const pending = (line: VoiceLine) => {
+      const person = personFor(notes, line);
+      return person ? drawing.current.get(person) : undefined;
+    };
     setPhase("speaking");
     const last = only ? from : lines.length - 1;
     // `pauseMs` is the gap before a line's first segment (none before the
@@ -520,11 +557,15 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     for (let q = 0; q < queue.length; q++) {
       if (signal.aborted) return;
       const cur = queue[q];
-      if (gate && gated(cur.line)) await gate.ready;
-      if (signal.aborted) return;
-      const url = await audioFor(cur.key, cur.line, cur.seg, signal);
+      // A draw never rejects (recast catches), and a new one may start
+      // while waiting (a second draw for the same person): wait them out.
+      for (let w = pending(cur.line); w; w = pending(cur.line)) {
+        await w;
+        if (signal.aborted) return;
+      }
+      const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes, cur.line), cur.line));
       const next = queue[q + 1];
-      if (next && !gated(next.line)) void audioFor(next.key, next.line, next.seg, signal).catch(() => {});
+      if (next && !pending(next.line)) void audioFor(next.key, next.line, next.seg, signal, speakAs(personFor(notes, next.line), next.line)).catch(() => {});
       if (signal.aborted) return;
       if (cur.pauseMs > 0) await pause(cur.pauseMs, signal);
       if (signal.aborted) return;
@@ -590,7 +631,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // the session is checked, not only this turn's, so a redraw that was
       // cut off is tried again. Lines before the first one in a slot being
       // redrawn play meanwhile.
-      const gate = recast(latestCast(entriesRef.current));
+      recast(latestCast(entriesRef.current));
       // The learner left Go while this turn was on its way: keep it, don't
       // start talking on a hidden tab.
       if (!activeRef.current) {
@@ -599,7 +640,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         setNotice("A reply arrived while you were away.", { label: "▶ Play the reply", run: () => void replay(idx, 0, lines, false) });
         return;
       }
-      await playLines(idx, r.lines, ctrl.signal, 0, false, gate);
+      await playLines(idx, r.lines, ctrl.signal, 0, false);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
       const s = settingsRef.current;
@@ -616,37 +657,32 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
    *  were in the scene before, the current one when its age fits, and else a
    *  Random voice drawn for their age (only where the provider labels ages:
    *  ElevenLabs' library does; macOS and Azure mostly don't). Slots the
-   *  learner set and the narrator gender not in use are left alone. Returns
-   *  the slots being drawn and when the draw is done (null when nothing is
-   *  drawn). The draw isn't cut off by Stop or by leaving Go (the call is
-   *  free, and its voice is wanted next time either way); only Restart or a
-   *  new cast drops its answer. A failed draw keeps the old voice and
-   *  records nothing, so the next turn tries again (twice at most per
-   *  person). */
-  function recast(wanted: Record<string, VoiceCastNote>): PlayGate | null {
+   *  learner set and the narrator gender not in use are left alone. A draw
+   *  is kept in `drawing` by person until it's done, and every playback of
+   *  that person's lines waits for it (playLines). The draw isn't cut off by
+   *  Stop or by leaving Go (the call is free, and its voice is wanted next
+   *  time either way); only Restart or a new cast drops its answer. When it
+   *  lands, the voice is that person's (heldBy), and the slot's only if the
+   *  dojo master still names them for it then. A failed draw keeps the old
+   *  voice, held only tentatively, so the next turn tries again (twice at
+   *  most per person). */
+  function recast(wanted: Record<string, VoiceCastNote>) {
     const cur = castRef.current;
-    if (!cur || !locale) return null;
+    if (!cur || !locale) return;
     const labelled = Object.values(cur.cast).some((v) => v.age);
     const set = settingsRef.current?.voices[cur.provider]?.[cur.locale] ?? {};
     let cast = cur.cast;
     let fallbacks = cur.fallbacks;
     const draw: Record<string, VoiceAge> = {};
     const keys: Record<string, string> = {};
-    // Slots whose person is already being drawn for (an earlier turn's
-    // draw still on its way): their lines wait for that one.
-    const waiting: Promise<void>[] = [];
-    const gatedSlots = new Set<string>();
     for (const n of Object.values(wanted)) {
       const slot = n.slot;
       if (!cast[slot] || set[slot as VoiceSlot]) continue;
       if (slot.startsWith("narrator:") && slot !== `narrator:${cur.narratorGender}`) continue;
       const key = whoKey(n);
-      const pending = drawing.current.get(key);
-      if (pending) {
-        waiting.push(pending);
-        gatedSlots.add(slot);
-        continue;
-      }
+      // Already being drawn for (an earlier turn's draw still on its way):
+      // their lines wait for that one, and it takes the slot when it lands.
+      if (drawing.current.get(key)) continue;
       const held = heldBy.current.get(key);
       if (holder.current.get(slot) !== key && held) {
         // Back in the scene: their voice again.
@@ -655,77 +691,74 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         holder.current.set(slot, key);
       }
       const now = cast[slot];
-      const fits = !labelled || now.age === n.age || (held?.voice.id === now.id && held.asked === n.age) || (drawFails.current.get(key) ?? 0) >= 2;
+      const fits = !labelled || now.age === n.age || (held?.voice.id === now.id && held.asked === n.age && !held.tentative) || (drawFails.current.get(key) ?? 0) >= 2;
       if (fits) {
         holder.current.set(slot, key);
-        if (held?.voice.id !== now.id) heldBy.current.set(key, { voice: now, fallback: fallbacks?.[slot], asked: n.age });
+        if (held?.voice.id !== now.id || held.tentative) heldBy.current.set(key, { voice: now, fallback: fallbacks?.[slot], asked: n.age });
         continue;
       }
+      // Until the draw lands (or if it fails), this person speaks with the
+      // slot's voice as it is now, even if someone else takes the tag.
+      if (!held) heldBy.current.set(key, { voice: now, fallback: fallbacks?.[slot], asked: n.age, tentative: true });
+      holder.current.set(slot, key);
       draw[slot] = n.age;
       keys[slot] = key;
-      gatedSlots.add(slot);
     }
     if (cast !== cur.cast || fallbacks !== cur.fallbacks) {
       castRef.current = { ...cur, cast, ...(fallbacks ? { fallbacks } : {}) };
       setCast(castRef.current);
     }
     const slotsToDraw = Object.keys(draw);
-    if (slotsToDraw.length) {
-      const base = castRef.current as VoiceCastReply;
-      const epoch = castEpoch.current;
-      // Every other slot's voice and fallback is taken: the drawn voice, and
-      // the fallback the server names, must differ from them.
-      const others = Object.keys(base.cast).filter((x) => !draw[x]);
-      const avoid = [...new Set([...others.map((x) => base.cast[x].id), ...others.map((x) => base.fallbacks?.[x]).filter((v): v is string => !!v)])].slice(0, 20);
-      const holdersBefore = Object.fromEntries(slotsToDraw.map((slot) => [slot, holder.current.get(slot)]));
-      const failed = () => {
-        for (const slot of slotsToDraw) drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-      };
-      const run = (async () => {
-        try {
-          const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid });
-          if (castEpoch.current !== epoch || !castRef.current) return;
-          const live = castRef.current;
-          const nextCast = { ...live.cast };
-          const nextFallbacks = { ...(live.fallbacks ?? {}) };
-          for (const slot of slotsToDraw) {
-            const v = r.cast[slot];
-            // Left out: the server found nothing for that age. The slot
-            // keeps its voice, and the next turn asks again.
-            if (!v) {
-              drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-              continue;
-            }
-            const fallback = r.fallbacks?.[slot] ?? live.fallbacks?.[slot];
-            heldBy.current.set(keys[slot], { voice: v, fallback, asked: draw[slot] });
-            // Someone else took the tag meanwhile (a later turn): the voice
-            // waits for this person's return.
-            const who = holder.current.get(slot);
-            if (who !== holdersBefore[slot] && who !== keys[slot]) continue;
-            nextCast[slot] = v;
-            if (fallback) nextFallbacks[slot] = fallback;
-            holder.current.set(slot, keys[slot]);
+    if (!slotsToDraw.length) return;
+    const base = castRef.current as VoiceCastReply;
+    const epoch = castEpoch.current;
+    // Every other slot's voice and fallback is taken: the drawn voice, and
+    // the fallback the server names, must differ from them.
+    const others = Object.keys(base.cast).filter((x) => !draw[x]);
+    const avoid = [...new Set([...others.map((x) => base.cast[x].id), ...others.map((x) => base.fallbacks?.[x]).filter((v): v is string => !!v)])].slice(0, 20);
+    const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
+    const run = (async () => {
+      try {
+        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid });
+        if (castEpoch.current !== epoch || !castRef.current) return;
+        const live = castRef.current;
+        const nextCast = { ...live.cast };
+        const nextFallbacks = { ...(live.fallbacks ?? {}) };
+        // Who each tag is now, as the transcript says (a later turn may have
+        // handed it to someone else while this draw was out).
+        const latest = latestCast(entriesRef.current);
+        for (const slot of slotsToDraw) {
+          const v = r.cast[slot];
+          // Left out: the server found nothing for that age. The person
+          // keeps their tentative voice, and the next turn asks again.
+          if (!v) {
+            failed(slot);
+            continue;
           }
-          castRef.current = { ...live, cast: nextCast, ...(Object.keys(nextFallbacks).length ? { fallbacks: nextFallbacks } : {}) };
-          setCast(castRef.current);
-        } catch (e) {
-          if (isAbort(e) || castEpoch.current !== epoch) return;
-          failed();
-          setNotice("Couldn't find a better-matched voice; keeping this one.");
+          const fallback = r.fallbacks?.[slot] ?? heldBy.current.get(keys[slot])?.fallback ?? live.fallbacks?.[slot];
+          heldBy.current.set(keys[slot], { voice: v, fallback, asked: draw[slot] });
+          // The tag is someone else's now: the voice waits for this
+          // person's return.
+          const n = latest[slot];
+          if (!n || whoKey(n) !== keys[slot]) continue;
+          nextCast[slot] = v;
+          if (fallback) nextFallbacks[slot] = fallback;
+          holder.current.set(slot, keys[slot]);
         }
-      })();
-      for (const slot of slotsToDraw) drawing.current.set(keys[slot], run);
-      void run.then(() => {
-        for (const slot of slotsToDraw) if (drawing.current.get(keys[slot]) === run) drawing.current.delete(keys[slot]);
-      });
-      waiting.push(run);
-    }
-    if (!waiting.length) return null;
-    const gate: PlayGate = { slots: gatedSlots, done: false, ready: Promise.resolve() };
-    gate.ready = Promise.all(waiting).then(() => {
-      gate.done = true;
+        castRef.current = { ...live, cast: nextCast, ...(Object.keys(nextFallbacks).length ? { fallbacks: nextFallbacks } : {}) };
+        setCast(castRef.current);
+      } catch (e) {
+        if (isAbort(e) || castEpoch.current !== epoch) return;
+        for (const slot of slotsToDraw) failed(slot);
+        // Quietly: the voice in use stays, and a notice with an action (a
+        // reply to play, words to send) must not be replaced by this.
+        setNoticeState((was) => was ?? { text: "Couldn't find a better-matched voice; keeping this one." });
+      }
+    })();
+    for (const slot of slotsToDraw) drawing.current.set(keys[slot], run);
+    void run.then(() => {
+      for (const slot of slotsToDraw) if (drawing.current.get(keys[slot]) === run) drawing.current.delete(keys[slot]);
     });
-    return gate;
   }
 
   async function startListening(toMaster = false) {
@@ -810,7 +843,8 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // own, one tap to send.
       if (away && toMaster && draft && !directTagRef.current) {
         setPhase("idle");
-        setNotice(`Your words to the dojo master: “${text}”`, { label: "Send them", run: () => void runTurn(`${DIRECT} ${text}`) });
+        setHeldRequest((was) => (was ? `${was} ${text}` : text));
+        setNotice("Your words to the dojo master are waiting above the box.");
         return;
       }
       const intoBox = away || (settingsRef.current?.review && !(toMaster && draft && !directTagRef.current));
@@ -888,7 +922,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       const line: VoiceLine = { speaker: "narrator", gender: castRef.current.narratorGender, text: MASTER_ACK, segments: [{ lang: "native", text: MASTER_ACK }] };
       try {
         setPhase("speaking");
-        const url = await audioFor(`ack:${castRef.current.provider}:${castVoiceFor(castRef.current, line) ?? castRef.current.narratorGender}`, line, line.segments[0], ctrl.signal);
+        const url = await audioFor(`ack:${castRef.current.provider}:${castRef.current.narratorGender}`, line, line.segments[0], ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         await playUrl(url, ctrl.signal);
       } catch {
@@ -934,6 +968,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     setPicked(null);
     setPlan([]);
     setComposer("");
+    setHeldRequest(null);
     setError(null);
     setNotice(null);
   }
@@ -999,9 +1034,22 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
             {locale ? ` · ${locale}` : ""}
             {chars > 0 && ` · ${chars.toLocaleString()} characters spoken`}
             {cast && Object.keys(cast.cast).length > 0 && (
-              // On a phone it keeps to two lines; the tooltip has it all.
-              <span className="line-clamp-2 sm:line-clamp-none" data-testid="voice-cast" title={`Voices this session: ${castSummary(cast, castWho, usedSlots)}. Random slots draw new voices each session; Restart draws again.`}>
-                Voices this session: {castSummary(cast, castWho, usedSlots)}
+              // On a phone it keeps to two lines until tapped open (a touch
+              // screen has no tooltip).
+              <span className="flex items-start gap-1">
+                <span id="voice-cast" className={`${castOpen ? "" : "line-clamp-2"} sm:line-clamp-none`} data-testid="voice-cast" title={`Voices this session: ${castSummary(cast, castWho, usedSlots)}. Random slots draw new voices each session; Restart draws again.`}>
+                  Voices this session: {castSummary(cast, castWho, usedSlots)}
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md px-1 text-fg-3 underline decoration-dotted underline-offset-2 hover:text-fg sm:hidden"
+                  aria-expanded={castOpen}
+                  aria-controls="voice-cast"
+                  onClick={() => setCastOpen((o) => !o)}
+                  data-testid="voice-cast-more"
+                >
+                  {castOpen ? "less" : "more"}
+                </button>
               </span>
             )}
           </span>
@@ -1108,6 +1156,12 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
                     const run = notice.action?.run;
                     setNotice(null);
                     run?.();
+                    // This button is about to go: keep keyboard focus on a
+                    // control that stays (Stop while the reply plays, so
+                    // Space can't open the mic over it), else Talk.
+                    const p = phaseRef.current;
+                    const to = p === "speaking" || p === "thinking" ? toolbarRef.current?.querySelector<HTMLElement>('[data-testid="voice-stop"]') : talkRef.current;
+                    to?.focus();
                   }}
                   testid="voice-notice-action"
                 >
@@ -1151,15 +1205,47 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
                 taking a third one. */}
             <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))} aria-label={copyStatus === "copied" ? "Copied" : "Copy transcript"}>
               {copyStatus === "copied" ? "Copied" : (
-                <>
+                // One child, so the button's gap never lands inside the label.
+                <span>
                   Copy<span className="hidden sm:inline"> transcript</span>
-                </>
+                </span>
               )}
             </Button>
             <Button variant="ghost" className="px-2 py-1" onClick={restart}>
               Restart
             </Button>
           </div>
+          {heldRequest && (
+            <div className="flex flex-wrap items-center gap-1.5 self-start rounded-2xl bg-accent-soft py-1 pr-1 pl-3 text-sm text-fg" data-testid="voice-held-request">
+              <span className="min-w-0 [overflow-wrap:anywhere]">💬 To the dojo master: “{heldRequest}”</span>
+              <QuickButton
+                onClick={() => {
+                  const text = heldRequest;
+                  if (!text || !canAct) return;
+                  if (phase !== "idle") stopAll();
+                  setHeldRequest(null);
+                  talkRef.current?.focus();
+                  void runTurn(`${DIRECT} ${text}`);
+                }}
+                disabled={!canAct}
+                testid="voice-held-send"
+              >
+                Send them
+              </QuickButton>
+              <button
+                type="button"
+                className="rounded-full px-1.5 text-fg-3 hover:bg-raised hover:text-fg"
+                onClick={() => {
+                  setHeldRequest(null);
+                  composerRef.current?.focus();
+                }}
+                aria-label="Drop these words to the dojo master"
+                title="Drop them"
+              >
+                ×
+              </button>
+            </div>
+          )}
           {/* A message for the dojo master waiting in the box is tagged, not
               a mode: ▶ sends it to the dojo master; × makes it a practice answer. */}
           {direct && (
@@ -1721,11 +1807,12 @@ function expectedPhrases(history: VoiceHistoryItem[]): string[] {
 
 /** A voice someone in the scene has had: the cast entry, its fallback, and
  *  the age it was drawn (or kept) for. */
-type HeldVoice = { voice: VoiceCastReply["cast"][string]; fallback?: string; asked: VoiceAge };
+/** A person's voice. `tentative`: the slot's voice when their draw began,
+ *  used until it lands (or after it fails), but not yet theirs for good. */
+type HeldVoice = { voice: VoiceCastReply["cast"][string]; fallback?: string; asked: VoiceAge; tentative?: true };
 
-/** Slots whose voice is being redrawn while a turn starts playing, and when
- *  that's done: their lines wait for it. */
-type PlayGate = { slots: Set<string>; ready: Promise<void>; done: boolean };
+/** The voice a clip is made in, and the account voice for a refusal. */
+type SpeakAs = { voice?: string; fallback?: string };
 
 /** Each slot's latest CAST note across the session: who speaks with that
  *  voice tag now. */
@@ -1845,8 +1932,10 @@ type LineTranslation = { gloss: VoiceGloss; whole: boolean } | null;
  *  that don't touch it (the thinking counter, the composer). Each entry is
  *  a memoised row too, given only what concerns it (its own playing line
  *  and open definition, the glosses found in its text, its translations,
- *  each kept the same object while unchanged), so a new turn lays out the
- *  new row, not every glossed line of the session again. It follows the
+ *  each kept the same object while unchanged), so a new turn re-renders
+ *  the new row, not every glossed line of the session again. (The
+ *  translations themselves are still worked out for every line on each
+ *  turn, in VoicePanel: string matching, cheap next to rendering.) It follows the
  *  session while the learner lets it: a new turn and the line being spoken
  *  are scrolled into view, until the learner scrolls away to reread.
  *  Scrolling back to the bottom, sending something or tapping ▶ follows

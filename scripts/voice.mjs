@@ -254,15 +254,19 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
  *  misplaced mark is never read out. */
 // Any spelling of the mark: "<pause 1.5>", "<pause 1.5 seconds>",
 // "<pause: 1.5>", "<pause=1.5>", and run together: "<pause1.5>", "<pause2s>"
-// (so no \b after the word, only "not another letter"). The number is the
-// first one inside: "1.5", ".5", "1,5", or "800ms" in milliseconds. Bounded
-// so it can't run away on a long line.
-const TIMING_RE = /<\s{0,3}(pause|overlap)(?![a-z])([^<>\n]{0,40})>/gi;
-const TIMING_NUM = /(\d*[.,]?\d+)\s*(ms\b)?/i;
+// (so no \b after the word, only "not another letter"); "<pausa 1>" too, the
+// Spanish a model writing Spanish reaches for. The number is the first one
+// inside: "1.5", ".5", "1,5", or milliseconds ("800ms", "500 milliseconds",
+// "1,500ms"). Bounded so it can't run away on a long line, but wide enough
+// for a mark with a note ("<pause 1.5 seconds while she weighs them>").
+const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])([^<>\n]{0,80})>/gi;
+const TIMING_NUM = /(\d*[.,]?\d+)\s*(?:(ms|msecs?|milliseconds?)(?![a-z]))?/i;
 /** Seconds from a timing mark's inside, or null when it names no number. */
 function timingSeconds(inside) {
   const m = String(inside).match(TIMING_NUM);
   if (!m) return null;
+  // "1,500ms" is a thousand separator, "1,5" a decimal comma.
+  if (m[2] && /^\d{1,3},\d{3}$/.test(m[1])) return Number(m[1].replace(",", "")) / 1000;
   const n = Number(m[1].replace(",", "."));
   return m[2] ? n / 1000 : n;
 }
@@ -401,7 +405,7 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // matching (metaRest), so every optional piece below is unambiguous and
 // neither a line of spaces nor a run of "**<pause 1> " can make it backtrack.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const TIMING_MARKS = `(?:<[ ]?(?:${ci("pause")}|${ci("overlap")})[^<>]{0,40}> ?)*`;
+const TIMING_MARKS = `(?:<[ ]?(?:${ci("pausa")}|${ci("pause")}|${ci("overlap")})[^<>]{0,80}> ?)*`;
 const META_TAG = `^(?:[-•] )?${TIMING_MARKS}(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?${TIMING_MARKS}`;
 const metaRe = (label) => new RegExp(`${META_TAG}${label} ?: ?`);
 /** The text after a shown-not-spoken label, or null when `rawLine` isn't
@@ -480,7 +484,7 @@ const CAST_WHO_CHARS = 80;
  *  doesn't say. */
 export function ageOf(label) {
   const w = String(label ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
-  if (/^(child|kid|little|boy|girl|toddler|baby)\b/.test(w)) return "child";
+  if (/^(child|kid|boy|girl|toddler|baby|little (?:boy|girl|one|kid))\b/.test(w)) return "child";
   if (/^(young|teen|teenager|teenage|youthful)\b/.test(w)) return "young";
   if (/^(middle aged|middle|adult|mature)\b/.test(w)) return "middle";
   if (/^(old|elderly|older|senior|aged)\b/.test(w)) return "old";
@@ -504,15 +508,19 @@ export function parseCast(text, mode = "adult") {
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
     if (!allowed.has(speaker)) continue;
     const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
-    // The age is a word in the first clause: "old, Doña Carmen", or "an
-    // elderly woman, Doña Carmen". When it leads, it comes out of `who`.
-    const clause = after.split(/[,|;]/)[0];
-    const words = clause.split(/\s+/).filter(Boolean);
+    // The age is the first word ("old, Doña Carmen"), or follows an article
+    // or "little"/"very" ("an elderly woman", "a little girl"). Only those
+    // places: "the girl's mother" is not a child, nor "Mr Young" young. When
+    // it leads, it comes out of `who`. The clause is capped, so a long line
+    // costs nothing.
+    const words = after.slice(0, 120).split(/[,|;]/)[0].split(/\s+/).filter(Boolean).slice(0, 4);
     let age = "";
     let lead = false;
     for (let i = 0; i < words.length && !age; i++) {
-      age = ageOf(words.slice(i).join(" "));
+      const w = words[i].toLowerCase();
+      if (!/['’]s$/.test(w)) age = ageOf(`${w.replace(/[.!?:]+$/, "")}${words[i + 1]?.toLowerCase() === "aged" ? " aged" : ""}`);
       lead = i === 0;
+      if (!/^(a|an|the|very|quite|little)$/.test(w)) break;
     }
     if (!age) continue;
     const named = lead ? after.replace(/^[A-Za-z]+(?:[\s_-]aged)?/, "").replace(/^[\s,|:–—-]+/, "") : after;
@@ -1080,7 +1088,10 @@ export function castFallbacks(own, slots, set = {}, { all = slots, ages = {}, ta
   const list = Array.isArray(own) ? own : [];
   const want = new Set(slots);
   const out = {};
-  const order = [...all.filter((x) => !want.has(x)), ...all.filter((x) => want.has(x)), ...slots.filter((x) => !all.includes(x))];
+  // Given the other slots' fallbacks (`taken`), only `slots` are worked
+  // through; without them the other slots are replayed in Start's order
+  // first, so a recast lands where Start would have put it.
+  const order = busy.length ? slots : [...all.filter((x) => !want.has(x)), ...all.filter((x) => want.has(x)), ...slots.filter((x) => !all.includes(x))];
   for (const slot of order) {
     const gender = slot.split(":")[1];
     const age = AGE_RANK.hasOwnProperty(ages[slot]) ? ages[slot] : "";
@@ -1106,8 +1117,12 @@ export function castFallbacks(own, slots, set = {}, { all = slots, ages = {}, ta
  *  is `omitted`, so the client keeps the voice it has rather than one in
  *  another language; a full draw never omits.
  *  → {pools, omitted}. */
-export function castPools({ slots, set = {}, ages = {}, library = {}, aged = {}, own = [], recast = false }) {
+export function castPools({ slots, set = {}, ages = {}, library = {}, aged = {}, own = [], recast = false, avoid = [] }) {
   const pools = { female: [], male: [] };
+  // Voices playing other slots go before an age narrows the pool, so the
+  // next-nearest free voice wins over a taken exact match.
+  const skip = new Set(avoid);
+  const free = (list) => (Array.isArray(list) ? list.filter((v) => !skip.has(v.id)) : list);
   const omitted = [];
   const random = slots.filter((x) => !set[x]);
   for (const g of ["female", "male"]) pools[g] = library[g]?.length ? library[g] : poolFor(own, g);
@@ -1115,10 +1130,16 @@ export function castPools({ slots, set = {}, ages = {}, library = {}, aged = {},
     const age = ages[slot];
     if (!age) continue;
     const g = slot.split(":")[1];
-    if (aged[slot]?.length) pools[slot] = aged[slot];
-    else if (library[g]?.length) pools[slot] = nearestAge(library[g], age);
+    const a = free(aged[slot]);
+    const l = free(library[g]);
+    if (a?.length) pools[slot] = a;
+    else if (l?.length) pools[slot] = nearestAge(l, age);
+    else if (aged[slot]?.length || library[g]?.length) pools[slot] = nearestAge(aged[slot]?.length ? aged[slot] : library[g], age);
     else if (recast && (aged[slot] === null || library[g] === null)) omitted.push(slot);
-    else pools[slot] = poolFor(own, g, new Set(), age);
+    else {
+      const o = poolFor(own, g, skip, age);
+      pools[slot] = o.length ? o : poolFor(own, g, new Set(), age);
+    }
   }
   return { pools, omitted };
 }

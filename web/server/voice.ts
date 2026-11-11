@@ -567,7 +567,7 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
       ...wantAge.map(async (slot) => (aged[slot] = await search(slot.split(":")[1], ages[slot]))),
     ]);
   }
-  const { pools, omitted } = castPools({ slots, set, ages, library, aged, own, recast });
+  const { pools, omitted } = castPools({ slots, set, ages, library, aged, own, recast, avoid });
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;
   const cast = pickCast({ slots, set, pools, names, ages: voiceAges, avoid });
   for (const slot of omitted) delete cast[slot];
