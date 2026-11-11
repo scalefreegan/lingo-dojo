@@ -9,7 +9,7 @@ import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/c
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, ageOf, castFallbacks, parseCast, speechVoices, oneLine, replayStage, poolFor, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -278,12 +278,7 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
       const stage = replayStage(m.stage);
       // Who each voice tag is goes back as CAST lines, so the dojo master
       // keeps its characters (and their ages) straight.
-      const castNotes: VoiceCastNote[] = Array.isArray(m.castNotes)
-        ? (m.castNotes as { slot?: unknown; age?: unknown; who?: unknown }[])
-            .filter((n) => typeof n?.slot === "string" && /^(narrator|character|sidekick):(female|male)$/.test(n.slot) && !!ageOf(n.age))
-            .slice(0, 6)
-            .map((n) => ({ slot: n.slot as string, age: ageOf(n.age) as VoiceAge, who: typeof n.who === "string" ? oneLine(n.who).slice(0, 80) : "" }))
-        : [];
+      const castNotes: VoiceCastNote[] = replayCastNotes(m.castNotes);
       out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}), ...(castNotes.length ? { castNotes } : {}) });
     }
   }
@@ -436,10 +431,10 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
         r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: first, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
       } catch (e) {
         // A library voice drawn for the cast can be refused: a plan without
-        // library access, or a voice since removed. Which status ElevenLabs
-        // uses isn't pinned down, so retryInOtherVoice takes any client
-        // error another voice could fix. Say the line in the fallback rather
-        // than lose it.
+        // library access, or a voice since removed. retryInOtherVoice takes
+        // the statuses that mean "not this voice" (400, 402, 403, 404, 422),
+        // not a bad key, spent credits or a rate limit. Say the line in the
+        // retry voice (speechVoices) rather than lose it.
         const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
         if (!cast || !retry || !retryInOtherVoice(status)) throw e;
         r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: retry, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
@@ -486,8 +481,9 @@ async function handleLibrary(req: IncomingMessage, res: ServerResponse): Promise
   sendJson(res, 200, elevenLibrary(await (await call("elevenlabs", request)).json()) satisfies LibraryReply);
 }
 
-/** ElevenLabs voices that refused a line this run (cast voices only), so
- *  the next line goes straight to the saved voice. */
+/** ElevenLabs cast voices refused this run (marked once a retry in another
+ *  voice worked), so later lines go straight to the retry voice and later
+ *  casts leave them out. */
 const refusedVoices = new Set<string>();
 
 /** A voice named by the client's cast, if it has the provider's shape. It
@@ -503,6 +499,7 @@ function castVoice(provider: TtsProvider, v: unknown): string | null {
 /** How many of the most-used library voices a Random slot draws from: a
  *  wide pick for variety, still voices people actually use. */
 const CAST_POOL = 40;
+type LibVoice = { id: string; name: string; age?: string };
 
 /** POST /api/voice/cast {mode, locale, units, ages?, slots?, avoid?} → this
  *  session's voices and narrator gender. Slots the learner set keep their
@@ -533,8 +530,6 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
   const keys = keysFor(provider);
   const avoid = Array.isArray(body?.avoid) ? (body.avoid as unknown[]).slice(0, 20).map((v) => castVoice(provider, v)).filter((v): v is string => !!v) : [];
   const set: Record<string, string | undefined> = settings.voices[provider]?.[locale] ?? {};
-  // Pools by gender, and by "slot" for a slot that wants an age.
-  const pools: Record<string, { id: string; name: string; age?: string }[]> = { female: [], male: [] };
   const names: Record<string, string> = {};
   const voiceAges: Record<string, string> = {};
   // The provider's own list names the voices the learner chose, and is the
@@ -548,31 +543,39 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
     if (v.age) voiceAges[v.id] = v.age;
   }
   const random = slots.filter((x) => !set[x]);
-  const genders = [...new Set(random.filter((x) => !ages[x]).map((x) => x.split(":")[1]))];
-  const aged = random.filter((x) => ages[x]);
+  const recast = Array.isArray(body?.slots);
+  // ElevenLabs draws from the Voice Library: one search per gender in play,
+  // and one per slot that wants an age. null marks a search that failed
+  // (castPools tells it from one that found nothing).
+  const library: Record<string, LibVoice[] | null> = {};
+  const aged: Record<string, LibVoice[] | null> = {};
   if (provider === "elevenlabs") {
-    const library = async (gender: string, age?: VoiceAge) => {
+    const search = async (gender: string, age?: VoiceAge): Promise<LibVoice[] | null> => {
       try {
         const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender, age, sort: "usage_character_count_1y", pageSize: CAST_POOL });
         return elevenLibrary(await (await call(provider, r)).json())
           .voices.filter((v) => !refusedVoices.has(v.id))
           .map((v) => ({ id: v.id, name: v.name, age: ageOf(v.age) }));
       } catch {
-        return [];
+        return null;
       }
     };
+    const genders = [...new Set(random.map((x) => x.split(":")[1]))];
+    const wantAge = random.filter((x) => ages[x]);
     await Promise.all([
-      ...genders.map(async (g) => (pools[g] = await library(g))),
-      ...aged.map(async (slot) => (pools[slot] = await library(slot.split(":")[1], ages[slot]))),
+      ...genders.map(async (g) => (library[g] = await search(g))),
+      ...wantAge.map(async (slot) => (aged[slot] = await search(slot.split(":")[1], ages[slot]))),
     ]);
   }
-  for (const g of ["female", "male"]) if (!pools[g].length) pools[g] = poolFor(own, g);
-  for (const slot of aged) if (!pools[slot]?.length) pools[slot] = poolFor(own, slot.split(":")[1], new Set(), ages[slot]);
+  const { pools, omitted } = castPools({ slots, set, ages, library, aged, own, recast });
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;
   const cast = pickCast({ slots, set, pools, names, ages: voiceAges, avoid });
-  // ElevenLabs casts from the library, which a free plan can't speak with;
-  // each slot gets a distinct account voice of its gender to fall back on.
-  const fallbacks = provider === "elevenlabs" ? castFallbacks(own, slots, set) : {};
+  for (const slot of omitted) delete cast[slot];
+  // ElevenLabs casts from the library, which a plan without library access
+  // can't speak with; each slot gets a distinct account voice of its gender
+  // (and nearest its age) to fall back on. In a recast `avoid` holds the
+  // other slots' voices and fallbacks, which stay theirs.
+  const fallbacks = provider === "elevenlabs" ? castFallbacks(own, slots.filter((x) => !omitted.includes(x)), set, { all, ages, taken: recast ? avoid : [] }) : {};
   const pinned = pinnedNarratorGender(Array.isArray(body?.units) ? body.units : []);
   const narratorGender: VoiceGender = pinned ?? (Math.random() < 0.5 ? "female" : "male");
   sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) } satisfies VoiceCastReply);

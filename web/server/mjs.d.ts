@@ -144,7 +144,22 @@ declare module "*/scripts/voice.mjs" {
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
   export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
   export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
-  export function castFallbacks(own: { id: string; gender: string; match: boolean; premade?: boolean }[], slots: string[], set?: Record<string, string | undefined>): Record<string, string>;
+  export function replayCastNotes(raw: unknown): { slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
+  export function castFallbacks(
+    own: { id: string; gender: string; match: boolean; premade?: boolean; age?: string }[],
+    slots: string[],
+    set?: Record<string, string | undefined>,
+    o?: { all?: string[]; ages?: Record<string, string>; taken?: string[] },
+  ): Record<string, string>;
+  export function castPools(o: {
+    slots: string[];
+    set?: Record<string, string | undefined>;
+    ages?: Record<string, string>;
+    library?: Record<string, { id: string; name: string; age?: string }[] | null>;
+    aged?: Record<string, { id: string; name: string; age?: string }[] | null>;
+    own?: { id: string; name: string; gender: string; match: boolean; age?: string }[];
+    recast?: boolean;
+  }): { pools: Record<string, { id: string; name: string; age?: string }[]>; omitted: string[] };
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];

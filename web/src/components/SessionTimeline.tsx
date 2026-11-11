@@ -6,7 +6,9 @@ import type { VoicePlanItem } from "../../shared/wire";
  * part each turn ends in (a STAGE line), so "here" is its word, not a guess.
  * Collapsed it is a thin rail of dots, to give the transcript the room.
  * It lives in its own column (VoicePanel's aside) and scrolls on its own;
- * on narrow screens it sits above the session, kept short. */
+ * on narrow screens it sits above the session, kept short. Each list is
+ * `relative` so the rows' screen-reader text (sr-only, absolutely placed)
+ * is clipped by the list's scroll, not left to lengthen the page. */
 
 const KIND_ICON: Record<string, string> = {
   intro: "👋",
@@ -76,7 +78,7 @@ export function SessionTimeline({
         <button type="button" className="rounded-md px-1 text-fg-3 hover:bg-raised hover:text-fg" onClick={onToggle} aria-expanded={false} aria-label="Show the session's parts" title="Show the session's parts">
           ☰
         </button>
-        <ol ref={listRef} className="flex min-h-0 flex-row flex-wrap items-center lg:flex-col lg:flex-nowrap lg:overflow-y-auto">
+        <ol ref={listRef} className="relative flex min-h-0 flex-row flex-wrap items-center lg:flex-col lg:flex-nowrap lg:overflow-y-auto">
           {plan.map((p, i) => (
             <li key={`${i}:${p.id}`}>
               {/* A 24px target around a small dot. */}
@@ -106,7 +108,7 @@ export function SessionTimeline({
           «
         </button>
       </div>
-      <ol ref={listRef} className="flex max-h-48 min-h-0 flex-col overflow-y-auto lg:max-h-none lg:flex-1">
+      <ol ref={listRef} className="relative flex max-h-48 min-h-0 flex-col overflow-y-auto lg:max-h-none lg:flex-1">
         {plan.map((p, i) => {
           const st = state(i);
           return (
