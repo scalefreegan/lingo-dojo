@@ -990,3 +990,92 @@ test("timing marks: Spanish milliseconds, and a number in a note is not a pause 
   // Still never spoken, number or not.
   assert.deepEqual(parseVoiceReply("NARRATOR-F: Hi\n<pause while she counts 20 pesos> CHARACTER-F: <t>Hola</t>").map((l) => l.text), ["Hi", "Hola"]);
 });
+
+/* ------------------------- round 11: written first ------------------------- */
+// Every CAST wording and timing mark the reviews have raised (rounds 8–11),
+// in one table each, so a later fix can't quietly undo an earlier one.
+
+test("parseCast table: the age keyword after the tag, and the wordings around it", () => {
+  const cases = [
+    // [after "CAST: CHARACTER-F ", age, who (undefined = don't check)]
+    ["old, Doña Carmen, the fruit vendor", "old", "Doña Carmen, the fruit vendor"],
+    ["OLD, Doña Carmen", "old", "Doña Carmen"],
+    ["middle-aged, a neighbour", "middle", "a neighbour"],
+    ["Middle aged, the guide", "middle", "the guide"],
+    ["middle, the guide", "middle", "the guide"],
+    ["young, Beto", "young", "Beto"],
+    ["child, Sofía", "child", "Sofía"],
+    ["elderly, B", "old", "B"],
+    ["old Doña Carmen", "old", "Doña Carmen"],
+    ["old,Doña Carmen", "old", "Doña Carmen"],
+    ["middle aged,Ana", "middle", "Ana"],
+    ["aged 70,Don Pedro", "old", "Don Pedro"],
+    ["aged 70, Don Pedro", "old", "Don Pedro"],
+    ["aged 7, Pedro", "child", "Pedro"],
+    ["aged 22, Lupe", "young", "Lupe"],
+    ["a 25-year-old waiter", "young", "a 25-year-old waiter"],
+    ["a twenty-year-old student", "young", undefined],
+    ["a seventy-five-year-old, Don Beto", "old", undefined],
+    ["7 years old, Pedro", "child", "Pedro"],
+    ["a 16-year-old, Lupe", "young", undefined],
+    ["a seven-year-old girl, Sofía", "child", undefined],
+    ["a 12-year-old", "child", undefined],
+    ["a 13-year-old", "young", undefined],
+    ["a 29-year-old", "young", undefined],
+    ["a 30-year-old", "middle", undefined],
+    ["a 59-year-old", "middle", undefined],
+    ["a 60-year-old", "old", undefined],
+    ["little, Sofía", "child", "Sofía"],
+    ["a little one, Pedro", "child", undefined],
+    ["the little one", "child", undefined],
+    ["a little girl, Sofía", "child", undefined],
+    ["a little baby", "child", undefined],
+    ["a little toddler", "child", undefined],
+    ["a little old lady, Doña Carmen", "old", undefined],
+    ["a little old man", "old", undefined],
+    ["the middle child, Ana", "child", undefined],
+    ["an elderly woman, Doña Carmen", "old", "an elderly woman, Doña Carmen"],
+    ["an old man who's selling fruit, Don Pedro", "old", undefined],
+    ["an elderly woman that's lost her glasses", "old", undefined],
+    ["an older woman, Doña Rosa", "old", undefined],
+    ["a teenage boy, Beto", "young", undefined],
+    // No age: someone else's, a name, a relation, or nonsense.
+    ["the girl's mother, Doña Ana", "", undefined],
+    ["the boy's grandfather", "", undefined],
+    ["the old man's daughter, Lucía", "", undefined],
+    ["an old woman's son", "", undefined],
+    ["Mr Young, the baker", "", undefined],
+    ["Little Red, a girl", "", undefined],
+    ["the older brother", "", undefined],
+    ["the middle sister", "", undefined],
+    ["a middle schooler", "", undefined],
+    ["aged constructor, X", "", undefined],
+    ["constructor-year-old", "", undefined],
+    ["__proto__-year-old", "", undefined],
+  ];
+  for (const [after, age, who] of cases) {
+    const got = parseCast(`CAST: CHARACTER-F ${after}`)[0];
+    assert.equal(got?.age ?? "", age, `"${after}" → age`);
+    if (who !== undefined) assert.equal(got?.who, who, `"${after}" → who`);
+  }
+});
+
+test("timing table: the length at the start or end of the mark, or with a unit; a number in a note isn't one", () => {
+  const cases = [
+    ["<pause 1.5>", 1.5], ["<pause1.5>", 1.5], ["<pause2s>", 2], ["<pause .5>", 0.5], ["<pause 1,5>", 1.5],
+    ["<pause: 1.5>", 1.5], ["<pause=1.5>", 1.5], ["<pause, 1.5>", 1.5], ["<pause (1.5)>", 1.5], ["<pause(1.5)>", 1.5],
+    ["<pause ~1.5>", 1.5], ["<pause about 1.5>", 1.5], ["<pause +1>", 1], ["<pause — 1.5>", 1.5],
+    ["<pause for 1.5>", 1.5], ["<pause for 2 seconds>", 2], ["<pausa de 1,5>", 1.5], ["<pausa de 2 segundos>", 2],
+    ["<overlap 0.4>", -0.4], ["<overlap -0.4>", -0.4], ["<overlap0.4>", -0.4],
+    ["<pause 800ms>", 0.8], ["<pause 500 milliseconds>", 0.5], ["<pause 500 msec>", 0.5], ["<pause 500 mseconds>", 0.5],
+    ["<pause 1,500ms>", 1.5], ["<pausa 500 milisegundos>", 0.5], ["<pausa 500 mseg>", 0.5], ["<pausa 500 msegs>", 0.5],
+    ["<pausa 1>", 1], ["<pause 1.5 seconds while she weighs the tomatoes slowly>", 1.5],
+    ["<pause 1.5 while she counts 20 pesos>", 1.5], ["<pause while she counts, 3>", 3],
+    ["<pause while she counts 20 pesos>", null], ["<pause>", null],
+  ];
+  for (const [mark, want] of cases) {
+    const lines = parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`);
+    assert.deepEqual(lines.map((l) => l.text), ["Hi", "Hola"], `${mark} is never spoken`);
+    assert.equal(lines[1].gap ?? null, want, mark);
+  }
+});

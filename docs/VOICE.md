@@ -71,11 +71,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   The dojo master can set its own: `<pause 1.2>` before a line waits first
   (a vendor weighing tomatoes), and `<overlap 0.4>` starts it before the
   previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
-  for a pause). Any spelling with a number inside counts: `<pause1.5>`,
-  `<pause 2s>`, `<pause .5>`, `<pause 800ms>`, `<pause 500 milliseconds>`,
-  `<pausa 500 milisegundos>`, or a short note after the number. The length is
-  the number at the start or one with a unit, so "<pause while she counts 20
-  pesos>" is an ordinary pause, not 20 s. The server resolves each line's `pauseMs`
+  for a pause). Spellings vary: `<pause1.5>`, `<pause 2s>`, `<pause .5>`,
+  `<pause (1.5)>`, `<overlap -0.4>`, `<pause for 2 seconds>`, `<pausa de 1,5>`,
+  `<pause 800ms>`, `<pausa 500 milisegundos>`, or a note after the number.
+  The length is the number at the start of the mark, else one with a unit,
+  else the one that ends it; "<pause while she counts 20 pesos>" is an
+  ordinary pause, not 20 s. The server resolves each line's `pauseMs`
   (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
   next clip early with both playing. Segments within a line run back to back.
 - **Speak**: one call per segment; the browser plays one while the next is
@@ -176,7 +177,11 @@ later casts skip it, for the rest of the server's run.
 **Ages.** The dojo master writes a `CAST:` line (shown, never spoken;
 `parseCast`) whenever someone speaks for the first time or a different
 person takes over a voice tag: `CAST: CHARACTER-F old, Doña Carmen, the
-fruit vendor`. The turn reply carries these as `castNotes`, and they go back
+fruit vendor`. The age is one of child, young, middle-aged or old right
+after the tag; looser wordings are read too ("an elderly woman", "a little
+girl", "a seven-year-old", "aged 22": under 13 a child, under 30 young,
+under 60 middle-aged), but an age on someone else ("the old man's
+daughter") or a name ("Mr Young") is not the character's. The turn reply carries these as `castNotes`, and they go back
 in the replay. When a Random slot's voice is the wrong age, the browser
 recasts just that slot (`/cast` with `ages`, `slots` and `avoid`) before the
 turn plays: for ElevenLabs a library search filtered by age (young, middle
