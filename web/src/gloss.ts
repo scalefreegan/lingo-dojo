@@ -127,3 +127,41 @@ export function sentenceGlosses(texts: string[], glosses: VoiceGloss[], locale?:
   }
   return out;
 }
+
+/* A cheap "could this gloss be in this text?" test, for the transcript's
+ * caches: it never says no to a real match (a plain substring test, folded
+ * and unfolded), so a text that fails it is known to be untouched by the
+ * gloss and its layout can be kept. Each gloss's needles are worked out
+ * once. */
+const needles = new WeakMap<VoiceGloss, { bare: string; low: string; locale?: string }>();
+function needleOf(g: VoiceGloss, locale?: string): { bare: string; low: string } {
+  let n = needles.get(g);
+  if (!n || n.locale !== locale) {
+    const bare = g.term.normalize("NFC").replace(EDGE_PUNCT, "");
+    let low = bare;
+    try {
+      low = bare.toLocaleLowerCase(locale);
+    } catch {
+      low = bare.toLowerCase();
+    }
+    n = { bare, low, locale };
+    needles.set(g, n);
+  }
+  return n;
+}
+/** `text` as it is and folded, for mightMatch. */
+export function haystack(text: string, locale?: string): { text: string; low: string } {
+  const t = text.normalize("NFC");
+  let low = t;
+  try {
+    low = t.toLocaleLowerCase(locale);
+  } catch {
+    low = t.toLowerCase();
+  }
+  return { text: t, low };
+}
+export function mightMatch(hay: { text: string; low: string }, g: VoiceGloss, locale?: string): boolean {
+  const n = needleOf(g, locale);
+  return !!n.bare && (hay.low.includes(n.low) || hay.text.includes(n.bare));
+}
+

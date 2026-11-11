@@ -260,10 +260,16 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
 // "1,500ms"). Bounded so it can't run away on a long line, but wide enough
 // for a mark with a note ("<pause 1.5 seconds while she weighs them>").
 const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])([^<>\n]{0,80})>/gi;
-const TIMING_NUM = /(\d*[.,]?\d+)\s*(?:(ms|msecs?|milliseconds?)(?![a-z]))?/i;
-/** Seconds from a timing mark's inside, or null when it names no number. */
+const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|mseg";
+const S_UNIT = "s|secs?|seconds?|segundos?|seg";
+// The length is a number at the start ("<pause 1.5 while she counts>",
+// "<pause: 1.5>") or one with a unit ("<pause for 2 seconds>"); a number
+// in a note ("<pause while she counts 20 pesos>") is not a length.
+const TIMING_LEAD = new RegExp(`^\\s*[:=]?\\s*(\\d*[.,]?\\d+)\\s*(?:(${MS_UNIT})(?![a-z]))?`, "i");
+const TIMING_UNIT = new RegExp(`(\\d*[.,]?\\d+)\\s*(?:(${MS_UNIT})|(?:${S_UNIT}))(?![a-z])`, "i");
+/** Seconds from a timing mark's inside, or null when it names no length. */
 function timingSeconds(inside) {
-  const m = String(inside).match(TIMING_NUM);
+  const m = String(inside).match(TIMING_LEAD) ?? String(inside).match(TIMING_UNIT);
   if (!m) return null;
   // "1,500ms" is a thousand separator, "1,5" a decimal comma.
   if (m[2] && /^\d{1,3},\d{3}$/.test(m[1])) return Number(m[1].replace(",", "")) / 1000;
@@ -492,6 +498,36 @@ export function ageOf(label) {
 }
 const AGE_RANK = { child: 0, young: 1, middle: 2, old: 3 };
 
+const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const yearsOf = (w) => (/^\d{1,3}$/.test(w ?? "") ? Number(w) : NUMBER_WORDS[w] ?? null);
+const ageForYears = (n) => (n < 13 ? "child" : n < 20 ? "young" : n < 60 ? "middle" : "old");
+
+/** A CAST line's age from the first words of its first clause: the first
+ *  word that isn't an article or "very" says it ("old", "an elderly woman",
+ *  "a little girl", "the little one", "a seven-year-old", "aged 7", "the
+ *  middle child"). An age on someone else ("the old man's daughter", "the
+ *  girl's mother") or a name ("Mr Young", "Little Red") is no age.
+ *  → {age, lead}: `lead` is how many leading words name only the age (they
+ *  come out of `who`), 0 when the age sits inside a description. */
+function castAge(rawWords) {
+  const ws = rawWords.map((w) => w.toLowerCase().replace(/[.!?:]+$/, ""));
+  const possessive = (i) => ws.slice(i, i + 3).some((w) => /['’]s$/.test(w));
+  for (let i = 0; i < ws.length; i++) {
+    const w = ws[i];
+    if (/^(a|an|the|very|quite)$/.test(w)) continue;
+    const at = (age, len) => (possessive(i) ? { age: "", lead: 0 } : { age, lead: i === 0 ? len : 0 });
+    if (w === "aged" && yearsOf(ws[i + 1]) != null) return at(ageForYears(yearsOf(ws[i + 1])), 2);
+    const y = w.match(/^([a-z]+|\d{1,3})-years?-old$/);
+    if (y && yearsOf(y[1]) != null) return at(ageForYears(yearsOf(y[1])), 1);
+    if (w === "little") return !ws[i + 1] ? at("child", 1) : /^(one|ones|girl|boy|kid|child|lad|lass)$/.test(ws[i + 1]) ? at("child", 0) : { age: "", lead: 0 };
+    if (w === "middle" && /^(child|kid)$/.test(ws[i + 1] ?? "")) return at("child", 0);
+    const aged = ws[i + 1] === "aged";
+    const age = ageOf(`${w}${aged ? " aged" : ""}`);
+    return age ? at(age, aged ? 2 : 1) : { age: "", lead: 0 };
+  }
+  return { age: "", lead: 0 };
+}
+
 /** The CAST lines of a reply as {slot, age, who}: "CAST: CHARACTER-F old,
  *  Doña Carmen, the fruit vendor". A tag without a gender, a speaker the
  *  mode doesn't have, or an age it can't read is dropped; a later line for
@@ -508,22 +544,10 @@ export function parseCast(text, mode = "adult") {
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
     if (!allowed.has(speaker)) continue;
     const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
-    // The age is the first word ("old, Doña Carmen"), or follows an article
-    // or "little"/"very" ("an elderly woman", "a little girl"). Only those
-    // places: "the girl's mother" is not a child, nor "Mr Young" young. When
-    // it leads, it comes out of `who`. The clause is capped, so a long line
-    // costs nothing.
-    const words = after.slice(0, 120).split(/[,|;]/)[0].split(/\s+/).filter(Boolean).slice(0, 4);
-    let age = "";
-    let lead = false;
-    for (let i = 0; i < words.length && !age; i++) {
-      const w = words[i].toLowerCase();
-      if (!/['’]s$/.test(w)) age = ageOf(`${w.replace(/[.!?:]+$/, "")}${words[i + 1]?.toLowerCase() === "aged" ? " aged" : ""}`);
-      lead = i === 0;
-      if (!/^(a|an|the|very|quite|little)$/.test(w)) break;
-    }
+    // The clause is capped, so a long line costs nothing.
+    const { age, lead } = castAge(after.slice(0, 120).split(/[,|;]/)[0].split(/\s+/).filter(Boolean).slice(0, 6));
     if (!age) continue;
-    const named = lead ? after.replace(/^[A-Za-z]+(?:[\s_-]aged)?/, "").replace(/^[\s,|:–—-]+/, "") : after;
+    const named = lead ? after.replace(new RegExp(`^(?:\\S+\\s*){${lead}}`), "").replace(/^[\s,|:–—-]+/, "") : after;
     const who = oneLine(named).slice(0, CAST_WHO_CHARS);
     const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
     out.delete(slot);
@@ -1080,9 +1104,10 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
  *  slot's age when one is asked for (on a plan that refuses library voices
  *  the fallback is the voice that speaks), then natives. Voices the learner
  *  set for a slot, and `taken` ones (other slots' fallbacks in a recast),
- *  are left alone. Every slot of the mode is worked through in `all`'s
- *  order, so a recast of one slot gets the same answer as at Start rather
- *  than an earlier slot's voice; only `slots` come back. → slot → id. */
+ *  are left alone. Given `taken` (a recast: the other slots' fallbacks from
+ *  the client), only `slots` are worked through. Without it, every slot of
+ *  the mode is worked through in `all`'s order, so a recast of one slot gets
+ *  the answer Start would have; only `slots` come back. → slot → id. */
 export function castFallbacks(own, slots, set = {}, { all = slots, ages = {}, taken: busy = [] } = {}) {
   const taken = new Set([...Object.values(set ?? {}).filter(Boolean), ...busy]);
   const list = Array.isArray(own) ? own : [];
@@ -1137,8 +1162,12 @@ export function castPools({ slots, set = {}, ages = {}, library = {}, aged = {},
     else if (aged[slot]?.length || library[g]?.length) pools[slot] = nearestAge(aged[slot]?.length ? aged[slot] : library[g], age);
     else if (recast && (aged[slot] === null || library[g] === null)) omitted.push(slot);
     else {
-      const o = poolFor(own, g, skip, age);
-      pools[slot] = o.length ? o : poolFor(own, g, new Set(), age);
+      // The tier first (native, then unlabelled, then foreign), then the free
+      // voices inside it: a native already playing another slot beats a
+      // foreign accent or a voice of unknown gender.
+      const tier = poolFor(own, g);
+      const f = tier.filter((v) => !skip.has(v.id));
+      pools[slot] = nearestAge(f.length ? f : tier, age);
     }
   }
   return { pools, omitted };

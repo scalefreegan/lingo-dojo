@@ -73,7 +73,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
   for a pause). Any spelling with a number inside counts: `<pause1.5>`,
   `<pause 2s>`, `<pause .5>`, `<pause 800ms>`, `<pause 500 milliseconds>`,
-  `<pausa 1>`, or a short note after the number. The server resolves each line's `pauseMs`
+  `<pausa 500 milisegundos>`, or a short note after the number. The length is
+  the number at the start or one with a unit, so "<pause while she counts 20
+  pesos>" is an ordinary pause, not 20 s. The server resolves each line's `pauseMs`
   (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
   next clip early with both playing. Segments within a line run back to back.
 - **Speak**: one call per segment; the browser plays one while the next is

@@ -938,3 +938,55 @@ test("timing marks: milliseconds spelled out, thousands separators, long marks, 
   assert.deepEqual(gap("<pausa 1>"), ["character", "Hola", 1]);
   assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<pausa 1> STAGE: scene").map((l) => l.text), ["Hi"]);
 });
+
+/* ------------------------- round 10: written first ------------------------- */
+
+test("castPools, own voices: a taken native beats a free foreign or unlabelled voice", () => {
+  const own = [
+    { id: "dalia", name: "Dalia", gender: "female", match: true, age: "" },
+    { id: "jorge", name: "Jorge", gender: "male", match: true, age: "" },
+    { id: "ava", name: "Ava (en-US)", gender: "female", match: false, age: "" },
+    { id: "mystery", name: "Mystery", gender: "", match: true, age: "" },
+  ];
+  const slots = ["character:female"];
+  const ages = { "character:female": "old" };
+  assert.deepEqual(castPools({ slots, ages, own, recast: true, avoid: ["dalia", "jorge"] }).pools["character:female"].map((v) => v.id), ["dalia"]);
+  const two = [...own, { id: "paulina", name: "Paulina", gender: "female", match: true, age: "old" }];
+  assert.deepEqual(castPools({ slots, ages, own: two, recast: true, avoid: ["dalia"] }).pools["character:female"].map((v) => v.id), ["paulina"], "a free native of the right tier still wins");
+  // Every library voice avoided: the nearest age among them, not nothing.
+  const library = { female: [{ id: "N", name: "N", age: "old" }] };
+  assert.deepEqual(castPools({ slots, ages, library, aged: { "character:female": [] }, own, recast: true, avoid: ["N"] }).pools["character:female"].map((v) => v.id), ["N"]);
+});
+
+test("parseCast: children in their usual wordings, and an age that belongs to someone else", () => {
+  const age = (s) => parseCast(`CAST: CHARACTER-F ${s}`)[0]?.age ?? "";
+  assert.equal(age("little, Sofía"), "child");
+  assert.equal(age("a little one, Pedro"), "child");
+  assert.equal(age("the little one"), "child");
+  assert.equal(age("a seven-year-old girl, Sofía"), "child");
+  assert.equal(age("a 7-year-old, Sofía"), "child");
+  assert.equal(age("aged 7, Pedro"), "child");
+  assert.equal(age("aged 70, Don Pedro"), "old");
+  assert.equal(age("a 16-year-old, Lupe"), "young");
+  assert.equal(age("the middle child, Ana"), "child");
+  assert.equal(age("the old man's daughter, Lucía"), "");
+  assert.equal(age("an old woman's son"), "");
+  assert.equal(age("an elderly woman, Doña Carmen"), "old");
+  assert.equal(age("old, Doña Carmen"), "old");
+  assert.equal(parseCast("CAST: CHARACTER-F old, Doña Carmen")[0].who, "Doña Carmen");
+});
+
+test("timing marks: Spanish milliseconds, and a number in a note is not a pause length", () => {
+  const gap = (mark) => parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`)[1]?.gap ?? null;
+  assert.equal(gap("<pausa 500 milisegundos>"), 0.5);
+  assert.equal(gap("<pause 500 mseconds>"), 0.5);
+  assert.equal(gap("<pausa 500 mseg>"), 0.5);
+  assert.equal(gap("<pause while she counts 20 pesos>"), null);
+  assert.equal(gap("<pause for 2 seconds>"), 2);
+  assert.equal(gap("<pausa de 2 segundos>"), 2);
+  assert.equal(gap("<pause: 1.5>"), 1.5);
+  assert.equal(gap("<pause=1.5>"), 1.5);
+  assert.equal(gap("<pause 1.5 while she counts 20 pesos>"), 1.5);
+  // Still never spoken, number or not.
+  assert.deepEqual(parseVoiceReply("NARRATOR-F: Hi\n<pause while she counts 20 pesos> CHARACTER-F: <t>Hola</t>").map((l) => l.text), ["Hi", "Hola"]);
+});
