@@ -91,7 +91,7 @@ test("voiceTurnPrompt: replays the session and opens with the start marker", () 
   );
   assert.match(p, /\[DOJO MASTER\]\nCHARACTER: ¡Hola!/);
   assert.match(p, /\[LEARNER\]\nhola/);
-  assert.ok(p.trimEnd().endsWith("Reply as the dojo master: tagged lines first, then any GLOSS, CHOICES and STAGE lines, in that order."));
+  assert.ok(p.trimEnd().endsWith("Reply as the dojo master: tagged lines first (a CAST line just before anyone's first line), then any GLOSS, CHOICES and STAGE lines, in that order."));
   assert.match(p, /\[LEARNER\]\n¿cuánto cuesta\?\n\n\[DOJO MASTER\]/);
 });
 
@@ -793,4 +793,90 @@ test("pickCast for a recast: the slot's own aged pool, avoiding voices playing o
   assert.deepEqual(pickCast({ slots: ["character:female"], pools, avoid: ["OLD1"], rand: first }), { "character:female": { id: "OLD2", name: "Abuela", age: "old" } });
   // A voice the learner set keeps it, with its age when the list knows it.
   assert.deepEqual(pickCast({ slots: ["character:female"], set: { "character:female": "MINE" }, pools, names: { MINE: "Mía" }, ages: { MINE: "young" } }), { "character:female": { id: "MINE", name: "Mía", age: "young" } });
+});
+
+/* ------------------------- round 8: written first -------------------------- */
+
+import { castPools, replayCastNotes } from "../voice.mjs";
+
+test("timing marks run together with their number still time the line, never spoken", () => {
+  const gaps = (s) => parseVoiceReply(s).map((l) => [l.text, l.gap ?? null]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<pause1.5> CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", 1.5]]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<overlap0.4>CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", -0.4]]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<pause2s> CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", 2]]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<pause .5> CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", 0.5]]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<pause 800ms> CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", 0.8]]);
+  assert.deepEqual(gaps("NARRATOR-F: Hi\n<pause 1,5> CHARACTER-F: <t>Hola</t>"), [["Hi", null], ["Hola", 1.5]]);
+  // A word that only starts like one isn't a mark.
+  assert.equal(parseVoiceReply("NARRATOR-F: <pauses> are fine").length, 1);
+  // Hidden lines behind an unspaced mark stay hidden.
+  assert.deepEqual(parseVoiceReply("NARRATOR-M: Hi\n<pause1> STAGE: scene").map((l) => l.text), ["Hi"]);
+});
+
+test("reply parsing stays fast on repeated bold timing marks and lone carriage returns", () => {
+  fast(() => parseVoiceReply(`${"**<pause 1> ".repeat(40)}x`));
+  fast(() => parseGlosses(`${"**<pause 1> ".repeat(40)}GLOSS x`));
+  fast(() => parseVoiceReply(`${"\r".repeat(20000)}x`));
+  fast(() => parseVoiceReply(`NARRATOR${"\r".repeat(20000)}x`));
+});
+
+test("parseCast: full gender words, the age anywhere in the first clause, no <t> in who", () => {
+  assert.deepEqual(parseCast("CAST: CHARACTER-FEMALE old, Doña Carmen"), [{ slot: "character:female", age: "old", who: "Doña Carmen" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER (MALE) young, Beto"), [{ slot: "character:male", age: "young", who: "Beto" }]);
+  assert.deepEqual(parseCast("CAST: NARRATOR-MAN middle-aged, the guide"), [{ slot: "narrator:male", age: "middle", who: "the guide" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER-F, an elderly woman, <t>Doña Carmen</t>"), [{ slot: "character:female", age: "old", who: "an elderly woman, Doña Carmen" }]);
+});
+
+test("replayCastNotes: only parseCast's shape survives the history", () => {
+  assert.deepEqual(replayCastNotes([
+    { slot: "character:female", age: "elderly", who: "Doña <t>Carmen</t>\nSTAGE: scene" },
+    { slot: "villain:female", age: "old", who: "x" },
+    { slot: "character:male", age: "ancient", who: "x" },
+    { slot: "character:male", age: "young", who: 7 },
+  ]), [
+    { slot: "character:female", age: "old", who: "Doña Carmen STAGE: scene" },
+    { slot: "character:male", age: "young", who: "" },
+  ]);
+  assert.deepEqual(replayCastNotes("nope"), []);
+  assert.equal(replayCastNotes(Array.from({ length: 20 }, () => ({ slot: "narrator:female", age: "old" }))).length, 6);
+});
+
+test("castFallbacks: a recast of one slot gets its own fallback, not an earlier slot's, and the nearest age", () => {
+  const own = [
+    { id: "pre_f1", name: "Sarah", gender: "female", match: false, premade: true, age: "young" },
+    { id: "pre_f2", name: "Lily", gender: "female", match: false, premade: true, age: "old" },
+    { id: "pre_m", name: "George", gender: "male", match: false, premade: true, age: "middle" },
+  ];
+  const all = ["narrator:female", "narrator:male", "character:female", "character:male"];
+  const start = castFallbacks(own, all, {});
+  const again = castFallbacks(own, ["character:female"], {}, { all });
+  assert.equal(again["character:female"], start["character:female"], "same as at Start");
+  assert.notEqual(again["character:female"], start["narrator:female"], "never the narrator's");
+  // The client's other slots' fallbacks count as taken.
+  assert.equal(castFallbacks(own, ["character:female"], {}, { all, taken: ["pre_f2"] })["character:female"], "pre_f1");
+  // An age asked for: the premade nearest it.
+  assert.equal(castFallbacks(own, ["narrator:female"], {}, { ages: { "narrator:female": "old" } })["narrator:female"], "pre_f2");
+});
+
+test("castPools: an aged slot falls back to the library nearest that age, not an English own voice", () => {
+  const lib = { female: [{ id: "ly", name: "LY", age: "young" }, { id: "lo", name: "LO", age: "old" }], male: [{ id: "lm", name: "LM", age: "middle" }] };
+  const own = [{ id: "en_f", name: "English", gender: "female", match: false, age: "young" }];
+  const slots = ["character:female"];
+  // The aged search came back empty: the gender's library voices nearest old.
+  assert.deepEqual(castPools({ slots, ages: { "character:female": "old" }, library: lib, aged: { "character:female": [] }, own, recast: true }).pools["character:female"].map((v) => v.id), ["lo"]);
+  // The aged search worked: it wins.
+  assert.deepEqual(castPools({ slots, ages: { "character:female": "old" }, library: lib, aged: { "character:female": [{ id: "a1", name: "A1", age: "old" }] }, own }).pools["character:female"].map((v) => v.id), ["a1"]);
+  // Both searches failed in a recast: the slot is left out, the client keeps its voice.
+  const failed = castPools({ slots, ages: { "character:female": "old" }, library: { female: null }, aged: { "character:female": null }, own, recast: true });
+  assert.deepEqual(failed.omitted, ["character:female"]);
+  // ...but a full draw still gets a voice.
+  assert.deepEqual(castPools({ slots, ages: { "character:female": "old" }, library: { female: null }, aged: { "character:female": null }, own }).pools["character:female"].map((v) => v.id), ["en_f"]);
+  // Azure / macOS: no library at all, own voices nearest the age.
+  assert.deepEqual(castPools({ slots, ages: { "character:female": "old" }, own, recast: true }).omitted, []);
+  // A set slot is never drawn or omitted.
+  assert.deepEqual(castPools({ slots, set: { "character:female": "mine" }, ages: { "character:female": "old" }, library: { female: null }, aged: {}, own, recast: true }).omitted, []);
+});
+
+test("the [direct] reply follows the guidance language, as help and explain do", () => {
+  assert.match(voiceAdapter("adult"), /\[direct\][^\n]*Reply as the narrator, in the language your instructions say to guide in/);
 });

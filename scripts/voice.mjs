@@ -206,7 +206,7 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - When you ask the learner how the session should go (whether to keep going, go slower, try something harder, or change the scene), not when you ask a practice question, end the turn with one CHOICES line offering two to four short answers in their native language, which the app shows as buttons. It is shown, not spoken. For example:
   CHOICES: Keep going | Slow down | A harder version
   A tapped choice reaches you as "[direct]" followed by its words.
-- A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator in their native language: do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
+- A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator, in the language your instructions say to guide in (the learner's native language unless they say otherwise): do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
 }
 
 /** The system prompt for a voice turn: the pack as assembled, then the
@@ -238,7 +238,7 @@ export function voiceTurnPrompt(history, message) {
     : `[DOJO MASTER]\n${castLines(m.castNotes)}${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}${typeof m.stage === "string" && m.stage ? `\nSTAGE: ${m.stage}` : ""}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
-  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines first, then any GLOSS, CHOICES and STAGE lines, in that order.`;
+  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines first (a CAST line just before anyone's first line), then any GLOSS, CHOICES and STAGE lines, in that order.`;
 }
 
 /* ------------------------------ the reply side ----------------------------- */
@@ -253,14 +253,23 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
  *  the line (after the tag, inside **bold**, with a decimal comma), so a
  *  misplaced mark is never read out. */
 // Any spelling of the mark: "<pause 1.5>", "<pause 1.5 seconds>",
-// "<pause: 1.5>", "<pause=1.5>"; the number is the first one inside. Bounded
+// "<pause: 1.5>", "<pause=1.5>", and run together: "<pause1.5>", "<pause2s>"
+// (so no \b after the word, only "not another letter"). The number is the
+// first one inside: "1.5", ".5", "1,5", or "800ms" in milliseconds. Bounded
 // so it can't run away on a long line.
-const TIMING_RE = /<\s{0,3}(pause|overlap)\b([^<>\n]{0,40})>/gi;
-const TIMING_NUM = /(\d+(?:[.,]\d+)?)/;
-/** Runs of spaces and tabs → one space: every pattern below then sees at
- *  most one blank between tokens, so none of them can backtrack for long on
- *  a line padded with spaces. */
-const squeeze = (s) => String(s).replace(/[^\S\r\n]+/g, " ");
+const TIMING_RE = /<\s{0,3}(pause|overlap)(?![a-z])([^<>\n]{0,40})>/gi;
+const TIMING_NUM = /(\d*[.,]?\d+)\s*(ms\b)?/i;
+/** Seconds from a timing mark's inside, or null when it names no number. */
+function timingSeconds(inside) {
+  const m = String(inside).match(TIMING_NUM);
+  if (!m) return null;
+  const n = Number(m[1].replace(",", "."));
+  return m[2] ? n / 1000 : n;
+}
+/** Runs of blanks (a lone \r included) → one space: every pattern below then
+ *  sees at most one blank between tokens, so none of them can backtrack for
+ *  long on a line padded with spaces. Lines are split on \n first. */
+const squeeze = (s) => String(s).replace(/[^\S\n]+/g, " ");
 
 /** Gaps between lines, in ms. A switch between the narrator and anyone in
  *  the scene always gets a slight delay (never an overlap), so the learner
@@ -387,18 +396,19 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // (the adapter's "every line starts with a tag" pulls that way) is allowed.
 // The tag is matched in any case, as TAG_RE does ("Narrator-F:"); only the
 // label itself must be upper case. A bullet, and timing marks (bold or not)
-// before or after the tag, are allowed too. The lines are trimmed and
-// squeezed (one blank between tokens) and capped before matching
-// (metaRest), so a line of spaces can't make it backtrack.
+// before or after the tag, are allowed too. The lines lose their ** bold,
+// are trimmed and squeezed (one blank between tokens) and capped before
+// matching (metaRest), so every optional piece below is unambiguous and
+// neither a line of spaces nor a run of "**<pause 1> " can make it backtrack.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const TIMING_MARKS = `(?:(?:\\*\\*)?<\\s{0,3}(?:${ci("pause")}|${ci("overlap")})[^<>]{0,40}>[ \\t]*(?:\\*\\*)?[ \\t]*)*`;
-const META_TAG = `^(?:[-•][ \\t]+)?${TIMING_MARKS}(?:\\*\\*)?[ \\t]*(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?:\\s*[-/(]\\s*(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")})\\s*\\)?)?[ \\t]*(?:\\*\\*)?[ \\t]*:[ \\t]*(?:\\*\\*)?[ \\t]*)?${TIMING_MARKS}`;
-const metaRe = (label) => new RegExp(`${META_TAG}(?:\\*\\*)?\\s*${label}\\s*(?:\\*\\*)?\\s*:\\s*(?:\\*\\*)?`);
+const TIMING_MARKS = `(?:<[ ]?(?:${ci("pause")}|${ci("overlap")})[^<>]{0,40}> ?)*`;
+const META_TAG = `^(?:[-•] )?${TIMING_MARKS}(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?${TIMING_MARKS}`;
+const metaRe = (label) => new RegExp(`${META_TAG}${label} ?: ?`);
 /** The text after a shown-not-spoken label, or null when `rawLine` isn't
  *  that line. Matched on the line's trimmed start so leading spaces never
  *  reach the pattern. */
 function metaRest(re, rawLine) {
-  const line = squeeze(rawLine).trimStart();
+  const line = squeeze(String(rawLine).replace(/\*\*/g, "")).trimStart();
   const m = line.slice(0, 200).match(re);
   return m ? line.slice(m[0].length) : null;
 }
@@ -460,7 +470,9 @@ const STAGE_RE = metaRe("STAGE");
 
 // Who a voice tag now is, so the app can give it a voice of the right age.
 const CAST_RE = metaRe("CAST");
-const CAST_TAG_RE = /^(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s?[-/(]\s?(F|M|FEMALE|MALE|WOMAN|MAN)\s?\)?)?/i;
+// Longest gender words first, and a word end after, so FEMALE is never
+// read as F plus "EMALE".
+const CAST_TAG_RE = /^(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s?[-/(]\s?(FEMALE|WOMAN|MALE|MAN|F|M)\b\s?\)?)?/i;
 const CAST_WHO_CHARS = 80;
 
 /** How old a voice sounds or a character is, from a provider label or the
@@ -491,16 +503,36 @@ export function parseCast(text, mode = "adult") {
     if (!t || !t[2]) continue;
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
     if (!allowed.has(speaker)) continue;
-    const after = body.slice(t[0].length).replace(/^[\s,|:–—-]+/, "");
-    const a = after.match(/^([A-Za-z]+(?:[\s_-]aged)?)/);
-    const age = a ? ageOf(a[1]) : "";
+    const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
+    // The age is a word in the first clause: "old, Doña Carmen", or "an
+    // elderly woman, Doña Carmen". When it leads, it comes out of `who`.
+    const clause = after.split(/[,|;]/)[0];
+    const words = clause.split(/\s+/).filter(Boolean);
+    let age = "";
+    let lead = false;
+    for (let i = 0; i < words.length && !age; i++) {
+      age = ageOf(words.slice(i).join(" "));
+      lead = i === 0;
+    }
     if (!age) continue;
-    const who = oneLine(after.slice(a[0].length).replace(/^[\s,|:–—-]+/, "")).slice(0, CAST_WHO_CHARS);
+    const named = lead ? after.replace(/^[A-Za-z]+(?:[\s_-]aged)?/, "").replace(/^[\s,|:–—-]+/, "") : after;
+    const who = oneLine(named).slice(0, CAST_WHO_CHARS);
     const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
     out.delete(slot);
     out.set(slot, { slot, age, who });
   }
   return [...out.values()];
+}
+
+/** Cast notes the client sent back in the history, kept only in the shape
+ *  parseCast makes: a known slot, a readable age, and `who` on one line
+ *  without <t> marks, capped. Anything else is dropped. */
+export function replayCastNotes(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((n) => typeof n?.slot === "string" && /^(narrator|character|sidekick):(female|male)$/.test(n.slot) && !!ageOf(n.age))
+    .slice(0, 6)
+    .map((n) => ({ slot: n.slot, age: ageOf(n.age), who: typeof n.who === "string" ? oneLine(n.who.replace(/<\/?\s*t\s*>/gi, "")).slice(0, CAST_WHO_CHARS) : "" }));
 }
 
 /** A turn's cast notes as the CAST lines it came with, for the replay. */
@@ -617,8 +649,8 @@ export function parseVoiceReply(text, mode = "adult") {
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
       // The first mark with a number wins; all of them come out of the text.
-      const t = marks.map((x) => [x[1], x[2].match(TIMING_NUM)?.[1]]).find((x) => x[1]);
-      if (t) gap = (t[0].toLowerCase() === "overlap" ? -1 : 1) * Number(t[1].replace(",", "."));
+      const t = marks.map((x) => [x[1], timingSeconds(x[2])]).find((x) => x[1] != null);
+      if (t) gap = (t[0].toLowerCase() === "overlap" ? -1 : 1) * t[1];
       raw = raw.replace(TIMING_RE, " ").replace(/\*\*\s+/, "**");
       if (!raw.replace(/\*/g, "").trim()) continue;
     }
@@ -935,7 +967,8 @@ export function transcriptText(provider, json) {
 // voices with an accent, a description and usage numbers, searchable by
 // language and locale. On a paid plan a library voice can be used by id
 // without adding it (the random cast relies on this; tested 2026-11); a free
-// plan gets HTTP 402, and /speak then falls back to the saved voice. "Use
+// plan is refused (402 and similar), and /speak then retries in the slot's
+// own voice, its cast fallback, or a borrowed one (speechVoices). "Use
 // as…" in the browser adds one to the account (POST /v1/voices/add) so it
 // shows up in the account's own list.
 
@@ -1011,11 +1044,7 @@ export function poolFor(list, gender, skip = new Set(), age = "") {
   let pool = tiers.find((t) => t.length) ?? [];
   // An age asked for: within that tier, the voices nearest it (a voice with
   // no age label counts as a step and a half away, so a real neighbour wins).
-  if (AGE_RANK.hasOwnProperty(age) && pool.length) {
-    const dist = (v) => (AGE_RANK.hasOwnProperty(v.age) ? Math.abs(AGE_RANK[v.age] - AGE_RANK[age]) : 1.5);
-    const best = Math.min(...pool.map(dist));
-    pool = pool.filter((v) => dist(v) === best);
-  }
+  if (AGE_RANK.hasOwnProperty(age) && pool.length) pool = nearestAge(pool, age);
   return pool.map((v) => ({ id: v.id, name: v.name, age: v.age ?? "" }));
 }
 
@@ -1039,23 +1068,67 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
 /** For ElevenLabs: each slot's fallback, a distinct account voice of its
  *  gender (two women never share one while the account has two). Premade
  *  voices come first (any plan can speak with them; voices added from the
- *  library may be refused like the library itself), then natives. Voices
- *  the learner set for a slot are left for that slot. → slot → id. */
-export function castFallbacks(own, slots, set = {}) {
-  const taken = new Set(Object.values(set ?? {}).filter(Boolean));
+ *  library may be refused like the library itself), then those nearest the
+ *  slot's age when one is asked for (on a plan that refuses library voices
+ *  the fallback is the voice that speaks), then natives. Voices the learner
+ *  set for a slot, and `taken` ones (other slots' fallbacks in a recast),
+ *  are left alone. Every slot of the mode is worked through in `all`'s
+ *  order, so a recast of one slot gets the same answer as at Start rather
+ *  than an earlier slot's voice; only `slots` come back. → slot → id. */
+export function castFallbacks(own, slots, set = {}, { all = slots, ages = {}, taken: busy = [] } = {}) {
+  const taken = new Set([...Object.values(set ?? {}).filter(Boolean), ...busy]);
   const list = Array.isArray(own) ? own : [];
-  const rank = (v) => (v.premade ? 0 : 2) + (v.match ? 0 : 1);
+  const want = new Set(slots);
   const out = {};
-  for (const slot of slots) {
+  const order = [...all.filter((x) => !want.has(x)), ...all.filter((x) => want.has(x)), ...slots.filter((x) => !all.includes(x))];
+  for (const slot of order) {
     const gender = slot.split(":")[1];
+    const age = AGE_RANK.hasOwnProperty(ages[slot]) ? ages[slot] : "";
+    const dist = (v) => (!age ? 0 : AGE_RANK.hasOwnProperty(v.age) ? Math.abs(AGE_RANK[v.age] - AGE_RANK[age]) : 1.5);
+    const rank = (v) => (v.premade ? 0 : 10) + dist(v) * 2 + (v.match ? 0 : 1);
     const labelled = list.filter((v) => String(v.gender).toLowerCase() === gender);
-    const from = (labelled.length ? labelled : list.filter((v) => !v.gender)).slice().sort((a, b) => rank(a) - rank(b));
+    const from = (labelled.length ? labelled : list.filter((v) => !v.gender)).slice().sort((x, y) => rank(x) - rank(y));
     const pick = from.find((v) => !taken.has(v.id)) ?? from[0];
     if (!pick) continue;
-    out[slot] = pick.id;
+    if (want.has(slot)) out[slot] = pick.id;
     taken.add(pick.id);
   }
   return out;
+}
+
+/** /cast's pools, from what the provider gave: `library` is gender → the
+ *  Voice Library's voices of that gender, `aged` is slot → that slot's
+ *  age-filtered search (ElevenLabs only; null where the search failed, []
+ *  where it found nothing), `own` the account's or provider's list. A slot
+ *  wanting an age takes its aged search, else the gender's library voices
+ *  nearest that age, else (when the library had nothing at all) the own
+ *  voices nearest it. In a recast (`recast`), a slot whose searches failed
+ *  is `omitted`, so the client keeps the voice it has rather than one in
+ *  another language; a full draw never omits.
+ *  → {pools, omitted}. */
+export function castPools({ slots, set = {}, ages = {}, library = {}, aged = {}, own = [], recast = false }) {
+  const pools = { female: [], male: [] };
+  const omitted = [];
+  const random = slots.filter((x) => !set[x]);
+  for (const g of ["female", "male"]) pools[g] = library[g]?.length ? library[g] : poolFor(own, g);
+  for (const slot of random) {
+    const age = ages[slot];
+    if (!age) continue;
+    const g = slot.split(":")[1];
+    if (aged[slot]?.length) pools[slot] = aged[slot];
+    else if (library[g]?.length) pools[slot] = nearestAge(library[g], age);
+    else if (recast && (aged[slot] === null || library[g] === null)) omitted.push(slot);
+    else pools[slot] = poolFor(own, g, new Set(), age);
+  }
+  return { pools, omitted };
+}
+
+/** The voices of `list` nearest `age` (an unlabelled one is a step and a
+ *  half away). */
+function nearestAge(list, age) {
+  const dist = (v) => (AGE_RANK.hasOwnProperty(v.age) ? Math.abs(AGE_RANK[v.age] - AGE_RANK[age]) : 1.5);
+  const best = Math.min(...list.map(dist));
+  return list.filter((v) => dist(v) === best);
 }
 
 /** Whether a provider's refusal of a cast voice is worth one retry in

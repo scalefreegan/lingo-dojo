@@ -10,9 +10,10 @@ import type { Tab } from "./shared";
  * open), the three-step flow as tabs, Library off to the side (it's a
  * destination, not a step), and the two actions that touch the whole draft
  * (New pack, Reload content) tucked behind "…" so they don't compete with
- * the tabs for attention. On a phone (below `sm`) Library moves into that
- * "…" menu — the bar can't hold four tabs and the menu at 390px — and the
- * three flow tabs scroll in their own strip rather than widening the page. */
+ * the tabs for attention. Below `md` Library moves into that "…" menu — the
+ * bar can't hold four tabs and the menu on a phone, nor beside the Profile
+ * pill on a small tablet — and the three flow tabs scroll in their own strip
+ * rather than widening the page. */
 export default function TopBar({
   tab,
   onTab,
@@ -47,7 +48,9 @@ export default function TopBar({
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line bg-panel/90 px-3 backdrop-blur sm:gap-2 sm:px-4 sm:pr-10">
       <h1 className="flex shrink-0 items-center gap-1 text-lg font-semibold text-fg sm:mr-1 sm:gap-1.5">
         <Mochi size={30} />
-        <span className="sr-only sm:not-sr-only">Lingo Dojo</span>
+        {/* Kids mode's tag takes the room the name needs below lg, where
+            the bar would otherwise clip Go. */}
+        <span className={mode === "kids" ? "sr-only lg:not-sr-only" : "sr-only sm:not-sr-only"}>Lingo Dojo</span>
         {mode === "kids" && (
           <span className="rounded-full bg-accent-soft px-1 py-0.5 text-[10px] font-medium leading-none text-accent sm:px-1.5 sm:text-[11px]" data-testid="mode-tag">
             Kids
@@ -65,7 +68,7 @@ export default function TopBar({
         {content && draft && (
           <ProfileControl content={content} draft={draft} mode={mode} onMode={onMode} onChange={onChange} onSaveDefaults={onSaveDefaults} />
         )}
-        <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden sm:flex" />
+        <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} />
       </div>
     </header>
@@ -91,7 +94,7 @@ const menuItemClass = "px-3 py-2 text-left text-sm text-fg-2 hover:bg-raised dis
 
 /** New pack and Reload content: whole-draft actions, not part of the Scene →
  *  Customize → Go flow, so they live behind an overflow toggle instead of
- *  sitting next to the tabs. Library joins them on a phone, where the bar
+ *  sitting next to the tabs. Library joins them below `md`, where the bar
  *  has no room for its tab. */
 function OverflowMenu({
   onNewPack,
@@ -123,7 +126,7 @@ function OverflowMenu({
               type="button"
               role="menuitem"
               aria-current={libraryActive ? "page" : undefined}
-              className={`${menuItemClass} border-b border-line sm:hidden ${libraryActive ? "font-medium text-fg" : ""}`}
+              className={`${menuItemClass} border-b border-line md:hidden ${libraryActive ? "font-medium text-fg" : ""}`}
               onClick={() => {
                 onLibrary();
                 setOpen(false);

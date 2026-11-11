@@ -71,7 +71,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   The dojo master can set its own: `<pause 1.2>` before a line waits first
   (a vendor weighing tomatoes), and `<overlap 0.4>` starts it before the
   previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
-  for a pause). The server resolves each line's `pauseMs`
+  for a pause). Any spelling with a number inside counts: `<pause1.5>`,
+  `<pause 2s>`, `<pause .5>`, `<pause 800ms>`. The server resolves each line's `pauseMs`
   (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
   next clip early with both playing. Segments within a line run back to back.
 - **Speak**: one call per segment; the browser plays one while the next is
@@ -176,8 +177,14 @@ fruit vendor`. The turn reply carries these as `castNotes`, and they go back
 in the replay. When a Random slot's voice is the wrong age, the browser
 recasts just that slot (`/cast` with `ages`, `slots` and `avoid`) before the
 turn plays: for ElevenLabs a library search filtered by age (young, middle
-aged, old; a child takes the youngest), else the provider's own voices
-nearest that age (`poolFor`). Voice lists carry ages where the provider
+aged, old; a child takes the youngest), else the locale's library voices of
+that gender nearest the age, else the provider's own voices nearest it
+(`castPools`, `poolFor`). If the library can't be reached during a recast,
+the slot keeps the voice it has (never an English account voice), and the
+next turn tries again. The slot's fallback is recomputed against the other
+slots' (sent in `avoid`) and nearest the age, so a character never falls
+back to the narrator's voice. A character who comes back keeps the voice
+they had. Voice lists carry ages where the provider
 labels them (ElevenLabs; macOS Grandma and Grandpa). A slot you set keeps
 its voice. The
 cast holds for the whole session, so each character keeps one voice. Restart
