@@ -27,6 +27,9 @@ const SPEAKER_LABEL: Record<VoiceSpeaker, string> = { narrator: "Narrator", char
 const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", azure: "Azure Speech", system: "macOS voices (free)" };
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
+/** How long a mid-session voice draw may take before it counts as failed. */
+const CAST_TIMEOUT_MS = 10_000;
+const HELD_NOTICE = "Your words to the dojo master are waiting above the box.";
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
 
 /** The Skip, Help and Explain buttons' messages; scripts/voice.mjs SKIP,
@@ -154,6 +157,9 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   // While a line waits for its speaker's voice to be drawn: nothing is
   // audible yet, so the status says so and Mochi isn't shown talking.
   const [findingVoice, setFindingVoice] = useState(false);
+  // Which wait owns "Finding a voice…": only the owner clears it, so a late
+  // wait finishing can't clear a newer one's, and Stop clears it outright.
+  const findingOwner = useRef<object | null>(null);
   const [notice, setNoticeState] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null);
   const setNotice = (text: string | null, action?: { label: string; run: () => void }) => setNoticeState(text ? { text, action } : null);
   const [composer, setComposer] = useState("");
@@ -449,6 +455,8 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
    *  and anything still on its way to starting one of those. */
   function stopAll() {
     genRef.current += 1;
+    findingOwner.current = null;
+    setFindingVoice(false);
     ctrlRef.current?.abort();
     ctrlRef.current = null;
     recRef.current?.cancel();
@@ -458,6 +466,32 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     setPlaying(null);
     setLevel(0);
     setPhase("idle");
+  }
+
+  /** Wait for a voice draw with "Finding a voice…" showing, until the draw
+   *  lands or `signal` aborts (Stop, Restart, a new turn): a draw that hangs
+   *  never holds playback or the status. */
+  async function waitForDraw(draw: Promise<void>, signal: AbortSignal) {
+    const token = {};
+    findingOwner.current = token;
+    setFindingVoice(true);
+    let onAbort = () => {};
+    try {
+      await Promise.race([
+        draw,
+        new Promise<void>((resolve) => {
+          onAbort = () => resolve();
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      if (findingOwner.current === token) {
+        findingOwner.current = null;
+        setFindingVoice(false);
+      }
+    }
   }
 
   function freshCtrl() {
@@ -615,12 +649,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // A draw never rejects (recast catches), and a new one may start
       // while waiting (a second draw for the same person): wait them out.
       for (let w = pending(cur.line); w; w = pending(cur.line)) {
-        setFindingVoice(true);
-        try {
-          await w;
-        } finally {
-          setFindingVoice(false);
-        }
+        await waitForDraw(w, signal);
         if (signal.aborted) return;
       }
       const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes, cur.line), cur.line));
@@ -796,7 +825,9 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         const mine = new Set(Object.values(keys));
         const theirs = [...heldBy.current.entries()].filter(([k]) => !mine.has(k) && slotsToDraw.some((x) => k.startsWith(`${x}|`))).flatMap(([, h]) => [h.voice.id, h.fallback]);
         const avoid = [...new Set([...others.map((x) => base.cast[x].id), ...others.map((x) => base.fallbacks?.[x]), ...theirs].filter((v): v is string => !!v))].slice(0, 20);
-        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid });
+        // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
+        // in use stays and the next turn retries (within drawFails).
+        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid }, AbortSignal.timeout(CAST_TIMEOUT_MS));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
@@ -825,6 +856,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         castRef.current = { ...live, cast: nextCast, ...(Object.keys(nextFallbacks).length ? { fallbacks: nextFallbacks } : {}) };
         setCast(castRef.current);
       } catch (e) {
+        // A timeout (TimeoutError, not AbortError) is a failed draw.
         if (isAbort(e) || castEpoch.current !== epoch) return;
         for (const slot of slotsToDraw) failed(slot);
         // Quietly: the voice in use stays, and a notice with an action (a
@@ -942,7 +974,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       if (away && toMaster && draft && !directTagRef.current) {
         setPhase("idle");
         setHeldRequest((was) => (was ? `${was} ${text}` : text));
-        setNotice("Your words to the dojo master are waiting above the box.");
+        setNotice(HELD_NOTICE);
         return;
       }
       const intoBox = away || (settingsRef.current?.review && !(toMaster && draft && !directTagRef.current));
@@ -1020,21 +1052,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       const line: VoiceLine = { speaker: "narrator", gender: castRef.current.narratorGender, text: MASTER_ACK, segments: [{ lang: "native", text: MASTER_ACK }] };
       try {
         setPhase("speaking");
-        // In the narrator's voice as it will be: wait for a draw for them
-        // still on its way, as every line does (playLines). The clip is
-        // cached per voice (audioFor), so a new narrator voice isn't
-        // answered by the old one's clip.
-        const notes = latestCast(entriesRef.current);
-        const person = personFor(notes, line);
-        for (let w = person ? drawing.current.get(person) : undefined; w; w = person ? drawing.current.get(person) : undefined) {
-          setFindingVoice(true);
-          try {
-            await w;
-          } finally {
-            setFindingVoice(false);
-          }
-          if (ctrl.signal.aborted || gen !== genRef.current) return;
-        }
+        // In the narrator's voice as it is now. Unlike a turn's lines it
+        // doesn't wait for a draw still on its way: "yes?" has to be
+        // instant, and a slow draw must not hold the mic. The clip is cached
+        // per voice (audioFor), so a new narrator voice gets its own.
+        const person = personFor(latestCast(entriesRef.current), line);
         const url = await audioFor(`ack:${castRef.current.provider}:${castRef.current.narratorGender}`, line, line.segments[0], ctrl.signal, speakAs(person, line));
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         await playUrl(url, ctrl.signal);
@@ -1356,6 +1378,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
                 className="rounded-full px-1.5 text-fg-3 hover:bg-raised hover:text-fg"
                 onClick={(e) => {
                   setHeldRequest(null);
+                  setNoticeState((was) => (was?.text === HELD_NOTICE ? null : was));
                   // A keyboard user's focus goes to the box (the chip is
                   // gone); a tap moves none, so a phone's keyboard doesn't
                   // pop up (as choose() does). detail is 0 for Enter/Space.
@@ -2165,12 +2188,13 @@ const Transcript = memo(function Transcript({
   // Per row, the glosses found in its target-language text. Glosses only
   // grow during a session (the first wording of a term wins), so a row
   // tests just the ones added since it last looked, and keeps its list (the
-  // same array) when none of them is in it.
-  const glossCache = useRef(new Map<number, { m: VoiceHistoryItem; first: VoiceGloss | undefined; seen: number; list: VoiceGloss[] }>());
+  // same array) when none of them is in it. A new target locale starts over
+  // (case folding is locale-specific), as the translations cache does.
+  const glossCache = useRef(new Map<number, { m: VoiceHistoryItem; first: VoiceGloss | undefined; seen: number; list: VoiceGloss[]; locale: string | null }>());
   const rowGlosses = (m: VoiceHistoryItem, i: number): VoiceGloss[] => {
     if (m.role !== "master") return NO_GLOSSES;
     let c = glossCache.current.get(i);
-    if (!c || c.m !== m || c.first !== glosses[0] || c.seen > glosses.length) c = { m, first: glosses[0], seen: 0, list: NO_GLOSSES };
+    if (!c || c.m !== m || c.first !== glosses[0] || c.seen > glosses.length || c.locale !== locale) c = { m, first: glosses[0], seen: 0, list: NO_GLOSSES, locale };
     if (c.seen < glosses.length) {
       const texts = m.lines.flatMap((l) => (l.segments ?? []).filter((g) => g.lang === "target").map((g) => g.text.normalize("NFC")));
       const hays = texts.map((t) => haystack(t, locale ?? undefined));
@@ -2315,14 +2339,15 @@ const TranscriptRow = memo(function TranscriptRow({
               const { gloss, whole } = tr;
               const what = whole ? "this line" : "this phrase";
               return (
-                <button type="button" className="rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
+                <button type="button" className="grid min-h-6 min-w-6 place-items-center rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
                   {trLabel}
                 </button>
               );
             })()}
             </span>
             )}
-            <button type="button" className="shrink-0 text-fg-3 hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
+            {/* A 24px target (WCAG 2.5.8) around the small ▶. */}
+            <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:bg-raised hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
               ▶
             </button>
           </div>

@@ -255,21 +255,28 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
 // Any spelling of the mark: "<pause 1.5>", "<pause 1.5 seconds>",
 // "<pause: 1.5>", "<pause=1.5>", and run together: "<pause1.5>", "<pause2s>"
 // (so no \b after the word, only "not another letter"); "<pausa 1>" too, the
-// Spanish a model writing Spanish reaches for. The number is the first one
-// inside: "1.5", ".5", "1,5", or milliseconds ("800ms", "500 milliseconds",
-// "1,500ms"). Bounded so it can't run away on a long line, but wide enough
+// Spanish a model writing Spanish reaches for. Which number is the length:
+// see timingSeconds ("1.5", ".5", "1,5", or milliseconds: "800ms", "500
+// milliseconds", "1,500ms"). Bounded so it can't run away on a long line, but wide enough
 // for a mark with a note ("<pause 1.5 seconds while she weighs them>").
 const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])([^<>\n]{0,80})>/gi;
-const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|mseg";
-const S_UNIT = "s|secs?|seconds?|segundos?|seg";
-// The length is a number at the start ("<pause 1.5 while she counts>",
-// "<pause: 1.5>") or one with a unit ("<pause for 2 seconds>"); a number
-// in a note ("<pause while she counts 20 pesos>") is not a length.
-const TIMING_LEAD = new RegExp(`^\\s*[:=]?\\s*(\\d*[.,]?\\d+)\\s*(?:(${MS_UNIT})(?![a-z]))?`, "i");
-const TIMING_UNIT = new RegExp(`(\\d*[.,]?\\d+)\\s*(?:(${MS_UNIT})|(?:${S_UNIT}))(?![a-z])`, "i");
-/** Seconds from a timing mark's inside, or null when it names no length. */
+const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|msegs?";
+const S_UNIT = "s|secs?|seconds?|segundos?|segs?";
+const NUM = String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?(?![a-z])`;
+// The length is the number at the start of the mark (after punctuation, a
+// sign, or a word like "for", "de", "about": "<pause (1.5)>", "<overlap
+// -0.4>", "<pausa de 1,5>"), else one with a unit ("<pause while she
+// counts, for 2 seconds>"), else the number that ends it ("<pause while
+// she counts, 3>"). A number inside a note ("<pause while she counts 20
+// pesos>") is not a length, and the line gets its default pause.
+const TIMING_LEAD = new RegExp(String.raw`^[\s:=,(\[~+\-–—]*(?:(?:for|of|de|about|around|approx\.?|approximately|unos|como|durante)\s+)?` + NUM, "i");
+const TIMING_UNIT = new RegExp(String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))(?![a-z])`, "i");
+const TIMING_END = new RegExp(String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?[\s).\]]*$`, "i");
+/** Seconds from a timing mark's inside (never negative: an overlap's sign
+ *  is its word), or null when it names no length. */
 function timingSeconds(inside) {
-  const m = String(inside).match(TIMING_LEAD) ?? String(inside).match(TIMING_UNIT);
+  const t = String(inside);
+  const m = t.match(TIMING_LEAD) ?? t.match(TIMING_UNIT) ?? t.match(TIMING_END);
   if (!m) return null;
   // "1,500ms" is a thousand separator, "1,5" a decimal comma.
   if (m[2] && /^\d{1,3},\d{3}$/.test(m[1])) return Number(m[1].replace(",", "")) / 1000;
@@ -498,34 +505,65 @@ export function ageOf(label) {
 }
 const AGE_RANK = { child: 0, young: 1, middle: 2, old: 3 };
 
-const NUMBER_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
-const yearsOf = (w) => (/^\d{1,3}$/.test(w ?? "") ? Number(w) : NUMBER_WORDS[w] ?? null);
-const ageForYears = (n) => (n < 13 ? "child" : n < 20 ? "young" : n < 60 ? "middle" : "old");
+const NUMBER_WORDS = new Map(Object.entries({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 }));
+/** "7", "seven", "seventy-five" → 7, 7, 75; anything else null. */
+function yearsOf(w) {
+  const x = String(w ?? "");
+  if (/^\d{1,3}$/.test(x)) return Number(x);
+  if (NUMBER_WORDS.has(x)) return NUMBER_WORDS.get(x);
+  const m = x.match(/^([a-z]+)-([a-z]+)$/);
+  if (m && NUMBER_WORDS.has(m[1]) && NUMBER_WORDS.has(m[2]) && NUMBER_WORDS.get(m[1]) >= 20 && NUMBER_WORDS.get(m[2]) < 10) return NUMBER_WORDS.get(m[1]) + NUMBER_WORDS.get(m[2]);
+  return null;
+}
+// ElevenLabs' "young" covers young adults, so under 30 is young.
+const ageForYears = (n) => (n < 13 ? "child" : n < 30 ? "young" : n < 60 ? "middle" : "old");
+// The four words the adapter asks for, as the whole first clause.
+const AGE_KEYWORD = /^(child|young|middle[\s-]?aged|middle|old|elderly)$/i;
+const CHILD_NOUN = /^(one|ones|girl|boy|kid|child|baby|toddler|lad|lass)$/;
+const FILLER = /^(a|an|the|very|quite|about|around)$/;
+// "who's", "that's" are contractions, not someone else's.
+const POSSESSIVE = /^(?!(?:who|that|she|he|it|there|what|which|where|here)['’]s$)[\p{L}]+['’]s$/u;
 
-/** A CAST line's age from the first words of its first clause: the first
- *  word that isn't an article or "very" says it ("old", "an elderly woman",
- *  "a little girl", "the little one", "a seven-year-old", "aged 7", "the
- *  middle child"). An age on someone else ("the old man's daughter", "the
- *  girl's mother") or a name ("Mr Young", "Little Red") is no age.
+/** A CAST line's age from its first clause. The adapter asks for one of
+ *  child, young, middle-aged or old right after the tag, and that is
+ *  trusted as is. Otherwise the first word that isn't an article says it:
+ *  an age word ("an elderly woman"), "little" before a child or an age
+ *  ("a little girl", "a little old lady"), a number of years ("a
+ *  seven-year-old", "aged 7", "7 years old"), "middle-aged", "the middle
+ *  child", or "older"/"younger" before a man or woman. An age on someone
+ *  else ("the old man's daughter") or a name or relation ("Mr Young",
+ *  "Little Red", "the older brother", "the middle sister") is no age.
  *  → {age, lead}: `lead` is how many leading words name only the age (they
  *  come out of `who`), 0 when the age sits inside a description. */
-function castAge(rawWords) {
-  const ws = rawWords.map((w) => w.toLowerCase().replace(/[.!?:]+$/, ""));
-  const possessive = (i) => ws.slice(i, i + 3).some((w) => /['’]s$/.test(w));
-  for (let i = 0; i < ws.length; i++) {
-    const w = ws[i];
-    if (/^(a|an|the|very|quite)$/.test(w)) continue;
-    const at = (age, len) => (possessive(i) ? { age: "", lead: 0 } : { age, lead: i === 0 ? len : 0 });
-    if (w === "aged" && yearsOf(ws[i + 1]) != null) return at(ageForYears(yearsOf(ws[i + 1])), 2);
-    const y = w.match(/^([a-z]+|\d{1,3})-years?-old$/);
-    if (y && yearsOf(y[1]) != null) return at(ageForYears(yearsOf(y[1])), 1);
-    if (w === "little") return !ws[i + 1] ? at("child", 1) : /^(one|ones|girl|boy|kid|child|lad|lass)$/.test(ws[i + 1]) ? at("child", 0) : { age: "", lead: 0 };
-    if (w === "middle" && /^(child|kid)$/.test(ws[i + 1] ?? "")) return at("child", 0);
-    const aged = ws[i + 1] === "aged";
-    const age = ageOf(`${w}${aged ? " aged" : ""}`);
-    return age ? at(age, aged ? 2 : 1) : { age: "", lead: 0 };
+function castAge(clause) {
+  const c = clause.trim();
+  if (AGE_KEYWORD.test(c)) return { age: ageOf(c.replace(/^middle$/i, "middle aged")), lead: c.split(/\s+/).length };
+  const ws = c.split(/\s+/).filter(Boolean).slice(0, 8).map((w) => w.toLowerCase().replace(/[.!?:]+$/, ""));
+  const none = { age: "", lead: 0 };
+  let i = 0;
+  while (i < ws.length && FILLER.test(ws[i])) i++;
+  const w = ws[i];
+  if (!w) return none;
+  const next = ws[i + 1] ?? "";
+  const someoneElse = ws.slice(i, i + 3).some((x) => POSSESSIVE.test(x));
+  const at = (age, len) => (!age || someoneElse ? none : { age, lead: i === 0 ? len : 0 });
+  if (w === "aged" && yearsOf(next) != null) return at(ageForYears(yearsOf(next)), 2);
+  const y = w.match(/^(.+)-years?-old$/);
+  if (y) return yearsOf(y[1]) != null ? at(ageForYears(yearsOf(y[1])), 1) : none;
+  if (yearsOf(w) != null && /^years?$/.test(next) && ws[i + 2] === "old") return at(ageForYears(yearsOf(w)), 3);
+  if (w === "little") {
+    if (!next) return at("child", 1);
+    if (CHILD_NOUN.test(next)) return at("child", 0);
+    const a = ageOf(next);
+    return a && a !== "child" ? at(a, 0) : none;
   }
-  return { age: "", lead: 0 };
+  if (w === "middle" || w === "middle-aged") {
+    if (w === "middle-aged" || next === "aged") return at("middle", w === "middle-aged" ? 1 : 2);
+    return /^(child|kid)$/.test(next) ? at("child", 0) : none;
+  }
+  if (w === "older" || w === "younger") return /^(man|woman|lady|gentleman|person|couple|men|women)$/.test(next) ? at(w === "older" ? "old" : "young", 0) : none;
+  if (w === "aged") return none;
+  return at(ageOf(w), 1);
 }
 
 /** The CAST lines of a reply as {slot, age, who}: "CAST: CHARACTER-F old,
@@ -545,9 +583,11 @@ export function parseCast(text, mode = "adult") {
     if (!allowed.has(speaker)) continue;
     const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
     // The clause is capped, so a long line costs nothing.
-    const { age, lead } = castAge(after.slice(0, 120).split(/[,|;]/)[0].split(/\s+/).filter(Boolean).slice(0, 6));
+    const { age, lead } = castAge(after.slice(0, 120).split(/[,|;]/)[0]);
     if (!age) continue;
-    const named = lead ? after.replace(new RegExp(`^(?:\\S+\\s*){${lead}}`), "").replace(/^[\s,|:–—-]+/, "") : after;
+    // Words counted as castAge counts them: a comma ends a word even with no
+    // space after it ("old,Doña Carmen").
+    const named = lead ? after.replace(new RegExp(String.raw`^(?:[^\s,|;]+\s*){${lead}}`), "").replace(/^[\s,|:–—-]+/, "") : after;
     const who = oneLine(named).slice(0, CAST_WHO_CHARS);
     const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
     out.delete(slot);
