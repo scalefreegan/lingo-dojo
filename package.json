@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Lingo Dojo — a composable prompt-pack builder for language practice with a voice dojo master",
+  "description": "Lingo Dojo — composable prompt packs for spoken language practice, with an in-app voice dojo master",
   "scripts": {
     "dev": "npm --prefix web run dev",
     "test": "node --test scripts/tests/*.test.mjs",

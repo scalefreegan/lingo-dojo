@@ -6,8 +6,9 @@ A composable prompt-pack builder for spoken language practice. You pick a scenar
 ("tasting mezcal at a palenque outside Santiago Matatlán"), choose the lesson units
 you want (how the session opens, warm-up drills, how hard it pushes you, which
 language the guidance comes in, how mistakes are corrected, how it closes), and get
-one markdown prompt to paste into whatever voice agent you talk to. The voice agent
-is the **dojo master**; Lingo Dojo never runs the session itself.
+one markdown prompt. Then practise right in the app: the **dojo master** speaks in
+native voices and you answer by talking (push-to-talk) or typing. Or copy the prompt
+into whatever voice agent you already use.
 
 Three ideas, one app:
 
@@ -44,10 +45,14 @@ The embedded agent uses your Claude Code login. No API key is involved.
   and level.
 - **Customize** tab: one expandable card per slot. Radios for pick-one slots,
   checkboxes for pick-any. Units marked `default: true` start selected.
-- **Go** tab: the assembled prompt with a word/token readout and a note box for the
-  dojo master. **Copy** puts it on the clipboard. **Export file** writes
-  `exports/<id>.md`. **Save pack** stores it as `content/packs/<date>-<slug>.yaml`;
-  saved packs can be loaded or cloned from the Library.
+- **Go** tab: **Practice** runs the pack as a spoken session in the app. The dojo
+  master and each character speak in their own native voice, you answer with
+  push-to-talk or by typing, and a session timeline tracks the parts (setup and keys:
+  [`docs/VOICE.md`](docs/VOICE.md)). The same tab shows the assembled prompt with a
+  word/token readout and a note box for the dojo master. **Copy** puts it on the
+  clipboard for any other voice agent. **Export file** writes `exports/<id>.md`.
+  **Save pack** stores it as `content/packs/<date>-<slug>.yaml`; saved packs can be
+  loaded or cloned from the Library.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
   language ("add a corrections unit that only flags gender agreement"). New files
   appear in the slots as soon as the commit lands.
