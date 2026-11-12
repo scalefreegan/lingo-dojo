@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
@@ -99,8 +99,31 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const glosses = useMemo(() => sessionGlosses(entries), [entries]);
   // By term, not identity: a line's translate button builds its gloss fresh
   // each render.
-  const pick = useCallback((at: string, gloss: VoiceGloss) => setPicked((p) => (p?.at === at && p.gloss.term === gloss.term ? null : { at, gloss })), []);
-  const closePick = useCallback(() => setPicked(null), []);
+  // The control that opened the definition, so closing it from the
+  // keyboard (× or Escape) puts focus back there, not on the page.
+  const pickOpener = useRef<HTMLElement | null>(null);
+  const pick = useCallback((at: string, gloss: VoiceGloss) => {
+    pickOpener.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    setPicked((p) => (p?.at === at && p.gloss.term === gloss.term ? null : { at, gloss }));
+  }, []);
+  const closePick = useCallback((refocus = false) => {
+    setPicked(null);
+    const to = pickOpener.current;
+    pickOpener.current = null;
+    if (refocus && to?.isConnected) to.focus();
+  }, []);
+  // Escape closes an open definition, from its opener, its card or anywhere
+  // on the tab (nothing else on Go uses Escape).
+  useEffect(() => {
+    if (!picked || !active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      e.preventDefault();
+      closePick(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [picked, active, closePick]);
   // Replay reads the session's latest state; the transcript gets a stable
   // handle to it so its memo holds.
   const replayRef = useRef<(i: number, j: number, lines: VoiceLine[]) => Promise<unknown>>(async () => {});
@@ -738,10 +761,13 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         // the mic.
         setNotice("A reply arrived while you were away.", {
           label: "▶ Play the reply",
-          run: () =>
+          run: () => {
+            // Never heard yet: a retry that landed meanwhile applies to it.
+            applyDeferred();
             void replay(idx, 0, lines, false).then((done) => {
               if (done) listenAgain();
-            }),
+            });
+          },
         });
         return;
       }
@@ -770,14 +796,14 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
    *  dojo master still names them for it then. A failed draw keeps the old
    *  voice, held only tentatively, so the next turn tries again (twice at
    *  most per person). */
-  function recast(wanted: Record<string, VoiceCastNote>) {
+  /** Retries that landed since the last turn started: their voices start
+   *  now. Called as a turn begins (recast), and before a reply that arrived
+   *  while away is first played, which hasn't started either. */
+  function applyDeferred() {
     const cur = castRef.current;
-    if (!cur || !locale) return;
-    const labelled = Object.values(cur.cast).some((v) => v.age);
-    const set = settingsRef.current?.voices[cur.provider]?.[cur.locale] ?? {};
+    if (!cur || !deferred.current.size) return;
     let cast = cur.cast;
     let fallbacks = cur.fallbacks;
-    // Retries that landed since the last turn: their voices start now.
     for (const [key, d] of deferred.current) {
       heldBy.current.set(key, d.held);
       if (holder.current.get(d.slot) === key && cast[d.slot]) {
@@ -786,6 +812,18 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       }
     }
     deferred.current.clear();
+    castRef.current = { ...cur, cast, ...(fallbacks ? { fallbacks } : {}) };
+    setCast(castRef.current);
+  }
+
+  function recast(wanted: Record<string, VoiceCastNote>) {
+    applyDeferred();
+    const cur = castRef.current;
+    if (!cur || !locale) return;
+    const labelled = Object.values(cur.cast).some((v) => v.age);
+    const set = settingsRef.current?.voices[cur.provider]?.[cur.locale] ?? {};
+    let cast = cur.cast;
+    let fallbacks = cur.fallbacks;
     const draw: Record<string, VoiceAge> = {};
     const keys: Record<string, string> = {};
     for (const n of Object.values(wanted)) {
@@ -821,12 +859,22 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       castRef.current = { ...cur, cast, ...(fallbacks ? { fallbacks } : {}) };
       setCast(castRef.current);
     }
-    const slotsToDraw = Object.keys(draw);
-    if (!slotsToDraw.length) return;
+    // First draws and retries go out separately: a retry (this person's
+    // draw failed before) doesn't hold their lines, but a first draw does,
+    // and one person's retry must not make another's first draw a retry.
+    const all = Object.keys(draw);
+    const isRetry = (x: string) => (drawFails.current.get(keys[x]) ?? 0) > 0;
+    const fresh = all.filter((x) => !isRetry(x));
+    const again = all.filter(isRetry);
+    if (fresh.length) startDraw(fresh, false, draw, keys);
+    if (again.length) startDraw(again, true, draw, keys);
+  }
+
+  /** One /cast for `slotsToDraw` (see recast). */
+  function startDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>) {
+    if (!locale) return;
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-    // A retry (this person's draw failed before): lines don't wait for it.
-    const retry = slotsToDraw.some((x) => (drawFails.current.get(keys[x]) ?? 0) > 0);
     // One deadline for the whole draw, the wait behind earlier draws for
     // the same tags included: lines never wait longer than CAST_TIMEOUT_MS.
     const deadline = Date.now() + CAST_TIMEOUT_MS;
@@ -850,13 +898,19 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         // people have had with these tags (a draw that landed for someone
         // since gone, the one just before this). The drawn voice, and the
         // fallback the server names, must differ from them.
-        const others = Object.keys(base.cast).filter((x) => !draw[x]);
-        const mine = new Set(Object.values(keys));
-        const theirs = [...heldBy.current.entries()].filter(([k]) => !mine.has(k) && slotsToDraw.some((x) => k.startsWith(`${x}|`))).flatMap(([, h]) => [h.voice.id, h.fallback]);
+        const others = Object.keys(base.cast).filter((x) => !slotsToDraw.includes(x));
+        const mine = new Set(slotsToDraw.map((x) => keys[x]));
+        // A retry that landed for someone else on these tags (waiting in
+        // `deferred` for the next turn) counts too.
+        const theirs = [
+          ...[...heldBy.current.entries()].filter(([k]) => !mine.has(k) && slotsToDraw.some((x) => k.startsWith(`${x}|`))).map(([, h]) => h),
+          ...[...deferred.current.entries()].filter(([k, d]) => !mine.has(k) && slotsToDraw.includes(d.slot)).map(([, d]) => d.held),
+        ].flatMap((h) => [h.voice.id, h.fallback]);
         const avoid = [...new Set([...others.map((x) => base.cast[x].id), ...others.map((x) => base.fallbacks?.[x]), ...theirs].filter((v): v is string => !!v))].slice(0, 20);
         // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
         // in use stays and the next turn retries (within drawFails).
-        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
+        const ages = Object.fromEntries(slotsToDraw.map((x) => [x, draw[x]]));
+        const r = await getCast({ mode, locale, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
@@ -2157,7 +2211,7 @@ const Transcript = memo(function Transcript({
    *  the translate buttons. */
   showTr: boolean;
   onPick: (at: string, gloss: VoiceGloss) => void;
-  onClosePick: () => void;
+  onClosePick: (refocus?: boolean) => void;
   onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
@@ -2318,7 +2372,7 @@ const TranscriptRow = memo(function TranscriptRow({
   trLabel: string;
   showTr: boolean;
   onPick: (at: string, gloss: VoiceGloss) => void;
-  onClosePick: () => void;
+  onClosePick: (refocus?: boolean) => void;
   onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
 }) {
   if (m.role === "learner") {
@@ -2342,28 +2396,17 @@ const TranscriptRow = memo(function TranscriptRow({
   return (
       <li className="flex flex-col gap-1">
         {m.lines.map((l, j) => (
-          <div key={j} data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
+          <Fragment key={j}>
+          <div data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
             <SpeakerCritter speaker={l.speaker} size={30} />
             <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
-            <span className="min-w-0 max-w-[72ch] flex-1 text-fg [overflow-wrap:anywhere]">
+            <span className="min-w-0 max-w-[72ch] flex-1 text-fg break-words">
               {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                 <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
                   {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
                   {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
                 </span>
               ))}
-              {picked?.at === `${i}:${j}` && (
-                <span className="mt-1.5 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg" role="status" data-testid="voice-gloss">
-                  <span className="flex-1">
-                    <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
-                    <span className="text-fg-3"> — </span>
-                    {picked.gloss.meaning}
-                  </span>
-                  <button type="button" className="-my-0.5 grid size-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={onClosePick}>
-                    ×
-                  </button>
-                </span>
-              )}
             </span>
             {/* A fixed slot for the translate button, so every line's ▶
                 sits in the same column whether it has one or not; none at
@@ -2391,6 +2434,27 @@ const TranscriptRow = memo(function TranscriptRow({
               ▶
             </button>
           </div>
+          {/* The definition under the line, the row's full width on a phone
+              (under the text column from sm up), and after the line's
+              controls in the DOM, so Tab goes opener → card. Escape or ×
+              from the keyboard closes it and puts focus back on its opener. */}
+          {picked?.at === `${i}:${j}` && (
+            <div
+              className="mx-2 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg sm:ml-[8.5rem] sm:max-w-[72ch]"
+              role="status"
+              data-testid="voice-gloss"
+            >
+              <span className="min-w-0 flex-1 break-words">
+                <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
+                <span className="text-fg-3"> — </span>
+                {picked.gloss.meaning}
+              </span>
+              <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={(e) => onClosePick(e.detail === 0)}>
+                ×
+              </button>
+            </div>
+          )}
+          </Fragment>
         ))}
       </li>
   );

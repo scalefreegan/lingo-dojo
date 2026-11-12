@@ -956,7 +956,7 @@ test("parseCast strict table: the age word right after the tag, else no recast",
     // [after "CAST: CHARACTER-F ", age, who (undefined = don't check)]
     ["old, Doña Carmen, the fruit vendor", "old", "Doña Carmen, the fruit vendor"],
     ["OLD, Doña Carmen", "old", "Doña Carmen"],
-    ["old Doña Carmen", "old", "Doña Carmen"],
+    ["old Doña Carmen", "", undefined],
     ["old,Doña Carmen", "old", "Doña Carmen"],
     ["old; Doña Carmen", "old", "Doña Carmen"],
     ["old—Doña Carmen", "old", "Doña Carmen"],
@@ -1060,4 +1060,60 @@ test("timing and CAST parsing stay fast on hostile marks", () => {
   const marks = ["<pause a" + "1".repeat(78) + ">", "<pause " + "1".repeat(78) + ">", "<pause " + "1.".repeat(39) + ">", "<pause" + " ".repeat(79) + "1>"];
   for (const m of marks) fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `${m} NARRATOR-F: x`).join("\n")), 400);
   fast(() => parseCast(`CAST: CHARACTER-F ${"aged ".repeat(200000)}`));
+});
+
+/* ------------------------- round 13: written first ------------------------- */
+
+test("parseCast strict: the age word must end at punctuation or the line's end", () => {
+  const cases = [
+    ["middle schooler, Beto", ""], ["middle child, Ana", ""], ["middle-school teacher", ""],
+    ["old man's daughter, Lucía", ""], ["old man’s daughter, Lucía", ""], ["young man's grandmother", ""],
+    ["kid brother", ""], ["senior manager", ""], ["child psychologist", ""], ["child-minder", ""],
+    ["old-fashioned shopkeeper", ""], ["old/elderly, Don Pedro", ""], ["aged 7-10, kids", ""],
+    ["young.", "young"], ["old. Doña Carmen", "old"], ["*old*, Doña Carmen", "old"], ["**old**, Doña Carmen", "old"],
+    ["_old_, Doña Carmen", "old"], ["old , Doña Carmen", "old"], ["old", "old"],
+  ];
+  for (const [after, age] of cases) assert.equal(parseCast(`CAST: CHARACTER-F ${after}`)[0]?.age ?? "", age, after);
+  assert.equal(parseCast("CAST: CHARACTER-F old. Doña Carmen")[0].who, "Doña Carmen");
+  assert.equal(parseCast("CAST: CHARACTER-F *old*, Doña Carmen")[0].who, "Doña Carmen");
+});
+
+test("CAST lines replay and read back for every age", () => {
+  for (const age of ["child", "young", "middle", "old"]) {
+    const prompt = voiceTurnPrompt([{ role: "master", lines: parseVoiceReply("CHARACTER-F: <t>Hola</t>"), castNotes: [{ slot: "character:female", age, who: "Ana" }] }], "x");
+    const line = prompt.split("\n").find((l) => l.startsWith("CAST:"));
+    assert.deepEqual(parseCast(line), [{ slot: "character:female", age, who: "Ana" }], line);
+  }
+});
+
+test("timing strict: a long note, or <t> inside it, is still a mark and never spoken", () => {
+  const note = "while she slowly counts out the change, twenty pesos in small coins, one by one, and smiles at you";
+  for (const mark of [`<pause 1.5 ${note}>`, "<pause 1.5 while she weighs <t>los jitomates</t>>", `<pause ${note}>`]) {
+    const lines = parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Aquí tiene</t>`);
+    assert.deepEqual(lines.map((l) => [l.speaker, l.text]), [["narrator", "Hi"], ["character", "Aquí tiene"]], mark);
+  }
+  assert.equal(parseVoiceReply(`NARRATOR-F: Hi\n<pause 1.5 ${note}> CHARACTER-F: <t>Hola</t>`)[1].gap, 1.5);
+});
+
+test("timing strict: a decimal running into a letter is no length, not a truncated one", () => {
+  for (const mark of ["<pause 1.5m>", "<pause 1.5sek>", "<pause 1.5x>", "<pause 0.5min>", "<pause 2x>"]) {
+    assert.equal(parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`)[1].gap ?? null, null, mark);
+  }
+});
+
+test("hidden lines stay hidden behind an italic mark or a * bullet", () => {
+  for (const pre of ["*<pause 1>* ", "_<pause 1>_ ", "* ", "* <pause 1> "]) {
+    const reply = `NARRATOR-F: Hi\n${pre}GLOSS: hola = hi\n${pre}CAST: CHARACTER-F old, Ana`;
+    assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["Hi"], pre);
+    assert.deepEqual(parseGlosses(reply), [{ term: "hola", meaning: "hi" }], pre);
+    assert.equal(parseCast(reply)[0]?.age, "old", pre);
+  }
+});
+
+test("a * bullet before a tag is a bullet, and bold after the tag stays in the text", () => {
+  assert.deepEqual(parseVoiceReply("NARRATOR-F: Hi\n* CHARACTER-F: <t>Hola</t>").map((l) => [l.speaker, l.text]), [["narrator", "Hi"], ["character", "Hola"]]);
+  const l = parseVoiceReply("CHARACTER-F: **Hola** *waves* adiós")[0];
+  assert.equal(l.speaker, "character");
+  assert.doesNotMatch(l.text, /waves/, "a stage direction is never spoken");
+  assert.equal(parseVoiceReply("**CHARACTER-F:** <t>Hola</t>")[0].text, "Hola");
 });
