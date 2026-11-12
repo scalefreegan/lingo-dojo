@@ -73,7 +73,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
   for a pause). The length is the number the mark starts with: `<pause 1.5>`,
   `<pause1.5>`, `<pause: 1.5>`, `<overlap -0.4>`, with an optional unit
-  (`2s`, `800ms`, `500 milisegundos`) and any note after it. A mark that
+  (`2s`, `800ms`, `500 milisegundos`) and any note after it, of any length,
+  `<t>` marks included. A mark that
   doesn't start with a number ("<pause while she counts 20 pesos>") is an
   ordinary pause; either way it is never spoken, bold or not. The server resolves each line's `pauseMs`
   (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
@@ -177,7 +178,7 @@ later casts skip it, for the rest of the server's run.
 `parseCast`) whenever someone speaks for the first time or a different
 person takes over a voice tag: `CAST: CHARACTER-F old, Doña Carmen, the
 fruit vendor`. The age is one of child, young, middle-aged or old right
-after the tag (also read: "elderly", "middle age", "aged 70", "7-year-old";
+after the tag, followed by a comma (or other punctuation, or the line's end) (also read: "elderly", "middle age", "aged 70", "7-year-old";
 under 13 a child, under 30 young, under 60 middle-aged). Only that place is
 read: a free description ("an elderly woman", "the old man's daughter")
 was misread too often, so a line without the word there is ignored and the

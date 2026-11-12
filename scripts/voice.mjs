@@ -245,7 +245,7 @@ export function voiceTurnPrompt(history, message) {
 
 // `NARRATOR:`, `CHARACTER-F:`, `**Character (M):**`, `SIDEKICK/woman:` — the
 // tag, then an optional gender, in whatever punctuation the model reached for.
-const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
+const TAG_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPER)(?:\s*[-/(]\s*(F|M|FEMALE|MALE|WOMAN|MAN)\s*\)?)?\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*/i;
 
 /** A timing mark: `<pause 1.5>` waits that many seconds before the line;
  *  `<overlap 0.4>` starts it that much before the previous one ends (people
@@ -259,7 +259,11 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
 // see timingSeconds ("1.5", ".5", "1,5", or milliseconds: "800ms", "500
 // milliseconds", "1,500ms"). Bounded so it can't run away on a long line, but wide enough
 // for a mark with a note ("<pause 1.5 seconds while she weighs them>").
-const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])([^<>\n]{0,80})>/gi;
+// The note may be long and may hold <t> marks ("<pause 1.5 while she weighs
+// <t>los jitomates</t>>"); a mark that isn't matched would be read out with
+// the tag after it. Each step takes one character or one whole <t>/</t>, so
+// matching stays linear.
+const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*t\s*>){0,400})>/gi;
 const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|msegs?";
 const S_UNIT = "s|secs?|seconds?|segundos?|segs?";
 // The length is the number at the start of the mark, the format the adapter
@@ -269,7 +273,7 @@ const S_UNIT = "s|secs?|seconds?|segundos?|segs?";
 // while she counts to 10>", "<pause for 2>") is an ordinary pause: a guess
 // at a number inside a note was wrong as often as right. Digit runs are
 // bounded so a hostile mark can't make it backtrack.
-const TIMING_LEAD = new RegExp(String.raw`^[ \t:=~+\-–—]*(\d{0,6}[.,]?\d{1,6})\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?(?![\p{L}\d])`, "iu");
+const TIMING_LEAD = new RegExp(String.raw`^[ \t:=~+\-–—]*(\d{0,6}[.,]?\d{1,6})\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?(?![\p{L}\d]|[.,]\d)`, "iu");
 /** Seconds from a timing mark's inside (never negative: an overlap's sign
  *  is its word), or null when it doesn't start with a length. */
 function timingSeconds(inside) {
@@ -415,14 +419,18 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // matching (metaRest), so every optional piece below is unambiguous and
 // neither a line of spaces nor a run of "**<pause 1> " can make it backtrack.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const TIMING_MARKS = `(?:<[ ]?(?:${ci("pausa")}|${ci("pause")}|${ci("overlap")})[^<>]{0,80}> ?)*`;
-const META_TAG = `^(?:[-•] )?${TIMING_MARKS}(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?${TIMING_MARKS}`;
+const TIMING_MARKS = `(?:<[ ]?(?:${ci("pausa")}|${ci("pause")}|${ci("overlap")})(?:[^<>]|</?[ ]?[tT][ ]?>){0,400}> ?)*`;
+const META_TAG = `^(?:[-•*] )?${TIMING_MARKS}(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?${TIMING_MARKS}`;
 const metaRe = (label) => new RegExp(`${META_TAG}${label} ?: ?`);
 /** The text after a shown-not-spoken label, or null when `rawLine` isn't
  *  that line. Matched on the line's trimmed start so leading spaces never
  *  reach the pattern. */
 function metaRest(re, rawLine) {
-  const line = squeeze(String(rawLine).replace(/\*\*/g, "")).trimStart();
+  // Bold anywhere, and italics hugging a timing mark ("*<pause 1>* GLOSS:").
+  const line = squeeze(String(rawLine).replace(/\*\*/g, ""))
+    .replace(/[*_]+(?=<\s?(?:pausa|pause|overlap))/gi, "")
+    .replace(/(<\s?(?:pausa|pause|overlap)[^<>]{0,400}>)[*_]+/gi, "$1")
+    .trimStart();
   const m = line.slice(0, 200).match(re);
   return m ? line.slice(m[0].length) : null;
 }
@@ -519,7 +527,11 @@ const ageForYears = (n) => (n < 13 ? "child" : n < 30 ? "young" : n < 60 ? "midd
 // ("an elderly woman", "the old man's daughter") is not read for an age,
 // because every reading of free text misread some other wording. A line
 // without one is ignored, and the slot keeps the voice it has.
-const SEP = String.raw`(?=$|[\s,;:|—–\-(/])`;
+// The age word ends where the format puts punctuation (or the line ends):
+// "old, Doña Carmen", "old; …", "old — …", "old (70s), …", "young.". Not
+// before a plain space or a hyphen, so "old man's daughter", "kid brother",
+// "middle schooler" and "old-fashioned" are never ages.
+const SEP = String.raw`(?=\s*(?:$|[,;:|—–(.])|\s+-\s)`;
 const CAST_AGE_WORD = new RegExp(String.raw`^(child|kid|young|teen|teenage|teenager|middle[\s-]aged?|middle|old|elderly|senior)${SEP}`, "i");
 const CAST_AGED = new RegExp(String.raw`^aged\s+(?:about\s+|around\s+|~\s*)?([a-z]+(?:-[a-z]+)?|\d{1,3})\+?${SEP}`, "i");
 const CAST_YEARS = new RegExp(String.raw`^([a-z]+(?:-[a-z]+)?|\d{1,3})[\s-]years?[\s-]old${SEP}`, "i");
@@ -548,7 +560,9 @@ export function parseCast(text, mode = "adult") {
   for (const rawLine of String(text).split(/\r?\n/)) {
     const rest = metaRest(CAST_RE, rawLine);
     if (rest == null) continue;
-    const body = rest.replace(/\*\*/g, "").trim();
+    // Bold and italics off ("*old*, Doña Carmen"); an underscore inside a
+    // word stays.
+    const body = rest.replace(/\*+/g, "").replace(/(?<![\p{L}\d])_+|_+(?![\p{L}\d])/gu, "").trim();
     const t = body.match(CAST_TAG_RE);
     if (!t || !t[2]) continue;
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
@@ -558,7 +572,7 @@ export function parseCast(text, mode = "adult") {
     if (!age) continue;
     // Who they are: what follows the age, after any comma, dash or
     // semicolon ("old—Doña Carmen", "old; Doña Carmen").
-    const named = (tail + after.slice(200)).replace(/^[\s,;:|—–\-]+/, "");
+    const named = (tail + after.slice(200)).replace(/^[\s,;:|—–\-.]+/, "");
     const who = oneLine(named).slice(0, CAST_WHO_CHARS);
     const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
     out.delete(slot);
@@ -709,7 +723,10 @@ export function parseVoiceReply(text, mode = "adult") {
       const tag = m[1].toLowerCase() === "helper" ? "sidekick" : m[1].toLowerCase();
       current = allowed.has(tag) ? tag : "narrator";
       gender = m[2] ? GENDER_OF[m[2].toLowerCase()] : null;
-      line = raw.slice(m[0].length);
+      // "**NARRATOR-F:** Hola": the bold after the colon closes the tag's. In
+      // "NARRATOR-F: **Hola**" it opens the text's, so it stays with the text.
+      const opensBold = /\*\*\s*$/.test(m[0]) && !/^\s*(?:[-•*]\s+)?\*\*/.test(raw);
+      line = raw.slice(opensBold ? m[0].replace(/\*\*\s*$/, "").length : m[0].length);
       // A new speaker starts outside any wrap: a <t> the previous speaker
       // never closed must not turn this one's English into Spanish.
       inside = false;
