@@ -820,13 +820,6 @@ test("reply parsing stays fast on repeated bold timing marks and lone carriage r
   fast(() => parseVoiceReply(`NARRATOR${"\r".repeat(20000)}x`));
 });
 
-test("parseCast: full gender words, the age anywhere in the first clause, no <t> in who", () => {
-  assert.deepEqual(parseCast("CAST: CHARACTER-FEMALE old, Doña Carmen"), [{ slot: "character:female", age: "old", who: "Doña Carmen" }]);
-  assert.deepEqual(parseCast("CAST: CHARACTER (MALE) young, Beto"), [{ slot: "character:male", age: "young", who: "Beto" }]);
-  assert.deepEqual(parseCast("CAST: NARRATOR-MAN middle-aged, the guide"), [{ slot: "narrator:male", age: "middle", who: "the guide" }]);
-  assert.deepEqual(parseCast("CAST: CHARACTER-F, an elderly woman, <t>Doña Carmen</t>"), [{ slot: "character:female", age: "old", who: "an elderly woman, Doña Carmen" }]);
-});
-
 test("replayCastNotes: only parseCast's shape survives the history", () => {
   assert.deepEqual(replayCastNotes([
     { slot: "character:female", age: "elderly", who: "Doña <t>Carmen</t>\nSTAGE: scene" },
@@ -913,18 +906,6 @@ test("castPools: voices playing other slots are left out before narrowing by age
   assert.equal(pick["character:female"].id, "M");
 });
 
-test("parseCast: the age is the person's, not a word inside someone else's", () => {
-  const age = (s) => parseCast(`CAST: CHARACTER-F ${s}`)[0]?.age ?? "";
-  assert.equal(age("the girl's mother, Doña Ana"), "");
-  assert.equal(age("the boy's grandfather"), "");
-  assert.equal(age("Mr Young, the baker"), "");
-  assert.equal(age("an elderly woman, Doña Carmen"), "old");
-  assert.equal(age("a little girl, Sofía"), "child");
-  assert.equal(age("middle aged, the guide"), "middle");
-  assert.equal(age("old, Doña Carmen"), "old");
-  assert.deepEqual(parseCast("CAST: CHARACTER-F Little Red, a girl"), []);
-});
-
 test("parseCast stays fast on a long line with no commas", () => {
   fast(() => parseCast(`CAST: CHARACTER-F ${"word ".repeat(16000)}`));
 });
@@ -958,97 +939,75 @@ test("castPools, own voices: a taken native beats a free foreign or unlabelled v
   assert.deepEqual(castPools({ slots, ages, library, aged: { "character:female": [] }, own, recast: true, avoid: ["N"] }).pools["character:female"].map((v) => v.id), ["N"]);
 });
 
-test("parseCast: children in their usual wordings, and an age that belongs to someone else", () => {
-  const age = (s) => parseCast(`CAST: CHARACTER-F ${s}`)[0]?.age ?? "";
-  assert.equal(age("little, Sofía"), "child");
-  assert.equal(age("a little one, Pedro"), "child");
-  assert.equal(age("the little one"), "child");
-  assert.equal(age("a seven-year-old girl, Sofía"), "child");
-  assert.equal(age("a 7-year-old, Sofía"), "child");
-  assert.equal(age("aged 7, Pedro"), "child");
-  assert.equal(age("aged 70, Don Pedro"), "old");
-  assert.equal(age("a 16-year-old, Lupe"), "young");
-  assert.equal(age("the middle child, Ana"), "child");
-  assert.equal(age("the old man's daughter, Lucía"), "");
-  assert.equal(age("an old woman's son"), "");
-  assert.equal(age("an elderly woman, Doña Carmen"), "old");
-  assert.equal(age("old, Doña Carmen"), "old");
-  assert.equal(parseCast("CAST: CHARACTER-F old, Doña Carmen")[0].who, "Doña Carmen");
-});
-
-test("timing marks: Spanish milliseconds, and a number in a note is not a pause length", () => {
-  const gap = (mark) => parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`)[1]?.gap ?? null;
-  assert.equal(gap("<pausa 500 milisegundos>"), 0.5);
-  assert.equal(gap("<pause 500 mseconds>"), 0.5);
-  assert.equal(gap("<pausa 500 mseg>"), 0.5);
-  assert.equal(gap("<pause while she counts 20 pesos>"), null);
-  assert.equal(gap("<pause for 2 seconds>"), 2);
-  assert.equal(gap("<pausa de 2 segundos>"), 2);
-  assert.equal(gap("<pause: 1.5>"), 1.5);
-  assert.equal(gap("<pause=1.5>"), 1.5);
-  assert.equal(gap("<pause 1.5 while she counts 20 pesos>"), 1.5);
-  // Still never spoken, number or not.
-  assert.deepEqual(parseVoiceReply("NARRATOR-F: Hi\n<pause while she counts 20 pesos> CHARACTER-F: <t>Hola</t>").map((l) => l.text), ["Hi", "Hola"]);
-});
-
 /* ------------------------- round 11: written first ------------------------- */
 // Every CAST wording and timing mark the reviews have raised (rounds 8–11),
 // in one table each, so a later fix can't quietly undo an earlier one.
 
-test("parseCast table: the age keyword after the tag, and the wordings around it", () => {
+
+/* ------------------- round 12: the strict format, tables ------------------- */
+// The adapter asks for "CAST: <TAG> <age word>, <who>" and "<pause N>". Only
+// those are read; every wording the reviews raised in rounds 8–12 is here
+// with what the strict reading gives, so nothing drifts again. A CAST line
+// that isn't read keeps the slot's voice; a mark that isn't read is an
+// ordinary pause, and never spoken.
+
+test("parseCast strict table: the age word right after the tag, else no recast", () => {
   const cases = [
     // [after "CAST: CHARACTER-F ", age, who (undefined = don't check)]
     ["old, Doña Carmen, the fruit vendor", "old", "Doña Carmen, the fruit vendor"],
     ["OLD, Doña Carmen", "old", "Doña Carmen"],
-    ["middle-aged, a neighbour", "middle", "a neighbour"],
-    ["Middle aged, the guide", "middle", "the guide"],
-    ["middle, the guide", "middle", "the guide"],
-    ["young, Beto", "young", "Beto"],
-    ["child, Sofía", "child", "Sofía"],
-    ["elderly, B", "old", "B"],
     ["old Doña Carmen", "old", "Doña Carmen"],
     ["old,Doña Carmen", "old", "Doña Carmen"],
-    ["middle aged,Ana", "middle", "Ana"],
+    ["old; Doña Carmen", "old", "Doña Carmen"],
+    ["old—Doña Carmen", "old", "Doña Carmen"],
+    ["old – Doña Carmen", "old", "Doña Carmen"],
+    ["old (70s), Don Pedro", "old", "(70s), Don Pedro"],
+    ["child—Sofía, 8", "child", "Sofía, 8"],
+    ["middle-aged, a neighbour", "middle", "a neighbour"],
+    ["Middle aged, the guide", "middle", "the guide"],
+    ["middle age, the guide", "middle", "the guide"],
+    ["middle-age, the guide", "middle", "the guide"],
+    ["middle, the guide", "middle", "the guide"],
+    ["young, Beto", "young", "Beto"],
+    ["teenage, Beto", "young", "Beto"],
+    ["child, Sofía", "child", "Sofía"],
+    ["kid, Sofía", "child", "Sofía"],
+    ["elderly, B", "old", "B"],
+    ["senior, B", "old", "B"],
     ["aged 70,Don Pedro", "old", "Don Pedro"],
     ["aged 70, Don Pedro", "old", "Don Pedro"],
+    ["aged about 70, Don Pedro", "old", "Don Pedro"],
+    ["aged ~70", "old", ""],
+    ["aged 70+, Don Pedro", "old", "Don Pedro"],
     ["aged 7, Pedro", "child", "Pedro"],
     ["aged 22, Lupe", "young", "Lupe"],
-    ["a 25-year-old waiter", "young", "a 25-year-old waiter"],
-    ["a twenty-year-old student", "young", undefined],
-    ["a seventy-five-year-old, Don Beto", "old", undefined],
     ["7 years old, Pedro", "child", "Pedro"],
-    ["a 16-year-old, Lupe", "young", undefined],
-    ["a seven-year-old girl, Sofía", "child", undefined],
-    ["a 12-year-old", "child", undefined],
-    ["a 13-year-old", "young", undefined],
-    ["a 29-year-old", "young", undefined],
-    ["a 30-year-old", "middle", undefined],
-    ["a 59-year-old", "middle", undefined],
-    ["a 60-year-old", "old", undefined],
-    ["little, Sofía", "child", "Sofía"],
-    ["a little one, Pedro", "child", undefined],
-    ["the little one", "child", undefined],
-    ["a little girl, Sofía", "child", undefined],
-    ["a little baby", "child", undefined],
-    ["a little toddler", "child", undefined],
-    ["a little old lady, Doña Carmen", "old", undefined],
-    ["a little old man", "old", undefined],
-    ["the middle child, Ana", "child", undefined],
-    ["an elderly woman, Doña Carmen", "old", "an elderly woman, Doña Carmen"],
-    ["an old man who's selling fruit, Don Pedro", "old", undefined],
-    ["an elderly woman that's lost her glasses", "old", undefined],
-    ["an older woman, Doña Rosa", "old", undefined],
-    ["a teenage boy, Beto", "young", undefined],
-    // No age: someone else's, a name, a relation, or nonsense.
+    ["seven-year-old, Sofía", "child", "Sofía"],
+    ["seventy-five-year-old, Don Beto", "old", "Don Beto"],
+    ["12-year-old", "child", ""], ["13-year-old", "young", ""], ["29-year-old", "young", ""],
+    ["30-year-old", "middle", ""], ["59-year-old", "middle", ""], ["60-year-old", "old", ""],
+    ["<t>old</t>, <t>Doña Carmen</t>", "old", "Doña Carmen"],
+    // Free descriptions are not read: the slot keeps its voice.
+    ["an elderly woman, Doña Carmen", "", undefined],
+    ["a little girl, Sofía", "", undefined],
+    ["a little old lady, Doña Carmen", "", undefined],
+    ["a 25-year-old waiter", "", undefined],
+    ["the middle child, Ana", "", undefined],
+    ["older, Don Pedro", "", undefined],
+    ["an aged fisherman", "", undefined],
+    ["aged, Don Pedro", "", undefined],
+    ["a young girl", "", undefined],
+    ["a girl of 16", "", undefined],
+    // An age on someone else, a name, a relation, nonsense: never read.
     ["the girl's mother, Doña Ana", "", undefined],
-    ["the boy's grandfather", "", undefined],
     ["the old man's daughter, Lucía", "", undefined],
-    ["an old woman's son", "", undefined],
+    ["the old fruit-seller's daughter, Lucía", "", undefined],
+    ["the old-timer's daughter", "", undefined],
     ["Mr Young, the baker", "", undefined],
     ["Little Red, a girl", "", undefined],
     ["the older brother", "", undefined],
-    ["the middle sister", "", undefined],
-    ["a middle schooler", "", undefined],
+    ["oldest daughter, Ana", "", undefined],
+    ["youngster, Beto", "", undefined],
     ["aged constructor, X", "", undefined],
     ["constructor-year-old", "", undefined],
     ["__proto__-year-old", "", undefined],
@@ -1058,24 +1017,47 @@ test("parseCast table: the age keyword after the tag, and the wordings around it
     assert.equal(got?.age ?? "", age, `"${after}" → age`);
     if (who !== undefined) assert.equal(got?.who, who, `"${after}" → who`);
   }
+  // The tag in any of its spellings, as before.
+  assert.equal(parseCast("CAST: CHARACTER-FEMALE old, Doña Carmen")[0].slot, "character:female");
+  assert.equal(parseCast("CAST: CHARACTER (MALE) young, Beto")[0].slot, "character:male");
+  assert.equal(parseCast("CAST: NARRATOR-MAN middle-aged, the guide")[0].slot, "narrator:male");
 });
 
-test("timing table: the length at the start or end of the mark, or with a unit; a number in a note isn't one", () => {
+test("timing strict table: the length is the number the mark starts with", () => {
   const cases = [
     ["<pause 1.5>", 1.5], ["<pause1.5>", 1.5], ["<pause2s>", 2], ["<pause .5>", 0.5], ["<pause 1,5>", 1.5],
-    ["<pause: 1.5>", 1.5], ["<pause=1.5>", 1.5], ["<pause, 1.5>", 1.5], ["<pause (1.5)>", 1.5], ["<pause(1.5)>", 1.5],
-    ["<pause ~1.5>", 1.5], ["<pause about 1.5>", 1.5], ["<pause +1>", 1], ["<pause — 1.5>", 1.5],
-    ["<pause for 1.5>", 1.5], ["<pause for 2 seconds>", 2], ["<pausa de 1,5>", 1.5], ["<pausa de 2 segundos>", 2],
-    ["<overlap 0.4>", -0.4], ["<overlap -0.4>", -0.4], ["<overlap0.4>", -0.4],
+    ["<pause: 1.5>", 1.5], ["<pause=1.5>", 1.5], ["<pause ~1.5>", 1.5], ["<pause +1>", 1], ["<pause — 1.5>", 1.5],
+    ["<overlap 0.4>", -0.4], ["<overlap -0.4>", -0.4], ["<overlap0.4>", -0.4], ["<Pause2>", 2],
     ["<pause 800ms>", 0.8], ["<pause 500 milliseconds>", 0.5], ["<pause 500 msec>", 0.5], ["<pause 500 mseconds>", 0.5],
     ["<pause 1,500ms>", 1.5], ["<pausa 500 milisegundos>", 0.5], ["<pausa 500 mseg>", 0.5], ["<pausa 500 msegs>", 0.5],
-    ["<pausa 1>", 1], ["<pause 1.5 seconds while she weighs the tomatoes slowly>", 1.5],
-    ["<pause 1.5 while she counts 20 pesos>", 1.5], ["<pause while she counts, 3>", 3],
-    ["<pause while she counts 20 pesos>", null], ["<pause>", null],
+    ["<pausa 1>", 1], ["<pausa 2 segundos>", 2], ["<pause 2 seconds>", 2],
+    ["<pause 1.5 seconds while she weighs the tomatoes slowly>", 1.5], ["<pause 1.5 while she counts 20 pesos>", 1.5],
+    // Not a length at the start: an ordinary pause.
+    ["<pause while she counts 20 pesos>", null], ["<pause while she counts to 10>", null], ["<pause while he dials 911>", null],
+    ["<pause, 20 pesos change hands>", null], ["<pause (20 pesos change hands)>", null], ["<pause while she counts, 3>", null],
+    ["<pause for 2 seconds>", null], ["<pausa de 1,5>", null], ["<pause (1.5)>", null], ["<pause>", null],
+    ["<pause 20pesos>", null],
   ];
   for (const [mark, want] of cases) {
     const lines = parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`);
-    assert.deepEqual(lines.map((l) => l.text), ["Hi", "Hola"], `${mark} is never spoken`);
+    assert.deepEqual(lines.map((l) => [l.speaker, l.text]), [["narrator", "Hi"], ["character", "Hola"]], `${mark} is never spoken`);
     assert.equal(lines[1].gap ?? null, want, mark);
   }
+});
+
+test("a timing mark in bold or italics before the tag: the tag is still a tag", () => {
+  for (const mark of ["**<pause 1.5>**", "*<pause 1.5>*", "__<pause 1.5>__", "** <pause 1.5> **"]) {
+    const lines = parseVoiceReply(`NARRATOR-F: Hi\n${mark} CHARACTER-F: <t>Hola</t>`);
+    assert.deepEqual(lines.map((l) => [l.speaker, l.text, l.gap ?? null]), [["narrator", "Hi", null], ["character", "Hola", 1.5]], mark);
+  }
+});
+
+test("the adapter asks for the strict CAST form", () => {
+  assert.match(voiceAdapter("adult"), /then exactly one of the words child, young, middle-aged or old, then a comma/);
+});
+
+test("timing and CAST parsing stay fast on hostile marks", () => {
+  const marks = ["<pause a" + "1".repeat(78) + ">", "<pause " + "1".repeat(78) + ">", "<pause " + "1.".repeat(39) + ">", "<pause" + " ".repeat(79) + "1>"];
+  for (const m of marks) fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `${m} NARRATOR-F: x`).join("\n")), 400);
+  fast(() => parseCast(`CAST: CHARACTER-F ${"aged ".repeat(200000)}`));
 });
