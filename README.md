@@ -1,5 +1,7 @@
 # Lingo Dojo
 
+![Lingo Dojo demo](screenshots/demo.gif)
+
 A composable prompt-pack builder for spoken language practice. You pick a scenario
 ("tasting mezcal at a palenque outside Santiago Matatlán"), choose the lesson units
 you want (how the session opens, warm-up drills, how hard it pushes you, which
@@ -37,14 +39,15 @@ The embedded agent uses your Claude Code login. No API key is involved.
 
 ## Using it
 
-- **Left column**: pick a scenario or type a quick one; override the target language,
-  variant, or level for this pack; add free notes for the dojo master.
-- **Middle**: one card per slot. Radios for pick-one slots, checkboxes for pick-any.
-  Units marked `default: true` start selected.
-- **Right**: the assembled prompt, live, with warnings and a word/token readout.
-  **Copy** puts it on the clipboard. **Export** writes `exports/<id>.md`. **Save**
-  stores the pack as `content/packs/<date>-<slug>.yaml`; saved packs can be loaded
-  or cloned.
+- **Scene** tab: pick a scenario (search, category filters, collapsible collections)
+  or write a quick one. The top bar's profile pill sets the target language, variant,
+  and level.
+- **Customize** tab: one expandable card per slot. Radios for pick-one slots,
+  checkboxes for pick-any. Units marked `default: true` start selected.
+- **Go** tab: the assembled prompt with a word/token readout and a note box for the
+  dojo master. **Copy** puts it on the clipboard. **Export file** writes
+  `exports/<id>.md`. **Save pack** stores it as `content/packs/<date>-<slug>.yaml`;
+  saved packs can be loaded or cloned from the Library.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
   language ("add a corrections unit that only flags gender agreement"). New files
   appear in the slots as soon as the commit lands.
