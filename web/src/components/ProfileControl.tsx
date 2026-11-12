@@ -62,7 +62,9 @@ export default function ProfileControl({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || e.isComposing) return;
+      // Handled: nothing else (an open definition on Go) takes this Escape.
+      e.preventDefault();
       setOpen(false);
       setSaveMessage(null);
       pillRef.current?.focus();

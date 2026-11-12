@@ -261,9 +261,15 @@ const TAG_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELP
 // for a mark with a note ("<pause 1.5 seconds while she weighs them>").
 // The note may be long and may hold <t> marks ("<pause 1.5 while she weighs
 // <t>los jitomates</t>>"); a mark that isn't matched would be read out with
-// the tag after it. Each step takes one character or one whole <t>/</t>, so
-// matching stays linear.
-const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*t\s*>){0,400})>/gi;
+// the tag after it. Each step takes one character or one whole <t>/</t> (the
+// two can't start on the same character, and a scan stops at any other <),
+// so matching stays linear with no length cap.
+const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*t\s*>)*)>/gi;
+// A mark with any italics or bold hugging it, for taking marks out of a
+// line before it's matched as a hidden line. The lookbehind starts a match
+// only at the start of a run of * or _, so a long run of them (a
+// fill-in-the-blank "____") can't make it backtrack.
+const MARK_OUT = new RegExp(String.raw`(?<![*_])[*_]*` + TIMING_RE.source + String.raw`[*_]*`, "gi");
 const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|msegs?";
 const S_UNIT = "s|secs?|seconds?|segundos?|segs?";
 // The length is the number at the start of the mark, the format the adapter
@@ -419,18 +425,18 @@ export function splitLong(text, max = MAX_SEGMENT_CHARS) {
 // matching (metaRest), so every optional piece below is unambiguous and
 // neither a line of spaces nor a run of "**<pause 1> " can make it backtrack.
 const ci = (w) => [...w].map((c) => (/[a-z]/i.test(c) ? `[${c.toUpperCase()}${c.toLowerCase()}]` : c)).join("");
-const TIMING_MARKS = `(?:<[ ]?(?:${ci("pausa")}|${ci("pause")}|${ci("overlap")})(?:[^<>]|</?[ ]?[tT][ ]?>){0,400}> ?)*`;
-const META_TAG = `^(?:[-•*] )?${TIMING_MARKS}(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?${TIMING_MARKS}`;
+// Timing marks are taken out before matching (metaRest), so they need no
+// place here.
+const META_TAG = `^(?:[-•*] )?(?:(?:${["NARRATOR", "CHARACTER", "SIDEKICK", "HELPER"].map(ci).join("|")})(?: ?[-/(] ?(?:${["FEMALE", "WOMAN", "MALE", "MAN", "F", "M"].map(ci).join("|")}) ?\\)?)? ?: ?)?`;
 const metaRe = (label) => new RegExp(`${META_TAG}${label} ?: ?`);
 /** The text after a shown-not-spoken label, or null when `rawLine` isn't
  *  that line. Matched on the line's trimmed start so leading spaces never
  *  reach the pattern. */
 function metaRest(re, rawLine) {
-  // Bold anywhere, and italics hugging a timing mark ("*<pause 1>* GLOSS:").
-  const line = squeeze(String(rawLine).replace(/\*\*/g, ""))
-    .replace(/[*_]+(?=<\s?(?:pausa|pause|overlap))/gi, "")
-    .replace(/(<\s?(?:pausa|pause|overlap)[^<>]{0,400}>)[*_]+/gi, "$1")
-    .trimStart();
+  // Timing marks out first (with any italics hugging them, a note of any
+  // length, <t> inside it), the same grammar the spoken path uses; then
+  // bold anywhere.
+  const line = squeeze(String(rawLine).replace(MARK_OUT, " ").replace(/\*\*/g, "")).trimStart();
   const m = line.slice(0, 200).match(re);
   return m ? line.slice(m[0].length) : null;
 }

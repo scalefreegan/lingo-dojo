@@ -112,12 +112,18 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     pickOpener.current = null;
     if (refocus && to?.isConnected) to.focus();
   }, []);
-  // Escape closes an open definition, from its opener, its card or anywhere
-  // on the tab (nothing else on Go uses Escape).
+  // Escape closes an open definition from the transcript (its opener, its
+  // card) or with nothing focused, never from the answer box or another
+  // field, where it would pull focus away mid-typing. Not while an input
+  // method is composing (Escape cancels the composition), and not when
+  // something else (the profile popover) already handled it.
   useEffect(() => {
     if (!picked || !active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      const t = e.target;
+      const inTranscript = t instanceof Element && !!t.closest('[data-testid="voice-transcript"]');
+      if (!inTranscript && t !== document.body && t !== document.documentElement) return;
       e.preventDefault();
       closePick(true);
     };
@@ -866,24 +872,32 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     const isRetry = (x: string) => (drawFails.current.get(keys[x]) ?? 0) > 0;
     const fresh = all.filter((x) => !isRetry(x));
     const again = all.filter(isRetry);
-    if (fresh.length) startDraw(fresh, false, draw, keys);
-    if (again.length) startDraw(again, true, draw, keys);
+    const first = fresh.length ? startDraw(fresh, false, draw, keys) : undefined;
+    // The retry goes after the first draw, so its `avoid` holds the voice
+    // the first draw got (two concurrent draws could pick the same voice).
+    // A retry doesn't hold playback, so waiting costs nothing.
+    if (again.length) startDraw(again, true, draw, keys, first);
   }
 
   /** One /cast for `slotsToDraw` (see recast). */
-  function startDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>) {
-    if (!locale) return;
+  function startDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>, after?: Promise<void>): Promise<void> | undefined {
+    if (!locale) return undefined;
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
     // One deadline for the whole draw, the wait behind earlier draws for
     // the same tags included: lines never wait longer than CAST_TIMEOUT_MS.
-    const deadline = Date.now() + CAST_TIMEOUT_MS;
+    // (A retry queued after a first draw starts its clock once that lands.)
+    let deadline = Date.now() + CAST_TIMEOUT_MS;
     const left = () => deadline - Date.now();
     // Draws already out for these tags (someone else's): this one goes after
     // them, one at a time per tag, so it knows the voices they got.
     const ahead = slotsToDraw.map((x) => slotDraws.current.get(x)).filter((p): p is Promise<void> => !!p);
     const run = (async () => {
       try {
+        if (after) {
+          await after;
+          deadline = Date.now() + CAST_TIMEOUT_MS;
+        }
         if (ahead.length) {
           let timer: ReturnType<typeof setTimeout> | undefined;
           const late = new Promise<"late">((res) => (timer = setTimeout(() => res("late"), Math.max(0, left()))));
@@ -966,6 +980,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         if (slotDraws.current.get(slot) === run) slotDraws.current.delete(slot);
       }
     });
+    return run;
   }
 
   /** Hands-free: once the dojo master has finished, the mic opens again. */

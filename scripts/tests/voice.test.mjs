@@ -1117,3 +1117,28 @@ test("a * bullet before a tag is a bullet, and bold after the tag stays in the t
   assert.doesNotMatch(l.text, /waves/, "a stage direction is never spoken");
   assert.equal(parseVoiceReply("**CHARACTER-F:** <t>Hola</t>")[0].text, "Hola");
 });
+
+/* ------------------------- round 14: written first ------------------------- */
+
+test("hidden lines stay hidden behind any timing mark: italic, <t> in the note, a long note", () => {
+  const notes = ["*<pause 1 while she weighs <t>los jitomates</t>>* ", "_<pause 1 while she weighs <t>los jitomates</t>>_ ", `<pause 1 ${"x".repeat(185)}> `, `<pause 1 ${"x".repeat(600)}> `];
+  for (const pre of notes) {
+    const reply = `NARRATOR-F: Hi\n${pre}GLOSS: hola = hi\n${pre}CAST: CHARACTER-F old, Ana\n${pre}STAGE: scene`;
+    assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["Hi"], pre.slice(0, 40));
+    assert.deepEqual(parseGlosses(reply), [{ term: "hola", meaning: "hi" }], pre.slice(0, 40));
+    assert.equal(parseCast(reply)[0]?.age, "old", pre.slice(0, 40));
+    assert.equal(parseStage(reply, ["scene"]), "scene", pre.slice(0, 40));
+  }
+});
+
+test("a note of any length is still a mark, never spoken", () => {
+  const lines = parseVoiceReply(`NARRATOR-F: Hi\n<pause 1.5 ${"y".repeat(900)}> CHARACTER-F: <t>Hola</t>`);
+  assert.deepEqual(lines.map((l) => [l.speaker, l.text, l.gap ?? null]), [["narrator", "Hi", null], ["character", "Hola", 1.5]]);
+});
+
+test("runs of underscores or *_ never make the hidden-line patterns backtrack", () => {
+  fast(() => parseVoiceReply(`NARRATOR-F: Fill in: ${"_".repeat(40000)}`));
+  fast(() => parseVoiceReply(`NARRATOR-F: x ${"*_".repeat(20000)}`));
+  fast(() => parseGlosses(`${"_".repeat(40000)} GLOSS: a = b`));
+  fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `<pause ${"<t>".repeat(100)}`).join("\n")));
+});
