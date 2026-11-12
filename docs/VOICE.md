@@ -71,12 +71,11 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   The dojo master can set its own: `<pause 1.2>` before a line waits first
   (a vendor weighing tomatoes), and `<overlap 0.4>` starts it before the
   previous line ends (people cutting each other off; at most 1.5 s, up to 4 s
-  for a pause). Spellings vary: `<pause1.5>`, `<pause 2s>`, `<pause .5>`,
-  `<pause (1.5)>`, `<overlap -0.4>`, `<pause for 2 seconds>`, `<pausa de 1,5>`,
-  `<pause 800ms>`, `<pausa 500 milisegundos>`, or a note after the number.
-  The length is the number at the start of the mark, else one with a unit,
-  else the one that ends it; "<pause while she counts 20 pesos>" is an
-  ordinary pause, not 20 s. The server resolves each line's `pauseMs`
+  for a pause). The length is the number the mark starts with: `<pause 1.5>`,
+  `<pause1.5>`, `<pause: 1.5>`, `<overlap -0.4>`, with an optional unit
+  (`2s`, `800ms`, `500 milisegundos`) and any note after it. A mark that
+  doesn't start with a number ("<pause while she counts 20 pesos>") is an
+  ordinary pause; either way it is never spoken, bold or not. The server resolves each line's `pauseMs`
   (`scripts/voice.mjs` `linePauseMs`), and the player waits, or starts the
   next clip early with both playing. Segments within a line run back to back.
 - **Speak**: one call per segment; the browser plays one while the next is
@@ -178,10 +177,12 @@ later casts skip it, for the rest of the server's run.
 `parseCast`) whenever someone speaks for the first time or a different
 person takes over a voice tag: `CAST: CHARACTER-F old, Doña Carmen, the
 fruit vendor`. The age is one of child, young, middle-aged or old right
-after the tag; looser wordings are read too ("an elderly woman", "a little
-girl", "a seven-year-old", "aged 22": under 13 a child, under 30 young,
-under 60 middle-aged), but an age on someone else ("the old man's
-daughter") or a name ("Mr Young") is not the character's. The turn reply carries these as `castNotes`, and they go back
+after the tag (also read: "elderly", "middle age", "aged 70", "7-year-old";
+under 13 a child, under 30 young, under 60 middle-aged). Only that place is
+read: a free description ("an elderly woman", "the old man's daughter")
+was misread too often, so a line without the word there is ignored and the
+slot keeps its voice. Who they are is what follows, after a comma, dash or
+semicolon. The turn reply carries these as `castNotes`, and they go back
 in the replay. When a Random slot's voice is the wrong age, the browser
 recasts just that slot (`/cast` with `ages`, `slots` and `avoid`) before the
 turn plays: for ElevenLabs a library search filtered by age (young, middle

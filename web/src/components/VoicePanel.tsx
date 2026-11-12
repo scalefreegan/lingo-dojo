@@ -362,6 +362,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   // The latest draw by slot: a second person's draw for the same tag waits
   // for the first, so it can steer clear of the voice that one got.
   const slotDraws = useRef(new Map<string, Promise<void>>());
+  // A retry after a failed or timed-out draw runs in the background (lines
+  // play in the voice in use meanwhile); its voice waits here and is taken
+  // up at the next turn (recast), so a voice never changes mid-turn.
+  const retrying = useRef(new Map<string, Promise<void>>());
+  const deferred = useRef(new Map<string, { slot: string; held: HeldVoice }>());
   const castEpoch = useRef(0);
   const slots = reply?.slots[mode] ?? (["narrator:female", "narrator:male", "character:female", "character:male"] as VoiceSlot[]);
 
@@ -693,6 +698,8 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         castEpoch.current += 1;
         drawing.current.clear();
         slotDraws.current.clear();
+        retrying.current.clear();
+        deferred.current.clear();
         castRef.current = next;
         setCast(next);
         // The old voices belong to another provider or locale: forget them,
@@ -770,6 +777,15 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     const set = settingsRef.current?.voices[cur.provider]?.[cur.locale] ?? {};
     let cast = cur.cast;
     let fallbacks = cur.fallbacks;
+    // Retries that landed since the last turn: their voices start now.
+    for (const [key, d] of deferred.current) {
+      heldBy.current.set(key, d.held);
+      if (holder.current.get(d.slot) === key && cast[d.slot]) {
+        cast = { ...cast, [d.slot]: d.held.voice };
+        if (d.held.fallback) fallbacks = { ...fallbacks, [d.slot]: d.held.fallback };
+      }
+    }
+    deferred.current.clear();
     const draw: Record<string, VoiceAge> = {};
     const keys: Record<string, string> = {};
     for (const n of Object.values(wanted)) {
@@ -779,7 +795,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       const key = whoKey(n);
       // Already being drawn for (an earlier turn's draw still on its way):
       // their lines wait for that one, and it takes the slot when it lands.
-      if (drawing.current.get(key)) continue;
+      if (drawing.current.get(key) || retrying.current.get(key)) continue;
       const held = heldBy.current.get(key);
       if (holder.current.get(slot) !== key && held) {
         // Back in the scene: their voice again.
@@ -809,13 +825,26 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     if (!slotsToDraw.length) return;
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
+    // A retry (this person's draw failed before): lines don't wait for it.
+    const retry = slotsToDraw.some((x) => (drawFails.current.get(keys[x]) ?? 0) > 0);
+    // One deadline for the whole draw, the wait behind earlier draws for
+    // the same tags included: lines never wait longer than CAST_TIMEOUT_MS.
+    const deadline = Date.now() + CAST_TIMEOUT_MS;
+    const left = () => deadline - Date.now();
     // Draws already out for these tags (someone else's): this one goes after
     // them, one at a time per tag, so it knows the voices they got.
     const ahead = slotsToDraw.map((x) => slotDraws.current.get(x)).filter((p): p is Promise<void> => !!p);
     const run = (async () => {
       try {
-        if (ahead.length) await Promise.all(ahead);
+        if (ahead.length) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const late = new Promise<"late">((res) => (timer = setTimeout(() => res("late"), Math.max(0, left()))));
+          const won = await Promise.race([Promise.all(ahead), late]);
+          clearTimeout(timer);
+          if (won === "late") throw new DOMException("the draw ahead took too long", "TimeoutError");
+        }
         if (castEpoch.current !== epoch || !castRef.current) return;
+        if (left() <= 0) throw new DOMException("no time left for the draw", "TimeoutError");
         const base = castRef.current;
         // Taken: every other slot's voice and fallback, and the voices other
         // people have had with these tags (a draw that landed for someone
@@ -827,7 +856,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         const avoid = [...new Set([...others.map((x) => base.cast[x].id), ...others.map((x) => base.fallbacks?.[x]), ...theirs].filter((v): v is string => !!v))].slice(0, 20);
         // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
         // in use stays and the next turn retries (within drawFails).
-        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid }, AbortSignal.timeout(CAST_TIMEOUT_MS));
+        const r = await getCast({ mode, locale, units: pack.units, ages: draw, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
@@ -844,6 +873,11 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
             continue;
           }
           const fallback = r.fallbacks?.[slot] ?? heldBy.current.get(keys[slot])?.fallback ?? live.fallbacks?.[slot];
+          if (retry) {
+            // Taken up at the next turn, not in the middle of this one.
+            deferred.current.set(keys[slot], { slot, held: { voice: v, fallback, asked: draw[slot] } });
+            continue;
+          }
           heldBy.current.set(keys[slot], { voice: v, fallback, asked: draw[slot] });
           // The tag is someone else's now: the voice waits for this
           // person's return.
@@ -861,16 +895,20 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         for (const slot of slotsToDraw) failed(slot);
         // Quietly: the voice in use stays, and a notice with an action (a
         // reply to play, words to send) must not be replaced by this.
-        setNoticeState((was) => was ?? { text: "Couldn't find a better-matched voice; keeping this one." });
+        // Hands-free, the mic opens right after the turn and would clear it
+        // at once, so it isn't shown at all there.
+        const st = settingsRef.current;
+        if (!(st?.handsFree && st.turn === "pause")) setNoticeState((was) => was ?? { text: "Couldn't find a better-matched voice; keeping this one." });
       }
     })();
+    const by = retry ? retrying.current : drawing.current;
     for (const slot of slotsToDraw) {
-      drawing.current.set(keys[slot], run);
+      by.set(keys[slot], run);
       slotDraws.current.set(slot, run);
     }
     void run.then(() => {
       for (const slot of slotsToDraw) {
-        if (drawing.current.get(keys[slot]) === run) drawing.current.delete(keys[slot]);
+        if (by.get(keys[slot]) === run) by.delete(keys[slot]);
         if (slotDraws.current.get(slot) === run) slotDraws.current.delete(slot);
       }
     });
@@ -1100,6 +1138,8 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     drawFails.current.clear();
     drawing.current.clear();
     slotDraws.current.clear();
+    retrying.current.clear();
+    deferred.current.clear();
     castEpoch.current += 1;
     setDirect(false);
     // A new session draws a new cast.
@@ -2319,7 +2359,7 @@ const TranscriptRow = memo(function TranscriptRow({
                     <span className="text-fg-3"> — </span>
                     {picked.gloss.meaning}
                   </span>
-                  <button type="button" className="text-fg-3 hover:text-fg" aria-label="Close definition" onClick={onClosePick}>
+                  <button type="button" className="-my-0.5 grid size-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={onClosePick}>
                     ×
                   </button>
                 </span>
@@ -2339,7 +2379,7 @@ const TranscriptRow = memo(function TranscriptRow({
               const { gloss, whole } = tr;
               const what = whole ? "this line" : "this phrase";
               return (
-                <button type="button" className="grid min-h-6 min-w-6 place-items-center rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
+                <button type="button" className="-my-0.5 grid min-h-6 min-w-6 place-items-center rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
                   {trLabel}
                 </button>
               );

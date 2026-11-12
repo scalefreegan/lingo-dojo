@@ -194,7 +194,7 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
   GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
-- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, how old they are (child, young, middle-aged or old), and a few words on who they are. The app picks a voice of that age. It is shown, not spoken. For example:
+- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, then exactly one of the words child, young, middle-aged or old, then a comma and a few words on who they are. The app picks a voice of that age; it reads only that word, in that place. It is shown, not spoken. For example:
   CAST: CHARACTER-F old, Doña Carmen, the fruit vendor
 - CAST lines go just before the line they introduce; GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order. Each is on its own line with its label in capitals and no speaker tag.
 - Keep each turn short, then stop and wait for the learner.
@@ -262,21 +262,18 @@ const TAG_RE = /^\s*(?:[-•]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELPE
 const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])([^<>\n]{0,80})>/gi;
 const MS_UNIT = "ms|msecs?|mseconds?|milliseconds?|milisegundos?|msegs?";
 const S_UNIT = "s|secs?|seconds?|segundos?|segs?";
-const NUM = String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?(?![a-z])`;
-// The length is the number at the start of the mark (after punctuation, a
-// sign, or a word like "for", "de", "about": "<pause (1.5)>", "<overlap
-// -0.4>", "<pausa de 1,5>"), else one with a unit ("<pause while she
-// counts, for 2 seconds>"), else the number that ends it ("<pause while
-// she counts, 3>"). A number inside a note ("<pause while she counts 20
-// pesos>") is not a length, and the line gets its default pause.
-const TIMING_LEAD = new RegExp(String.raw`^[\s:=,(\[~+\-–—]*(?:(?:for|of|de|about|around|approx\.?|approximately|unos|como|durante)\s+)?` + NUM, "i");
-const TIMING_UNIT = new RegExp(String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))(?![a-z])`, "i");
-const TIMING_END = new RegExp(String.raw`(\d*[.,]?\d+)\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?[\s).\]]*$`, "i");
+// The length is the number at the start of the mark, the format the adapter
+// asks for: "<pause 1.5>", "<pause1.5>", "<pause: 1.5>", "<overlap -0.4>",
+// with an optional unit ("2s", "800ms", "500 milisegundos") and anything
+// after it ("<pause 1.5 while she weighs them>"). Any other mark ("<pause
+// while she counts to 10>", "<pause for 2>") is an ordinary pause: a guess
+// at a number inside a note was wrong as often as right. Digit runs are
+// bounded so a hostile mark can't make it backtrack.
+const TIMING_LEAD = new RegExp(String.raw`^[ \t:=~+\-–—]*(\d{0,6}[.,]?\d{1,6})\s*(?:(${MS_UNIT})|(?:${S_UNIT}))?(?![\p{L}\d])`, "iu");
 /** Seconds from a timing mark's inside (never negative: an overlap's sign
- *  is its word), or null when it names no length. */
+ *  is its word), or null when it doesn't start with a length. */
 function timingSeconds(inside) {
-  const t = String(inside);
-  const m = t.match(TIMING_LEAD) ?? t.match(TIMING_UNIT) ?? t.match(TIMING_END);
+  const m = String(inside).match(TIMING_LEAD);
   if (!m) return null;
   // "1,500ms" is a thousand separator, "1,5" a decimal comma.
   if (m[2] && /^\d{1,3},\d{3}$/.test(m[1])) return Number(m[1].replace(",", "")) / 1000;
@@ -508,7 +505,7 @@ const AGE_RANK = { child: 0, young: 1, middle: 2, old: 3 };
 const NUMBER_WORDS = new Map(Object.entries({ one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 }));
 /** "7", "seven", "seventy-five" → 7, 7, 75; anything else null. */
 function yearsOf(w) {
-  const x = String(w ?? "");
+  const x = String(w ?? "").toLowerCase();
   if (/^\d{1,3}$/.test(x)) return Number(x);
   if (NUMBER_WORDS.has(x)) return NUMBER_WORDS.get(x);
   const m = x.match(/^([a-z]+)-([a-z]+)$/);
@@ -517,53 +514,28 @@ function yearsOf(w) {
 }
 // ElevenLabs' "young" covers young adults, so under 30 is young.
 const ageForYears = (n) => (n < 13 ? "child" : n < 30 ? "young" : n < 60 ? "middle" : "old");
-// The four words the adapter asks for, as the whole first clause.
-const AGE_KEYWORD = /^(child|young|middle[\s-]?aged|middle|old|elderly)$/i;
-const CHILD_NOUN = /^(one|ones|girl|boy|kid|child|baby|toddler|lad|lass)$/;
-const FILLER = /^(a|an|the|very|quite|about|around)$/;
-// "who's", "that's" are contractions, not someone else's.
-const POSSESSIVE = /^(?!(?:who|that|she|he|it|there|what|which|where|here)['’]s$)[\p{L}]+['’]s$/u;
+// The format the adapter asks for: the tag, then one age word, then who.
+// Only the age as the first word(s) after the tag counts; a description
+// ("an elderly woman", "the old man's daughter") is not read for an age,
+// because every reading of free text misread some other wording. A line
+// without one is ignored, and the slot keeps the voice it has.
+const SEP = String.raw`(?=$|[\s,;:|—–\-(/])`;
+const CAST_AGE_WORD = new RegExp(String.raw`^(child|kid|young|teen|teenage|teenager|middle[\s-]aged?|middle|old|elderly|senior)${SEP}`, "i");
+const CAST_AGED = new RegExp(String.raw`^aged\s+(?:about\s+|around\s+|~\s*)?([a-z]+(?:-[a-z]+)?|\d{1,3})\+?${SEP}`, "i");
+const CAST_YEARS = new RegExp(String.raw`^([a-z]+(?:-[a-z]+)?|\d{1,3})[\s-]years?[\s-]old${SEP}`, "i");
 
-/** A CAST line's age from its first clause. The adapter asks for one of
- *  child, young, middle-aged or old right after the tag, and that is
- *  trusted as is. Otherwise the first word that isn't an article says it:
- *  an age word ("an elderly woman"), "little" before a child or an age
- *  ("a little girl", "a little old lady"), a number of years ("a
- *  seven-year-old", "aged 7", "7 years old"), "middle-aged", "the middle
- *  child", or "older"/"younger" before a man or woman. An age on someone
- *  else ("the old man's daughter") or a name or relation ("Mr Young",
- *  "Little Red", "the older brother", "the middle sister") is no age.
- *  → {age, lead}: `lead` is how many leading words name only the age (they
- *  come out of `who`), 0 when the age sits inside a description. */
-function castAge(clause) {
-  const c = clause.trim();
-  if (AGE_KEYWORD.test(c)) return { age: ageOf(c.replace(/^middle$/i, "middle aged")), lead: c.split(/\s+/).length };
-  const ws = c.split(/\s+/).filter(Boolean).slice(0, 8).map((w) => w.toLowerCase().replace(/[.!?:]+$/, ""));
-  const none = { age: "", lead: 0 };
-  let i = 0;
-  while (i < ws.length && FILLER.test(ws[i])) i++;
-  const w = ws[i];
-  if (!w) return none;
-  const next = ws[i + 1] ?? "";
-  const someoneElse = ws.slice(i, i + 3).some((x) => POSSESSIVE.test(x));
-  const at = (age, len) => (!age || someoneElse ? none : { age, lead: i === 0 ? len : 0 });
-  if (w === "aged" && yearsOf(next) != null) return at(ageForYears(yearsOf(next)), 2);
-  const y = w.match(/^(.+)-years?-old$/);
-  if (y) return yearsOf(y[1]) != null ? at(ageForYears(yearsOf(y[1])), 1) : none;
-  if (yearsOf(w) != null && /^years?$/.test(next) && ws[i + 2] === "old") return at(ageForYears(yearsOf(w)), 3);
-  if (w === "little") {
-    if (!next) return at("child", 1);
-    if (CHILD_NOUN.test(next)) return at("child", 0);
-    const a = ageOf(next);
-    return a && a !== "child" ? at(a, 0) : none;
-  }
-  if (w === "middle" || w === "middle-aged") {
-    if (w === "middle-aged" || next === "aged") return at("middle", w === "middle-aged" ? 1 : 2);
-    return /^(child|kid)$/.test(next) ? at("child", 0) : none;
-  }
-  if (w === "older" || w === "younger") return /^(man|woman|lady|gentleman|person|couple|men|women)$/.test(next) ? at(w === "older" ? "old" : "young", 0) : none;
-  if (w === "aged") return none;
-  return at(ageOf(w), 1);
+/** A CAST line's age from the words right after its tag: "old", "middle-aged",
+ *  "middle age", "elderly", "aged 70", "a 7-year-old" without the article
+ *  ("7-year-old"), "seven years old". → {age, rest}: `rest` is the text
+ *  after the age (who they are); age "" when the line doesn't start with
+ *  one. */
+function castAge(after) {
+  const t = String(after);
+  let m = t.match(CAST_AGE_WORD);
+  if (m) return { age: ageOf(m[1].replace(/^middle(?:[\s-]age)?$/i, "middle aged")), rest: t.slice(m[0].length) };
+  m = t.match(CAST_AGED) ?? t.match(CAST_YEARS);
+  if (m && yearsOf(m[1]) != null) return { age: ageForYears(yearsOf(m[1])), rest: t.slice(m[0].length) };
+  return { age: "", rest: t };
 }
 
 /** The CAST lines of a reply as {slot, age, who}: "CAST: CHARACTER-F old,
@@ -582,12 +554,11 @@ export function parseCast(text, mode = "adult") {
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
     if (!allowed.has(speaker)) continue;
     const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
-    // The clause is capped, so a long line costs nothing.
-    const { age, lead } = castAge(after.slice(0, 120).split(/[,|;]/)[0]);
+    const { age, rest: tail } = castAge(after.slice(0, 200));
     if (!age) continue;
-    // Words counted as castAge counts them: a comma ends a word even with no
-    // space after it ("old,Doña Carmen").
-    const named = lead ? after.replace(new RegExp(String.raw`^(?:[^\s,|;]+\s*){${lead}}`), "").replace(/^[\s,|:–—-]+/, "") : after;
+    // Who they are: what follows the age, after any comma, dash or
+    // semicolon ("old—Doña Carmen", "old; Doña Carmen").
+    const named = (tail + after.slice(200)).replace(/^[\s,;:|—–\-]+/, "");
     const who = oneLine(named).slice(0, CAST_WHO_CHARS);
     const slot = `${speaker}:${GENDER_OF[t[2].toLowerCase()]}`;
     out.delete(slot);
@@ -721,9 +692,15 @@ export function parseVoiceReply(text, mode = "adult") {
     const marks = [...raw.matchAll(TIMING_RE)];
     if (marks.length) {
       // The first mark with a number wins; all of them come out of the text.
-      const t = marks.map((x) => [x[1], timingSeconds(x[2])]).find((x) => x[1] != null);
-      if (t) gap = (t[0].toLowerCase() === "overlap" ? -1 : 1) * t[1];
-      raw = raw.replace(TIMING_RE, " ").replace(/\*\*\s+/, "**");
+      for (const x of marks) {
+        const sec = timingSeconds(x[2]);
+        if (sec == null) continue;
+        gap = (x[1].toLowerCase() === "overlap" ? -1 : 1) * sec;
+        break;
+      }
+      // The marks come out, and with them any bold or italics they sat in
+      // ("**<pause 1.5>** CHARACTER-F: …"), so the tag after is still a tag.
+      raw = raw.replace(TIMING_RE, " ").replace(/(\*{1,2}|_{1,2})\s*\1/g, " ").replace(/\*\*\s+/, "**");
       if (!raw.replace(/\*/g, "").trim()) continue;
     }
     let line = raw;
