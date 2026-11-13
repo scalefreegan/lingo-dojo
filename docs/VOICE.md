@@ -48,8 +48,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `NARRATOR-F:` / `CHARACTER-M:` / `SIDEKICK-F:` lines: speaker plus gender,
   taken from the units and the scenario's roles (Doña Carmen is `-F`, a Don
   `-M`). Each line is spoken by the voice in that speaker's slot for that
-  gender, so a woman vendor gets a woman's voice. A tool-less turn takes
-  about 4 s.
+  gender, so a woman vendor gets a woman's voice. Every tagged line is its
+  own row in the transcript, even when the speaker repeats (a dictated
+  vocabulary list is term, pause, meaning, one line each); only an untagged
+  line continues the row before it. A tool-less turn takes about 4 s.
 - **Language marks**: the dojo master wraps every target-language word or
   phrase in `<t>…</t>` (a whole in-scene line included). Each line is split into
   target and native segments, and every segment is spoken by the **same
@@ -114,7 +116,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   which ends every turn with a `STAGE: <id>` line (shown, never spoken;
   `parseStage` keeps only a known id; a game that comes back inside the
   story is reported as the beat it happens in, so the timeline never runs
-  backwards). The timeline marks done, here and
+  backwards). A part that asks nothing of the learner (a debrief, the
+  vocabulary list) runs straight into the next one in the same turn, so the
+  learner never has to ask for it; only the last part closes the session.
+  The timeline marks done, here and
   ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
   straight there, skipping what's in between (the frame's "every warm-up
   first" rule gives way to the learner asking). It collapses to a rail of dots (remembered per browser).

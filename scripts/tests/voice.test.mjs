@@ -99,7 +99,7 @@ test("voiceTurnPrompt: replays the session and opens with the start marker", () 
 
 const plain = (lines) => lines.map(({ speaker, text }) => ({ speaker, text }));
 
-test("parseVoiceReply: tags, continuation, merging, and unknown speakers", () => {
+test("parseVoiceReply: tags, continuation, and unknown speakers", () => {
   const lines = parseVoiceReply(
     `NARRATOR: Let's begin.
 We're at the market.
@@ -111,7 +111,9 @@ Plain line after.`,
   );
   assert.deepEqual(plain(lines), [
     { speaker: "narrator", text: "Let's begin. We're at the market." },
-    { speaker: "character", text: "¡Buenos días! ¿Qué le doy?" },
+    // A repeated tag is a new line on purpose, so it is a row of its own.
+    { speaker: "character", text: "¡Buenos días!" },
+    { speaker: "character", text: "¿Qué le doy?" },
     { speaker: "narrator", text: "(not in adult mode) Plain line after." },
   ]);
   assert.deepEqual(plain(parseVoiceReply("Hello there", "adult")), [{ speaker: "narrator", text: "Hello there" }]);
@@ -133,7 +135,8 @@ CHARACTER: <t>¡Claro! ¿Algo más?`,
   ]);
   assert.equal(narrator.text, "The word for tomato is jitomate. Try: un kilo, por favor");
   assert.deepEqual(character.segments, [{ lang: "target", text: "¡Claro! ¿Algo más?" }], "an unclosed <t> runs to the end of the line");
-  // Same-speaker lines merge, and so do touching same-language segments.
+  // An untagged line continues the row, and touching same-language
+  // segments merge.
   const [merged] = parseVoiceReply("CHARACTER: <t>Hola.</t>\n<t>¿Qué tal?</t>", "adult");
   assert.deepEqual(merged.segments, [{ lang: "target", text: "Hola. ¿Qué tal?" }]);
   // Replayed history puts the marks back.
@@ -152,7 +155,8 @@ CHARACTER: untagged gender`,
   assert.deepEqual(lines.map((l) => [l.speaker, l.gender, l.text]), [
     ["narrator", "female", "Welcome."],
     ["character", "male", "¡Pásele!"],
-    ["character", "female", "¿Y usted? Bienvenida."],
+    ["character", "female", "¿Y usted?"],
+    ["character", "female", "Bienvenida."],
     ["character", null, "untagged gender"],
   ]);
   // The replay keeps the gender in the tag.
@@ -201,14 +205,39 @@ CHARACTER-F: <t>¿Me atiende?</t>
     ["character", null, LINE_PAUSE.narratorSwitch],
     ["character", 1.2, 1200], // a timed line from the same speaker stays its own line
     ["character", -0.4, -400], // a mark on its own line applies to the next
+    ["character", null, LINE_PAUSE.sameSpeaker], // a repeated tag is its own line
     ["narrator", -0.5, LINE_PAUSE.narratorSwitchMin], // never overlap the narrator
   ]);
-  assert.equal(lines[3].text, "¡Oiga, yo estaba primero! ¿Me atiende?", "an untimed line by the same speaker merges");
+  assert.equal(lines[3].text, "¡Oiga, yo estaba primero!");
+  assert.equal(lines[4].text, "¿Me atiende?");
   assert.ok(lines.every((l) => !/pause|overlap/.test(l.text)), "marks are never spoken");
   // The replayed history keeps the marks, so the model sees its own format.
   const replay = voiceTurnPrompt([{ role: "master", lines }], "x");
   assert.match(replay, /<pause 1\.2> CHARACTER-M: <t>A ver/);
   assert.match(replay, /<overlap 0\.4> CHARACTER-F:/);
+});
+
+test("a dictated list keeps each term in its own row, before its meaning", () => {
+  // The vocabulary debrief as the dojo master wrote it: term, pause, meaning.
+  // Merging same-speaker lines used to put each term at the end of the row
+  // before it ("Here you go. El recibo."), with no pause before it.
+  const lines = parseVoiceReply(
+    `NARRATOR-F: Grab something to write with.
+
+NARRATOR-F: <t>Aquí tiene.</t>
+<pause 2> NARRATOR-F: Here you go.
+
+NARRATOR-F: <t>El recibo.</t>
+<pause 2> NARRATOR-F: The receipt.`,
+    "adult",
+  );
+  assert.deepEqual(lines.map((l) => [l.text, l.pauseMs]), [
+    ["Grab something to write with.", 0],
+    ["Aquí tiene.", LINE_PAUSE.sameSpeaker],
+    ["Here you go.", 2000],
+    ["El recibo.", LINE_PAUSE.sameSpeaker],
+    ["The receipt.", 2000],
+  ]);
 });
 
 test("timing: a misplaced mark is still a timing mark, never spoken", () => {
@@ -550,6 +579,9 @@ test("sessionPlan: intro, warm-ups, the scene and its beats, then the debrief", 
   assert.ok(d.includes(`"${JUMP} <id>"`));
   assert.equal(planDirective([]), "");
   assert.match(d, /a jump overrides the rule about running every warm-up first/);
+  // A part that asks nothing of the learner runs straight into the next.
+  assert.match(d, /go straight on to the next part in the same turn/);
+  assert.match(d, /Only the last part closes the session/);
 });
 
 test("a long run of spaces doesn't make the reply patterns backtrack", () => {
