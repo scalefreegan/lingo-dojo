@@ -678,7 +678,7 @@ export function sessionPlan(content, pack, mode = "adult") {
 export function planDirective(plan) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.`;
 }
 
 /** Replayed text from the browser, on one line: glosses and choices go back
@@ -706,6 +706,12 @@ export function parseVoiceReply(text, mode = "adult") {
   // A timing mark waits for the next line that has words (it may sit on a
   // line of its own).
   let gap = null;
+  // A repeated tag is the model starting a new line on purpose (it is told
+  // one speaker per line), so it starts its own row, as a timed line does:
+  // a dictated list ("<t>El recibo.</t>", then "<pause 2> The receipt.")
+  // merged each term into the row before it and paired every meaning with
+  // the next term. Only an untagged line continues the row.
+  let tagged = false;
   for (const rawLine of String(text).split(/\r?\n/)) {
     if (!rawLine.trim() || isMeta(rawLine)) continue;
     let raw = squeeze(rawLine);
@@ -736,19 +742,21 @@ export function parseVoiceReply(text, mode = "adult") {
       // A new speaker starts outside any wrap: a <t> the previous speaker
       // never closed must not turn this one's English into Spanish.
       inside = false;
+      tagged = true;
     }
     let segments;
     ({ segments, inside } = segmentsFrom(line, inside));
     if (!segments.length) continue;
     let target = out[out.length - 1];
-    // A timed line is its own line even from the same speaker: the pause
-    // sits between the two.
-    if (!target || target.speaker !== current || target.gender !== gender || gap != null) {
+    // A timed or tagged line is its own line even from the same speaker:
+    // the pause sits between the two.
+    if (!target || target.speaker !== current || target.gender !== gender || gap != null || tagged) {
       target = { speaker: current, gender, text: "", segments: [] };
       if (gap != null) target.gap = gap;
       gap = null;
       out.push(target);
     }
+    tagged = false;
     for (const g of segments) {
       const prev = target.segments[target.segments.length - 1];
       let text = g.text;
