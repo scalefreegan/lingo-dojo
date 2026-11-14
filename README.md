@@ -72,7 +72,9 @@ launch asks for Documents access for "Lingo Dojo Server"):
 open -a "Lingo Dojo"
 ```
 
-The embedded agent uses your Claude Code login. No API key is involved.
+The embedded agent uses your Claude Code login. No Anthropic API key is involved.
+Spoken practice needs an ElevenLabs or Azure Speech key in a gitignored `.env.local`
+(see [`docs/VOICE.md`](docs/VOICE.md)); the prompt builder works without one.
 
 ## Usage
 
@@ -93,10 +95,10 @@ The embedded agent uses your Claude Code login. No API key is involved.
   language ("add a corrections unit that only flags gender agreement"). New files
   appear in the slots as soon as the commit lands.
 
-Command line export of a saved pack:
+Command line export of a saved pack (a pack inside `content/kids/` renders in kids mode; or pass `--mode adult|kids`):
 
 ```sh
-npm run export -- content/packs/2026-10-19-palenque-first-visit.yaml
+npm run export -- content/kids/packs/2026-10-20-first-german-adventure.yaml
 ```
 
 ## Adult and kids libraries
@@ -124,10 +126,10 @@ for a different target language.
 ```
 content/        the product: schema, frame, profile, units, scenarios, packs
 scripts/        content.mjs (loader), assemble.mjs (pack -> markdown), export.mjs (CLI),
-                claude.mjs (headless agent spawn), tests/ (node --test)
+                claude.mjs (headless agent spawn), voice.mjs (voice session helpers), tests/ (node --test)
 web/server/     Vite serve-middleware API behind a same-origin wrap():
-                /api/content, /api/packs[/:id], /api/assemble, /api/export,
-                /api/chat (SSE), /api/chat/history, /api/settings
+                /api/content, /api/profile, /api/packs, /api/folders, /api/assemble,
+                /api/export, /api/chat (SSE), /api/settings, /api/voice
 web/src/        React UI: SceneTab, CustomizeTab, GoTab, LibraryTab, VoicePanel, AgentDrawer/ChatPanel
 data/           runtime state (chat history, model setting), gitignored
 exports/        rendered prompts, gitignored
