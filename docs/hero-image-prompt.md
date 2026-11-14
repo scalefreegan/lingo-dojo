@@ -1,0 +1,5 @@
+# Hero image prompt
+
+Generate `docs/hero.png` (suggested 1600x900, 16:9) with this prompt:
+
+> Clean modern flat-vector illustration, 16:9, of a language-practice app on a soft warm off-white background with a single vermilion-red accent color and muted charcoal and cream neutrals. On the left, a rounded scenario card with a small stylized map-pin and a simple Oaxacan-style agave and market-stall icon; in the center, a vertical stack of five slim rounded "lesson unit" cards connected by a thin line, some with checked toggles and one with radio dots, suggesting slots being filled in order; on the right, a tall document panel with abstract text lines and a short highlighted block, representing the assembled prompt, with a small microphone button and two speech bubbles (one large, one small, filled with abstract squiggles) floating beside it to suggest a spoken conversation with a dojo master. A subtle belt-knot or folded-ribbon motif in the accent color ties the three areas together. Soft drop shadows, generous whitespace, crisp geometric shapes, product-mockup feel. No text, letters, numbers, or logos anywhere in the image.

@@ -1,6 +1,23 @@
-# Lingo Dojo
+<h1 align="center">Lingo Dojo</h1>
 
-![Lingo Dojo demo](screenshots/demo.gif)
+<p align="center"><b>Composable prompt packs for spoken language practice, with an in-app voice dojo master.</b></p>
+
+<p align="center">Pick a scenario, stack lesson units, and get one markdown prompt, or practise right in the app.</p>
+
+<p align="center">
+  <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb?style=flat-square">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-646cff?style=flat-square">
+  <img alt="Status: early WIP" src="https://img.shields.io/badge/status-early%20WIP-orange?style=flat-square">
+</p>
+
+<p align="center">
+  <img src="docs/hero.png" alt="Lingo Dojo: a scenario, lesson-unit cards, and an assembled practice prompt" width="800">
+</p>
+<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
+<p align="center"><sub><i>Scenario in, lesson units stacked, one prompt out.</i></sub></p>
+
+## Overview
 
 A composable prompt-pack builder for spoken language practice. You pick a scenario
 ("tasting mezcal at a palenque outside Santiago Matatlán"), choose the lesson units
@@ -21,7 +38,7 @@ Three ideas, one app:
    may read the repo but can only write under `content/`. Every edit it makes is a
    git commit, so you can always revert.
 
-## Running
+## Get started
 
 ```sh
 npm install && npm --prefix web install   # once
@@ -38,7 +55,7 @@ open -a "Lingo Dojo"
 
 The embedded agent uses your Claude Code login. No API key is involved.
 
-## Using it
+## Usage
 
 - **Scene** tab: pick a scenario (search, category filters, collapsible collections)
   or write a quick one. The top bar's profile pill sets the target language, variant,
@@ -63,7 +80,7 @@ Command line export of a saved pack:
 npm run export -- content/packs/2026-10-19-palenque-first-visit.yaml
 ```
 
-## Modes
+## Adult and kids libraries
 
 There are two libraries, switched from the Profile pill in the top bar. **Adult**
 is `content/`: conversation practice at a CEFR level. **Kids** is `content/kids/`:
