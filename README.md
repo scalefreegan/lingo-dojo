@@ -7,7 +7,8 @@
 <p align="center">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb?style=flat-square">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square">
-  <img alt="Vite" src="https://img.shields.io/badge/Vite-646cff?style=flat-square">
+  <img alt="Vite 8" src="https://img.shields.io/badge/Vite-8-646cff?style=flat-square">
+  <img alt="Tailwind 4" src="https://img.shields.io/badge/Tailwind-4-38bdf8?style=flat-square">
   <img alt="Status: early WIP" src="https://img.shields.io/badge/status-early%20WIP-orange?style=flat-square">
 </p>
 
@@ -17,26 +18,44 @@
 <!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 <p align="center"><sub><i>Scenario in, lesson units stacked, one prompt out.</i></sub></p>
 
-## Overview
+## Features
 
-A composable prompt-pack builder for spoken language practice. You pick a scenario
-("tasting mezcal at a palenque outside Santiago Matatlán"), choose the lesson units
-you want (how the session opens, warm-up drills, how hard it pushes you, which
-language the guidance comes in, how mistakes are corrected, how it closes), and get
-one markdown prompt. Then practise right in the app: the **dojo master** speaks in
-native voices and you answer by talking (push-to-talk) or typing. Or copy the prompt
-into whatever voice agent you already use.
+<table>
+  <tr>
+    <td width="50%">
+      <h3>Composable prompt packs</h3>
+      Choose lesson units per slot (opening, narrator, character, warm-up, style, corrections, closing) and get one markdown prompt. <code>content/schema.yaml</code> sets the slot order and whether each is pick-one or pick-any.
+    </td>
+    <td width="50%">
+      <h3>Spoken practice in the app</h3>
+      The dojo master and each character speak in their own native voice. You answer with push-to-talk or by typing. Voices and speech-to-text use ElevenLabs or Azure keys (<a href="docs/VOICE.md">setup</a>).
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <h3>Scenario-driven</h3>
+      Pick a scenario ("tasting mezcal at a palenque outside Santiago Matatlán") or write a quick one. Search, category filters and collections help you find one. The seed library is Mexican Spanish with Oaxaca settings.
+    </td>
+    <td>
+      <h3>Bring your own voice agent</h3>
+      Copy the assembled prompt, export it to <code>exports/&lt;id&gt;.md</code>, or save the pack to <code>content/packs/</code> and render it from the CLI.
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <h3>Adult and kids libraries</h3>
+      Adult mode is CEFR-level conversation practice. Kids mode is story, play and short sessions for a child who does not read yet, with its own slots, frame, profile and packs.
+    </td>
+    <td>
+      <h3>An agent that edits the library</h3>
+      The chat drawer runs a headless Claude that can read the repo but only write under <code>content/</code>. Every edit is a git commit, so you can revert. It uses your Claude Code login, no API key.
+    </td>
+  </tr>
+</table>
 
-Three ideas, one app:
+## How it works
 
-1. **Everything is a text file.** Units, scenarios, your learner profile, and saved
-   packs are markdown and YAML under `content/`. Git is the history. There is no
-   database.
-2. **Slots, not a pile of toggles.** `content/schema.yaml` names the slots in prompt
-   order and says whether each is pick-one or pick-any. The UI is one card per slot.
-3. **An agent that edits the library.** The chat drawer runs a headless Claude that
-   may read the repo but can only write under `content/`. Every edit it makes is a
-   git commit, so you can always revert.
+Everything is a text file: units, scenarios, your learner profile and saved packs are markdown and YAML under `content/`, with git as the history and no database. The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
 
 ## Get started
 
@@ -109,11 +128,11 @@ scripts/        content.mjs (loader), assemble.mjs (pack -> markdown), export.mj
 web/server/     Vite serve-middleware API behind a same-origin wrap():
                 /api/content, /api/packs[/:id], /api/assemble, /api/export,
                 /api/chat (SSE), /api/chat/history, /api/settings
-web/src/        React UI: ScenarioColumn, SlotsColumn, PreviewColumn, AgentDrawer/ChatPanel
+web/src/        React UI: SceneTab, CustomizeTab, GoTab, LibraryTab, VoicePanel, AgentDrawer/ChatPanel
 data/           runtime state (chat history, model setting), gitignored
 exports/        rendered prompts, gitignored
 macos/          Dock app (stay-open applet + server helper), port 38400
-docs/           PRD.md (decisions), CONTENT.md (format contract)
+docs/           PRD.md (decisions), CONTENT.md (format contract), VOICE.md (voice setup)
 ```
 
 Stack: React 19, Vite, TypeScript strict, Tailwind 4, oxlint, Node's built-in test
