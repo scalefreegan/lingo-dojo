@@ -100,6 +100,12 @@ test("first run: /me says so; the first account is an admin seeded from the prof
     ]);
     assert.equal((await c.call("GET", "/api/settings")).body.model, "claude-opus-5-5");
     assert.equal((await c.call("GET", "/api/voice/settings")).body.settings.turn, "pause");
+    // The seed packs went to the learner of their mode, and only to it.
+    await c.pick("Sam");
+    assert.deepEqual((await c.call("GET", "/api/packs")).body.packs.map((p) => [p.id, p.title]), [["2026-10-19-market-gentle", "Market, gentle corrections"]]);
+    await c.pick("Pip");
+    assert.deepEqual((await c.call("GET", "/api/packs")).body.packs.map((p) => [p.id, p.title]), [["2026-10-20-farm-first", "Farm, first visit"]]);
+    await c.call("PUT", "/api/auth/learner", { learnerId: null });
 
     // Only once: a second first run is a 409 and adds nobody.
     const again = await anon().call("POST", "/api/auth/first-run", { username: "mallory", password: PASSWORD });

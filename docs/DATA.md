@@ -1,7 +1,8 @@
 # Learners, memory and practice: the database design
 
-Status: **phase 0 (foundation) and phase 1 (logins and learners) built**;
-phases 2–11 are plan, not built (2026-11-15). Epic `ld-gf9`,
+Status: **phase 0 (foundation), phase 1 (logins and learners) and phase 2
+(packs in the database, and their import) built**; phases 3–11 are plan, not
+built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -56,9 +57,9 @@ browser ──cookie──▶ Vite middleware (web/server/*)
                      ├─ db.ts             one pg Pool, Drizzle (setDb: the tests' PGlite)
                      ├─ auth.ts           /api/auth/*  login, logout, me, first run, learner pick;
                      │                    /api/learners  (built, phase 1)
-                     ├─ seed.ts           the first admin's seed from the old files (built, phase 1)
+                     ├─ seed.ts           the first admin's seed from the old files (built, phase 1; packs, phase 2)
                      ├─ store.ts          per-user settings and agent chat (built, phase 1)
-                     ├─ content.ts        library (files, as now); packs → DB
+                     ├─ content.ts        library (files, as now); packs, folders, revisions → DB (built, phase 2)
                      ├─ voice.ts          turns persist to conversations; retrieval; LOOKUP
                      ├─ bank.ts           /api/phrases/*  bank CRUD, metrics
                      ├─ practice.ts       /api/practice/* queue, grade, review
@@ -72,13 +73,15 @@ scripts/
   db/hand-edits.mjs   the documented hand edits to 0000_init.sql (built, phase 0)
   db/setup.mjs        CLI: db:setup / db:migrate (built, phase 0)
   db/accounts.ts      users, sessions, learners, settings, agent messages (built, phase 1)
+  db/packs.ts         packs, folders, revisions, restore, the pack import (built, phase 2)
+  db/import.ts        the import's account and learner choice, and its report (built, phase 2)
   auth.mjs            pure: scrypt, tokens, the cookie, the login throttle (built, phase 1)
   fsrs.mjs            pure: rating mapping, mastery bands (wraps ts-fsrs)
   match.mjs           pure: answer normalization and lenient match
   recall.mjs          pure: review-block selection and retrieval ranking
   bank-mcp.mjs        stdio MCP server for the content agent (read-only role)
   user.mjs            CLI: add [--admin] / passwd / list / disable / enable (built, phase 1)
-  import.mjs          CLI: one-time file → DB import (idempotent)
+  import.mjs          CLI: npm run db:import, pack files → DB (idempotent; built, phase 2)
 ```
 
 The pure modules (`fsrs`, `match`, `recall`, the extraction parser) follow the
@@ -172,7 +175,7 @@ catalog.
 
 **The owned-row helper** is `scripts/db/owned.ts`:
 `forLearner(db, learnerId)` and `forUser(db, userId)` return a scope with
-`list`, `get`, `insert`, `upsert`, `update`, `remove`, `removeAllOwned` and
+`list`, `get`, `insert`, `insertOrIgnore` (added in phase 2), `upsert`, `update`, `remove`, `removeAllOwned` and
 `where`. Each one adds `owner = id and (cond)`, or stamps the owner on insert.
 The caller's condition is always parenthesized, so a raw `a or b` can't
 escape the filter.
@@ -240,6 +243,85 @@ The wire `Pack.id` stays `folder/slug`, so the Library and Scene tabs keep
 working unchanged. Git used to make every pack change undoable. Here
 `pack_revisions` does that job (a snapshot per write, move, rename or delete),
 and deletes are soft.
+
+As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
+
+- **Per learner.** Every pack and folder route works on the active learner's
+  rows (`learner: true`, so a stale page is a 409 `stale_learner`), through
+  `forLearner(tx, learnerId)` inside each write's transaction (the scope
+  `learnerRows()` is, on the transaction rather than the pool). Another
+  learner's pack, folder or revision id, of the same account or another, is a
+  404 like a missing one. A kids learner's packs are kids packs because the
+  learner is; there is no per-mode tree any more.
+- **Ids.** `Pack.id` is `<slug>` or `<folder>/<slug>`, checked with the
+  loader's `PACK_ID_RE` (one folder deep, kebab segments); a rename re-slugs
+  to `<date>-<slug of title>`, keeping the slug's date (`renamedStem` in
+  `scripts/content.mjs`). PUT on an id writes the pack there: it creates it,
+  or replaces a live pack's content (as the file write did). `id`/`folder` in
+  the body are ignored; keys outside the pack contract are dropped (a row has
+  no column for them; the file write kept them). A missing `created` is now.
+  A NUL character (`\u0000`) anywhere in a pack, object keys included, or in
+  a new title is a 400: Postgres can't store it in text or jsonb, so it would
+  otherwise be a 500.
+- **Revisions.** Every pack write records a snapshot (the wire `Pack`) in the
+  same transaction: `create`, `update`, `move`, `rename`, `delete` (the
+  content that was deleted), `restore`, `import`. A move to the folder the
+  pack is already in changes nothing and records nothing. **Folder create and
+  delete record no revision:** `pack_revisions.pack_id` is required and a
+  folder has no content of its own (only an empty folder can be deleted, and
+  a restored pack brings its folder back), so there is nothing to snapshot
+  without a schema change.
+- **Undo routes.** `GET /api/pack-revisions?id=<pack id>` lists a pack's
+  revisions, newest first (renames and moves keep the history, being the same
+  row): the live pack at that id, else the most recently deleted one that
+  had it; `?revision=<revision id>` instead names the pack a revision belongs
+  to, which reaches an older deleted pack whose id has been reused. `GET
+  /api/pack-revisions/deleted` lists the deleted packs, newest first, each
+  with its delete revision. Both page: 100 revisions or 50 deleted packs a
+  page, `?offset=`, and the reply's `next` is the next page's offset (null
+  after the last), so nothing kept is out of reach. Two separate actions,
+  so a stale click can't do the other one: `POST
+  /api/pack-revisions/:revision/restore` puts a revision's content (title,
+  created, scenario, units, overrides, notes) onto its **live** pack, which
+  keeps its id (409 when the pack is deleted); `POST
+  /api/pack-revisions/:revision/undelete` brings a **deleted** pack back as
+  it was deleted, at the id it had, with its folder (409 when it is not
+  deleted, e.g. a second click or another device's stale list, which changes
+  nothing; 409 too when a live pack has taken the id since: move or rename it
+  first). Either is a `restore` revision. The Library shows **Recently
+  deleted** (paged with More) using undelete; on a 409 it re-reads its lists.
+  Listing and restoring older revisions of a live pack has no UI yet.
+- **Concurrency.** Each write is one transaction that locks the live row it
+  changes (`SELECT … FOR UPDATE`), so a move and a delete of one pack at once
+  do exactly one thing (the second finds nothing at the old id). Two creates
+  of one id: the insert is `ON CONFLICT DO NOTHING` on the partial unique
+  index, and the loser updates the winner's row, so both writes are
+  revisions and neither errors. A move or rename into a taken id is a 409,
+  whether the clash was there first or arrived meanwhile (the unique
+  violation is mapped). Folders: a write into a folder takes the folder row's
+  lock (an upsert) before the pack's, and a folder delete locks the folder
+  row before it counts the live packs in it, so a pack never lands in a
+  deleted folder; the folder list is also the union of folder rows and live
+  packs' folders. An undelete takes its folder's lock, then the pack row's;
+  of two undeletes at once the second finds the pack live (409), and a
+  restore racing an undelete either waits for it or is refused, never landing
+  on a deleted pack. `scripts/tests/packs.pg.test.mjs` races each of these on
+  a real Postgres.
+- **Owner scoping in one place.** Every query in `packs.ts` goes through
+  `forLearner(tx, learnerId)` (inserts that may conflict through its
+  `insertOrIgnore`, which puts the owner in the conflict target), and the
+  routes only pass the active learner's id. A later bead is to move packs
+  under a per-learner language profile; that changes the owner key in
+  `packs.ts` (and the schema), not the routes or the UI.
+- **No files, no commits.** No pack route reads or writes `content/**/packs`
+  or calls git; `commitPacks` is gone (the agent's `content/` commit stays),
+  and so are the file write functions in `scripts/content.mjs` (savePack,
+  movePack, renamePack, deletePack, createFolder, deleteFolder). Only
+  `loadPackFiles` reads pack files, for the import, the first run and the
+  export CLI: `loadContent` (the app's library: units, scenarios, frame,
+  schema) no longer parses `packs/` at all, so a broken or large pack file
+  can't slow or clutter the app's content load or its problems list. The wire replies lost their `commit`/`error` fields
+  (`Committed`): the Library's status line was their only reader.
 
 ### Conversations
 
@@ -392,10 +474,9 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   adds a voice to the owner's ElevenLabs account. Library reloads are a plain
   `GET /api/content`, so any user may do them. The UI hides the agent drawer
   and the Voice Library's "Use as" for voices not yet added from non-admins.
-- **Saved packs in this phase:** still files under `content/*/packs/`, and
-  shared: any logged-in user can write, move, rename and delete any pack (and
-  folder) in the mode of the learner they picked. This ends in phase 2, when
-  packs move to the database, each owned by a learner.
+- **Saved packs:** until phase 2 they were files under `content/*/packs/`,
+  shared by every account. Since phase 2 each learner owns its packs in the
+  database (see Packs).
 - **Login throttling:** after 5 attempts that don't succeed for one username
   from one client in 15 minutes, that client's logins for that username wait
   30 seconds. This is in memory, which is enough for one Mac. As built: the
@@ -428,7 +509,8 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   EXCLUSIVE MODE`, so of two at once one gets a 409. It seeds the admin from
   the files that held the data before logins, each skipped quietly when
   missing: `content/profile.yaml` → an adult learner,
-  `content/kids/profile.yaml` → a kids learner, `data/voice.json` →
+  `content/kids/profile.yaml` → a kids learner (each with its mode's pack
+  files, imported as in Import below, since phase 2), `data/voice.json` →
   `user_settings.voice` (normalized), `data/settings.json` → the model,
   `data/chat.jsonl` → `agent_messages`. After that the running app reads and
   writes none of those files; the profiles stay as seeds and for the export
@@ -790,8 +872,9 @@ regularly, or when the need shows up):
 ## Import (one time, idempotent)
 
 Phase 1's first-run screen (see Auth) already does steps 1, 2 and 4 for the
-first admin. What is left for phase 2 is step 3, the packs, and the
-"already imported" check for them.
+first admin, and since phase 2 step 3 too: a fresh install's first admin
+starts with the seed packs. As built, `npm run db:import` is step 3 and 5
+only (see below); the plan it replaced follows.
 
 `npm run db:import` does the following:
 
@@ -809,6 +892,53 @@ first admin. What is left for phase 2 is step 3, the packs, and the
 After the import, the pack routes stop writing YAML and stop making git
 commits. The YAML stays in git as seed content, and `npm run export` keeps
 working on files offline.
+
+As built (phase 2; `scripts/import.mjs`, `scripts/db/import.ts`,
+`importPacks` in `scripts/db/packs.ts`):
+
+```
+npm run db:import                    # into the first admin's learners
+npm run db:import -- --user <name>   # into that account's learners
+```
+
+- It creates nothing: no account (steps 1, 2 and 4 are the first run's; with
+  no admin it stops and says to use the first-run screen or `npm run user --
+  add <name> --admin`) and no learner. The account is `--user`, else the
+  oldest admin that isn't disabled. The learner is that account's first
+  non-archived learner of each mode (the picker's order); a mode with none is
+  skipped, and the output says so.
+- `content/packs/**` goes to the adult learner and `content/kids/packs/**` to
+  the kids learner, keeping folder, slug, title and created; every folder
+  under `packs/` (an empty one with its `.keep` too) becomes a folder row.
+  Each imported pack gets an `import` revision. A file that doesn't load, an
+  id that isn't a valid pack id, or a pack with no title or with a NUL
+  character is skipped and listed (`invalid`). Each pack is its own savepoint:
+  one the database refuses for any other reason is rolled back alone, logged,
+  and listed (`failed`), and the rest import. That keeps a bad seed file from
+  failing the first run, which imports in the admin's transaction.
+- Re-runs: a pack is skipped when the learner has any row at that folder and
+  slug, a soft-deleted one included, or an `import` revision whose snapshot
+  has that id, so a pack renamed, moved or deleted in the app since is not
+  imported again. A folder deleted in the app does come back (folders have no
+  deleted state; it comes back empty). One transaction per learner.
+- `--user` naming a disabled account is an error (enable it first, or name
+  another): its packs would land where nobody can log in to see them.
+- It reads `DATABASE_URL` like the other CLIs, and the pack files from
+  `content/` (`LINGO_CONTENT_DIR` moves it). It prints one line per mode and
+  one per pack:
+
+```
+database: postgres://localhost/lingo_dojo
+packs → robin (admin)
+adult (content/packs/) → Sam: 1 imported, 1 already there, 1 folder added
+  + oaxaca/2026-10-20-mezcal
+  = 2026-10-19-market-gentle (already there)
+  + folder oaxaca
+kids (content/kids/packs/): skipped, robin has no kids learner (add one in the app, then re-run)
+```
+
+The first run (`createFirstAdmin`) runs the same `importPacks` for each
+learner it makes, in its transaction.
 
 ## Backups (proposed)
 
@@ -850,7 +980,18 @@ deletes cover undoing a single change.
   `first-run.pg.test.mjs`, which runs only with `LINGO_TEST_PG_URL` set: it
   makes a throwaway database on that server, races 12 first runs and 12
   voice-settings saves five times each, and drops it (each fails with its
-  lock removed).
+  lock removed). Phase 2: `packs.http.test.mjs` covers the pack, folder and
+  revision routes (CRUD, move, rename, the folder rules, soft delete,
+  undelete and restore and their 409s, paging, NUL rejection, a revision per
+  write, id collisions, `stale_learner`, and a
+  second learner of the same account and a second account that can't see or
+  change the first's packs, even by id); `packs.test.mjs` the import (both
+  modes, a re-run, a re-run after rename/move/delete, a missing learner, a
+  soft-deleted pack, `--user` including a disabled one, NUL and
+  database-refused packs during a first run) and the first run's seed packs;
+  `packs.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races creates of one id, a
+  move against a delete, renames to one title, a folder delete against a
+  save into it, two undeletes, and an undelete against a restore.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).
@@ -862,7 +1003,8 @@ deletes cover undoing a single change.
   and the architecture tree.
 - `CLAUDE.md`: the no-database line; the `data/` description, the auth rule in
   `wrap()` and the test database rule (done in phase 1).
-- `CONTENT.md`: the `recall` slot, `{{phrase_review}}`, and packs living in the DB.
+- `CONTENT.md`: the `recall` slot, `{{phrase_review}}`, and packs living in the DB
+  (done in phase 2).
 - `VOICE.md`: "Nothing is saved", `LOOKUP:`, per-turn retrieval; per-user
   settings (done in phase 1).
 
@@ -872,7 +1014,7 @@ deletes cover undoing a single change.
 |---|---|---|
 | 0 | Postgres + Drizzle foundation: setup scripts, schema v1 (every table above), migrations, PGlite test harness, boot check. **Built** | none |
 | 1 | Auth + learners: login, sessions, `wrap` auth levels, user CLI, learner picker, profile on DB, admin-only agent, per-user settings, first-run screen. **Built** | 0 |
-| 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits | 1 |
+| 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits. **Built** | 1 |
 | 3 | Conversations: persist turns, End, the History view | 1 |
 | 4 | Phrase bank: tables, gloss capture, scenario lists, star/add, the bank UI with metrics | 3 |
 | 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |

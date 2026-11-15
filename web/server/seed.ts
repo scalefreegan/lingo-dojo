@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { learnerFromProfile } from "../../scripts/auth.mjs";
 import { isAgentModel } from "../../scripts/claude.mjs";
-import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
+import { REPO_ROOT, loadContent, loadPackFiles, modeRoot } from "../../scripts/content.mjs";
 import { normalizeVoiceSettings } from "../../scripts/voice.mjs";
 import type { AgentMessage, FirstRunSeed, NewLearner } from "../../scripts/db/accounts.ts";
 import type { Mode } from "../shared/wire.ts";
@@ -12,14 +12,18 @@ import type { Mode } from "../shared/wire.ts";
 //
 //   content/profile.yaml        → an adult learner
 //   content/kids/profile.yaml   → a kids learner
+//   content/packs/**            → the adult learner's packs and folders
+//   content/kids/packs/**       → the kids learner's packs and folders
 //   data/voice.json             → user_settings.voice
 //   data/settings.json          → user_settings.model
 //   data/chat.jsonl             → agent_messages
 //
 // Each part is skipped quietly when its file is missing or unreadable: a
-// fresh clone has the profiles and none of data/. After the first run the
-// running app reads none of these files again; the profiles stay as seeds
-// and for the offline `npm run export` CLI.
+// fresh clone has the profiles, the seed packs and none of data/. After the
+// first run the running app reads none of these files again; the profiles
+// and packs stay as seeds and for the offline `npm run export` CLI, and
+// `npm run db:import` copies packs added to the files later
+// (scripts/import.mjs).
 
 /** LINGO_DATA_DIR when set (resolved against the repo root, like the content
  *  and exports overrides), else <repo>/data. Per call, so a test can point it
@@ -83,5 +87,7 @@ export function readFirstRunSeed(): FirstRunSeed {
     voice: voiceRaw && typeof voiceRaw === "object" ? (normalizeVoiceSettings(voiceRaw) as unknown as Record<string, unknown>) : null,
     model: isAgentModel(settings?.model) ? settings.model : null,
     messages: chatSeed(path.join(dir, "chat.jsonl")),
+    // Only for a mode that seeds a learner: there is no one else to own them.
+    packs: { adult: loadPackFiles(modeRoot("adult")), kids: loadPackFiles(modeRoot("kids")) },
   };
 }

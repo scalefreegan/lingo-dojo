@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import { ApiError, listDeletedPacks, undeletePack } from "../api";
 import { slugify, splitPackId } from "../draft";
-import type { ContentReply, Pack } from "../types";
+import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
 import type { PackActions } from "./shared";
 
@@ -10,8 +11,9 @@ const small = "px-2 py-1 text-sm sm:text-xs";
 const fine = "text-sm sm:text-xs";
 
 /* Library tab: every saved pack, grouped by folder ("No folder" first), with
- * a toolbar to make a folder. The one-line outcome of an action now lives on
- * the Go tab (that's where saving happens), not here. */
+ * a toolbar to make a folder, and the recently deleted packs below with
+ * Restore. The one-line outcome of an action now lives on the Go tab
+ * (that's where saving happens), not here. */
 export default function LibraryTab({
   packs,
   folders,
@@ -19,12 +21,20 @@ export default function LibraryTab({
   currentId,
   onCreateFolder,
   onDeleteFolder,
+  mode,
+  onRestored,
+  onStale,
   ...row
 }: PackActions & {
   packs: Pack[];
   folders: string[];
   content: ContentReply;
   currentId: string | null;
+  mode: Mode;
+  /** A deleted pack was restored: re-list the packs. */
+  onRestored: (p: Pack) => Promise<void>;
+  /** A restore was refused as stale (409): re-list the packs. */
+  onStale: () => Promise<void>;
 }) {
   // null = closed; otherwise the name being typed.
   const [newFolder, setNewFolder] = useState<string | null>(null);
@@ -110,13 +120,114 @@ export default function LibraryTab({
           )}
         </div>
       )}
+      <RecentlyDeleted mode={mode} packs={packs} onRestored={onRestored} onStale={onStale} />
     </div>
   );
 }
 
+/** The soft-deleted packs (newest first, a page at a time with "More"), each
+ *  with Restore (an undelete), folded away until opened. The list is re-read
+ *  whenever the saved packs change (a delete or a restore re-lists them), so
+ *  it never needs its own refresh. A restore that fails says why in place;
+ *  a 409 also means this list was stale (the pack came back on another
+ *  device, or its id was taken), so the lists are re-read. */
+function RecentlyDeleted({
+  mode,
+  packs,
+  onRestored,
+  onStale,
+}: {
+  mode: Mode;
+  packs: Pack[];
+  onRestored: (p: Pack) => Promise<void>;
+  onStale: () => Promise<void>;
+}) {
+  const [deleted, setDeleted] = useState<DeletedPack[]>([]);
+  const [next, setNext] = useState<number | null>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    listDeletedPacks(mode).then(
+      (r) => {
+        if (!live) return;
+        setDeleted(r.packs);
+        setNext(r.next);
+      },
+      () => live && (setDeleted([]), setNext(null)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [mode, packs]);
+
+  async function more() {
+    if (next === null) return;
+    try {
+      const r = await listDeletedPacks(mode, next);
+      setDeleted((d) => [...d, ...r.packs.filter((p) => !d.some((x) => x.revision === p.revision))]);
+      setNext(r.next);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    }
+  }
+
+  async function restore(d: DeletedPack) {
+    setBusy(d.revision);
+    setError(null);
+    try {
+      const r = await undeletePack(mode, d.revision);
+      await onRestored(r.pack);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+      if (e instanceof ApiError && e.status === 409) await onStale();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (deleted.length === 0) return null;
+  return (
+    <section aria-label="Recently deleted" data-testid="recently-deleted" className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" className={small} aria-expanded={open} onClick={() => setOpen(!open)}>
+          {open ? "▾" : "▸"} Recently deleted <span className="text-fg-3">({deleted.length})</span>
+        </Button>
+      </div>
+      {open && (
+        <>
+          {error && <p className={`${fine} text-err`}>{error}</p>}
+          <ul className="overflow-hidden rounded-lg border border-line">
+            {deleted.map((d) => (
+              <li key={d.revision} className="flex items-center gap-3 border-b border-line px-4 py-2 last:border-b-0" data-testid={`deleted-${d.pack.id}`}>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm text-fg-2">{d.pack.title}</div>
+                  <div className={`truncate ${fine} text-fg-3`}>
+                    <span className="font-mono">{d.pack.id}</span> · deleted {new Date(d.deletedAt).toLocaleString()}
+                  </div>
+                </div>
+                <Button variant="ghost" className={small} disabled={busy !== null} onClick={() => void restore(d)}>
+                  Restore
+                </Button>
+              </li>
+            ))}
+          </ul>
+          {next !== null && (
+            <Button variant="ghost" className={`${small} self-start`} onClick={() => void more()}>
+              More
+            </Button>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /** One saved pack: Load and Clone up front; Move, Rename and Delete behind a
- *  "…" toggle, since they change files. Delete is the one action that asks
- *  (window.confirm — the file goes, though git keeps it). On a phone the
+ *  "…" toggle, since they change the pack. Delete is the one action that asks
+ *  (window.confirm — the pack goes to Recently deleted). On a phone the
  *  three buttons sit on their own line under the title, so the title keeps
  *  its width and "…" stays a full-size target. */
 function PackRow({
@@ -207,7 +318,7 @@ function PackRow({
             className={`${small} text-err`}
             disabled={busy}
             onClick={() => {
-              if (window.confirm(`Delete "${p.title}" (${p.id})?\nThe file is removed from content/packs; git keeps its history.`)) void run(onDelete(p.id));
+              if (window.confirm(`Delete "${p.title}" (${p.id})?\nIt moves to Recently deleted, below the list, where Restore brings it back.`)) void run(onDelete(p.id));
             }}
           >
             Delete

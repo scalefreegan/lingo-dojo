@@ -13,6 +13,7 @@
 
 import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { forUser, type Db } from "./owned.ts";
+import { importPacks, type PackFiles } from "./packs.ts";
 import { agentMessages, authSessions, learners, userSettings, users } from "./schema.ts";
 
 export type User = typeof users.$inferSelect;
@@ -92,6 +93,9 @@ export interface FirstRunSeed {
   voice: Record<string, unknown> | null;
   model: string | null;
   messages: AgentMessage[];
+  /** Each mode's pack files (content/packs, content/kids/packs), imported
+   *  into the learner of that mode (packs.ts importPacks). */
+  packs?: Partial<Record<"adult" | "kids", PackFiles>>;
 }
 
 /**
@@ -100,7 +104,8 @@ export interface FirstRunSeed {
  * which conflicts with itself and with any insert) for the check and the
  * insert, so of two concurrent first runs one creates the admin and the
  * other sees a user and gets null. All or nothing: a seed that fails to
- * write leaves no half-made admin behind.
+ * write leaves no half-made admin behind. The seed packs are imported for
+ * the learner of each mode (first run on a fresh install: the repo's packs).
  */
 export async function createFirstAdmin(db: Db, account: { username: string; passwordHash: string }, seed: FirstRunSeed): Promise<User | null> {
   return db.transaction(async (tx) => {
@@ -108,7 +113,13 @@ export async function createFirstAdmin(db: Db, account: { username: string; pass
     if (await hasUsers(tx)) return null;
     const [user] = await tx.insert(users).values({ username: account.username, passwordHash: account.passwordHash, isAdmin: true }).returning();
     const mine = forUser(tx, user.id);
-    if (seed.learners.length) await mine.insert(learners, seed.learners);
+    const made = seed.learners.length ? await mine.insert(learners, seed.learners) : [];
+    // The seed packs go to the learner of their mode, in this transaction:
+    // a fresh install starts with them, and a failure leaves no admin.
+    for (const learner of made) {
+      const files = seed.packs?.[learner.mode];
+      if (files) await importPacks(tx, learner.id, files);
+    }
     if (seed.voice || seed.model) await mine.insert(userSettings, { voice: seed.voice ?? {}, model: seed.model });
     if (seed.messages.length) {
       await mine.insert(agentMessages, seed.messages.map((m) => ({ role: m.role, text: m.text, ...(validDate(m.ts) ? { ts: new Date(m.ts) } : {}) })));

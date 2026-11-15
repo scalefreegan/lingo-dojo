@@ -9,14 +9,14 @@ import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import {
-  loadContent, loadPackFile, parseFrontmatter, savePack, deletePack, saveProfile, writeExport, safeJoin, contentRoot,
-  listFolders, createFolder, deleteFolder, movePack, renamePack, splitPackId, slugify,
+  loadContent, loadPackFile, loadPackFiles, parseFrontmatter, saveProfile, writeExport, safeJoin, contentRoot,
+  listFolders, splitPackId, slugify, renamedStem, PACK_ID_RE,
 } from "../content.mjs";
 import { FIXTURE, copyFixture, write } from "./helpers.mjs";
 
 const problemFor = (content, suffix) => content.problems.filter((p) => p.file.endsWith(suffix));
 
-test("loads the fixture tree: schema order, units, scenarios, packs, profile, frame", () => {
+test("loads the fixture tree: schema order, units, scenarios, profile, frame; pack files are not the library's", () => {
   const c = loadContent(FIXTURE);
   assert.deepEqual(c.schema.slots.map((s) => s.id), ["intro", "warmup", "corrections", "debrief"]);
   assert.equal(c.schema.slots[0].required, true);
@@ -27,7 +27,8 @@ test("loads the fixture tree: schema order, units, scenarios, packs, profile, fr
     "orphan-unit", "warmup-odd", "warmup-vocab",
   ]);
   assert.deepEqual(c.scenarios.map((s) => s.id), ["market", "plaza"]);
-  assert.deepEqual(c.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
+  assert.equal(c.packs, undefined, "pack files are read by loadPackFiles only");
+  assert.deepEqual(loadPackFiles(FIXTURE).packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
   assert.equal(c.profile.learner_name, "Sam");
   assert.match(c.frame, /^You are the dojo master/);
   // languages.yaml: file order, variants [] when the key is absent
@@ -145,12 +146,17 @@ test("bad files are reported, never thrown: bad YAML, no frontmatter, id/filenam
   assert.match(msg("units/unclosed.md"), /^error: frontmatter is not closed/);
   assert.match(msg("units/renamed.md"), /^error: id "something-else" must equal the filename stem "renamed"/);
   assert.match(msg("scenarios/no-summary.md"), /^error: missing required key\(s\): summary/);
-  assert.match(msg("packs/2026-01-01-bad.yaml"), /^error: not valid YAML/);
-  assert.match(msg("packs/2026-01-02-untitled.yaml"), /^error: missing required key\(s\): title/);
+  // Broken pack files are no problem of the library's (the app never reads
+  // them); loadPackFiles reports them, for the import and the export CLI.
+  assert.equal(msg("packs/2026-01-01-bad.yaml"), "");
+  const files = loadPackFiles(root);
+  const fileMsg = (suffix) => files.problems.filter((p) => p.file.endsWith(suffix)).map((p) => `${p.level}: ${p.message}`).join(" | ");
+  assert.match(fileMsg("packs/2026-01-01-bad.yaml"), /^error: not valid YAML/);
+  assert.match(fileMsg("packs/2026-01-02-untitled.yaml"), /^error: missing required key\(s\): title/);
   // every rejected file is absent; the good ones still load
   for (const id of ["bad-yaml", "no-fm", "unclosed", "renamed"]) assert.ok(!c.units.some((u) => u.id === id), id);
   assert.ok(c.units.some((u) => u.id === "intro-native"));
-  assert.deepEqual(c.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
+  assert.deepEqual(files.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
 });
 
 test("missing files and a bad schema are problems, not crashes", () => {
@@ -181,7 +187,7 @@ test("an empty content root loads as an empty library with problems", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-empty-"));
   try {
     const c = loadContent(root);
-    assert.deepEqual([c.units, c.scenarios, c.packs, c.schema.slots, c.languages], [[], [], [], [], []]);
+    assert.deepEqual([c.units, c.scenarios, loadPackFiles(root).packs, c.schema.slots, c.languages], [[], [], [], [], []]);
     assert.ok(c.problems.some((p) => p.file.endsWith("schema.yaml") && p.level === "error"));
     assert.ok(c.problems.some((p) => p.file.endsWith("languages.yaml") && p.level === "warning"));
   } finally {
@@ -205,33 +211,6 @@ test("LINGO_CONTENT_DIR moves the content root, resolved against the repo root",
     if (before === undefined) delete process.env.LINGO_CONTENT_DIR;
     else process.env.LINGO_CONTENT_DIR = before;
   }
-});
-
-test("savePack writes contract-ordered YAML that loads back; deletePack removes it", () => {
-  const root = copyFixture();
-  const abs = savePack("2026-10-20-plaza-chat", {
-    id: "ignored-in-body",
-    notes: "Talk about the weather.\n",
-    title: "Plaza chat",
-    created: "2026-10-20T10:00:00-06:00",
-    scenario: "plaza",
-    units: ["intro-target", "warmup-vocab"],
-    overrides: { level: "B2" },
-    extra: "kept",
-  }, root);
-  assert.equal(abs, path.join(root, "packs", "2026-10-20-plaza-chat.yaml"));
-  const text = fs.readFileSync(abs, "utf8");
-  assert.deepEqual(Object.keys(YAML.parse(text)), [
-    "title", "created", "scenario", "quick_scenario", "units", "overrides", "notes", "extra",
-  ]);
-  const { pack, problems } = loadPackFile(abs);
-  assert.deepEqual(problems, []);
-  assert.equal(pack.id, "2026-10-20-plaza-chat");
-  assert.deepEqual(pack.units, ["intro-target", "warmup-vocab"]);
-  assert.equal(pack.overrides.level, "B2");
-  assert.equal(pack.notes, "Talk about the weather.\n");
-  assert.equal(deletePack("2026-10-20-plaza-chat", root), true);
-  assert.equal(deletePack("2026-10-20-plaza-chat", root), false);
 });
 
 test("saveProfile merges in place: other keys keep their order, comments and block style; blank removes a key", () => {
@@ -283,15 +262,15 @@ test("saveProfile creates a missing profile.yaml and refuses to overwrite a brok
 test("ids that could escape their directory are refused before any write", () => {
   const root = copyFixture();
   // a pack id may have one folder; an export id may not
-  for (const id of ["../evil", "a/b/c", "a/../b", "/a", "a/", "a//b", "./a", ".keep/x", "A-Upper", "-leading", "", "x.yaml", "..", "a\\b", 7, null]) {
-    assert.throws(() => savePack(id, { title: "t" }, root), { code: "EINVAL", message: /invalid id/ }, String(id));
+  for (const id of ["../evil", "a/b/c", "a/../b", "/a", "a/", "a//b", "./a", ".keep/x", "A-Upper", "-leading", "", "x.yaml", "..", "a\\b"]) {
+    assert.equal(PACK_ID_RE.test(id), false, id);
   }
+  for (const id of ["2026-10-19-x", "oaxaca/2026-10-19-x"]) assert.equal(PACK_ID_RE.test(id), true, id);
   for (const id of ["../evil", "a/b", "A-Upper", "-leading", "", "x.yaml", "..", "a\\b"]) {
     assert.throws(() => writeExport(id, "x", path.join(root, "exports")), /invalid id/, id);
   }
   assert.throws(() => safeJoin(root, "ok", "/../../x"), /escapes/);
   assert.ok(!fs.existsSync(path.join(root, "evil.yaml")));
-  assert.deepEqual(fs.readdirSync(path.join(root, "packs")), ["2026-10-19-market-gentle.yaml"], "nothing was written under packs/");
   assert.deepEqual(splitPackId("oaxaca/2026-10-19-x"), { folder: "oaxaca", stem: "2026-10-19-x" });
   assert.deepEqual(splitPackId("2026-10-19-x"), { folder: "", stem: "2026-10-19-x" });
 });
@@ -306,7 +285,7 @@ test("packs load one folder deep with folder ids; deeper and dot-directories are
   write(root, "packs/deep/deeper/2026-10-21-nope.yaml", "title: Nope\n");
   write(root, "packs/.hidden/2026-10-22-nope.yaml", "title: Nope\n");
   write(root, "packs/Bad Name/2026-10-23-x.yaml", "title: Bad\n");
-  const c = loadContent(root);
+  const c = loadPackFiles(root);
   assert.deepEqual(c.packs.map((p) => [p.id, p.folder]), [
     ["2026-10-19-market-gentle", ""],
     ["Bad Name/2026-10-23-x", "Bad Name"],
@@ -321,88 +300,23 @@ test("packs load one folder deep with folder ids; deeper and dot-directories are
   assert.deepEqual(listFolders(path.join(root, "nowhere")), []);
 });
 
-test("savePack and deletePack take folder ids; the folder is created on save and kept on delete", () => {
+test("loadPackFiles: the packs that load, every folder (an empty one too), and only the pack files' problems", () => {
   const root = copyFixture();
-  const abs = savePack("oaxaca/2026-10-20-mezcal", { title: "Mezcal", folder: "ignored", id: "ignored" }, root);
-  assert.equal(abs, path.join(root, "packs", "oaxaca", "2026-10-20-mezcal.yaml"));
-  assert.doesNotMatch(fs.readFileSync(abs, "utf8"), /^(folder|id):/m, "the path is the id; the file does not repeat it");
-  const c = loadContent(root);
-  assert.deepEqual(c.packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
-  assert.equal(c.packs[1].folder, "oaxaca");
-  assert.equal(deletePack("oaxaca/2026-10-20-mezcal", root), true);
-  assert.equal(deletePack("oaxaca/2026-10-20-mezcal", root), false);
-  assert.deepEqual(listFolders(root), ["oaxaca"], "an emptied folder stays");
+  write(root, "packs/oaxaca/2026-10-20-mezcal.yaml", "title: Mezcal\ncreated: 2026-10-20T10:00:00-06:00\n");
+  write(root, "packs/empty/.keep", "");
+  write(root, "packs/2026-10-21-broken.yaml", "title: [unclosed\n");
+  const files = loadPackFiles(root);
+  assert.deepEqual(files.packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.equal(files.packs[1].folder, "oaxaca");
+  assert.deepEqual(files.folders, ["empty", "oaxaca"]);
+  assert.deepEqual(files.problems.map((p) => p.file.split("/").slice(-2).join("/")), ["packs/2026-10-21-broken.yaml"]);
+  assert.deepEqual(loadPackFiles(path.join(root, "nowhere")).packs, []);
 });
 
-test("createFolder makes the directory with a .keep; deleteFolder removes only an empty one", () => {
-  const root = copyFixture();
-  assert.equal(createFolder("oaxaca", root), path.join(root, "packs", "oaxaca"));
-  assert.deepEqual(fs.readdirSync(path.join(root, "packs", "oaxaca")), [".keep"]);
-  assert.deepEqual(listFolders(root), ["oaxaca"]);
-  assert.throws(() => createFolder("oaxaca", root), { code: "EEXIST" });
-  for (const name of ["Oaxaca", "a/b", "..", ".", "", "-x", "a.b", "x y", null]) {
-    assert.throws(() => createFolder(name, root), { code: "EINVAL" }, String(name));
-  }
-  savePack("oaxaca/2026-10-20-mezcal", { title: "Mezcal" }, root);
-  assert.throws(() => deleteFolder("oaxaca", root), { code: "ENOTEMPTY", message: /not empty \(1 item\)/ });
-  assert.ok(fs.existsSync(path.join(root, "packs", "oaxaca", "2026-10-20-mezcal.yaml")), "a refused delete removes nothing");
-  deletePack("oaxaca/2026-10-20-mezcal", root);
-  assert.equal(deleteFolder("oaxaca", root), true);
-  assert.equal(deleteFolder("oaxaca", root), false);
-  assert.ok(!fs.existsSync(path.join(root, "packs", "oaxaca")));
-  assert.throws(() => deleteFolder("../units", root), { code: "EINVAL" });
-  assert.ok(fs.existsSync(path.join(root, "units")));
-});
-
-test("movePack renames the file between the top level and a folder, never over another pack", () => {
-  const root = copyFixture();
-  const id = "2026-10-19-market-gentle";
-  const before = fs.readFileSync(path.join(root, "packs", `${id}.yaml`), "utf8");
-  assert.equal(movePack(id, "oaxaca", root), `oaxaca/${id}`);
-  assert.ok(!fs.existsSync(path.join(root, "packs", `${id}.yaml`)));
-  assert.equal(fs.readFileSync(path.join(root, "packs", "oaxaca", `${id}.yaml`), "utf8"), before, "a move keeps the file byte for byte");
-  assert.equal(movePack(`oaxaca/${id}`, "oaxaca", root), `oaxaca/${id}`, "moving to where it already is changes nothing");
-  assert.throws(() => movePack(id, "oaxaca", root), { code: "ENOENT" });
-  savePack(id, { title: "Another" }, root);
-  assert.throws(() => movePack(`oaxaca/${id}`, "", root), { code: "EEXIST" });
-  assert.throws(() => movePack(`oaxaca/${id}`, "a/b", root), { code: "EINVAL" });
-  assert.throws(() => movePack(`oaxaca/${id}`, "..", root), { code: "EINVAL" });
-  assert.throws(() => movePack(`oaxaca/${id}`, null, root), { code: "EINVAL" });
-  assert.equal(fs.readFileSync(path.join(root, "packs", "oaxaca", `${id}.yaml`), "utf8"), before, "a refused move changes nothing");
-  deletePack(id, root);
-  assert.equal(movePack(`oaxaca/${id}`, "", root), id);
-  assert.deepEqual(loadContent(root).packs.map((p) => p.id), [id]);
-});
-
-test("renamePack updates the title and re-slugs the stem, keeping the date and folder", () => {
-  const root = copyFixture();
-  savePack("oaxaca/2026-10-20-mezcal", { title: "Mezcal", created: "2026-10-20T10:00:00-06:00", units: ["intro-native"], extra: "kept" }, root);
-  assert.equal(renamePack("oaxaca/2026-10-20-mezcal", "  Café en Oaxaca ", root), "oaxaca/2026-10-20-cafe-en-oaxaca");
-  assert.ok(!fs.existsSync(path.join(root, "packs", "oaxaca", "2026-10-20-mezcal.yaml")));
-  const { pack, problems } = loadPackFile(path.join(root, "packs", "oaxaca", "2026-10-20-cafe-en-oaxaca.yaml"));
-  assert.deepEqual(problems, []);
-  assert.equal(pack.title, "Café en Oaxaca");
-  assert.equal(pack.created, "2026-10-20T10:00:00-06:00");
-  assert.deepEqual(pack.units, ["intro-native"]);
-  assert.equal(pack.extra, "kept");
-  // the same slug rewrites the file in place
-  assert.equal(renamePack("oaxaca/2026-10-20-cafe-en-oaxaca", "Cafe en Oaxaca!", root), "oaxaca/2026-10-20-cafe-en-oaxaca");
-  assert.equal(loadContent(root).packs.find((p) => p.folder === "oaxaca").title, "Cafe en Oaxaca!");
-  // a stem without a date takes the date from created, else today
-  savePack("undated", { title: "Undated", created: "2025-01-02T00:00:00Z" }, root);
-  assert.equal(renamePack("undated", "Now dated", root), "2025-01-02-now-dated");
-  savePack("nodate", { title: "No date" }, root);
-  assert.match(renamePack("nodate", "Today", root), /^\d{4}-\d{2}-\d{2}-today$/);
-  // refusals: a clash, a blank title, a missing pack, a broken file — nothing changes
-  savePack("2026-10-19-plaza", { title: "Plaza" }, root);
-  assert.throws(() => renamePack("2026-10-19-market-gentle", "Plaza", root), { code: "EEXIST" });
-  assert.ok(fs.existsSync(path.join(root, "packs", "2026-10-19-market-gentle.yaml")));
-  assert.equal(loadContent(root).packs.find((p) => p.id === "2026-10-19-market-gentle").title, "Market, gentle corrections");
-  assert.throws(() => renamePack("2026-10-19-market-gentle", "  ", root), { code: "EINVAL" });
-  assert.throws(() => renamePack("2026-10-19-nope", "X", root), { code: "ENOENT" });
-  write(root, "packs/2026-10-19-broken.yaml", "title: [unclosed\n");
-  assert.throws(() => renamePack("2026-10-19-broken", "Fixed", root), { code: "EINVAL" });
-  assert.equal(fs.readFileSync(path.join(root, "packs", "2026-10-19-broken.yaml"), "utf8"), "title: [unclosed\n");
+test("renamedStem keeps the stem's date, else the created date, else today; slugify folds accents", () => {
+  assert.equal(renamedStem("2026-10-20-mezcal", "2025-01-01T00:00:00Z", "  Café en Oaxaca "), "2026-10-20-cafe-en-oaxaca");
+  assert.equal(renamedStem("undated", "2025-01-02T00:00:00Z", "Now dated"), "2025-01-02-now-dated");
+  assert.match(renamedStem("nodate", "", "Today"), /^\d{4}-\d{2}-\d{2}-today$/);
   assert.equal(slugify("Café en Oaxaca"), "cafe-en-oaxaca");
   assert.equal(slugify("!!!"), "pack");
 });
@@ -437,7 +351,7 @@ test("the kids tree loads on its own and shares the content root's languages.yam
     assert.deepEqual(kids.schema.slots.map((s) => s.id), ["intro", "story", "games"]);
     assert.deepEqual(kids.units.map((u) => u.id).sort(), ["game-echo", "intro-game", "story-quest"]);
     assert.deepEqual(kids.scenarios.map((s) => s.id), ["farm"]);
-    assert.deepEqual(kids.packs.map((p) => p.id), ["2026-10-20-farm-first"]);
+    assert.deepEqual(loadPackFiles(modeRoot("kids")).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
     assert.equal(kids.profile.learner_name, "Pip");
     assert.match(kids.frame, /^You are the dojo master running a short play session/);
     // No languages.yaml of its own: the root's list, and no problem about it.
@@ -447,7 +361,7 @@ test("the kids tree loads on its own and shares the content root's languages.yam
     const adult = loadContent(modeRoot("adult"));
     assert.ok(!adult.units.some((u) => u.id === "intro-game"));
     assert.ok(!adult.scenarios.some((s) => s.id === "farm"));
-    assert.ok(!adult.packs.some((p) => p.id.includes("farm")));
+    assert.ok(!loadPackFiles(modeRoot("adult")).packs.some((p) => p.id.includes("farm")));
     assert.ok(!listFolders(root).includes("kids"));
     // Its own languages.yaml wins when present; neither file is a warning.
     write(root, "kids/languages.yaml", "version: 1\nlanguages:\n  - name: Klingon\n    variants: []\n");

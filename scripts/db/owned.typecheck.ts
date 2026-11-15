@@ -40,6 +40,11 @@ export async function ownedRowTypes(db: Db, learnerId: string, userId: string) {
     set: { learnerId: "someone-else" },
   });
 
+  // Insert-or-ignore: the same values as insert, the owner in the target.
+  await mine.insertOrIgnore(phrases, { lang: "es-MX", text: "hola", norm: "hola", source: "gloss" }, { target: [phrases.lang, phrases.norm] });
+  // @ts-expect-error nor through insertOrIgnore
+  await mine.insertOrIgnore(phrases, { learnerId, lang: "es-MX", norm: "x", source: "gloss" });
+
   // A table without learner_id cannot be queried through a learner scope…
   // @ts-expect-error users has no learner_id
   await mine.list(users);

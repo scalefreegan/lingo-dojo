@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { loadContent } from "../content.mjs";
+import { loadContent, loadPackFiles } from "../content.mjs";
 import { assemble, CHOSEN_CITY, MISSING_UNIT_LINE, QUICK_SCENARIO_TITLE } from "../assemble.mjs";
 import { FIXTURE, copyFixture, write } from "./helpers.mjs";
 
@@ -26,7 +26,7 @@ test("renders the contract's sections in order", () => {
 });
 
 test("the fixture pack file assembles cleanly", () => {
-  const { markdown, warnings } = assemble(content, content.packs[0]);
+  const { markdown, warnings } = assemble(content, loadPackFiles(FIXTURE).packs[0]);
   assert.deepEqual(warnings, []);
   assert.match(markdown, /- \*\*Level:\*\* B1/);
 });
@@ -351,7 +351,7 @@ test("an invalid minutes value is ignored with a warning", () => {
 
 test("kids mode splits its own parts and says story, not scene", () => {
   const kids = loadContent(`${FIXTURE}/kids`);
-  const { markdown, warnings } = assemble(kids, { ...kids.packs[0], overrides: { minutes: 3 } }, "kids");
+  const { markdown, warnings } = assemble(kids, { ...loadPackFiles(`${FIXTURE}/kids`).packs[0], overrides: { minutes: 3 } }, "kids");
   assert.deepEqual(warnings, []);
   const section = budgetOf(markdown);
   assert.match(section, /^The learner has \*\*3 minutes\*\*/);
@@ -361,7 +361,7 @@ test("kids mode splits its own parts and says story, not scene", () => {
   // game would vanish from the split, so this fails if assemble passed the
   // wrong mode to sessionPlan.
   assert.match(section, /Echo game/);
-  assert.doesNotMatch(budgetOf(assemble(kids, { ...kids.packs[0], overrides: { minutes: 3 } }, "adult").markdown), /Echo game/, "the adult plan has no games");
+  assert.doesNotMatch(budgetOf(assemble(kids, { ...loadPackFiles(`${FIXTURE}/kids`).packs[0], overrides: { minutes: 3 } }, "adult").markdown), /Echo game/, "the adult plan has no games");
 });
 
 test("a fractional minutes value is rounded to whole minutes with a warning", () => {

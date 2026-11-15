@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
 } from "./api";
-import type { AssembleResult, AuthUser, Committed, ContentReply, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
+import type { AssembleResult, AuthUser, ContentReply, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
   draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, learnerKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
@@ -68,7 +68,7 @@ export default function App({
   const [packs, setPacks] = useState<Pack[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   // The one-line outcome of the last pack action (save, move, rename, delete,
-  // folder), with the commit that recorded it.
+  // restore, folder).
   const [packStatus, setPackStatus] = useState<PackStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
@@ -230,18 +230,17 @@ export default function App({
     return [s.learner_name, formatSessionLine(s)].filter(Boolean).join(" · ");
   }, [content, draft]);
 
-  /** Re-list after any pack write, so the library shows what is on disk. */
+  /** Re-list after any pack write, so the library shows what is stored. */
   async function refreshPacks() {
     const p = await listPacks(mode);
     setPacks(p.packs);
     setFolders(p.folders);
   }
 
-  /** The status line after a pack write: what happened and the commit that
-   *  recorded it — or that git did not, which deserves a look at the terminal. */
-  function report(what: string, c: Committed): PackStatus {
-    if (c.error) return { tone: "err", text: `${what} — ${c.error}` };
-    return { tone: "ok", text: c.commit ? `${what} (committed ${c.commit.hash})` : `${what} (nothing to commit)` };
+  /** The status line after a pack write. Every write is a revision in the
+   *  database (a delete can be undone from the Library's Recently deleted). */
+  function report(what: string): PackStatus {
+    return { tone: "ok", text: what };
   }
 
   /** Run a pack action, then re-list and show the outcome either way.
@@ -272,7 +271,7 @@ export default function App({
       const r = await savePack(mode, id, { ...draftToPack(draft), title, created });
       setDraft((d) => (d ? { ...d, title: r.pack.title, sourceId: r.pack.id, created: r.pack.created } : d));
       await refreshPacks();
-      setPackStatus(report(`Saved ${r.pack.id}`, r));
+      setPackStatus(report(`Saved ${r.pack.id}`));
       return { ok: true, id: r.pack.id };
     } catch (e) {
       return { ok: false, error: e instanceof ApiError ? e.message : String(e) };
@@ -283,7 +282,7 @@ export default function App({
     return act(async () => {
       const r = await movePack(mode, id, folder);
       setDraft((d) => (d && d.sourceId === id ? { ...d, sourceId: r.pack.id } : d));
-      return report(`Moved ${id} to ${folder || "no folder"}`, r);
+      return report(`Moved ${id} to ${folder || "no folder"}`);
     });
   }
 
@@ -291,26 +290,38 @@ export default function App({
     return act(async () => {
       const r = await renamePack(mode, id, title);
       setDraft((d) => (d && d.sourceId === id ? { ...d, sourceId: r.pack.id, title: r.pack.title } : d));
-      return report(`Renamed ${id} to ${r.pack.id}`, r);
+      return report(`Renamed ${id} to ${r.pack.id}`);
     });
   }
 
   function remove(id: string) {
     return act(async () => {
-      const r = await deletePack(mode, id);
+      await deletePack(mode, id);
       // The draft keeps its content but is no longer "the saved pack": a
-      // later save writes a new file rather than quietly resurrecting this one.
+      // later save makes a new pack rather than quietly resurrecting this one.
       setDraft((d) => (d && d.sourceId === id ? { ...d, sourceId: null } : d));
-      return report(`Deleted ${id}`, r);
+      return report(`Deleted ${id} (Library → Recently deleted can restore it)`);
     });
   }
 
   function addFolder(name: string) {
-    return act(async () => report(`Created folder ${name}`, await createFolder(mode, name)));
+    return act(async () => {
+      await createFolder(mode, name);
+      return report(`Created folder ${name}`);
+    });
   }
 
   function removeFolder(name: string) {
-    return act(async () => report(`Deleted folder ${name}`, await deleteFolder(mode, name)));
+    return act(async () => {
+      await deleteFolder(mode, name);
+      return report(`Deleted folder ${name}`);
+    });
+  }
+
+  /** A deleted pack came back (the Library's Recently deleted): re-list. */
+  async function restored(p: Pack) {
+    await refreshPacks();
+    setPackStatus(report(`Restored ${p.id}`));
   }
 
   /** "Save as my defaults": write the shown values to the active learner's
@@ -451,6 +462,9 @@ export default function App({
                 onDelete={remove}
                 onCreateFolder={addFolder}
                 onDeleteFolder={removeFolder}
+                mode={mode}
+                onRestored={restored}
+                onStale={() => refreshPacks().catch(() => undefined)}
               />
             )}
           </div>

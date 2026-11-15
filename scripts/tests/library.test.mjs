@@ -8,7 +8,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MODES, loadContent, modeRoot } from "../content.mjs";
+import { MODES, loadContent, loadPackFiles, modeRoot } from "../content.mjs";
 import { assemble } from "../assemble.mjs";
 
 for (const mode of MODES) {
@@ -40,7 +40,7 @@ for (const mode of MODES) {
 
     const unitIds = new Set(c.units.map((u) => u.id));
     const scenarioIds = new Set(c.scenarios.map((s) => s.id));
-    for (const p of c.packs) {
+    for (const p of loadPackFiles(modeRoot(mode)).packs) {
       if (p.scenario) assert.ok(scenarioIds.has(p.scenario), `pack ${p.id} names scenario "${p.scenario}", which ${mode} does not have`);
       for (const id of p.units) assert.ok(unitIds.has(id), `pack ${p.id} names unit "${id}", which ${mode} does not have`);
       const { warnings } = assemble(c, p, mode);
