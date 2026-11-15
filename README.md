@@ -54,14 +54,21 @@
 
 ## How it works
 
-Everything is a text file: units, scenarios, your learner profile and saved packs are markdown and YAML under `content/`, with git as the history and no database. The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
+Everything is a text file: units, scenarios, your learner profile and saved packs are markdown and YAML under `content/`, with git as the history. (A Postgres database for personal data is being built: see docs/DATA.md. No feature uses it yet.) The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
 
 ## Get started
 
 ```sh
 npm install && npm --prefix web install   # once
+npm run db:setup                          # once, and after pulling new migrations
 npm run dev                               # http://localhost:38400
 ```
+
+`db:setup` needs a local Postgres (`brew install postgresql@17 && brew services
+start postgresql@17`). It creates the `lingo_dojo` database (or the one
+`DATABASE_URL` in `.env.local` names) and applies the migrations. Nothing uses
+the database yet; it is the foundation for logins, saved conversations and the
+phrase bank (docs/DATA.md). The dev server won't start until it is set up.
 
 Or build the Dock app once and launch it by icon (see `macos/README.md`; the first
 launch asks for Documents access for "Lingo Dojo Server"):

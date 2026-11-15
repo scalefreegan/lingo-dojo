@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePacks, handleProfile } from "./content.ts";
+import { checkDatabase } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
 import { handleVoice } from "./voice.ts";
 
@@ -56,13 +57,13 @@ export function wrap(fn: Handler): Handler {
   };
 }
 
-export function apiPlugins(): Plugin {
+export function apiPlugins(opts: { checkDatabase?: boolean } = {}): Plugin {
   return {
     name: "lingo-dojo-api",
     apply: "serve",
     configureServer(server) {
-      // No database and no cache: every route re-reads content/ from disk,
-      // so an edit by the agent or an editor is live on the next request.
+      // No cache: every library route re-reads content/ from disk, so an
+      // edit by the agent or an editor is live on the next request.
       server.middlewares.use("/api/content", wrap(handleContent));
       server.middlewares.use("/api/profile", wrap(handleProfile));
       server.middlewares.use("/api/packs", wrap(handlePacks));
@@ -78,6 +79,16 @@ export function apiPlugins(): Plugin {
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" })));
+      // The boot check (docs/DATA.md): Vite awaits this hook, so a database
+      // that is missing, down or behind on migrations stops `npm run dev`
+      // with checkDatabase's message (what to run) instead of starting a
+      // server whose first database route fails far from the cause. The
+      // HTTP tests mount the plugin with checkDatabase: false; they never
+      // need a Postgres server.
+      if (opts.checkDatabase === false) return;
+      return checkDatabase().then(({ applied }) => {
+        server.config.logger.info(`  database ready (${applied} migration(s) applied)`);
+      });
     },
   };
 }

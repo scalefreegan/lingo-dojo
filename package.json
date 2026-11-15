@@ -7,9 +7,20 @@
   "scripts": {
     "dev": "npm --prefix web run dev",
     "test": "node --test scripts/tests/*.test.mjs",
-    "export": "node scripts/export.mjs"
+    "export": "node scripts/export.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node scripts/db/setup.mjs --migrate-only",
+    "db:setup": "node scripts/db/setup.mjs"
   },
   "dependencies": {
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1",
+    "ts-fsrs": "^6.0.0",
     "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
   }
 }

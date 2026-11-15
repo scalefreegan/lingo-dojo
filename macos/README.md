@@ -84,8 +84,10 @@ WITHOUT re-prompting.** Recovery, in order:
 Server log: `~/Library/Logs/LingoDojo.log` (the previous run is kept at
 `.log.old`).
 
-The app expects `npm install` to have been run once (repo root and `web/`) —
-the launcher starts the server, it doesn't install dependencies.
+The app expects `npm install` to have been run once (repo root and `web/`),
+and `npm run db:setup` after any new migration. The launcher starts the server;
+it doesn't install dependencies or migrate, and the server refuses to start on
+a missing or outdated database (the reason is in the log).
 
 ## Port
 
