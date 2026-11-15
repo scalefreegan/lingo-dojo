@@ -1169,11 +1169,16 @@ test("a note of any length is still a mark, never spoken", () => {
   assert.deepEqual(lines.map((l) => [l.speaker, l.text, l.gap ?? null]), [["narrator", "Hi", null], ["character", "Hola", 1.5]]);
 });
 
+// Wall-clock bound for catastrophic backtracking only: linear scans of these
+// inputs take a few ms, quadratic or worse takes seconds to forever, so 3 s
+// stays clear of a busy machine (a 250 ms bound failed at 261 ms) and still
+// catches the blowup.
+const BACKTRACK_MS = 3000;
 test("runs of underscores or *_ never make the hidden-line patterns backtrack", () => {
-  fast(() => parseVoiceReply(`NARRATOR-F: Fill in: ${"_".repeat(40000)}`));
-  fast(() => parseVoiceReply(`NARRATOR-F: x ${"*_".repeat(20000)}`));
-  fast(() => parseGlosses(`${"_".repeat(40000)} GLOSS: a = b`));
-  fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `<pause ${"<t>".repeat(100)}`).join("\n")));
+  fast(() => parseVoiceReply(`NARRATOR-F: Fill in: ${"_".repeat(40000)}`), BACKTRACK_MS);
+  fast(() => parseVoiceReply(`NARRATOR-F: x ${"*_".repeat(20000)}`), BACKTRACK_MS);
+  fast(() => parseGlosses(`${"_".repeat(40000)} GLOSS: a = b`), BACKTRACK_MS);
+  fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `<pause ${"<t>".repeat(100)}`).join("\n")), BACKTRACK_MS);
 });
 
 /* ------------------------------- time budget ------------------------------ */

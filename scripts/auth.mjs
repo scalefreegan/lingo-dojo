@@ -250,6 +250,26 @@ export function clientAddress(headers, remoteAddress) {
   return socket.slice(0, 64);
 }
 
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * True only for a request made directly on this machine: the socket peer is
+ * loopback, no proxy header is present, and the Host is a localhost name or
+ * loopback literal. First-run (the unauthenticated account-creating route)
+ * is limited to this, because `tailscale serve` reaches the server from
+ * loopback too: its tell is the X-Forwarded-* headers it always adds and the
+ * tailnet Host. Any of the three being off means "not here". A trailing-dot
+ * Host (`localhost.`) is refused, which only fails closed.
+ */
+export function isDirectLocalRequest(headers, remoteAddress) {
+  if (!LOOPBACK.has(String(remoteAddress ?? ""))) return false;
+  for (const h of ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"]) {
+    if (headers?.[h] !== undefined) return false;
+  }
+  const host = String(headers?.host ?? "").toLowerCase().replace(/:\d+$/, "");
+  return LOCAL_HOSTS.has(host);
+}
+
 /** The throttle key: a username and a client address. */
 export function throttleKey(username, address) {
   return `${username}\n${address}`;
