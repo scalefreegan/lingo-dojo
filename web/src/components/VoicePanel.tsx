@@ -6,6 +6,7 @@ import {
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
 import { SessionTimeline } from "./SessionTimeline";
+import { RubyToggle } from "./Ruby";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
 import {
@@ -1611,6 +1612,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         </div>
       )}
 
+      {/* Pinyin / zhuyin over the transcript's Chinese (nothing for other languages). */}
+      {started && <RubyToggle locale={locale} className="self-end" />}
       {started && (
         <Transcript
           entries={entries}
@@ -1708,7 +1711,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
           </Button>
         </div>
       )}
-      {started && ended && recapId && <SessionRecap id={recapId} justEnded />}
+      {started && ended && recapId && <SessionRecap id={recapId} justEnded locale={locale} />}
 
       {started && !ended && (
         <div className="flex flex-col gap-2">

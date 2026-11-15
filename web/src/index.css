@@ -203,3 +203,52 @@ h3 {
 @media (prefers-reduced-motion: reduce) {
   .mochi-bob, .mochi-talk, .mochi-dot { animation: none; }
 }
+
+/* Reading aids over Chinese characters (script/ruby.tsx): pinyin or zhuyin
+   in each <rt>, drawn from its data-rt by ::before. Generated text is never
+   selected or copied, so copying a line copies its characters only, and
+   the rt is aria-hidden, so a screen reader reads the characters once. */
+@layer components {
+  ruby.ld-ruby {
+    ruby-position: over;
+    ruby-align: center;
+  }
+  ruby.ld-ruby > rt {
+    font-size: 0.62em;
+    font-weight: 400;
+    line-height: 1.15;
+    letter-spacing: 0;
+    /* A little air either side, so neighbouring syllables don't run
+       together (wǒ men, not wǒmen) where a reading is wider than its
+       character. */
+    padding-inline: 0.2em;
+    opacity: 0.85;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  ruby.ld-ruby > rt::before {
+    content: attr(data-rt);
+  }
+  :root[data-mode="kids"] ruby.ld-ruby > rt {
+    font-size: 0.7em;
+  }
+  /* A character that opens the character card: a tile, so it reads as
+     tappable without the gloss underline (which means "has a meaning"). */
+  .ld-char {
+    display: inline-flex;
+    align-items: flex-end;
+    justify-content: center;
+    min-width: 1.9em;
+    margin: 0.1em 0.08em;
+    padding: 0.05em 0.15em;
+    border: 1px solid var(--line-strong);
+    border-radius: 0.5rem;
+    background: var(--panel);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .ld-char:hover {
+    background: var(--accent-soft);
+  }
+}

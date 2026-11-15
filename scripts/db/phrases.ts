@@ -639,11 +639,18 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     if (input.note !== undefined) set.note = input.note;
     // Alternates were accepted by the grader against the words and meaning
     // as they were: new words or a new meaning is a new question, so they
-    // go. Otherwise an edit may only remove some (an `alternates` list
-    // keeps those of the phrase's it names).
+    // go. Otherwise an edit may only remove some: an `alternates` list
+    // keeps those of the phrase's it names, a `removeAlternates` list drops
+    // those it names (read here, under the row lock, so one saved since the
+    // learner's page loaded stays).
     const changed = (set.text !== undefined && set.text !== row.text) || (input.meaning !== undefined && input.meaning !== row.meaning);
     if (changed) set.alternates = [];
-    else if (input.alternates !== undefined) set.alternates = row.alternates.filter((a) => input.alternates!.includes(a));
+    else {
+      let alternates = row.alternates;
+      if (input.alternates !== undefined) alternates = alternates.filter((a) => input.alternates!.includes(a));
+      if (input.removeAlternates !== undefined) alternates = alternates.filter((a) => !input.removeAlternates!.includes(a));
+      if (alternates !== row.alternates) set.alternates = alternates;
+    }
     if (input.starred !== undefined) set.starred = input.starred;
     if (input.suspended !== undefined) set.suspended = input.suspended;
     // Any change by hand marks it: no automatic path deletes it or

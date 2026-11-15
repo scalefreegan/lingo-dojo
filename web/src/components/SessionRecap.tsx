@@ -3,6 +3,7 @@ import { ApiError, getRecap, retryRecap } from "../api";
 import { openBank } from "../bankLink";
 import type { MasteryBand, RecapEvent, SessionRecap as Recap } from "../types";
 import { GlossStar } from "./GlossStar";
+import { RubyText } from "./Ruby";
 import { Badge, Button } from "./ui";
 
 /* The session recap (docs/DATA.md §Post-session extraction), under the
@@ -39,7 +40,10 @@ const KIND: Record<RecapEvent["kind"], string> = {
 
 /** `justEnded`: the Go tab's session that End just closed (its recap is
  *  about to start, so "open" and "none" wait instead of offering a button). */
-export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?: boolean }) {
+/** `locale`: the session's target language, the transcript's: the card's
+ *  phrases take the same readings (the transcript's Readings switch; no
+ *  switch of its own). */
+export function SessionRecap({ id, justEnded = false, locale = null }: { id: string; justEnded?: boolean; locale?: string | null }) {
   const [recap, setRecap] = useState<Recap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -195,7 +199,9 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
               <ul className="mt-1 flex flex-col gap-1" data-testid="recap-kept">
                 {recap.kept.map((k, i) => (
                   <li key={`${i}:${k.text}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
-                    <span className="font-medium text-fg">{k.text}</span>
+                    <span className="font-medium text-fg" lang={locale ?? undefined}>
+                      <RubyText text={k.text} locale={locale} />
+                    </span>
                     <span className="text-fg-3">{k.meaning}</span>
                     {!kids && k.mastery && <Badge tone={BAND_TONE[k.mastery]}>{k.mastery}</Badge>}
                     <span className="flex-1" />
@@ -218,7 +224,9 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
               <ul className="mt-1 flex flex-col gap-0.5 text-sm text-fg-2">
                 {well.map((e, i) => (
                   <li key={`${i}:${e.phrase}:${e.kind}`}>
-                    <span className="font-medium text-fg">{e.phrase}</span>
+                    <span className="font-medium text-fg" lang={locale ?? undefined}>
+                      <RubyText text={e.phrase} locale={locale} />
+                    </span>
                     {!kids && <span className="text-fg-3">: {KIND[e.kind]}</span>}
                   </li>
                 ))}
@@ -233,14 +241,22 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
               <ul className="mt-1 flex flex-col gap-1 text-sm text-fg-2" data-testid="recap-corrections">
                 {recap.corrections.map((c, i) => (
                   <li key={`${i}:${c.said}→${c.better}`}>
-                    <span className="text-fg-3 line-through">{c.said}</span> → <span className="font-medium text-fg">{c.better}</span>
+                    <span className="text-fg-3 line-through" lang={locale ?? undefined}>
+                      <RubyText text={c.said} locale={locale} />
+                    </span>{" "}
+                    →{" "}
+                    <span className="font-medium text-fg" lang={locale ?? undefined}>
+                      <RubyText text={c.better} locale={locale} />
+                    </span>
                     {c.note && <span className="text-fg-3"> ({c.note})</span>}
                   </li>
                 ))}
                 {!kids &&
                   fix.map((e, i) => (
                     <li key={`${i}:${e.phrase}:${e.kind}`}>
-                      <span className="font-medium text-fg">{e.phrase}</span>
+                      <span className="font-medium text-fg" lang={locale ?? undefined}>
+                        <RubyText text={e.phrase} locale={locale} />
+                      </span>
                       <span className="text-fg-3">
                         : {KIND[e.kind]}
                         {e.said ? ` (you said "${e.said}")` : ""}

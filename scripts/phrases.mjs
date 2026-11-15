@@ -236,7 +236,7 @@ function badString(v, field, max, required) {
  * or `{ error }` for a 400. text and meaning are one line; a note keeps its
  * line breaks. Control characters (C0 but newlines, bidi overrides) are
  * dropped from all three, and the lengths are those of what is stored. An edit takes any of text, meaning, note, starred,
- * suspended, alternates (to remove some); null or "" clears meaning and note. Unknown keys are ignored.
+ * suspended, alternates (the ones to keep) or removeAlternates (the ones to drop); null or "" clears meaning and note. Unknown keys are ignored.
  */
 export function readPhraseInput(body, { create = false } = {}) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
@@ -264,12 +264,20 @@ export function readPhraseInput(body, { create = false } = {}) {
     }
     value.alternates = body.alternates;
   }
+  // Or only the ones to remove (the bank's ×): one the grader saved after
+  // the learner's page loaded is kept, where a full list would drop it.
+  if (body.removeAlternates !== undefined) {
+    if (!Array.isArray(body.removeAlternates) || body.removeAlternates.length > 50 || body.removeAlternates.some((a) => typeof a !== "string" || a.length > LIMITS.text)) {
+      return { error: `removeAlternates must be a list of alternates to remove (at most ${LIMITS.text} characters each)` };
+    }
+    value.removeAlternates = body.removeAlternates;
+  }
   for (const key of ["starred", "suspended"]) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "boolean") return { error: `${key} must be true or false` };
     value[key] = body[key];
   }
-  if (!create && !Object.keys(value).length) return { error: "nothing to change: send text, meaning, note, alternates, starred or suspended" };
+  if (!create && !Object.keys(value).length) return { error: "nothing to change: send text, meaning, note, alternates, removeAlternates, starred or suspended" };
   return { value };
 }
 

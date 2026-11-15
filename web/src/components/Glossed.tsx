@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { VoiceGloss } from "../../shared/wire";
 import { isSpan, layout } from "../gloss";
+import { rubyPieces, useRuby } from "../script/ruby.tsx";
 
 /* Tap-to-see definitions on the dojo master's target-language text.
  *
@@ -12,7 +13,11 @@ import { isSpan, layout } from "../gloss";
  * and the line's own translate button (VoicePanel, from `sentenceGlosses`)
  * is the keyboard and screen-reader way to it. One level of nesting is
  * enough; a match that half-overlaps another is dropped rather than
- * guessed at. */
+ * guessed at.
+ *
+ * Chinese gets its readings (pinyin or zhuyin, script/ruby.tsx) over each
+ * character, read from the whole text so a word cut by a gloss boundary
+ * still reads as a word; the buttons and spans wrap the ruby unchanged. */
 
 function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: boolean; onPick: (g: VoiceGloss) => void; children: ReactNode }) {
   return (
@@ -35,15 +40,17 @@ function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: 
  *  sentence opening its translation on a pointer tap. */
 export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: string; glosses: VoiceGloss[]; picked: VoiceGloss | null; onPick: (g: VoiceGloss) => void; locale?: string }) {
   const text = raw.normalize("NFC");
-  if (!glosses.length) return <>{text}</>;
+  const ruby = useRuby(text, locale);
+  const piece = (from: number, to: number) => rubyPieces(text, from, to, ruby);
+  if (!glosses.length) return <>{piece(0, text.length)}</>;
   const out: ReactNode[] = [];
   let at = 0;
   for (const o of layout(text, glosses, locale)) {
-    if (o.start > at) out.push(text.slice(at, o.start));
+    if (o.start > at) out.push(...piece(at, o.start));
     if (!isSpan(o, locale)) {
       out.push(
         <Word key={o.start} gloss={o.gloss} active={picked === o.gloss} onPick={onPick}>
-          {text.slice(o.start, o.end)}
+          {piece(o.start, o.end)}
         </Word>,
       );
       at = o.end;
@@ -52,15 +59,15 @@ export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: 
     const parts: ReactNode[] = [];
     let i = o.start;
     for (const h of o.inner) {
-      if (h.start > i) parts.push(text.slice(i, h.start));
+      if (h.start > i) parts.push(...piece(i, h.start));
       parts.push(
         <Word key={h.start} gloss={h.gloss} active={picked === h.gloss} onPick={onPick}>
-          {text.slice(h.start, h.end)}
+          {piece(h.start, h.end)}
         </Word>,
       );
       i = h.end;
     }
-    if (o.end > i) parts.push(text.slice(i, o.end));
+    if (o.end > i) parts.push(...piece(i, o.end));
     out.push(
       <span key={o.start} className={`cursor-pointer rounded-sm hover:bg-accent-soft/60 ${picked === o.gloss ? "bg-accent-soft/60" : ""}`} onClick={() => onPick(o.gloss)}>
         {parts}
@@ -68,6 +75,6 @@ export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: 
     );
     at = o.end;
   }
-  if (at < text.length) out.push(text.slice(at));
+  if (at < text.length) out.push(...piece(at, text.length));
   return <>{out}</>;
 }

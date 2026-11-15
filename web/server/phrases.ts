@@ -15,7 +15,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST   /api/phrases            {text, meaning?, note?, starred?} → {phrase, created}  (201 new, 200 already there)
 //   GET    /api/phrases/lookup     ?text= → {phrase | null}: the phrase with those words (the ☆'s state)
 //   GET    /api/phrases/:id        → {phrase}: with its examples
-//   PATCH  /api/phrases/:id        {text?, meaning?, note?, starred?, suspended?} → {phrase}
+//   PATCH  /api/phrases/:id        {text?, meaning?, note?, starred?, suspended?, alternates?, removeAlternates?} → {phrase}
 //   DELETE /api/phrases/:id        → {deleted: true}; its cards, reviews and examples go with it
 //
 // Mounted with wrap's `learner: true`: the page must name the session's

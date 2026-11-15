@@ -674,7 +674,15 @@ tables were keyed by learner and `lang`; the language profiles of
   from the merge rule above, which filled the pending row in, so that every
   write takes its rows in one order (complete rows by norm, then pending
   rows by meaning) and two conversations capturing at once wait for each
-  other instead of deadlocking or colliding on the words. A write that still
+  other instead of deadlocking or colliding on the words. One pass per
+  transaction: two ordered passes one after the other are not in order
+  together, so a write with two jobs takes the complete rows of both in
+  one norm-ordered pass first (`lockInNormOrder`): the turn write that
+  drops a reply and captures the next (`lockTurnWrite`: the dropped
+  replies' sighted phrases by id, the new capture's upserted) and a recap
+  re-run (the last run's phrases by id, beside the new reply's). A row
+  found by id is placed at the norm it had when read, so a rename at that
+  moment can still misplace it. A write that still
   collides (an edit giving a pending phrase words while a capture adds
   them) is retried once (unique violation or deadlock), then reported:
   `phrases.pg.test.mjs` races captures, an add and crossing meanings on
@@ -1114,7 +1122,18 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   when the session started (a reviewed card due by then, at most 20). A
   failed call or a reply `parseExtraction` rejects is tried once more;
   after the second the conversation is `failed` with the reason in
-  `extraction_error`.
+  `extraction_error`: fixed wording only ("the model call didn't work",
+  "the reply wasn't a recap", "the recap couldn't be saved", "no reply",
+  "its learner or language is gone", or the CLI's own sign-in, limit or
+  overload hint), never a CLI's output or a database error (which hold
+  SQL, the recap's JSON and ids); those go to the server log with their
+  cause. A stored reason that is none of these reads as "the recap
+  couldn't be made". Model text is made well-formed before it is stored
+  (lone surrogates, zero-width space, word joiner and BOM removed, as well
+  as the control characters), so a reply can't fail the jsonb write.
+  `extractJsonObject` reads at most 200 000 characters and tries at most
+  64 opening braces, so a reply of unbalanced braces can't stall the
+  server.
 - **Migration 0004** adds to `conversations` `extraction_status` (not
   null, default `none`; check in none|running|done|failed|skipped),
   `extraction_claim` (uuid; a check makes it set exactly while running),
@@ -1143,8 +1162,11 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   write locks the conversation row and goes ahead only while it still
   holds its token.
 - **The write**, one transaction (retried once on a unique violation or
-  deadlock), in the bank's lock order (the conversation, then complete
-  phrases by norm, then pending rows, then cards). Only when the session
+  deadlock), in the bank's lock order: the conversation, then one
+  norm-ordered pass over every complete phrase it touches (the kept
+  phrases upserted, the ones events name, and the last run's phrases by
+  id, so one renamed since is still locked, restored and recounted), then
+  pending rows, then cards. Only when the session
   was in the profile's language (`bankLocale`, as the turn capture);
   otherwise the recap is stored and the bank left alone (`inBank`
   false).
@@ -1188,9 +1210,12 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
     from `card_before` (a listen/produce card that goes back to never
     reviewed and isn't reviewed again is deleted). A card reviewed
     since (practice) keeps the old session review and isn't reviewed
-    again. A phrase only the last run made (`source` extraction, no
-    sighting, no reviewed card, nothing the learner set) and not named
-    now is deleted. The same reply twice leaves cards, reviews, phrases,
+    again. A phrase the re-run leaves with no sighting is settled by the
+    one rule a dropped reply's undo uses too (`settleUnseen`), whichever
+    of the two comes last: deleted, with its unreviewed cards, when only
+    automatic paths held it (`source` gloss or extraction, nothing the
+    learner set, no reviewed card); otherwise kept, unseen, without its
+    unreviewed cards. The same reply twice leaves cards, reviews, phrases,
     sightings and examples identical (tested).
 - **Stored**: `summary`, `extraction` (`{v: 1, summary, keep[{text,
   meaning, why, phraseId}], events[{phrase, kind, said, note, phraseId,
@@ -1213,6 +1238,9 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   Library → Phrase bank searching for it, `bankLink.ts`); what went
   well; what to work on (corrections and corrected/confused events);
   "Retry recap" when failed, "Make a recap" for one never made.
+  Its target-language text (kept phrases, events, corrections) takes the
+  transcript's readings (`RubyText`, the transcript's Readings switch:
+  no switch of its own).
 - **Kids** (DATA.md is silent beyond "session capture" for kids): the
   same pass and bank writes for a kids learner; the prompt adds a line
   asking for a child's summary in simple words, and the card's wording
@@ -1431,9 +1459,12 @@ cards are left alone by this queue.
   forms, and a meaning there would grade as the words (keeping accepted
   meanings would need a column: not done). Editing a phrase's words or
   meaning (to a different value) clears its alternates: every one was
-  accepted against the old question. `PATCH /api/phrases/:id {alternates}`
-  keeps only the named ones (removal only, nothing added by hand); the
-  bank's per-alternate remove button is bead `ld-gf9.4` (Phrase bank view).
+  accepted against the old question. `PATCH /api/phrases/:id {removeAlternates}`
+  removes the ones it names (the bank's ×, so one saved meanwhile stays);
+  `PATCH /api/phrases/:id {alternates}`
+  keeps only the named ones (removal only, nothing added by hand). The
+  phrase detail's × hides one with an Undo for a few seconds, then sends
+  `removeAlternates`.
 - **What a review keeps besides the card.** A flashcard review's
   `card_before` jsonb carries, beside the FSRS fields (`fromRow`,
   `cardVersion` and the trouble query read only those), `submit_id` (the
@@ -1854,11 +1885,19 @@ Access in System Settings, or keep the checkout elsewhere.
   replacing the last, a card practised since, untrusted output (control
   characters, sentences, ids, a learner's meaning, a suspension), the
   pending merge and a dismissed phrase (by text, and a deleted scene
-  phrase by meaning), skipped, another language's
+  phrase by meaning), skipped,
+  learner-safe failure text (a database failure shows no SQL or JSON) and
+  a lone surrogate stored fine, another language's
   session, kids, open/404/405, a run that died with the server (whose late attempt counts nothing), and
   Practice on a recapped card (session reviews outside the daily limits,
   an override and a re-run leaving each other alone, a recap retried after
-  a practice review skipping that card);
+  a practice review skipping that card); `extraction-undo.test.mjs` the
+  one unseen-phrase rule in both orders (dropped reply then re-run, and
+  back); `extraction.pg.test.mjs` also holds, each round, the turn write
+  that drops a reply and captures the next beside a recap (it deadlocked
+  and lost the capture before the single lock pass) and a re-run beside a
+  rename of a phrase its last run sighted (left the count stale before
+  the by-id lock);
   `db-migration-0004.test.mjs` and `migration-0004.pg.test.mjs` the
   migration; `extraction.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races 8
   claims of one recap (one wins) and a recap's write against two gloss

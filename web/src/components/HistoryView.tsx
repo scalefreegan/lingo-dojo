@@ -3,6 +3,7 @@ import { ApiError, deleteConversation, getConversation, listConversations } from
 import { sessionGlosses, useLineTranslations } from "../transcript";
 import type { ConversationSummary, ConversationTurnsReply, VoiceGloss, VoiceHistoryItem } from "../types";
 import { inBankLanguage } from "./shared";
+import { RubyToggle } from "./Ruby";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
 import { Badge, Button } from "./ui";
@@ -207,6 +208,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
               {!c.endedAt && " · still open"}
             </p>
           </div>
+          {entries.length > 0 && <RubyToggle locale={locale} className="self-end" />}
           {entries.length === 0 ? (
             <p className="text-sm text-fg-3">No turns were saved in this one.</p>
           ) : (
@@ -228,7 +230,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
             />
           )}
           {glosses.length > 0 && <p className="text-xs text-fg-3">Tap an underlined word for its meaning.</p>}
-          {c.endedAt && <SessionRecap id={c.id} />}
+          {c.endedAt && <SessionRecap id={c.id} locale={locale} />}
         </>
       )}
     </div>
