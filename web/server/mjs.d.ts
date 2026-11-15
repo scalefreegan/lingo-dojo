@@ -199,5 +199,34 @@ declare module "*/scripts/voice.mjs" {
   export function normalizeVoiceSettings(raw: unknown): import("../shared/wire.ts").VoiceSettings;
 }
 
+declare module "*/scripts/db/config.mjs" {
+  export const DEFAULT_DATABASE_URL: string;
+  export const MIGRATIONS_DIR: string;
+  export function isLinkedWorktree(root?: string): boolean;
+  /** The shell's DATABASE_URL, else .env.local's, else the default; throws
+   *  in a linked worktree with neither. */
+  export function databaseUrl(env?: Record<string, string | undefined>, file?: string, root?: string): string;
+  /** Throws when the URL names no database. */
+  export function databaseName(url: string): string;
+  /** The URL with any password masked. */
+  export function redact(url: string): string;
+}
+
+declare module "*/scripts/db/migrations.mjs" {
+  type Migration = { sql: string[]; folderMillis: number; hash: string };
+  type MigrationState = {
+    status: "current" | "behind" | "skipped" | "ahead" | "diverged";
+    total: number;
+    applied: number;
+    missing: Migration[];
+    skipped: Migration[];
+    unknown: { hash: string; createdAt: number | null }[];
+  };
+  type Query = (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+  /** Read-only: the database's recorded migrations against the files, by hash. */
+  export function migrationState(query: Query, disk?: Migration[]): Promise<MigrationState>;
+  export function describeMigrations(state: MigrationState): string;
+}
+
 // Everything else: untyped.
 declare module "*.mjs";
