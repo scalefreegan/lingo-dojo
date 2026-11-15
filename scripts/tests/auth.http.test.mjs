@@ -16,7 +16,7 @@ import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, PASSWORD, addUser, client } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { tokenHash } from "../auth.mjs";
-import { disableUser, setPassword } from "../db/accounts.ts";
+import { disableUser, enableUser, setPassword } from "../db/accounts.ts";
 import { agentMessages, authSessions, learners, userSettings, users } from "../db/schema.ts";
 
 const root = copyFixture();
@@ -118,6 +118,10 @@ test("first run: /me says so; the first account is an admin seeded from the prof
   }
 });
 
+// On PGlite this can't fail: PGlite runs one transaction at a time, so the
+// two first runs never overlap, and the test passes with createFirstAdmin's
+// LOCK TABLE deleted. It stays as a check of the route's replies; the race
+// itself is first-run.pg.test.mjs, on a real Postgres (LINGO_TEST_PG_URL).
 test("first run: two at once make exactly one admin", async () => {
   const { db } = await freshRoutes();
   const [a, b] = await Promise.all([
@@ -260,6 +264,48 @@ test("the throttle: 5 failures for a username → 429 with Retry-After, even for
   assert.equal((await anon().call("POST", "/api/auth/login", { username: "robin", password: PASSWORD })).status, 200);
 });
 
+test("the throttle holds against parallel guesses: of 40 at once, 5 get an answer and the rest 429", async () => {
+  const { db } = await freshRoutes();
+  await addUser(db, "robin");
+  const replies = await Promise.all(
+    Array.from({ length: 40 }, (_, i) => anon().call("POST", "/api/auth/login", { username: "robin", password: `wrong ${i}` })),
+  );
+  const counts = {};
+  for (const r of replies) counts[r.status] = (counts[r.status] ?? 0) + 1;
+  assert.deepEqual(counts, { 401: 5, 429: 35 });
+});
+
+test("the throttle is per username and client: another client's guesses don't lock the owner out", async () => {
+  const { db } = await freshRoutes();
+  await addUser(db, "robin");
+  // Through the local proxy (the test server is on loopback), the client is
+  // the X-Forwarded-For hop the proxy added: the last one.
+  const guesser = { "X-Forwarded-For": "100.64.0.9" };
+  for (let i = 0; i < 5; i++) await anon().call("POST", "/api/auth/login", { username: "robin", password: `wrong ${i}` }, guesser);
+  assert.equal((await anon().call("POST", "/api/auth/login", { username: "robin", password: PASSWORD }, guesser)).status, 429);
+  const spoofed = { "X-Forwarded-For": "100.64.0.7, 100.64.0.9" };
+  assert.equal((await anon().call("POST", "/api/auth/login", { username: "robin", password: PASSWORD }, spoofed)).status, 429, "a made-up first hop is not a new client");
+  const owner = { "X-Forwarded-For": "100.64.0.7" };
+  assert.equal((await anon().call("POST", "/api/auth/login", { username: "robin", password: PASSWORD }, owner)).status, 200);
+});
+
+test("a login with a username no account can have is the same 401, never reaches the throttle; the body is capped small", async () => {
+  const { db } = await freshRoutes();
+  await addUser(db, "robin");
+  for (const username of ["x".repeat(4000), "no spaces", "../etc", "ROBIN!"]) {
+    const r = await anon().call("POST", "/api/auth/login", { username, password: "whatever" });
+    assert.equal(r.status, 401, username.slice(0, 20));
+    assert.equal(r.body.error, "wrong username or password");
+  }
+  // Many of them are not throttled (they are never counted), and so neither
+  // is the real account behind them.
+  for (let i = 0; i < 10; i++) assert.equal((await anon().call("POST", "/api/auth/login", { username: `bad name ${i}`, password: "x" })).status, 401);
+  assert.equal((await anon().call("POST", "/api/auth/login", { username: "robin", password: PASSWORD })).status, 200);
+  const huge = await anon().call("POST", "/api/auth/login", { username: "x".repeat(20_000), password: "x" });
+  assert.equal(huge.status, 413, "8 KB is the most a login body may be");
+  assert.equal((await anon().call("POST", "/api/auth/first-run", { username: "x".repeat(20_000), password: "x" })).status, 413);
+});
+
 test("a disabled user, or a changed password, ends every session; a disabled user can't log in", async () => {
   const { db } = await freshRoutes();
   await addUser(db, "robin");
@@ -274,6 +320,10 @@ test("a disabled user, or a changed password, ends every session; a disabled use
   assert.equal((await lee.call("GET", "/api/learners")).status, 401);
   assert.equal((await anon().call("POST", "/api/auth/login", { username: "lee", password: PASSWORD })).status, 401);
   assert.equal(await disableUser(db, "nobody"), false);
+  // enable undoes it: the same password works again.
+  assert.equal(await enableUser(db, "lee"), true);
+  assert.equal((await anon().call("POST", "/api/auth/login", { username: "lee", password: PASSWORD })).status, 200);
+  assert.equal(await enableUser(db, "nobody"), false);
 });
 
 /* ------------------------------- access levels ---------------------------- */
@@ -294,6 +344,8 @@ test("access levels: anonymous is 401 everywhere but login, me and first run; a 
   const adminRoutes = [
     ["POST", "/api/chat", { message: "hi" }], ["GET", "/api/chat/history"], ["DELETE", "/api/chat/history"],
     ["GET", "/api/settings"], ["PUT", "/api/settings", { model: "claude-opus-5-5" }],
+    // It adds a voice to the owner's ElevenLabs account, shared by everyone.
+    ["POST", "/api/voice/library/add", { ownerId: "o", voiceId: "v", name: "n" }],
   ];
   for (const [m, u, body] of [...userRoutes, ...adminRoutes]) {
     const r = await anon().call(m, u, body);

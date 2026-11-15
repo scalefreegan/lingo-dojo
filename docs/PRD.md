@@ -75,7 +75,7 @@ scripts/
   claude.mjs           spawn headless claude for the embedded agent (sibling pattern)
   export.mjs           CLI: node scripts/export.mjs content/packs/x.yaml
   auth.mjs             passwords, session cookie, login throttle (pure)
-  user.mjs             CLI: npm run user -- add | passwd | list | disable
+  user.mjs             CLI: npm run user -- add | passwd | list | disable | enable
   db/                  Postgres schema, migrations, accounts (docs/DATA.md)
   tests/*.test.mjs     node --test
 web/                   Vite app; API is Vite serve-middleware in web/server/*.ts

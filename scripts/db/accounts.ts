@@ -77,6 +77,12 @@ export async function disableUser(db: Db, username: string): Promise<boolean> {
   });
 }
 
+/** Undo disableUser: logins work again (with the password they had). */
+export async function enableUser(db: Db, username: string): Promise<boolean> {
+  const [row] = await db.update(users).set({ disabledAt: null }).where(eq(users.username, username)).returning();
+  return !!row;
+}
+
 /* --------------------------------- first run ------------------------------ */
 
 /** What the first admin starts with, read from the files that predate logins

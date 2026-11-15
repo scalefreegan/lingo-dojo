@@ -9,7 +9,7 @@ import type {
   Pack, PackDeleteReply, PackReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
 } from "../shared/wire.ts";
 import { updateLearner, type Learner, type LearnerPatch } from "../../scripts/db/accounts.ts";
-import { learnerMode, learnerProfile, type Ctx } from "./auth.ts";
+import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { commitPacks } from "./commit.ts";
 import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -22,7 +22,10 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // The mode comes from the session's active learner (auth.ts learnerMode):
 // every route but GET /api/content works on that learner's tree, content/ or
 // content/kids/ (scripts/content.mjs modeRoot), and answers 400 when a
-// `?mode=` it is sent disagrees (409 with no learner picked). GET
+// `?mode=` it is sent disagrees. Those routes are mounted with wrap's
+// `learner: true`, so before any of this runs the request has named the
+// learner its page shows and it is the active one (409 `stale_learner`
+// otherwise, auth.ts pageLearner). GET
 // /api/content keeps its `?mode=`, since an admin browses and has the agent
 // edit both libraries. The two trees never mix: a kids pack lives in
 // content/kids/packs and a kids export in exports/kids/.
@@ -145,11 +148,11 @@ const PICKER_COLUMNS: Record<PickerKey, keyof LearnerPatch> = {
 /** A name, a language or a variant is a few words; this is a sanity bound, not a format. */
 const MAX_PROFILE_VALUE = 80;
 
-export async function handleProfile(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handleProfile(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
   learnerMode(req, ctx);
-  const learner = ctx.learner!;
+  const learner = ctx.learner;
   const body = await readJsonBody<unknown>(req);
   if (!isObject(body)) throw new HttpError(400, "body must be an object of profile keys");
   const patch: LearnerPatch = {};
@@ -165,12 +168,12 @@ export async function handleProfile(req: IncomingMessage, res: ServerResponse, c
   if (patch.name === "") throw new HttpError(400, "a learner needs a name");
   const row = await updateLearner(rawDb(), ctx.user.id, learner.id, patch);
   // Archived since the session was read: the picker, not a silent no-op.
-  if (!row) throw new HttpError(409, "choose who's practicing first");
+  if (!row) throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
   // The reply is the row as stored, not an echo of the request.
   sendJson(res, 200, { profile: learnerProfile(row) } satisfies ProfileReply);
 }
 
-export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const mode = learnerMode(req, ctx);
   const root = modeRoot(mode);
   const seg = subPath(req);
@@ -238,7 +241,7 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
   methodNotAllowed(res, "GET, PUT, DELETE");
 }
 
-export async function handleFolders(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handleFolders(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const mode = learnerMode(req, ctx);
   const root = modeRoot(mode);
   const name = subPath(req);
@@ -256,7 +259,7 @@ export async function handleFolders(req: IncomingMessage, res: ServerResponse, c
   sendJson(res, 200, { ok: true, folders: listFolders(root), ...(await committed(`folder ${name} deleted`, mode)) } satisfies FolderDeleteReply);
 }
 
-export async function handleAssemble(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handleAssemble(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<AssembleRequest>>(req);
@@ -264,7 +267,7 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   sendJson(res, 200, assemble(learnerContent(mode, ctx), body.pack, mode) satisfies AssembleResult);
 }
 
-export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<ExportRequest>>(req);

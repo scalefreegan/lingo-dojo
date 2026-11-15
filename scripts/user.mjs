@@ -3,6 +3,7 @@
 // npm run user -- passwd <name>          new password; signs that user out everywhere
 // npm run user -- list                   every account, admin flag, learners, disabled
 // npm run user -- disable <name>         no more logins; signs them out (rows are kept)
+// npm run user -- enable <name>          undo disable: logins work again, same password
 //
 // Accounts are made here, not in the app (docs/DATA.md §Auth). The one
 // exception is the very first account, which the app's "Create the first
@@ -20,10 +21,10 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { hashPassword, normalizeUsername, passwordProblem, usernameProblem } from "./auth.mjs";
 import { databaseUrl, redact } from "./db/config.mjs";
-import { createUser, disableUser, listUsers, setPassword } from "./db/accounts.ts";
+import { createUser, disableUser, enableUser, listUsers, setPassword } from "./db/accounts.ts";
 import * as schema from "./db/schema.ts";
 
-const USAGE = `usage: npm run user -- add <name> [--admin] | passwd <name> | list | disable <name>`;
+const USAGE = `usage: npm run user -- add <name> [--admin] | passwd <name> | list | disable <name> | enable <name>`;
 
 /** Read a line from a terminal without echoing it. */
 function promptHidden(question) {
@@ -85,7 +86,7 @@ function nameArg(args) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (!["add", "passwd", "list", "disable"].includes(command)) {
+  if (!["add", "passwd", "list", "disable", "enable"].includes(command)) {
     console.error(USAGE);
     process.exit(2);
   }
@@ -117,9 +118,12 @@ async function main() {
       const passwordHash = await hashPassword(await newPassword());
       if (!(await setPassword(db, name, passwordHash))) throw new Error(`no account named ${name}`);
       console.log(`changed ${name}'s password; their sessions were signed out`);
-    } else {
+    } else if (command === "disable") {
       if (!(await disableUser(db, name))) throw new Error(`no account named ${name}`);
       console.log(`disabled ${name}; their sessions were signed out`);
+    } else {
+      if (!(await enableUser(db, name))) throw new Error(`no account named ${name}`);
+      console.log(`enabled ${name}; they can log in again`);
     }
   } finally {
     await pool.end();

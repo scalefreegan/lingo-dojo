@@ -15,12 +15,13 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
-import { ADULT, KID, addUser, client } from "./http-session.mjs";
+import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { learners } from "../db/schema.ts";
 
@@ -48,9 +49,8 @@ const { apiPlugins, sameOrigin } = await import("../../web/server/api.ts");
 
 const testDb = await freshDb();
 const db = testDb.db;
-let close, session;
+let base, close, session;
 before(async () => {
-  let base;
   ({ base, close } = await serveApi(apiPlugins, { db }));
   await addUser(db, "robin", undefined, { admin: true, learners: [ADULT, KID] });
   session = client(base);
@@ -521,6 +521,7 @@ test("without a picked learner, the learner-scoped routes answer 409 and GET /ap
       const r = await call(m, u, body);
       assert.equal(r.status, 409, `${m} ${u}`);
       assert.match(r.body.error, /choose who's practicing/);
+      assert.equal(r.body.code, "stale_learner", "the client goes back to the picker on it");
     }
     const c = await call("GET", "/api/content");
     assert.equal(c.status, 200);
@@ -528,5 +529,99 @@ test("without a picked learner, the learner-scoped routes answer 409 and GET /ap
     assert.deepEqual(c.body.profile, {});
   } finally {
     await session.pick("Sam");
+  }
+});
+
+/* ------------------------------ stale pages ------------------------------- */
+// The session cookie is shared by every tab of a browser, so the server
+// can't tell a stale tab from the mode alone: each learner-scoped call
+// carries the learner its page shows (X-Learner-Id) and must match.
+
+test("a stale tab (another tab picked a learner of the same mode) gets 409 stale_learner on every learner-scoped route; nothing is written", async () => {
+  const made = await call("POST", "/api/learners", { name: "Ana", mode: "adult", target_language: "French", level: "A1" });
+  assert.equal(made.status, 200, made.text);
+  const anaId = made.body.learner.id;
+  const other = tab(base, session);
+  await other.pick("Ana");
+  const anaRow = async () => (await db.select().from(learners).where(eq(learners.id, anaId)))[0];
+  try {
+    const anaBefore = await anaRow();
+    const commits = subjects().length;
+    // Tab 1 still shows Sam: "Save as my defaults" must not land on Ana.
+    for (const [m, u, body] of [
+      ["PUT", "/api/profile", { learner_name: "Sam", level: "C2" }], ["GET", "/api/packs"], ["PUT", "/api/packs/2026-10-20-stale", pack],
+      ["POST", "/api/folders", { name: "stale" }], ["POST", "/api/assemble", { pack }], ["POST", "/api/export", { pack, id: "stale" }],
+    ]) {
+      const r = await call(m, u, body);
+      assert.equal(r.status, 409, `${m} ${u}`);
+      assert.equal(r.body.code, "stale_learner", `${m} ${u}`);
+    }
+    assert.deepEqual(await anaRow(), anaBefore, "Ana's row is untouched");
+    assert.ok(!fs.existsSync(path.join(root, "packs", "2026-10-20-stale.yaml")));
+    assert.ok(!fs.existsSync(path.join(root, "packs", "stale")));
+    assert.ok(!fs.existsSync(path.join(exportsDir, "stale.md")));
+    assert.equal(subjects().length, commits, "no commit");
+    // A call that names no learner is refused the same way.
+    const bare = await other.call("POST", "/api/assemble", { pack }, { "X-Learner-Id": "" });
+    assert.equal(bare.body.code, "stale_learner");
+    // The current tab works, and writes Ana.
+    const ok = await other.call("PUT", "/api/profile", { level: "B1" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal((await anaRow()).level, "B1");
+  } finally {
+    await session.pick("Sam");
+    await call("POST", `/api/learners/${anaId}/archive`, {});
+  }
+});
+
+test("another account logged in on the same browser: the first account's open page gets 409 stale_learner, never writes the new one's learner", async () => {
+  await addUser(db, "lee", undefined, { learners: [{ ...ADULT, name: "Lee" }] });
+  const page = tab(base, session); // robin's page, still showing Sam
+  const lee = tab(base, session); // same browser: lee logs in over robin's cookie
+  await lee.login("lee");
+  await lee.pick("Lee");
+  try {
+    const r = await page.call("PUT", "/api/profile", { learner_name: "Sam", level: "C2" });
+    assert.equal(r.status, 409);
+    assert.equal(r.body.code, "stale_learner");
+    const leeRow = (await db.select().from(learners).where(eq(learners.name, "Lee")))[0];
+    assert.equal(leeRow.level, "A2", "lee's learner is untouched");
+  } finally {
+    await session.login("robin");
+    await session.pick("Sam");
+  }
+});
+
+test("learner bodies take own keys only: constructor or __proto__ is a 400, not a 500", async () => {
+  const me = (await call("GET", "/api/auth/me")).body;
+  for (const bad of ['"constructor":"x"', '"__proto__":"x"', '"toString":"x"']) {
+    const created = await call("POST", "/api/learners", `{"name":"X","mode":"adult",${bad}}`);
+    assert.equal(created.status, 400, `POST ${bad}: ${created.text}`);
+    assert.match(created.body.error, /unknown learner field/);
+    const patched = await call("PATCH", `/api/learners/${me.learner.id}`, `{${bad}}`);
+    assert.equal(patched.status, 400, `PATCH ${bad}: ${patched.text}`);
+  }
+});
+
+test("a 500 says something generic; the error itself (a failed query, its parameters) goes to the log, not the client", async () => {
+  const { wrap, INTERNAL_ERROR } = await import("../../web/server/api.ts");
+  const handler = wrap(() => {
+    throw new Error('Failed query: update "learners" set "x" = $1 params: secret-value');
+  }, { auth: "public" });
+  const server = http.createServer((req, res) => handler(req, res));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const logged = [];
+  const savedError = console.error;
+  console.error = (...args) => logged.push(args.map(String).join(" "));
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/`);
+    assert.equal(res.status, 500);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { error: INTERNAL_ERROR });
+    assert.doesNotMatch(text, /secret-value|learners|query/);
+    assert.ok(logged.some((l) => l.includes("secret-value")), "the server log has it");
+  } finally {
+    console.error = savedError;
+    await new Promise((resolve) => server.close(resolve));
   }
 });

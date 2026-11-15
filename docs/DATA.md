@@ -77,7 +77,7 @@ scripts/
   match.mjs           pure: answer normalization and lenient match
   recall.mjs          pure: review-block selection and retrieval ranking
   bank-mcp.mjs        stdio MCP server for the content agent (read-only role)
-  user.mjs            CLI: add [--admin] / passwd / list / disable (built, phase 1)
+  user.mjs            CLI: add [--admin] / passwd / list / disable / enable (built, phase 1)
   import.mjs          CLI: one-time file → DB import (idempotent)
 ```
 
@@ -372,21 +372,53 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   No session is a 401, a non-admin on an admin route a 403. The handler
   receives `ctx = { user: { id, username, isAdmin }, learner, sessionId }`;
   `learner` is the session's active learner row (null until picked, or once
-  archived), re-read on every request.
-- **Admin-only routes:** the content agent (`/api/chat`, its history) and its
-  model setting (`/api/settings`), which is everything that writes
-  `content/`. Library reloads are a plain `GET /api/content`, so any user may
-  do them. Pack writes (still files under `content/*/packs/`, shared by every
-  account until phase 2) stay at `"user"`. The UI hides the agent drawer from
-  non-admins.
-- **Login throttling:** after 5 failures per username in 15 minutes, logins for
-  that username wait 30 seconds. This is in memory, which is enough for one Mac.
-  As built: the username is normalized first, unknown ones count the same,
-  a failure after the wait (still 5 in the window) starts another wait, a
-  success clears it, and the reply is a 429 with `Retry-After`.
+  archived), re-read on every request. Only an `HttpError`'s sentence reaches
+  the client; any other error (a database error carries the failed query and
+  its parameters) is logged and answered with a generic 500.
+- **The page's learner:** the session cookie is shared by every tab of a
+  browser, so a tab can be out of date: tab 1 shows Sam, tab 2 picks Ana (or
+  another account logs in on the same browser), and tab 1's "Save as my
+  defaults" or voice turn would act on Ana. So every call from the client
+  carries the learner its page shows in an `X-Learner-Id` header (set in one
+  place, `web/src/api.ts`), and a learner-scoped route (`wrap(fn, { learner:
+  true })`: profile, packs, folders, assemble, export, voice turn and cast)
+  answers **409 with `code: "stale_learner"`** when that header is missing or
+  isn't the session's active learner, or when no learner is picked. On that
+  code the client re-reads `/api/auth/me`, which shows the right learner or
+  the picker; any other 409 (the turn lock, a non-empty folder) is an
+  ordinary error.
+- **Admin-only routes:** the content agent (`/api/chat`, its history), its
+  model setting (`/api/settings`), and `POST /api/voice/library/add`, which
+  adds a voice to the owner's ElevenLabs account. Library reloads are a plain
+  `GET /api/content`, so any user may do them. The UI hides the agent drawer
+  and the Voice Library's "Use as" for voices not yet added from non-admins.
+- **Saved packs in this phase:** still files under `content/*/packs/`, and
+  shared: any logged-in user can write, move, rename and delete any pack (and
+  folder) in the mode of the learner they picked. This ends in phase 2, when
+  packs move to the database, each owned by a learner.
+- **Login throttling:** after 5 attempts that don't succeed for one username
+  from one client in 15 minutes, that client's logins for that username wait
+  30 seconds. This is in memory, which is enough for one Mac. As built: the
+  username is normalized first; a username no account could have (it fails
+  the username rule) is the same 401 and never reaches the throttle, and a
+  login body is capped at 8 KB, so the throttle's map holds only short keys.
+  Unknown usernames count the same as real ones. An attempt is counted when
+  it starts, before the lookup and the scrypt, and taken back on success, so
+  parallel guesses can't all get in ahead of the first failure. An attempt
+  after the wait (still 5 in the window) starts another wait, and the reply
+  is a 429 with `Retry-After`. The client is the socket address, except
+  behind the local proxy (a loopback socket with `X-Forwarded-For`), where it
+  is the last `X-Forwarded-For` entry: the one the proxy added. Earlier
+  entries are whatever the client sent, so keying on them would let a
+  guesser make up a new client per try. Remaining risk: a guesser at the
+  same address as the owner (anyone using this Mac's own browser, or a
+  process on the Mac, which can also set the header freely) can still keep
+  that username's logins waiting, and someone guessing from many tailnet
+  devices gets 5 tries per device per window.
 - **Accounts:** `npm run user -- add <name> [--admin]`, `passwd`, `list`,
-  `disable`. The password is prompted for without echo, or read from stdin's
-  first line when it is piped. A user the CLI adds has no learners; the
+  `disable`, `enable` (undoes `disable`; the password is unchanged). The
+  password is prompted for without echo, or read from stdin's first line
+  when it is piped. A user the CLI adds has no learners; the
   picker opens on Add. There is no sign-up page, with one exception:
 - **First run:** while the `users` table is empty, `/api/auth/me` answers
   `firstRun: true` and the UI shows **Create the first account** instead of
@@ -415,15 +447,25 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   the same as a missing one.
 - **Per-user settings:** voice settings and casting (`user_settings.voice`),
   the agent's model (`user_settings.model`) and its chat (`agent_messages`,
-  ordered by `seq`), all through `forUser`. The voice turn lock is per user
-  until conversations key it.
+  ordered by `seq`), all through `forUser`. The voice turn lock is per login
+  session until conversations key it, so a parent and a child on two devices
+  under one account don't block each other (two tabs of one browser share a
+  session, and its lock).
+- **Browser storage:** the remembered draft, tab, Scene filter and folder
+  state are kept per learner (`<key>.learner.<id>`), so the next learner or
+  account on the same browser never sees the last one's unsaved name, level,
+  language or quick-scenario text. The per-mode keys they had before logins
+  are dropped on the first page load, not adopted: there is no telling whose
+  they were. The voice timeline's open/closed state stays per browser.
 
 Routes that took `?mode=` change as follows:
 
 - Pack, profile, assemble, export and voice routes use the active learner's
   mode, and answer 400 if a `?mode` they're sent disagrees (for the voice
-  turn and cast, the body's `mode`). With no learner picked they answer 409,
-  which sends the UI to the picker.
+  turn and cast, the body's `mode`). Before that, the learner check above
+  answers 409 `stale_learner` when the page's learner isn't the session's
+  active one or none is picked; the client re-reads `/api/auth/me` on it,
+  which shows the right learner or the picker.
 - `GET /api/content?mode=` keeps the parameter, because an admin browses and
   edits both libraries. Its `profile` is the active learner's in that
   learner's mode and `{}` in the other; `assemble()` gets the learner's
@@ -679,6 +721,16 @@ Needed now:
 - The `Secure` cookie rule (Auth) and the per-conversation turn lock
   (Conversations).
 
+Deployment notes (as of phase 1):
+
+- Until `server.allowedHosts` includes the tailnet name (bead 10 below), Vite
+  answers 403 to every request that comes in under that name.
+- The `ld_session` cookie is not port-scoped (cookies never are), so it is
+  also sent to any other app served on the same hostname, on any port or
+  path (the sibling apps on 38100–38300, if they are served under the same
+  `<mac>.<tailnet>.ts.net`). Those apps could read it from their requests.
+  Serve Lingo Dojo under its own hostname, or keep the others off this one.
+
 Not now (no beads filed; revisit when someone besides the owner uses it
 regularly, or when the need shows up):
 
@@ -742,9 +794,16 @@ deletes cover undoing a single change.
   list route). As built (phase 1): the HTTP tests mount the real plugin on a
   `freshDb()` (`serveApi(apiPlugins, { db })`) and log in through
   `scripts/tests/http-session.mjs`; `auth.http.test.mjs` covers first run
-  (including two at once), login, logout, expiry and sliding, the throttle,
-  the Secure rule, every access level, learner CRUD and picking, and a
-  second user against the first's learners, settings and agent chat.
+  (including two at once), login, logout, expiry and sliding, the throttle
+  (parallel guesses, per client, malformed usernames, the body cap), the
+  Secure rule, every access level, learner CRUD and picking, and a second
+  user against the first's learners, settings and agent chat; the API and
+  voice tests cover the stale-page 409 from a second tab and a second login
+  on the same browser. PGlite runs one transaction at a time, so the
+  first-run race itself is `first-run.pg.test.mjs`, which runs only with
+  `LINGO_TEST_PG_URL` set: it makes a throwaway database on that server,
+  races 12 first runs five times, and drops it (it fails with the lock
+  removed).
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).

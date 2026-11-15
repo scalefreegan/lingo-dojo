@@ -34,17 +34,26 @@ export async function addUser(db, username, password = PASSWORD, { admin = false
   return { user, learners: rows };
 }
 
-/** A fetch client with its own cookie jar (one cookie: ld_session). */
-export function client(base) {
-  const jar = { cookie: "" };
+/** A fetch client with its own cookie jar (one cookie: ld_session), or the
+ *  jar of another client (`tab(other)`: a second tab of the same browser).
+ *  Like the app's api.ts, it sends X-Learner-Id — the learner this "page"
+ *  shows, set by pick() — on every call; set `learnerId` to change it. */
+export function client(base, jar = { cookie: "" }) {
   const self = {
     jar,
+    /** The learner this client's page shows (pick() sets it), or null. */
+    learnerId: null,
     /** The last Set-Cookie headers seen, raw. */
     setCookies: [],
     async call(method, url, body, headers = {}) {
       const res = await fetch(base + url, {
         method,
-        headers: { "Content-Type": "application/json", ...(jar.cookie ? { Cookie: jar.cookie } : {}), ...headers },
+        headers: {
+          "Content-Type": "application/json",
+          ...(jar.cookie ? { Cookie: jar.cookie } : {}),
+          ...(self.learnerId ? { "X-Learner-Id": self.learnerId } : {}),
+          ...headers,
+        },
         body: body === undefined ? undefined : typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body),
       });
       self.setCookies = res.headers.getSetCookie();
@@ -75,8 +84,16 @@ export function client(base) {
       if (!l) throw new Error(`no learner ${nameOrId}`);
       const r = await self.call("PUT", "/api/auth/learner", { learnerId: l.id });
       if (r.status !== 200) throw new Error(`pick ${nameOrId}: ${r.status} ${JSON.stringify(r.body)}`);
+      self.learnerId = l.id;
       return r.body;
     },
   };
   return self;
+}
+
+/** A second tab of `other`'s browser: the same cookie jar, its own page. */
+export function tab(base, other) {
+  const t = client(base, other.jar);
+  t.learnerId = other.learnerId;
+  return t;
 }

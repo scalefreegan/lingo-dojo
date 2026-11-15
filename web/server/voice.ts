@@ -17,7 +17,7 @@ import type {
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
-import { activeLearner, learnerMode, learnerProfile, type Ctx } from "./auth.ts";
+import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, writeVoiceSettings } from "./store.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
@@ -30,7 +30,11 @@ import { readVoiceSettings, writeVoiceSettings } from "./store.ts";
 //   POST    /api/voice/turn          {mode, pack, history, message} → {lines}
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
 //   GET     /api/voice/library       ElevenLabs Voice Library search
-//   POST    /api/voice/library/add   add a library voice to the account
+//   POST    /api/voice/library/add   add a library voice to the account (admin)
+//   POST    /api/voice/cast          this session's voices
+//
+// turn and cast act for the active learner, so api.ts mounts them with
+// wrap's `learner: true` (the page must name that learner).
 //
 // The server holds no session: the browser sends the history with every
 // turn. Provider keys come from the repo-root .env.local (scripts/voice.mjs
@@ -220,10 +224,12 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
 
 /* ---------------------------------- turn ---------------------------------- */
 
-// One turn at a time per user: the history is the client's, so a second turn
-// racing the first would answer a conversation that is about to change under
-// it. Keyed by user so two people practising never block each other (DATA.md
-// keys it by conversation once conversations are stored).
+// One turn at a time per login session: the history is the client's, so a
+// second turn racing the first would answer a conversation that is about to
+// change under it. Keyed by session, not user, so a parent and a child
+// logged in to one account on two devices don't block each other (DATA.md:
+// keyed by conversation once conversations are stored). Two tabs of one
+// browser share a session, and so share the lock.
 const turning = new Set<string>();
 
 
@@ -279,7 +285,9 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   return out.slice(-HISTORY_WINDOW);
 }
 
-async function handleTurn(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+/** POST /api/voice/turn, mounted on its own with wrap's `learner: true`. */
+export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceTurnRequest>>(req);
   // The active learner's mode; a body naming the other one is a 400.
@@ -288,7 +296,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse, ctx: Ctx): 
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (message.length > 4000) throw new HttpError(413, "message too long");
   const history = cleanHistory(body.history);
-  const who = ctx.user.id;
+  const who = ctx.sessionId;
   if (turning.has(who)) throw new HttpError(409, "the dojo master is still answering the last turn");
   turning.add(who);
 
@@ -301,7 +309,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse, ctx: Ctx): 
   res.on("close", onClose);
   try {
     // The active learner is the profile (content.profile is the file's).
-    const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(activeLearner(ctx)) };
+    const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner) };
     const { markdown, warnings } = assemble(content, body.pack, mode);
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
@@ -511,7 +519,8 @@ type LibVoice = { id: string; name: string; age?: string };
  *  to the account), else the provider's own list for the locale. With
  *  `slots` only those are drawn (a recast mid-session), avoiding `avoid`;
  *  the client then keeps its narrator gender. */
-async function handleCast(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceCastRequest>>(req);
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
@@ -582,7 +591,10 @@ async function handleCast(req: IncomingMessage, res: ServerResponse, ctx: Ctx): 
   sendJson(res, 200, { provider, locale, cast, narratorGender, pinned: !!pinned, ...(Object.keys(fallbacks).length ? { fallbacks } : {}) } satisfies VoiceCastReply);
 }
 
-async function handleLibraryAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
+/** POST /api/voice/library/add: it adds a voice to the owner's ElevenLabs
+ *  account (shared by every login), so it is mounted admin-only. */
+export async function handleVoiceLibraryAdd(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<LibraryAddRequest>>(req);
   const keys = keysFor("elevenlabs");
@@ -604,10 +616,9 @@ export async function handleVoice(req: IncomingMessage, res: ServerResponse, ctx
   if (seg === "settings") return handleSettings(req, res, ctx);
   if (seg === "voices") return handleVoices(req, res);
   if (seg === "transcribe") return handleTranscribe(req, res, ctx);
-  if (seg === "turn") return handleTurn(req, res, ctx);
   if (seg === "speak") return handleSpeak(req, res, ctx);
   if (seg === "library") return handleLibrary(req, res);
-  if (seg === "cast") return handleCast(req, res, ctx);
-  if (seg === "library/add") return handleLibraryAdd(req, res);
+  // turn, cast and library/add are mounted on their own paths (api.ts), for
+  // their own access checks; they never reach here.
   sendJson(res, 404, { error: "no such route" });
 }

@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  SESSION_COOKIE, SESSION_MS, SLIDE_EVERY_MS, clearSessionCookie, createLoginThrottle, hashPassword, isSecureRequest, newSessionToken,
-  normalizeUsername, parseCookies, passwordProblem, profileFromLearner, sessionCookie, tokenHash, usernameProblem, verifyPassword,
+  SESSION_COOKIE, SESSION_MS, SLIDE_EVERY_MS, clearSessionCookie, clientAddress, createLoginThrottle, hashPassword, isSecureRequest,
+  newSessionToken, normalizeUsername, parseCookies, passwordProblem, profileFromLearner, sessionCookie, throttleKey, tokenHash,
+  usernameProblem, verifyPassword,
 } from "../../scripts/auth.mjs";
 import { MODES, isMode, LEVELS_BY_MODE } from "../../scripts/content.mjs";
 import {
@@ -9,7 +10,8 @@ import {
   listLearners, setSessionLearner, slideSession, updateLearner, type Learner, type LearnerPatch, type NewLearner,
 } from "../../scripts/db/accounts.ts";
 import type {
-  AuthUser, LearnerInfo, LearnerReply, LearnerRequest, LearnersReply, LoginRequest, MeReply, Mode, PickLearnerRequest, Profile,
+  AuthUser, ErrorCode, LearnerHeader, LearnerInfo, LearnerReply, LearnerRequest, LearnersReply, LoginRequest, MeReply, Mode,
+  PickLearnerRequest, Profile,
 } from "../shared/wire.ts";
 import { rawDb } from "./db.ts";
 import { readFirstRunSeed } from "./seed.ts";
@@ -26,6 +28,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST   /api/learners          user    {name, mode, …} → {learner}
 //   PATCH  /api/learners/:id      user    profile keys → {learner}
 //   POST   /api/learners/:id/archive user → {learner}; sessions that had it go back to the picker
+//
+// Routes that act for the learner (profile, packs, folders, assemble,
+// export, voice turn and cast) are mounted with wrap's `learner: true`: the
+// request must name the learner its page shows (X-Learner-Id) and that must
+// be the session's active learner, else 409 `stale_learner` (pageLearner).
 //
 // The session: a random token in the `ld_session` cookie, its SHA-256 the
 // auth_sessions row id. wrap() (api.ts) resolves it on every request into the
@@ -48,6 +55,12 @@ export interface PublicCtx {
 export interface Ctx extends PublicCtx {
   user: AuthUser;
   sessionId: string;
+}
+
+/** The context of a learner-scoped route (wrap's `learner: true`): the
+ *  learner is the session's active one and the one the page shows. */
+export interface LearnerCtx extends Ctx {
+  learner: Learner;
 }
 
 const NO_SESSION: PublicCtx = { user: null, learner: null, sessionId: null };
@@ -89,10 +102,33 @@ export async function sessionFor(req: IncomingMessage, res: ServerResponse): Pro
 
 /* ------------------------------- the learner ------------------------------ */
 
+export const STALE_LEARNER: ErrorCode = "stale_learner";
+/** LearnerHeader, as node lower-cases it. */
+const LEARNER_HEADER = "x-learner-id" satisfies Lowercase<LearnerHeader>;
+
 /** The active learner, or a 409 that sends the UI to the picker. */
 export function activeLearner(ctx: PublicCtx): Learner {
-  if (!ctx.learner) throw new HttpError(409, "choose who's practicing first");
+  if (!ctx.learner) throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
   return ctx.learner;
+}
+
+/**
+ * A learner-scoped route's check (wrap's `learner: true`): the learner the
+ * page is rendering, sent as X-Learner-Id, must be the session's active one.
+ * The session cookie is shared by every tab of the browser, so the mode
+ * alone can't tell a stale tab from a current one: tab 1 shows Sam, tab 2
+ * picks Ana (same mode, or another account logs in), and tab 1's "Save as
+ * my defaults" would write Sam's values into Ana's row, or its voice turn
+ * run with Ana's profile. A missing header counts as a mismatch, so a
+ * client that forgets it fails loudly rather than writing blind. The 409
+ * carries `stale_learner`, and the client re-reads /api/auth/me on it.
+ */
+export function pageLearner(req: IncomingMessage, ctx: PublicCtx): Learner {
+  const learner = activeLearner(ctx);
+  if (req.headers[LEARNER_HEADER] !== learner.id) {
+    throw new HttpError(409, "this page is out of date: who's practicing changed in another tab or login", STALE_LEARNER);
+  }
+  return learner;
 }
 
 /**
@@ -158,12 +194,26 @@ async function startSession(req: IncomingMessage, res: ServerResponse, user: Aut
   return { user, learner: null, sessionId: id };
 }
 
+/** A login or first-run body is a username and a password (MAX_PASSWORD
+ *  1024 characters, each up to 6 bytes as a JSON escape): 8 KB is room
+ *  enough, and all a caller with no session can make the server read. */
+const MAX_CREDENTIALS_BODY = 8 << 10;
+
+const WRONG = "wrong username or password";
+
 export async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const { username, password } = credentials(await readJsonBody<unknown>(req));
+  const { username, password } = credentials(await readJsonBody<unknown>(req, MAX_CREDENTIALS_BODY));
   if (!username || !password) throw new HttpError(400, "username and password are required");
-  const wait = throttle.wait(username);
+  // A name no account can have is the same 401 as a wrong password, and
+  // never reaches the throttle: its map holds only short, well-formed keys.
+  if (usernameProblem(username)) throw new HttpError(401, WRONG);
+  // Counted before the first await (createLoginThrottle), so parallel
+  // guesses can't all slip in ahead of the first failure. Keyed by client
+  // too: someone else's guesses at your username don't lock you out.
+  const key = throttleKey(username, clientAddress(req.headers, req.socket.remoteAddress));
+  const wait = throttle.attempt(key);
   if (wait > 0) {
     const s = Math.ceil(wait / 1000);
     res.setHeader("Retry-After", String(s));
@@ -171,11 +221,8 @@ export async function handleLogin(req: IncomingMessage, res: ServerResponse): Pr
   }
   const user = await findUserByUsername(rawDb(), username);
   const ok = user ? await verifyPassword(password, user.passwordHash) : (await verifyPassword(password, await (dummyHash ??= hashPassword("not a password"))), false);
-  if (!user || !ok || user.disabledAt) {
-    throttle.fail(username);
-    throw new HttpError(401, "wrong username or password");
-  }
-  throttle.succeed(username);
+  if (!user || !ok || user.disabledAt) throw new HttpError(401, WRONG);
+  throttle.succeed(key);
   const ctx = await startSession(req, res, { id: user.id, username: user.username, isAdmin: user.isAdmin });
   sendJson(res, 200, await meReply(ctx));
 }
@@ -196,7 +243,7 @@ export async function handleMe(req: IncomingMessage, res: ServerResponse, ctx: P
 export async function handleFirstRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const { username, password } = credentials(await readJsonBody<unknown>(req));
+  const { username, password } = credentials(await readJsonBody<unknown>(req, MAX_CREDENTIALS_BODY));
   const problem = usernameProblem(username) ?? passwordProblem(password);
   if (problem) throw new HttpError(400, problem);
   // A cheap refusal before the scrypt; the locked check below is the real one.
@@ -259,7 +306,9 @@ export function learnerPatch(body: unknown, allowMode: boolean): { patch: Learne
       mode = value;
       continue;
     }
-    const spec = TEXT_KEYS[key as keyof typeof TEXT_KEYS];
+    // Own keys only: "constructor" or "__proto__" would otherwise find
+    // Object.prototype's and reach the query as a column.
+    const spec = Object.hasOwn(TEXT_KEYS, key) ? TEXT_KEYS[key as keyof typeof TEXT_KEYS] : undefined;
     if (!spec) throw new HttpError(400, `unknown learner field "${key}"`);
     if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
     if (value.length > spec.max) throw new HttpError(400, `${key} is too long (at most ${spec.max} characters)`);

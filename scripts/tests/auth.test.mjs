@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  SESSION_COOKIE, SESSION_MS, clearSessionCookie, createLoginThrottle, hashPassword, isSecureRequest, learnerFromProfile, newSessionToken,
+  SESSION_COOKIE, SESSION_MS, clearSessionCookie, clientAddress, createLoginThrottle, throttleKey, hashPassword, isSecureRequest, learnerFromProfile, newSessionToken,
   normalizeUsername, parseCookies, passwordProblem, profileFromLearner, serializeCookie, sessionCookie, tokenHash, usernameProblem,
   verifyPassword,
 } from "../auth.mjs";
@@ -108,40 +108,56 @@ test("isSecureRequest: X-Forwarded-Proto https (first hop, any case) and nothing
 
 /* -------------------------------- throttle -------------------------------- */
 
-test("the login throttle: 5 failures in 15 minutes → a 30 s wait; per username; success clears", () => {
+test("the login throttle: 5 attempts in 15 minutes → a 30 s wait; per key; success clears", () => {
   let t = 1_000_000;
   const th = createLoginThrottle({ now: () => t });
   for (let i = 0; i < 4; i++) {
-    th.fail("robin");
+    assert.equal(th.attempt("robin"), 0);
     t += 1000;
   }
   assert.equal(th.wait("robin"), 0, "four failures: no wait");
-  th.fail("robin");
-  assert.equal(th.wait("robin"), 30_000, "the fifth starts the wait");
-  assert.equal(th.wait("lee"), 0, "another username is not affected");
+  assert.equal(th.attempt("robin"), 0, "the fifth may try");
+  assert.equal(th.wait("robin"), 30_000, "and starts the wait");
+  assert.equal(th.attempt("robin"), 30_000, "the sixth is refused");
+  assert.equal(th.wait("lee"), 0, "another key is not affected");
   t += 29_000;
-  assert.equal(th.wait("robin"), 1000);
+  assert.equal(th.attempt("robin"), 1000, "a refused attempt does not restart the wait");
   t += 1000;
-  assert.equal(th.wait("robin"), 0, "the wait is over");
-  th.fail("robin");
+  assert.equal(th.attempt("robin"), 0, "the wait is over");
   assert.equal(th.wait("robin"), 30_000, "still five in the window: another wait");
   t += 30_000;
+  th.attempt("robin");
   th.succeed("robin");
-  th.fail("robin");
-  assert.equal(th.wait("robin"), 0, "a success started the count over");
+  assert.equal(th.wait("robin"), 0, "a success took the attempt back and started the count over");
 });
 
-test("the login throttle: failures older than the window drop out", () => {
+test("the login throttle counts an attempt before it resolves, so parallel guesses can't all get in", () => {
+  const th = createLoginThrottle({ now: () => 0 });
+  // 40 at once: each calls attempt() before any of them knows the answer.
+  const admitted = Array.from({ length: 40 }, () => th.attempt("robin")).filter((w) => w === 0).length;
+  assert.equal(admitted, 5);
+});
+
+test("the login throttle: attempts older than the window drop out", () => {
   let t = 0;
   const th = createLoginThrottle({ now: () => t });
-  for (let i = 0; i < 4; i++) th.fail("robin");
+  for (let i = 0; i < 4; i++) th.attempt("robin");
   t += 15 * 60 * 1000; // those four are now outside the window
-  th.fail("robin");
+  th.attempt("robin");
   assert.equal(th.wait("robin"), 0);
-  for (let i = 0; i < 4; i++) th.fail("robin");
+  for (let i = 0; i < 4; i++) th.attempt("robin");
   assert.equal(th.wait("robin"), 30_000);
   th.clear();
   assert.equal(th.wait("robin"), 0);
+});
+
+test("clientAddress: the proxy's hop behind loopback, else the socket; throttleKey pairs it with the username", () => {
+  assert.equal(clientAddress({}, "127.0.0.1"), "127.0.0.1");
+  assert.equal(clientAddress({ "x-forwarded-for": "100.64.0.7" }, "127.0.0.1"), "100.64.0.7");
+  assert.equal(clientAddress({ "x-forwarded-for": "1.2.3.4, 100.64.0.7" }, "::1"), "100.64.0.7", "the hop the proxy added, not what the client sent");
+  assert.equal(clientAddress({ "x-forwarded-for": "1.2.3.4" }, "192.168.1.9"), "192.168.1.9", "not from loopback: the header is ignored");
+  assert.equal(clientAddress({ "x-forwarded-for": "x".repeat(500) }, "127.0.0.1").length, 64);
+  assert.notEqual(throttleKey("robin", "a"), throttleKey("robin", "b"));
 });
 
 /* --------------------------------- learners ------------------------------- */

@@ -22,11 +22,17 @@ are still files shared by every account (phase 2 moves them).
   same-origin check, then the session, then the access level. No exceptions.
   `auth` is `"public"` (only `/api/auth/login`, `/me`, `/first-run` and the
   `/api` 404), `"user"` (the default: no session → 401) or `"admin"` (the
-  content agent and its settings, anything that writes `content/`: non-admin
-  → 403). The handler gets `ctx = { user, learner, sessionId }`; take the
-  mode from `learnerMode(req, ctx)`, never from the request alone. Accounts
-  come from `npm run user -- add <name> [--admin] | passwd | list | disable`;
-  the app's only sign-up is the first-run screen while there are no users.
+  content agent and its settings, and adding a Voice Library voice to the
+  owner's ElevenLabs account: non-admin → 403). Saved packs are still shared
+  files any user may write until they move to the database (DATA.md phase 2).
+  A route that acts for the active learner also takes `learner: true`: the
+  client's `X-Learner-Id` must be that learner, else 409 `stale_learner`.
+  The handler gets `ctx = { user, learner, sessionId }`; take the
+  mode from `learnerMode(req, ctx)`, never from the request alone. Only an
+  `HttpError`'s message reaches the client; anything else is a generic 500.
+  Accounts come from `npm run user -- add <name> [--admin] | passwd | list |
+  disable | enable`; the app's only sign-up is the first-run screen while
+  there are no users.
 - The embedded agent spawns headless `claude -p` with your Claude Code login (no
   API key). It may Read the repo and Write/Edit **only under `content/`**. After
   every agent turn the server commits any `content/` change (`agent: <summary>`)
@@ -64,8 +70,8 @@ are still files shared by every account (phase 2 moves them).
   `scripts/content.mjs` is the one place that maps a mode to a root. The mode
   is the active learner's (a learner is adult or kids; switching learner
   switches mode): the pack/folder/assemble/export/profile/voice routes use it
-  and answer 400 to a `?mode=` (or body `mode`) that disagrees, 409 with no
-  learner picked. `GET /api/content?mode=` still takes either (admins browse
+  and answer 400 to a `?mode=` (or body `mode`) that disagrees, 409
+  `stale_learner` with no learner picked or a page showing another. `GET /api/content?mode=` still takes either (admins browse
   both libraries). Kids pack writes commit as `packs(kids): …` and kids
   exports go to `exports/kids/`. The adult loader never descends into `kids/`.
 
@@ -85,12 +91,14 @@ npm --prefix web run lint      # oxlint
 (cd web && npx tsc -b)
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
-npm run user -- add <name> [--admin]   # a login (also passwd | list | disable); password prompted, or on stdin
+npm run user -- add <name> [--admin]   # a login (also passwd | list | disable | enable); password prompted, or on stdin
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
 never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
-migrations); a test never connects to the dev database or any Postgres server.
+migrations); a test never connects to the dev database or any Postgres server,
+except `first-run.pg.test.mjs` when `LINGO_TEST_PG_URL` is set (it makes and
+drops a throwaway database on that server; point it at a scratch one).
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,
 `.pick()`); every route but the three public ones needs a session.

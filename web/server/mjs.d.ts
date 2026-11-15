@@ -232,13 +232,17 @@ declare module "*/scripts/auth.mjs" {
   export function sessionCookie(token: string, opts?: { secure?: boolean }): string;
   export function clearSessionCookie(opts?: { secure?: boolean }): string;
   export interface LoginThrottle {
-    /** Milliseconds this username must still wait; 0 when it may try. */
-    wait(name: string): number;
-    fail(name: string): void;
-    succeed(name: string): void;
+    /** Milliseconds this key must still wait; 0 when it may try. */
+    wait(key: string): number;
+    /** The wait (> 0: refused), or 0 with the attempt counted as a failure until succeed(). */
+    attempt(key: string): number;
+    succeed(key: string): void;
     clear(): void;
   }
   export function createLoginThrottle(opts?: { max?: number; windowMs?: number; waitMs?: number; now?: () => number }): LoginThrottle;
+  /** The client for the throttle: X-Forwarded-For's last hop behind a loopback proxy, else the socket address. */
+  export function clientAddress(headers: Record<string, string | string[] | undefined>, remoteAddress: string | undefined): string;
+  export function throttleKey(username: string, address: string): string;
   export const PROFILE_COLUMNS: Record<import("../shared/wire.ts").PickerKey | "goals" | "notes", string>;
   /** A learner row's values (column keys) from a profile.yaml mapping. */
   export function learnerFromProfile(profile: unknown, mode: import("../shared/wire.ts").Mode, fallbackName: string): Record<string, string>;

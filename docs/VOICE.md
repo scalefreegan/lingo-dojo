@@ -130,7 +130,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   limit). The choice is the pack's `overrides.minutes`, so the prompt shown,
   copied and exported has a **Time budget** section (docs/CONTENT.md). A pack
   without `minutes` starts the picker at the last choice, kept per mode as
-  `sessionMinutes` in `data/voice.json` (a PUT merges it per mode); what the
+  `sessionMinutes` in the user's voice settings (`user_settings.voice` in the
+  database; a PUT merges it per mode); what the
   picker shows is what the session, Copy and the export use. Save writes only
   a length that is the pack's own: one it had, or one picked for it
   (docs/CONTENT.md). The clock starts with the first

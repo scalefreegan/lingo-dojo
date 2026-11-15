@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, UNAUTHORIZED_EVENT, getMe, logout, pickLearner } from "./api";
+import { ApiError, STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, getMe, logout, pickLearner, setPageLearner } from "./api";
+import { dropModeKeys } from "./draft";
 import type { MeReply } from "./types";
 import App from "./App";
 import AccountScreen from "./components/AccountScreen";
@@ -14,13 +15,23 @@ import LearnerPicker from "./components/LearnerPicker";
  *
  * The server holds all of it (an httpOnly cookie and the session row); this
  * only asks /api/auth/me and redraws. Any 401 from any call (the session
- * ended elsewhere) fires UNAUTHORIZED_EVENT, which re-asks. App is keyed by
- * the learner, so switching learner remounts it on the new learner's mode. */
+ * ended elsewhere) fires UNAUTHORIZED_EVENT, and any 409 `stale_learner`
+ * (another tab picked someone else, archived this learner, or logged in as
+ * another account) fires STALE_LEARNER_EVENT; both re-ask. App is keyed by
+ * the user and the learner, so a switch remounts it with that learner's own
+ * mode, draft and tab, and nothing of the previous one's state survives. */
 export default function AuthGate() {
-  const [me, setMe] = useState<MeReply | null>(null);
+  const [me, setMeState] = useState<MeReply | null>(null);
   const [error, setError] = useState<string | null>(null);
   // "Who's practicing?" opened from the app (to add or archive), with a way back.
   const [picking, setPicking] = useState(false);
+
+  /** What the page shows, and the learner every call says it shows
+   *  (api.ts setPageLearner), changed together. */
+  const setMe = useCallback((m: MeReply) => {
+    setPageLearner(m.user && m.learner ? m.learner.id : null);
+    setMeState(m);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -29,18 +40,22 @@ export default function AuthGate() {
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     }
-  }, []);
+  }, [setMe]);
 
   useEffect(() => {
-    // The first ask; every later one comes from an action or a 401.
-    getMe().then(
-      (m) => setMe(m),
-      (e) => setError(e instanceof ApiError ? e.message : String(e)),
-    );
-    const onUnauthorized = () => void refresh();
-    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-  }, [refresh]);
+    // Drafts, tabs and Scene filters were once kept per mode, shared by
+    // whoever used this browser; they are per learner now (draft.ts).
+    dropModeKeys();
+    // The first ask; every later one comes from an action, a 401 or a 409.
+    getMe().then(setMe, (e) => setError(e instanceof ApiError ? e.message : String(e)));
+    const again = () => void refresh();
+    window.addEventListener(UNAUTHORIZED_EVENT, again);
+    window.addEventListener(STALE_LEARNER_EVENT, again);
+    return () => {
+      window.removeEventListener(UNAUTHORIZED_EVENT, again);
+      window.removeEventListener(STALE_LEARNER_EVENT, again);
+    };
+  }, [refresh, setMe]);
 
   // The kids accent belongs to a kids learner's app; the screens before it
   // are neutral.
@@ -94,7 +109,7 @@ export default function AuthGate() {
   }
   return (
     <App
-      key={me.learner.id}
+      key={`${me.user.id}:${me.learner.id}`}
       user={me.user}
       learner={me.learner}
       learners={me.learners}

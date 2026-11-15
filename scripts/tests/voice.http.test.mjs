@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
-import { ADULT, KID, addUser, client } from "./http-session.mjs";
+import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 
 const root = copyFixture();
@@ -121,6 +121,79 @@ test("POST /api/voice/turn honors the mode: a kids pack with minutes gets the ki
   }
 });
 
+/** A stand-in `claude` first on PATH that answers one line after `delayMs`,
+ *  touching `ran` so a test can tell whether a turn reached it. */
+function fakeClaude(delayMs) {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-fake-claude-"));
+  const ran = path.join(bin, "ran");
+  fs.writeFileSync(
+    path.join(bin, "claude"),
+    `#!/usr/bin/env node\nrequire("fs").appendFileSync(${JSON.stringify(ran)}, "x");\nsetTimeout(() => process.stdout.write(JSON.stringify({ type: "result", result: "NARRATOR-F: Hola." })), ${delayMs});\n`,
+    { mode: 0o755 },
+  );
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  return {
+    runs: () => (fs.existsSync(ran) ? fs.readFileSync(ran, "utf8").length : 0),
+    restore() {
+      process.env.PATH = savedPath;
+      fs.rmSync(bin, { recursive: true, force: true });
+    },
+  };
+}
+
+const adultPack = { title: "a", created: "", scenario: "market", quick_scenario: "", units: [], overrides: {}, notes: "" };
+
+test("a turn or cast from a page showing another learner than the session's is a 409 stale_learner, and nothing runs", async () => {
+  const fake = fakeClaude(0);
+  // A second adult learner for robin, picked in a second tab: the mode
+  // alone can't tell the two pages apart.
+  const made = await call("POST", "/api/learners", { name: "Ana", mode: "adult", target_language: "French" });
+  const other = tab(base, session);
+  try {
+    await other.pick("Ana");
+    const turn = { mode: "adult", pack: adultPack, history: [], message: "" };
+    const stale = await call("POST", "/api/voice/turn", turn);
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.code, "stale_learner");
+    const cast = await call("POST", "/api/voice/cast", { mode: "adult", locale: "es-MX", units: [] });
+    assert.equal(cast.status, 409);
+    assert.equal(cast.body.code, "stale_learner");
+    assert.equal(fake.runs(), 0, "the stale tab's turn never reached claude");
+    // A page that names no learner is refused the same way.
+    const none = await other.call("POST", "/api/voice/turn", turn, { "X-Learner-Id": "" });
+    assert.equal(none.body.code, "stale_learner");
+    // The current tab's turn runs, with Ana's profile.
+    const ok = await other.call("POST", "/api/voice/turn", turn);
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(fake.runs(), 1);
+  } finally {
+    await session.pick("Sam");
+    await call("POST", `/api/learners/${made.body.learner.id}/archive`, {});
+    fake.restore();
+  }
+});
+
+test("the turn lock is per login session: two devices on one account don't block each other; one session can't overlap", async () => {
+  const fake = fakeClaude(400);
+  const device2 = client(base);
+  await device2.login("robin");
+  await device2.pick("Sam");
+  try {
+    const turn = { mode: "adult", pack: adultPack, history: [], message: "" };
+    const [a, b] = await Promise.all([call("POST", "/api/voice/turn", turn), device2.call("POST", "/api/voice/turn", turn)]);
+    assert.equal(a.status, 200, a.text);
+    assert.equal(b.status, 200, b.text);
+    const [c, d] = await Promise.all([call("POST", "/api/voice/turn", turn), tab(base, session).call("POST", "/api/voice/turn", turn)]);
+    assert.deepEqual([c.status, d.status].sort(), [200, 409], "two tabs share a session, and its lock");
+    const locked = c.status === 409 ? c : d;
+    assert.match(locked.body.error, /still answering/);
+    assert.equal(locked.body.code, undefined, "an ordinary 409, not stale_learner");
+  } finally {
+    fake.restore();
+  }
+});
+
 test("unconfigured providers answer 400 with where the key goes", async () => {
   const v = await call("GET", "/api/voice/voices?provider=elevenlabs&locale=es-MX");
   assert.equal(v.status, 400);
@@ -148,7 +221,11 @@ test("input validation", async () => {
   assert.equal((await call("GET", "/api/voice/turn")).status, 405);
   assert.equal((await call("GET", "/api/voice/nope")).status, 404);
   assert.equal((await call("GET", "/api/voice/library?locale=spanish")).status, 400);
-  assert.equal((await call("GET", "/api/voice/library/add")).status, 405);
+  // Adding a library voice changes the owner's ElevenLabs account: admins
+  // only, so robin (not one) is refused before anything is checked.
+  const add = await call("POST", "/api/voice/library/add", { ownerId: "x", voiceId: "y", name: "z" });
+  assert.equal(add.status, 403);
+  assert.equal(add.body.error, "only an admin can do that");
   assert.equal((await call("GET", "/api/voice/cast")).status, 405);
   assert.equal((await call("POST", "/api/voice/cast", { mode: "adult", locale: "spanish", units: [] })).status, 400);
   assert.equal((await call("POST", "/api/voice/cast", { mode: "teen", locale: "es-MX", units: [] })).status, 400);

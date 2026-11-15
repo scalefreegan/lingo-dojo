@@ -171,48 +171,88 @@ export function clearSessionCookie({ secure = false } = {}) {
 /* -------------------------------- throttle -------------------------------- */
 
 /**
- * The login throttle: after `max` failures for one username within
- * `windowMs`, logins for that username wait `waitMs` from the last failure.
- * A failure after the wait (still `max` in the window) starts another wait;
- * a success clears the username. In memory: one Mac, one process.
+ * The login throttle: after `max` attempts that did not succeed for one key
+ * within `windowMs`, attempts for that key wait `waitMs` from the last one.
+ * An attempt after the wait (still `max` in the window) starts another wait;
+ * a success clears the key. In memory: one Mac, one process.
  *
- * `now` is injectable for tests. Usernames are keyed as given, so callers
- * pass the normalized one (an unknown username is throttled the same as a
- * real one: the throttle must not tell them apart).
+ * `attempt()` counts the try as a failure up front, synchronously, before
+ * the caller's first await (the user lookup, the scrypt); `succeed()` takes
+ * it back. Counting only after a wrong password, as this did first, let a
+ * burst of parallel guesses all pass the check before any of them failed.
+ *
+ * The key is the caller's (auth.ts: the normalized username plus the client
+ * address, throttleKey), so an unknown username is throttled the same as a
+ * real one and one client's guesses don't hold up another's logins. `now` is
+ * injectable for tests.
  */
 export function createLoginThrottle({ max = 5, windowMs = 15 * 60 * 1000, waitMs = 30 * 1000, now = () => Date.now() } = {}) {
-  /** username → failure times, oldest first */
+  /** key → attempt times, oldest first */
   const failures = new Map();
-  const recent = (name) => {
+  const recent = (key) => {
     const t = now();
-    const list = (failures.get(name) ?? []).filter((at) => t - at < windowMs);
-    if (list.length) failures.set(name, list);
-    else failures.delete(name);
+    const list = (failures.get(key) ?? []).filter((at) => t - at < windowMs);
+    if (list.length) failures.set(key, list);
+    else failures.delete(key);
     return list;
   };
+  const wait = (key) => {
+    const list = recent(key);
+    if (list.length < max) return 0;
+    return Math.max(0, list[list.length - 1] + waitMs - now());
+  };
   return {
-    /** Milliseconds this username must still wait; 0 when it may try. */
-    wait(name) {
-      const list = recent(name);
-      if (list.length < max) return 0;
-      return Math.max(0, list[list.length - 1] + waitMs - now());
-    },
-    fail(name) {
-      const list = recent(name);
+    /** Milliseconds this key must still wait; 0 when it may try. */
+    wait,
+    /** The wait (> 0: refused, nothing recorded), or 0 with the attempt
+     *  recorded as a failure until `succeed()`. */
+    attempt(key) {
+      const w = wait(key);
+      if (w > 0) return w;
+      const list = recent(key);
       list.push(now());
       // Only the last `max` matter for the rule; cap the memory a flood of
       // guesses can take.
-      failures.set(name, list.slice(-max));
-      // A burst of distinct names should not grow the map without bound.
+      failures.set(key, list.slice(-max));
+      // A burst of distinct keys should not grow the map without bound
+      // (keys are short: auth.ts checks the username before it gets here).
       if (failures.size > 10_000) failures.delete(failures.keys().next().value);
+      return 0;
     },
-    succeed(name) {
-      failures.delete(name);
+    succeed(key) {
+      failures.delete(key);
     },
     clear() {
       failures.clear();
     },
   };
+}
+
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+/**
+ * Who is logging in, for the throttle key. A request from loopback with an
+ * X-Forwarded-For came through the local proxy (Tailscale Serve in front of
+ * the dev server, DATA.md §Hosting): the client is the address that proxy
+ * appended, the list's LAST entry. Earlier entries are whatever the client
+ * sent and can be anything, so keying on them would let a guesser pick a
+ * fresh key per try. Anything else is the socket's address. Capped, since
+ * it ends up in a map key.
+ */
+export function clientAddress(headers, remoteAddress) {
+  const socket = String(remoteAddress ?? "");
+  const xff = headers?.["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff.join(",") : xff;
+  if (LOOPBACK.has(socket) && typeof raw === "string" && raw.trim()) {
+    const hops = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (hops.length) return hops[hops.length - 1].slice(0, 64);
+  }
+  return socket.slice(0, 64);
+}
+
+/** The throttle key: a username and a client address. */
+export function throttleKey(username, address) {
+  return `${username}\n${address}`;
 }
 
 /* --------------------------------- learners ------------------------------- */

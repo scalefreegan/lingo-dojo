@@ -330,6 +330,23 @@ export interface MeReply {
   learners: LearnerInfo[];
 }
 
+/** Every error reply: a sentence to show, and for the few errors the client
+ *  acts on, a code.
+ *
+ *  `stale_learner` (409): a learner-scoped route (profile, packs, folders,
+ *  assemble, export, voice turn and cast) was called for a learner who isn't
+ *  the session's active one — the page's `X-Learner-Id` header (LearnerHeader)
+ *  names another learner or none, or nobody is picked. Another tab switched
+ *  learner, archived this one, or logged in as someone else. The client
+ *  re-reads /api/auth/me instead of showing it. */
+export interface ErrorReply {
+  error: string;
+  code?: ErrorCode;
+}
+export type ErrorCode = "stale_learner";
+/** The request header naming the learner the page is rendering. */
+export type LearnerHeader = "X-Learner-Id";
+
 /** POST /api/auth/login and POST /api/auth/first-run. 401 on a wrong
  *  username or password (the same sentence for both), 429 while throttled,
  *  409 from first-run once any account exists. */

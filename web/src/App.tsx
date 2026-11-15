@@ -4,7 +4,7 @@ import {
 } from "./api";
 import type { AssembleResult, AuthUser, Committed, ContentReply, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, learnerKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -15,6 +15,7 @@ import GoTab from "./components/GoTab";
 import LibraryTab from "./components/LibraryTab";
 import AgentDrawer from "./components/AgentDrawer";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
+import { IsAdmin } from "./viewer";
 
 /** Debounce for the live preview: long enough to coalesce typing in the
  *  notes box, short enough that a checkbox feels immediate. */
@@ -26,11 +27,11 @@ function isTab(v: string | null): v is Tab {
   return v === "scene" || v === "customize" || v === "go" || v === "library";
 }
 
-/** The last tab this browser was on in a mode — "Scene" the first time, or
- *  if storage is blocked or holds something unrecognized. */
-function loadRememberedTab(mode: Mode): Tab {
+/** The last tab this learner was on in this browser — "Scene" the first
+ *  time, or if storage is blocked or holds something unrecognized. */
+function loadRememberedTab(learnerId: string): Tab {
   try {
-    const raw = localStorage.getItem(modeKey(TAB_KEY, mode));
+    const raw = localStorage.getItem(learnerKey(TAB_KEY, learnerId));
     return isTab(raw) ? raw : "scene";
   } catch {
     return "scene";
@@ -56,10 +57,12 @@ export default function App({
   /** The learner row changed (Save as my defaults): refresh what the gate holds. */
   onLearnerSaved: () => Promise<void> | void;
 }) {
-  // Which library is open: the active learner's. Everything below — content,
-  // packs, draft, tab — belongs to this mode. Switching learner remounts App
-  // (AuthGate keys it by learner), which reloads the lot and swaps in that
-  // mode's own remembered draft, so the two never bleed into each other.
+  // Which library is open: the active learner's. Content and packs are this
+  // mode's; the remembered draft, tab and Scene filters are this learner's
+  // (draft.ts learnerKey). Switching learner remounts App (AuthGate keys it
+  // by learner), which reloads the lot and swaps in that learner's own
+  // remembered draft, so two learners — or two accounts on one browser —
+  // never see each other's unsaved picks.
   const mode: Mode = learner.mode;
   const [content, setContent] = useState<ContentReply | null>(null);
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -83,18 +86,18 @@ export default function App({
   // The sticky bar's Practice: go to the Go tab with the voice session open.
   // Cleared once the panel has opened, so a later visit to Go doesn't reopen it.
   const [practiceRequest, setPracticeRequest] = useState(false);
-  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(mode));
+  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(learner.id));
 
   const setTab = useCallback(
     (t: Tab) => {
       setTabState(t);
       try {
-        localStorage.setItem(modeKey(TAB_KEY, mode), t);
+        localStorage.setItem(learnerKey(TAB_KEY, learner.id), t);
       } catch {
         /* private window or blocked storage: the next visit just starts on Scene */
       }
     },
-    [mode],
+    [learner.id],
   );
 
   // The mode on <html>, for the stylesheet's kids accent.
@@ -102,18 +105,17 @@ export default function App({
     document.documentElement.dataset.mode = mode;
   }, [mode]);
 
-  /** Put a loaded library into state. `fresh` is true when the library is a
-   *  different mode's than the draft: the draft is then replaced by that
-   *  mode's remembered one (so a refresh or a switch back keeps today's
-   *  picks), else by the library's defaults. A reload within the same mode
-   *  keeps the draft (a unit that vanished shows up as a warning). */
-  const applyLoad = useCallback((m: Mode, c: ContentReply, p: PacksReply, fresh: boolean) => {
+  /** Put a loaded library into state. `fresh` is true on the first load:
+   *  the draft is then this learner's remembered one (so a refresh keeps
+   *  today's picks), else the library's defaults. A reload keeps the draft
+   *  (a unit that vanished shows up as a warning). */
+  const applyLoad = useCallback((learnerId: string, c: ContentReply, p: PacksReply, fresh: boolean) => {
     setContent(c);
     setPacks(p.packs);
     setFolders(p.folders);
     setLoadError(null);
     setContentVersion((v) => v + 1);
-    setDraft((d) => (fresh || !d ? (loadRememberedDraft(m) ?? newDraft(c)) : d));
+    setDraft((d) => (fresh || !d ? (loadRememberedDraft(learnerId) ?? newDraft(c)) : d));
   }, []);
 
   // Load the library. The effect's own `live` flag drops a reply that lands
@@ -121,19 +123,19 @@ export default function App({
   useEffect(() => {
     let live = true;
     Promise.all([getContent(mode), listPacks(mode)]).then(
-      ([c, p]) => live && applyLoad(mode, c, p, true),
+      ([c, p]) => live && applyLoad(learner.id, c, p, true),
       (e) => live && setLoadError((e as Error).message),
     );
     return () => {
       live = false;
     };
-  }, [mode, applyLoad]);
+  }, [mode, learner.id, applyLoad]);
 
   async function reloadContent() {
     setReloading(true);
     try {
       const [c, p] = await Promise.all([getContent(mode), listPacks(mode)]);
-      applyLoad(mode, c, p, false);
+      applyLoad(learner.id, c, p, false);
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {
@@ -142,7 +144,7 @@ export default function App({
   }
 
   // The Go tab's "How long do you have?": the draft's own choice, else the
-  // last one, which lives in the voice settings (data/voice.json) per mode.
+  // last one, which lives in this user's voice settings (the database) per mode.
   // Until (or unless) they load, the picker offers no lengths and the pack
   // goes without one, which is No limit: today's behavior.
   const [lastMinutes, setLastMinutes] = useState<Record<Mode, number | null> | null>(null);
@@ -345,12 +347,12 @@ export default function App({
     setTab("go");
   }
 
-  // Remember every change under this mode's key; "New pack" below is the
-  // way back to the defaults. The draft is null between a mode switch and
-  // its load, and a null is not written (it would erase the remembered one).
+  // Remember every change under this learner's key; "New pack" below is the
+  // way back to the defaults. The draft is null until the first load, and a
+  // null is not written (it would erase the remembered one).
   useEffect(() => {
-    if (draft && content?.mode === mode) rememberDraft(mode, draft);
-  }, [mode, content, draft]);
+    if (draft && content?.mode === mode) rememberDraft(learner.id, draft);
+  }, [mode, learner.id, content, draft]);
 
   function startNew() {
     if (!content) return;
@@ -364,6 +366,7 @@ export default function App({
   const ready = content?.mode === mode ? content : null;
 
   return (
+    <IsAdmin.Provider value={user.isAdmin}>
     <div className="flex min-h-screen flex-col">
       <TopBar
         tab={tab}
@@ -400,7 +403,7 @@ export default function App({
         <main className="flex-1 p-4">
           <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : "max-w-3xl"}`}>
             {tab === "scene" && (
-              <SceneTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
+              <SceneTab key={mode} learnerId={learner.id} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
             )}
             {tab === "customize" && <CustomizeTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("go")} />}
             {/* Go stays mounted while another tab is open, so a practice
@@ -467,6 +470,7 @@ export default function App({
         </div>
       )}
     </div>
+    </IsAdmin.Provider>
   );
 }
 
