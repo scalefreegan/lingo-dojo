@@ -718,6 +718,22 @@ Built (bead 10):
 
 - The server keeps listening on localhost only (`server.host` is untouched).
   Tailscale is the one way in, and Postgres stays on localhost.
+- The serve target is `tailscale serve --bg --https=443 http://localhost:38400`,
+  with the name and scheme. Vite's default host `localhost` resolves to `::1`
+  first on this machine, so the server listens on `[::1]:38400` only and
+  `127.0.0.1:38400` does not answer. A bare port (`tailscale serve 38400`)
+  becomes `http://127.0.0.1:38400` and would give a 502
+  (tailscale/tailscale#12201); a `localhost` target is kept as a name and Go
+  dials both address families. The curl checks in this work used `localhost`,
+  where curl falls back across families; `127.0.0.1` is not a valid probe.
+- First-run is local only. `/api/auth/first-run` has no login in front of it
+  and the first account is the admin, so on a fresh install served before any
+  account exists any tailnet device could claim it. `isDirectLocalRequest`
+  (`scripts/auth.mjs`) allows it only when the socket peer is loopback, the
+  request carries no `X-Forwarded-For`/`-Host`/`-Proto`, and `Host` is
+  `localhost`, `127.0.0.1` or `[::1]`; otherwise 403 with a message to use the
+  Mac itself. `/api/auth/me` still says `firstRun: true` and adds
+  `firstRunHere`, so the page shows that message instead of the form.
 - Vite refuses hostnames it doesn't know, so the tailnet name goes in
   `server.allowedHosts`, read from `LINGO_PUBLIC_HOST` in the shell or the
   repo-root `.env.local` (`scripts/public-host.mjs`, tested in
@@ -746,6 +762,10 @@ Deployment notes:
   path (the sibling apps on 38100–38300, if they are served under the same
   `<mac>.<tailnet>.ts.net`). Those apps could read it from their requests.
   Serve Lingo Dojo under its own hostname, or keep the others off this one.
+- Known limits, left as they are: a `Host` with a trailing dot (`localhost.`)
+  is not treated as local (first-run refuses it, which fails closed), and the
+  login throttle trusts `X-Forwarded-For` from any loopback peer, so another
+  local process could pick its own throttle key.
 - Do not use Funnel. The Mac has to stay awake with the dev server running.
 
 Not yet verified (only the owner can, from a second device on the tailnet):

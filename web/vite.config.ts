@@ -34,7 +34,10 @@ export default defineConfig({
   // websocket on the page's own host and port, wss on an https page (443
   // here), and Tailscale Serve proxies websocket upgrades to 38400.
   // server.ws.clientPort is only for a proxy port the browser can't see.
-  // `host` stays default (localhost only): Tailscale is the one way in.
+  // `host` stays default: "localhost", which Node resolves to ::1 first, so on
+  // this machine only IPv6 loopback listens and 127.0.0.1 gets nothing.
+  // `tailscale serve` must therefore target http://localhost:38400 by name,
+  // not a bare port (which becomes 127.0.0.1). Tailscale is the one way in.
   server: {
     port: 38400,
     strictPort: true,

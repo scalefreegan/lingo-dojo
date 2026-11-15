@@ -325,6 +325,9 @@ export interface LearnerInfo {
  *  learner, null until one is picked ("Who's practicing?"). */
 export interface MeReply {
   firstRun: boolean;
+  /** Only with firstRun: this request may create the first account (a direct
+   *  local one). Absent or false: the page says to do it on the Mac. */
+  firstRunHere?: boolean;
   user: AuthUser | null;
   learner: LearnerInfo | null;
   learners: LearnerInfo[];

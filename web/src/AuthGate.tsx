@@ -93,6 +93,13 @@ export default function AuthGate() {
     );
   }
   if (!me) return <p className="p-6 text-sm text-fg-3">Loading…</p>;
+  if (me.firstRun && !me.firstRunHere) {
+    return (
+      <p className="p-6 text-sm text-fg-2" data-testid="first-run-remote">
+        No one has an account yet. Create the first account on the Mac that runs Lingo Dojo (open http://localhost:38400 there), then log in here.
+      </p>
+    );
+  }
   if (me.firstRun) return <AccountScreen kind="first-run" onDone={setMe} />;
   if (!me.user) return <AccountScreen kind="login" onDone={setMe} />;
   if (!me.learner || picking) {

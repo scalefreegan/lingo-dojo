@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parsePublicHosts, publicHosts } from "../public-host.mjs";
-import { clientAddress, isSecureRequest, sessionCookie } from "../auth.mjs";
+import { clientAddress, isDirectLocalRequest, isSecureRequest, sessionCookie } from "../auth.mjs";
 
 const { sameOrigin } = await import("../../web/server/api.ts");
 
@@ -74,4 +74,51 @@ test("throttle address: the proxy's X-Forwarded-For behind loopback, the socket 
   // A client-forged earlier hop is ignored; a header from a non-loopback peer is too.
   assert.equal(clientAddress({ "x-forwarded-for": "6.6.6.6, 100.64.0.7" }, "127.0.0.1"), "100.64.0.7");
   assert.equal(clientAddress(served, "192.168.1.9"), "192.168.1.9");
+});
+
+test("isDirectLocalRequest: loopback peer, no proxy headers, a localhost Host; anything else is not here", () => {
+  for (const host of ["localhost:38400", "127.0.0.1:38400", "[::1]:38400", "LOCALHOST", "localhost"]) {
+    assert.equal(isDirectLocalRequest({ host }, "127.0.0.1"), true, host);
+  }
+  assert.equal(isDirectLocalRequest({ host: "localhost:38400" }, "::1"), true);
+  assert.equal(isDirectLocalRequest({ host: "localhost:38400" }, "::ffff:127.0.0.1"), true);
+  // What tailscale serve sends: loopback peer, but a tailnet Host and forwarded headers.
+  assert.equal(isDirectLocalRequest(served, "127.0.0.1"), false);
+  // Each tell alone is enough to refuse, even with a localhost Host.
+  for (const h of ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto"]) {
+    assert.equal(isDirectLocalRequest({ host: "localhost:38400", [h]: "x" }, "127.0.0.1"), false, h);
+  }
+  assert.equal(isDirectLocalRequest({ host: HOST }, "127.0.0.1"), false);
+  assert.equal(isDirectLocalRequest({}, "127.0.0.1"), false);
+  assert.equal(isDirectLocalRequest({ host: "localhost:38400" }, "192.168.1.9"), false);
+  assert.equal(isDirectLocalRequest({ host: "localhost:38400" }, undefined), false);
+});
+
+// The wiring, not just the parser: resolve the real vite.config.ts the way
+// `vite` does. A config that passed `allowedHosts: true` (any host), or
+// dropped the list, fails here. vite.config.ts is re-evaluated per call.
+const web = path.resolve(import.meta.dirname, "../../web");
+const { resolveConfig } = await import(path.join(web, "node_modules/vite/dist/node/index.js"));
+async function allowedHostsWith(publicHost) {
+  const saved = { h: process.env.LINGO_PUBLIC_HOST, f: process.env.LINGO_ENV_FILE };
+  process.env.LINGO_ENV_FILE = path.join(os.tmpdir(), "lingo-dojo-no-such.env");
+  if (publicHost === undefined) delete process.env.LINGO_PUBLIC_HOST;
+  else process.env.LINGO_PUBLIC_HOST = publicHost;
+  try {
+    const c = await resolveConfig({ root: web, configFile: path.join(web, "vite.config.ts"), logLevel: "silent" }, "serve");
+    return { allowedHosts: c.server.allowedHosts, host: c.server.host };
+  } finally {
+    if (saved.h === undefined) delete process.env.LINGO_PUBLIC_HOST;
+    else process.env.LINGO_PUBLIC_HOST = saved.h;
+    if (saved.f === undefined) delete process.env.LINGO_ENV_FILE;
+    else process.env.LINGO_ENV_FILE = saved.f;
+  }
+}
+
+test("vite.config.ts: allowedHosts is exactly the parsed LINGO_PUBLIC_HOST list, never true; host stays default", async () => {
+  const set = await allowedHostsWith(` ${HOST.toUpperCase()}, other.example.ts.net,https://bad `);
+  assert.deepEqual(set.allowedHosts, [HOST, "other.example.ts.net"]);
+  assert.equal(set.host, undefined);
+  const unset = await allowedHostsWith(undefined);
+  assert.ok(unset.allowedHosts === undefined || (Array.isArray(unset.allowedHosts) && unset.allowedHosts.length === 0), JSON.stringify(unset.allowedHosts));
 });
