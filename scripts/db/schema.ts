@@ -400,6 +400,11 @@ export const phrases = pgTable(
     lastSeenAt: tz("last_seen_at"),
     seenCount: integer("seen_count").notNull().default(0),
     lastPracticedAt: tz("last_practiced_at"),
+    /** When the learner last changed it by hand (any edit, a star, an add
+     *  of words already here); null if never. The automatic paths (a
+     *  gloss, a scene's list, undoing a dropped reply) never delete it or
+     *  overwrite what the learner set while this is set. */
+    editedAt: tz("edited_at"),
     createdAt: createdAt(),
   },
   (t) => [

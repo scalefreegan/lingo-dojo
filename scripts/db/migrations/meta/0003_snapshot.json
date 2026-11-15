@@ -1,5 +1,5 @@
 {
-  "id": "abc467b4-ff7c-4af5-a664-0730d37e11fa",
+  "id": "223570ba-7f7f-488a-a2db-bc497f0b5313",
   "prevId": "d8044bfe-8c88-43ad-a791-12099b22e9a9",
   "version": "7",
   "dialect": "postgresql",
@@ -1729,6 +1729,12 @@
         },
         "last_practiced_at": {
           "name": "last_practiced_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "edited_at": {
+          "name": "edited_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

@@ -86,6 +86,16 @@ async function retrying<T>(run: () => Promise<T>): Promise<T> {
 
 const COMPLETE = sql`${phrases.text} is not null`;
 const PENDING = sql`${phrases.text} is null`;
+/** The meaning an automatic write (a gloss, a scene's list) leaves on a
+ *  phrase already there: its own, whoever set it; the incoming one only
+ *  fills a blank (a phrase added by hand with no meaning, say). */
+const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
+/** The phrase's note with `other` (a row being folded into it) kept too:
+ *  neither lost, the same one not twice. */
+const withNote = (other: string | null) =>
+  other == null
+    ? sql`${phrases.note}`
+    : sql`case when ${phrases.note} is null then ${other}::text when ${phrases.note} = ${other}::text then ${phrases.note} else ${phrases.note} || ${"\n\n" + other}::text end`;
 /** The partial unique indexes the upserts target (the scope adds the profile). */
 const IDENTITY = { target: [phrases.norm], targetWhere: COMPLETE };
 const PENDING_IDENTITY = { target: [phrases.meaningNorm], targetWhere: PENDING };
@@ -106,9 +116,13 @@ async function lockPhrase(tx: Db, profile: LanguageProfileRef, id: string): Prom
 /**
  * The merge rule, after the complete phrases are made or found: for each of
  * `found` (a complete row and the meaning its words came with), a pending
- * row with that meaning is folded into it (starred if either was, its note
- * when the complete one has none) and deleted. In meaning order, after every
- * complete row the write takes (the lock order above).
+ * row with that meaning is folded into it and deleted. Nothing the learner
+ * set on either is lost: starred or suspended if either was, both notes
+ * (joined when they differ), the later edit time, and the pending row's
+ * meaning when the complete one has none or the learner edited the pending
+ * one and not the complete one (it matched by meaning, so it is the same
+ * meaning, in the learner's words). In meaning order, after every complete
+ * row the write takes (the lock order above).
  */
 async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: string; meaningNorm: string | null }[]): Promise<void> {
   const mine = forLanguageProfile(tx, profile);
@@ -120,9 +134,18 @@ async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: s
       .where(mine.where(phrases, and(PENDING, eq(phrases.meaningNorm, f.meaningNorm))))
       .for("update");
     if (!pending) continue;
+    const pendingEdited = pending.editedAt != null;
     await mine.update(
       phrases,
-      { starred: sql`${phrases.starred} or ${pending.starred}`, note: sql`coalesce(${phrases.note}, ${pending.note})` },
+      {
+        starred: sql`${phrases.starred} or ${pending.starred}`,
+        suspended: sql`${phrases.suspended} or ${pending.suspended}`,
+        note: withNote(pending.note),
+        meaning: pendingEdited
+          ? sql`case when ${phrases.editedAt} is null then ${pending.meaning}::text else coalesce(${phrases.meaning}, ${pending.meaning}::text) end`
+          : sql`coalesce(${phrases.meaning}, ${pending.meaning}::text)`,
+        editedAt: sql`greatest(${phrases.editedAt}, ${pending.editedAt}::timestamptz)`,
+      },
       eq(phrases.id, f.id),
     );
     await mine.remove(phrases, eq(phrases.id, pending.id));
@@ -174,8 +197,8 @@ export async function recordGlosses(
               seenCount: sql`${phrases.seenCount} + 1`,
               lastSeenAt: sql`now()`,
               firstSeenAt: sql`coalesce(${phrases.firstSeenAt}, now())`,
-              // The first meaning stays: the learner may have edited it.
-              meaning: sql`coalesce(${phrases.meaning}, excluded.meaning)`,
+              // The first meaning stays, and the learner's always does.
+              meaning: AUTO_MEANING,
             },
           },
         );
@@ -210,8 +233,9 @@ export async function recordGlosses(
  * the turn's transaction, in a savepoint like recordGlosses. `norms` are
  * the phrases the reply's capture took (glossCaptures of its stored
  * glosses). Its examples go; each phrase is seen once less. A phrase whose
- * only sighting this was, and that the learner hasn't touched since (a
- * "gloss" phrase not starred, suspended or noted, no card reviewed), goes
+ * only sighting this was, and that the learner hasn't touched (a "gloss"
+ * phrase never edited by hand, `edited_at` null, and no card reviewed;
+ * starred, suspended or noted also count, belt and braces), goes
  * altogether, as if the reply had never been: it existed only because of
  * it. One the learner did touch stays, unseen (no first or last sighting)
  * and without the card that sighting made. The last sighting of a phrase
@@ -236,7 +260,7 @@ export async function unrecordGlosses(tx: Db, profile: LanguageProfileRef, opts:
           continue;
         }
         const reviewed = await mine.get(cards, and(eq(cards.phraseId, row.id), sql`${cards.reps} > 0`) as SQL);
-        const touched = row.source !== "gloss" || row.starred || row.suspended || row.note != null || !!reviewed;
+        const touched = row.source !== "gloss" || row.editedAt != null || row.starred || row.suspended || row.note != null || !!reviewed;
         if (!touched) {
           await mine.remove(phrases, eq(phrases.id, row.id));
           continue;
@@ -274,7 +298,7 @@ export async function addScenarioPhrases(
         const [row] = await mine.upsert(
           phrases,
           { lang: opts.lang, text: item.text, norm: item.norm, meaning: item.meaning, source: "scenario" },
-          { ...IDENTITY, set: { meaning: sql`coalesce(${phrases.meaning}, excluded.meaning)` } },
+          { ...IDENTITY, set: { meaning: AUTO_MEANING } },
         );
         found.push({ id: row.id, meaningNorm: item.meaningNorm });
       }
@@ -432,10 +456,12 @@ export async function addPhrase(
     const existed = !!(await mine.get(phrases, and(COMPLETE, eq(phrases.norm, norm)) as SQL));
     const [made] = await mine.upsert(
       phrases,
-      { lang, text: input.text, norm, meaning, note: input.note ?? null, source: "manual", starred: input.starred ?? true },
+      { lang, text: input.text, norm, meaning, note: input.note ?? null, source: "manual", starred: input.starred ?? true, editedAt: new Date() },
       {
         ...IDENTITY,
         set: {
+          // Starring or adding words already here is the learner's act too.
+          editedAt: sql`now()`,
           starred: sql`${phrases.starred} or excluded.starred`,
           meaning: sql`coalesce(${phrases.meaning}, excluded.meaning)`,
           note: sql`coalesce(${phrases.note}, excluded.note)`,
@@ -480,6 +506,9 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     if (input.note !== undefined) set.note = input.note;
     if (input.starred !== undefined) set.starred = input.starred;
     if (input.suspended !== undefined) set.suspended = input.suspended;
+    // Any change by hand marks it: no automatic path deletes it or
+    // overwrites what was set (DATA.md "Learner edits").
+    set.editedAt = new Date();
     const [updated] = await forLanguageProfile(tx, profile).update(phrases, set, eq(phrases.id, pid));
     return detail(tx, profile, updated);
   });

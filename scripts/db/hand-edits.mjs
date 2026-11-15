@@ -196,6 +196,7 @@ const ORDER_0003 = [
   { name: "new tables", re: /^CREATE TABLE "/ },
   { name: "old learner indexes out", re: /^DROP INDEX "(cards_learner_due_idx|phrases_identity|phrases_pending_identity|reviews_learner_at_idx)";$/ },
   { name: "profile columns", re: /^ALTER TABLE "\w+" ADD COLUMN "language_profile_id" uuid NOT NULL;$/ },
+  { name: "edit marker", re: /^ALTER TABLE "phrases" ADD COLUMN "edited_at" timestamp with time zone;$/ },
   { name: "new unique keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" UNIQUE\(/ },
   { name: "foreign keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" FOREIGN KEY / },
   { name: "indexes", re: /^CREATE (UNIQUE )?INDEX "/ },

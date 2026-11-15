@@ -503,7 +503,8 @@ phrases         id, learner_id, language_profile_id, lang (BCP-47 of the
                 (gloss|extraction|manual|scenario), alternates jsonb
                 (accepted other forms, default []), starred, suspended,
                 first_seen_at, last_seen_at, seen_count,
-                last_practiced_at, created_at
+                last_practiced_at, edited_at (the learner's last change
+                by hand; null if never), created_at
                 unique (language_profile_id, norm) where text is not null
                 unique (language_profile_id, meaning_norm) where text is null
                 trigram GIN indexes on text and meaning
@@ -654,8 +655,11 @@ tables were keyed by learner and `lang`; the language profiles of
   (rating 1) given to a card that was in review (`card_before.state` 2).
 - **Pending pairing.** A gloss pairs a pending phrase only by the meaning
   the dojo master gave (normalised). The complete phrase for the words is
-  made or found first, then the pending row is folded into it (starred if
-  either was, its note if the complete one has none) and deleted: a change
+  made or found first, then the pending row is folded into it and deleted,
+  keeping what the learner set on either (starred or suspended if either
+  was, both notes joined when they differ, the later `edited_at`, and the
+  pending row's meaning when it was edited and the complete one's wasn't,
+  or the complete one has none): a change
   from the merge rule above, which filled the pending row in, so that every
   write takes its rows in one order (complete rows by norm, then pending
   rows by meaning) and two conversations capturing at once wait for each
@@ -679,9 +683,18 @@ tables were keyed by learner and `lang`; the language profiles of
   browser no longer shows, that reply's sightings are undone in the same
   transaction: its examples go and each phrase it glossed is seen once
   less. A phrase whose only sighting that was, and which the learner hasn't
-  touched (a gloss phrase not starred, suspended or noted, no card
-  reviewed), is deleted, as if the reply had never been; one the learner
-  touched stays, unseen, without the card the sighting made. A phrase still
+  touched (a gloss phrase with no `edited_at`, not starred, suspended or
+  noted, no card reviewed), is deleted, as if the reply had never been; one
+  the learner touched stays, unseen, without the card the sighting made.
+- **Learner edits.** Every change by hand (any `PATCH`, even one that
+  changes only the meaning, and an add or ☆ Star of words already in the
+  bank) sets `phrases.edited_at`. That is the one marker the automatic
+  paths respect: undoing a dropped reply never deletes such a phrase, and
+  no gloss, scene list, pending absorption or retry overwrites a meaning,
+  note, star or suspension the learner set. A gloss or a scene's list only
+  fills a meaning that is blank (they never replace one, whoever set it);
+  scene lists skip dismissed keys and never delete; a retried write reruns
+  from the start on fresh rows, so it writes nothing stale. A phrase still
   seen elsewhere keeps its last-seen time (sightings aren't stored one by
   one, so the one before can't be known).
 - **UI.** The Library tab's third view, **Phrase bank**: add (starred),

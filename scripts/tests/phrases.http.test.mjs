@@ -208,6 +208,51 @@ test("a stored reply the browser dropped takes its sightings with it", async () 
   assert.equal(byText((await bank(sam)).body.phrases)["el kilo"].seenCount, 3, "one reply dropped, one added");
 });
 
+test("a dropped reply never deletes a phrase the learner edited, even only its meaning; a later gloss keeps the learner's meaning", async () => {
+  const sam = await someone();
+  const c = await start(sam, pack({ scenario: "" }));
+  assert.equal((await turn(sam, c.id, [], "")).status, 200);
+  const before = byText((await bank(sam)).body.phrases);
+  // In another tab, after Stop: the meaning corrected, nothing else; and a
+  // PATCH that changes no visible field (unstarring an unstarred phrase).
+  const fix = await sam.call("PATCH", `/api/phrases/${before["la vuelta"].id}`, { meaning: "the change (money back)" });
+  assert.equal(fix.status, 200, fix.text);
+  assert.equal((await sam.call("PATCH", `/api/phrases/${before["mercado"].id}`, { starred: false })).status, 200);
+  const [first] = await q("select id from turns where conversation_id = $1 and role = 'master'", [c.id]);
+  fakeOther();
+  const r = await turn(sam, c.id, [], "Hola.");
+  assert.equal(r.status, 200, r.text);
+  assert.equal((await q("select count(*)::int as n from turns where id = $1", [first.id]))[0].n, 0, "the dropped reply is gone");
+  let got = byText((await bank(sam)).body.phrases);
+  assert.ok(got["la vuelta"], "edited by hand: kept");
+  assert.deepEqual([got["la vuelta"].meaning, got["la vuelta"].seenCount, got["la vuelta"].lastSeenAt], ["the change (money back)", 0, null], "kept with the learner's meaning, unseen");
+  assert.ok(got["mercado"], "any PATCH counts as an edit");
+
+  // A later gloss of it doesn't put the dojo master's meaning back.
+  fake.answer(REPLY);
+  const c2 = await start(sam, pack({ scenario: "" }));
+  assert.equal((await turn(sam, c2.id, [], "")).status, 200);
+  got = byText((await bank(sam)).body.phrases);
+  assert.deepEqual([got["la vuelta"].meaning, got["la vuelta"].seenCount], ["the change (money back)", 1]);
+});
+
+test("absorbing a pending phrase keeps everything the learner set on either row", async () => {
+  const sam = await someone();
+  await start(sam, pack({ scenario: "errand" }));
+  const list = (await bank(sam, "?show=pending")).body.phrases;
+  const market = list.find((p) => p.meaning === "market");
+  // The pending "market" suspended and noted; "mercado" already in the bank
+  // with a note of its own.
+  assert.equal((await sam.call("PATCH", `/api/phrases/${market.id}`, { note: "the big one downtown", suspended: true })).status, 200);
+  assert.equal((await sam.call("POST", "/api/phrases", { text: "mercado", note: "open on Sundays", starred: false })).status, 201);
+  const c = await start(sam, pack({ scenario: "" }));
+  assert.equal((await turn(sam, c.id, [], "")).status, 200);
+  const got = byText((await bank(sam, "?show=all&limit=200")).body.phrases);
+  assert.equal(list.length, 3);
+  assert.equal((await bank(sam, "?show=pending")).body.phrases.find((p) => p.meaning === "market"), undefined, "absorbed");
+  assert.deepEqual([got["mercado"].note, got["mercado"].suspended, got["mercado"].meaning], ["open on Sundays\n\nthe big one downtown", true, "market"]);
+});
+
 test("a session in another language than the profile's (a pack override) leaves the bank alone", async () => {
   const sam = await someone();
   const german = pack({ overrides: { target_language: "German" } });

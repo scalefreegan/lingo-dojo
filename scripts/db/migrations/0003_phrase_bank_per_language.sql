@@ -39,6 +39,8 @@ ALTER TABLE "phrases" ADD COLUMN "language_profile_id" uuid NOT NULL;
 --> statement-breakpoint
 ALTER TABLE "reviews" ADD COLUMN "language_profile_id" uuid NOT NULL;
 --> statement-breakpoint
+ALTER TABLE "phrases" ADD COLUMN "edited_at" timestamp with time zone;
+--> statement-breakpoint
 ALTER TABLE "cards" ADD CONSTRAINT "cards_id_profile" UNIQUE("id","language_profile_id");
 --> statement-breakpoint
 ALTER TABLE "phrases" ADD CONSTRAINT "phrases_id_profile" UNIQUE("id","language_profile_id");
