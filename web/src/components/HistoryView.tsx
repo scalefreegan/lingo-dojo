@@ -197,7 +197,7 @@ function ConversationView({ id, onBack, onDelete }: { id: string; onBack: () => 
             <p className={`${fine} text-fg-3`}>
               {when(c.startedAt)} · {length(c)} · {turnsLabel(c.turnCount)}
               {c.plannedMinutes != null && ` · planned ${c.plannedMinutes} min`}
-              {c.targetVariant && ` · ${c.targetVariant}`}
+              {(c.targetVariant || c.targetLanguage) && ` · ${c.targetVariant || c.targetLanguage}`}
               {!c.endedAt && " · still open"}
             </p>
             {c.summary && <p className="mt-1 text-sm text-fg-2">{c.summary}</p>}

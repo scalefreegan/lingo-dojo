@@ -203,29 +203,41 @@ the Library tab's **History** (docs/DATA.md §Conversations has the tables).
   the shapes the transcript uses (lines with segments, gender and timing,
   glosses, choices, stage, cast notes), with the turn's duration and cost.
   If the conversation can't be made, the session goes on unsaved and says
-  so; the next turn tries again.
+  so; the next turn tries again, and the conversation it makes starts where
+  saving stopped, so the turns in between are stored too. The conversation
+  keeps the session's languages (the profile under the pack's overrides),
+  and History shows its glosses and translations in those, whatever the
+  profile says later.
 - **What is stored is what the screen shows.** The browser still sends the
   whole history every turn, and the server makes the stored turns match it
-  before appending (`scripts/conversations.mjs` `planTurnWrite`): stored
-  turns that agree with the screen stay; from the first one that doesn't,
-  the screen wins. So a turn that failed or was stopped (its words stay on
-  screen with no reply) is stored reply-less by the next turn; a reply the
-  server finished but the browser dropped (Stop just as it landed) is
-  deleted by the next turn; the same turn sent twice keeps only the second
-  answer. "Check what it heard" never shows: only the words finally sent
-  reach a turn. A recast changes voices, not words; the turn's `CAST` notes
-  are stored as the reply had them. Turns are numbered by their place on
-  screen, so `idx` stays gap-free and in order.
+  before appending (`scripts/conversations.mjs` `planTurnWrite`; the exact
+  rule is in DATA.md §Conversations, "Reconciling"): stored turns that agree
+  with the screen stay untouched, and the history may replace only the
+  final reply. So a turn that failed or was stopped (its words stay on
+  screen with no reply) is stored reply-less by the next turn, and a reply
+  the server finished but the browser dropped (Stop just as it landed) is
+  deleted by the next turn. A history that doesn't cover what is stored
+  (shorter, or different earlier on) rewrites nothing: the turn is only
+  appended. A dojo master turn stored from the browser's history rather
+  than from the server's own reply is marked `from_client`. "Check what it
+  heard" never shows: only the words finally sent reach a turn. A recast
+  changes voices, not words; the turn's `CAST` notes are stored as the
+  reply had them. Turns are numbered by their place on screen, so `idx`
+  stays gap-free and in order. A session is capped at 2000 history entries
+  (a 413 past that; Restart starts a new one).
 - **End.** End (beside Restart) finishes the session: the transcript stays
   to read and copy, and New session starts the next. Restart, Close,
   leaving the Go tab and leaving the page (a reload, closing the tab; a
   `keepalive` request that outlives the page) end the conversation too.
   Leaving Go keeps the session on screen: carrying on when you come back
   saves into a new conversation from that turn on. A turn still on its way
-  when the conversation ends is stored in it first (End waits for it). A
+  when the conversation ends is stored in it first: the browser sends End
+  once that turn has its answer (except when the page is going away), and
+  on the server End waits for a turn it already holds and refuses, before
+  anything runs, a turn that arrives while it is ending. A
   conversation nobody ended is ended two hours after its last turn, by the
-  next request that touches that learner's conversations, and its end is
-  that last turn. A turn on an ended conversation (another device, two idle
+  next request that touches that learner's conversations (not while a turn
+  for it is running), and its end is that last turn. A turn on an ended conversation (another device, two idle
   hours) or a deleted one is refused before anything runs, and the Go tab
   starts a new conversation with that turn and sends it again.
 - **Reload.** A reload ends the conversation (it is in History) and the Go

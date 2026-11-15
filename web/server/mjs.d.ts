@@ -36,6 +36,8 @@ declare module "*/scripts/content.mjs" {
   export function modeRoot(mode?: import("../shared/wire.ts").Mode): string;
   /** exports/ for adult, exports/kids for kids; throws EINVAL otherwise. */
   export function exportsDirFor(mode?: import("../shared/wire.ts").Mode): string;
+  /** A pack from a file or a request body, with every field in its shape. */
+  export function normalizePack(pack: unknown): import("../shared/wire.ts").PackInput & { overrides: Record<string, unknown> };
   /** The level picker's options per mode. */
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
   /** Never throws; bad files land in `problems`. The mode and its levels are
@@ -74,6 +76,8 @@ declare module "*/scripts/assemble.mjs" {
     /** Which tree `content` is; the Time budget splits that mode's parts. */
     mode?: import("../shared/wire.ts").Mode,
   ): import("../shared/wire.ts").AssembleResult;
+  /** The learner's profile under the pack's overrides, as the prompt sees it. */
+  export function effectiveProfile(profile: Record<string, unknown> | null | undefined, overrides?: Record<string, unknown> | null): Record<string, unknown>;
 }
 
 declare module "*/scripts/claude.mjs" {
@@ -144,6 +148,8 @@ declare module "*/scripts/voice.mjs" {
   export function parseChoices(text: string): string[];
   export function parseStage(text: string, ids: string[]): string | null;
   export function oneLine(s: string): string;
+  export const REPLAY_MAX_CHARS: number;
+  export function replayLine(s: string): string;
   export function replayStage(v: unknown): string;
   export function poolFor(list: { id: string; name: string; gender: string; match: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
   export function retryInOtherVoice(status: number): boolean;
@@ -299,6 +305,8 @@ declare module "*/scripts/conversations.mjs" {
     choices: string[] | null;
     stage: string | null;
     castNotes: import("../shared/wire.ts").VoiceCastNote[] | null;
+    /** A master row whose words came from the browser's history. */
+    fromClient: boolean;
   }
   export const IDLE_END_MS: number;
   export const CONVERSATION_ID_RE: RegExp;
@@ -306,15 +314,16 @@ declare module "*/scripts/conversations.mjs" {
   export const MAX_PAGE: number;
   export const TURN_PAGE: number;
   export const MAX_TURN_PAGE: number;
+  export const MAX_START: number;
   export function turnKey(t: { role: string; text?: string | null; lines?: { text: string }[] | null }): string;
-  export function rowFromItem(item: VoiceHistoryItem): TurnColumns;
+  export function rowFromItem(item: VoiceHistoryItem, fromClient?: boolean): TurnColumns;
   export function itemFromRow(row: TurnColumns): VoiceHistoryItem;
   export function planTurnWrite(o: {
     stored: { role: string; text?: string | null; lines?: { text: string }[] | null }[];
     screen: VoiceHistoryItem[];
     message: string;
     master: VoiceHistoryItem & { durationMs?: number | null; costUsd?: number | null };
-  }): { keep: number; insert: (TurnColumns & { idx: number; durationMs?: number | null; costUsd?: number | null })[] };
+  }): { keep: number; covered: boolean; insert: (TurnColumns & { idx: number; durationMs?: number | null; costUsd?: number | null })[] };
   export function conversationTitle(o: { title?: unknown; pack?: Partial<PackInput> | null; scenarioTitle?: string | null }): string;
   export function readPage(params: URLSearchParams, o: { size: number; max: number; key?: string }): { limit: number; start: number };
 }

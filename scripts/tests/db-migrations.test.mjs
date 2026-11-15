@@ -114,16 +114,39 @@ test("schema.ts matches the latest migration snapshot (no ungenerated changes)",
   assert.match(log, /No schema changes/, `drizzle-kit did not run cleanly:\n${log}`);
 });
 
-test("0000_init.sql is drizzle-kit's output plus exactly the documented hand edits", () => {
-  const journal = JSON.parse(fs.readFileSync(path.join(MIGRATIONS_DIR, "meta", "_journal.json"), "utf8"));
+const journal = () => JSON.parse(fs.readFileSync(path.join(MIGRATIONS_DIR, "meta", "_journal.json"), "utf8"));
+
+test("0000_init.sql is drizzle-kit's output plus exactly the documented hand edits", (t) => {
   // Generating from nothing reproduces the initial migration only while it is
-  // the only one; later migrations need no hand edits (hand-edits.mjs).
-  if (journal.entries.length !== 1) return;
+  // the only one: schema.ts has moved on since. Its hash is in every
+  // migrated database, so an edit to it is caught there (applied by hash).
+  if (journal().entries.length !== 1) return t.skip("0000 is no longer the latest migration; the next test checks the latest");
   const out = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-gen-"));
   generate(out);
   const [file] = fs.readdirSync(out).filter((f) => f.endsWith(".sql"));
   const generated = fs.readFileSync(path.join(out, file), "utf8");
   assert.equal(fs.readFileSync(INITIAL_MIGRATION, "utf8"), applyHandEdits(generated));
+});
+
+test("the latest later migration is exactly drizzle-kit's output from the ones before it (no hand edits)", (t) => {
+  const { entries } = journal();
+  if (entries.length < 2) return t.skip("only the initial migration");
+  const latest = entries[entries.length - 1];
+  const prior = entries.slice(0, -1);
+  // The migrations folder as it was before the latest one: its SQL, its
+  // snapshots and a journal that ends one earlier.
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-gen-"));
+  fs.mkdirSync(path.join(out, "meta"));
+  for (const e of prior) {
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, `${e.tag}.sql`), path.join(out, `${e.tag}.sql`));
+    const snap = `${String(e.idx).padStart(4, "0")}_snapshot.json`;
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, "meta", snap), path.join(out, "meta", snap));
+  }
+  fs.writeFileSync(path.join(out, "meta", "_journal.json"), JSON.stringify({ ...journal(), entries: prior }));
+  const log = generate(out);
+  const made = fs.readdirSync(out).filter((f) => f.endsWith(".sql") && !prior.some((e) => f === `${e.tag}.sql`));
+  assert.equal(made.length, 1, `drizzle-kit wrote no new migration:\n${log}`);
+  assert.equal(fs.readFileSync(path.join(MIGRATIONS_DIR, `${latest.tag}.sql`), "utf8"), fs.readFileSync(path.join(out, made[0]), "utf8"));
 });
 
 test("the hand-edited keys null only their link column (PGlite catalog)", async (t) => {

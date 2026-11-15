@@ -247,18 +247,26 @@ and deletes are soft.
 
 ```
 conversations   id, learner_id, pack_snapshot jsonb, scenario_id, title,
-                mode, target_variant, model, planned_minutes, started_at,
-                ended_at, turn_count, summary, extraction jsonb, extracted_at
+                mode, native_language, target_language, target_variant,
+                model, planned_minutes, started_at, ended_at, turn_count,
+                summary, extraction jsonb, extracted_at
 turns           id, conversation_id, learner_id, idx, role (learner|master),
                 text, lines jsonb, glosses jsonb, choices jsonb, stage,
-                cast_notes jsonb, duration_ms, cost_usd, lookup jsonb,
-                created_at
+                cast_notes jsonb, from_client boolean, duration_ms, cost_usd,
+                lookup jsonb, created_at
                 unique (conversation_id, idx); unique (id, learner_id)
 ```
 
 `pack_snapshot` freezes what was played, since packs change later. `turns`
 stores the same shapes `VoiceHistoryItem` already has, so a stored conversation
 can be shown with the existing transcript components.
+
+Added by migration `0001_conversation_languages_from_client` (phase 3 review):
+`native_language`, `target_language` (with `target_variant`, the session's
+languages when it started; `''` for none) and `turns.from_client` (not null,
+default false; see Conversations, "Reconciling"). A later bead moves
+conversations under a per-learner language profile; these three columns are
+what it would take its languages from.
 
 ### Phrase bank
 
@@ -489,11 +497,17 @@ docs/VOICE.md §Saved conversations is the user's side.
 1. On the first turn of a session, the client calls `POST /api/conversations`
    with the pack. The server stores a conversation with the pack snapshot and
    returns its `id`. Restart starts a new conversation. As built: the row
-   also gets the scene's title, the scenario id, the mode, the target
-   variant (the pack's override, else the learner's), the voice model and
-   `planned_minutes` (the pack's minutes; null is no limit). If creating it
-   fails, the session goes on unsaved (and says so), and the next turn
-   tries again.
+   also gets the scene's title, the scenario id, the mode, the voice model,
+   `planned_minutes` (the pack's minutes; null is no limit), and the
+   session's languages: `native_language`, `target_language` and
+   `target_variant` from the effective profile (the learner's profile under
+   the pack's overrides, `assemble.mjs` `effectiveProfile`, the same merge
+   the prompt uses, so a pack that moves the target language drops the
+   profile's variant). History's locales come from these saved values only,
+   never from the profile as it is later. If creating it fails, the session
+   goes on unsaved (and says so), and the next turn tries again: the
+   conversation it makes starts where saving stopped
+   (`conversationStart`), so the unsaved turns before it are stored too.
 2. `POST /api/voice/turn` carries `conversationId`. After a successful turn,
    the server appends the learner turn and the master turn in one transaction.
    The client still sends the history (VoicePanel's retry, recast and "check
@@ -503,26 +517,55 @@ docs/VOICE.md §Saved conversations is the user's side.
      another learner's or gone (404, `code: "no_conversation"`) or ended
      (409, `conversation_ended`); the client then makes a new conversation
      starting at that turn and sends it again.
-   - **The stored turns mirror the screen.** The write holds the
-     conversation row `FOR UPDATE`, reads its turns, and compares them with
-     the history the turn was sent with (`planTurnWrite`): the turns that
-     agree (same role and words) stay; from the first that doesn't, the
-     history wins (rows from that `idx` on are deleted and rewritten from
-     it); then the learner's message and the reply are appended. That
-     settles every way the two can part: a failed or stopped turn's message
-     (on screen, no reply) is stored reply-less by the next turn; a reply
-     stored but dropped by the browser (Stop racing the answer) is deleted
-     by the next turn; a turn sent twice keeps the second answer; an edited
-     "check what it heard" message only ever reaches the server as sent; a
-     recast changes no words. `idx` is the entry's place on screen counted
-     from the conversation's first entry (`conversationStart`: 0, unless the
-     conversation began mid-session after the one before ended), so it is
-     gap-free and ordered by construction, and `unique (conversation_id,
-     idx)` backs it.
-   - Rows rewritten from the history (not this turn's) have no duration or
-     cost; the history doesn't carry them. A write that fails leaves the
-     turn standing (the reply is paid for) with `saved: false`, and the
-     panel says the session isn't being saved.
+   - **The stored turns mirror the screen, as far as the server trusts
+     it.** The write holds the conversation row `FOR UPDATE`, reads its
+     turns, and compares them with the history the turn was sent with, from
+     `conversationStart` on (`planTurnWrite`).
+   - **Reconciling, the exact rule.** Two entries agree when they have the
+     same role and the same words: a learner's text, or a master turn's
+     lines, each through the turn route's own normalisation (`replayLine`:
+     one line, `|` and newlines as spaces, at most 4000 characters) and
+     with whitespace runs collapsed. Glosses and timing don't count. Let `k`
+     be the number of stored turns that agree with the history entry by
+     entry from the start. The history **covers** the store when `k` is all
+     of them, or all but the last and that last one is a master turn.
+     - Covered: the stored turns from `k` on (none, or that one final
+       reply) are deleted; the history's entries from `k` on are inserted;
+       then the learner's message and the reply. A turn that agreed is
+       never deleted or rewritten, so it keeps its timing and cost.
+     - Not covered (a history shorter than what is stored by two or more
+       turns, `history: []` included, or one that differs anywhere before
+       the final reply): nothing is deleted or rewritten. Only the message
+       and the reply are appended, after the stored turns, and the server
+       logs a warning. A working browser never sends such a history.
+     The final reply is the one exception because it is the one a browser
+     can legitimately not show: Stop raced the answer, which the server had
+     already stored. Everything before it was on screen when a later turn
+     was sent.
+   - That settles every way the screen and the store part: a failed or
+     stopped turn's message (on screen, no reply) is stored reply-less by
+     the next turn; a reply stored but dropped by the browser is deleted by
+     the next turn; turns that went unsaved (creating the conversation
+     failed) are stored by the first turn of the conversation made after;
+     an edited "check what it heard" message only ever reaches the server
+     as sent; a recast changes no words. `idx` is the entry's place on
+     screen counted from the conversation's first entry (`conversationStart`:
+     0, unless the conversation began mid-session), so it is gap-free and
+     ordered by construction, and `unique (conversation_id, idx)` backs it.
+   - **`from_client`.** A master turn inserted from the history is marked
+     `from_client = true`: its words are the browser's copy, not a reply the
+     server produced in that request, so a client could have written them.
+     The reply the server just produced and every learner turn are `false`.
+     The UI shows no difference. Anything that later reads stored master
+     turns as the dojo master's own words (extraction, recall) checks it.
+   - The history a turn may send is capped at 2000 entries (`HISTORY_MAX`),
+     whole: a longer one is a 413 before anything runs, never trimmed, since
+     `conversationStart` indexes the history as sent. Short entries fit far
+     more than that in the 1 MB body cap, so this is the limit that binds.
+   - Rows inserted from the history have no duration or cost; the history
+     doesn't carry them. A write that fails leaves the turn standing (the
+     reply is paid for) with `saved: false`, and the panel says the session
+     isn't being saved; the next turn stores it.
    - `turns` has no model column: `conversations.model` and
      `planned_minutes` are updated by each saved turn (the model and length
      as of the last turn, so +5 min and a mid-session pick show).
@@ -535,8 +578,19 @@ docs/VOICE.md §Saved conversations is the user's side.
      `ended_at` is null is updated. End, Restart, Close, leaving Go and
      page unload all call it; unload uses a `keepalive` fetch (not
      `sendBeacon`, which can't send the `X-Learner-Id` header `wrap` checks).
-   - It waits for the conversation's turn in flight, so a reply on its way
-     when the learner leaves Go is stored before the end.
+   - End and a turn share the conversation's lock (point 4). A turn takes it
+     as soon as its body names the conversation, before any query; End, after
+     checking the conversation is the learner's, waits until no turn holds
+     it, then holds it itself while it writes `ended_at`. So a turn the
+     server has already received is stored before the end, and a turn that
+     arrives while End holds the lock is refused with `conversation_ended`
+     before the dojo master runs. A turn is never answered and then left
+     unsaved because End came in between (checked on a real Postgres by
+     `conversations.pg.test.mjs`). The browser covers the turn the server
+     hasn't received yet: when ending (End, Restart, leaving Go) it waits for
+     the conversation to exist and for its turn on the way to answer, then
+     sends End. Only pagehide and unmounting send it at once (the turn dies
+     with the page).
    - Leaving Go keeps the session on screen; a turn after coming back
      starts a new conversation (from that turn on). Reload ends the
      conversation and the session; it can't be resumed until the history is
@@ -545,10 +599,13 @@ docs/VOICE.md §Saved conversations is the user's side.
      end the learner's open conversations whose last turn (or start, with
      none) is two hours old or more, with `ended_at` set to that last
      activity rather than now, so History's length isn't two idle hours
-     longer.
+     longer. A conversation with a turn running is skipped (its last turn is
+     about to be now); the turn's own request checks its conversation.
    - The extraction attaches to `onConversationEnded(conversation)` in
-     `web/server/conversations.ts`, called exactly once per conversation,
-     after the one write that set `ended_at` (whichever way it ended). It
+     `web/server/conversations.ts`, called at most once per conversation:
+     exactly once for every conversation that ends, after the one write that
+     set `ended_at` (whichever way it ended). Deleting a conversation that
+     is still open does not call it; it never ends, it is gone (tested). It
      does nothing yet.
    - An End sent after the page switched learner is a `stale_learner` and
      is ignored; that conversation ends by the idle rule.
@@ -556,8 +613,11 @@ docs/VOICE.md §Saved conversations is the user's side.
    a second voice turn while any turn is running. With more than one person
    practicing, that flag becomes a lock keyed by conversation id, so two
    learners never block each other and one conversation still can't race itself.
-   As built: an in-memory lock keyed by conversation id (by login session for
-   a turn with no conversation); a second turn is a plain 409.
+   As built: an in-memory lock keyed by learner and conversation id (by login
+   session for a turn with no conversation), so another learner naming the
+   id touches nothing; a second turn is a plain 409, and a turn while End
+   holds it is 409 `conversation_ended`. One server process, so in memory is
+   enough; it would not hold across processes.
 5. A **History** view (Library tab) lists past conversations with
    their summaries and opens one read-only in the transcript components. As
    built: a second view of the Library tab beside Saved packs, newest first,
@@ -565,7 +625,9 @@ docs/VOICE.md §Saved conversations is the user's side.
    length, turn count and summary (null until extraction); opening one pages
    through its turns (`GET /api/conversations/:id?from=&limit=`) and shows
    them with glosses tappable and no audio. Delete is a hard delete with a
-   confirm (`DELETE /api/conversations/:id`); the turns cascade.
+   confirm (`DELETE /api/conversations/:id`); the turns cascade. A page's
+   start (`offset`, `from`) past 2^31 − 1 is clamped there: an empty page,
+   never a query Postgres refuses.
 6. **Routes** (`wrap(…, { learner: true })`, every row through
    `learnerRows(id)`): another learner's conversation, guessed id or not, is
    the same 404 as a missing one, and an id that isn't a uuid never reaches
@@ -929,16 +991,21 @@ deletes cover undoing a single change.
   voice tests cover the stale-page 409 from a second tab and a second login
   on the same browser, and overlapping voice-settings saves.
   `conversations.http.test.mjs` (phase 3, with a stand-in `claude` on PATH)
-  covers creation, the stored turn shapes, idx under retried, stopped and
-  dropped turns, the per-conversation lock, End (idempotent, waiting for a
-  turn, one hook call), the two-hour idle end, paging, delete,
+  covers creation and the saved languages, the stored turn shapes, idx
+  under stopped and dropped turns, histories that don't cover the store
+  (`history: []`, a forged one), `from_client`, a `|` in a line, the
+  2000-entry cap, the per-conversation lock, End (idempotent, waiting for a
+  turn, End and a turn at once, one hook call), the two-hour idle end (and
+  its skipping a running turn), paging (huge offsets too), delete,
   `stale_learner`, and another learner or user against every route by id;
   `conversations.test.mjs` the pure reconciliation. PGlite runs one
-  transaction at a time, so the races themselves are in
-  `first-run.pg.test.mjs`, which runs only with `LINGO_TEST_PG_URL` set: it
-  makes a throwaway database on that server, races 12 first runs and 12
-  voice-settings saves five times each, and drops it (each fails with its
-  lock removed).
+  transaction at a time, so the races themselves are in `*.pg.test.mjs`,
+  which run only with `LINGO_TEST_PG_URL` set: each makes a throwaway
+  database on that server and drops it after. `first-run.pg.test.mjs`
+  races 12 first runs and 12 voice-settings saves five times each (each
+  fails with its lock removed); `conversations.pg.test.mjs` sends End and a
+  turn at once on 60 fresh conversations (it fails on the code before the
+  phase 3 review's lock fix).
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).

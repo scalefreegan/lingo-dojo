@@ -9,7 +9,7 @@ import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -19,7 +19,7 @@ import type {
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
-import { openConversation, saveTurn, takeTurnLock, turnLockKey } from "./conversations.ts";
+import { conversationIdOf, openConversation, saveTurn, takeTurnLock } from "./conversations.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -51,10 +51,12 @@ const MAX_AUDIO_BYTES = 8 << 20;
 const MAX_SPEAK_CHARS = 2000;
 /** Exchanges replayed into a turn's prompt. */
 const HISTORY_WINDOW = 60;
-/** Entries of the history kept for the saved conversation, which mirrors all
- *  of it (the prompt still gets only the last HISTORY_WINDOW). Far beyond a
- *  session; the request's 1 MB body cap binds first. */
-const HISTORY_MAX = 2000;
+/** The most history entries a turn may send: the saved conversation mirrors
+ *  all of it (the prompt still gets only the last HISTORY_WINDOW), indexed by
+ *  conversationStart, so it is never trimmed — a longer one is a 413. Some
+ *  1000 exchanges, hours past any session; short entries fit far more than
+ *  this in the 1 MB body cap, so this is the limit that binds. */
+export const HISTORY_MAX = 2000;
 
 /* -------------------------------- settings -------------------------------- */
 
@@ -240,9 +242,10 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
 
 function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   if (!Array.isArray(raw)) return [];
+  if (raw.length > HISTORY_MAX) throw new HttpError(413, `this session is too long to go on (over ${HISTORY_MAX} turns); press Restart to start a new one`);
   const out: VoiceHistoryItem[] = [];
   for (const m of raw) {
-    if (m?.role === "learner" && typeof m.text === "string") out.push({ role: "learner", text: m.text.slice(0, 4000) });
+    if (m?.role === "learner" && typeof m.text === "string") out.push({ role: "learner", text: m.text.slice(0, REPLAY_MAX_CHARS) });
     else if (m?.role === "master" && Array.isArray(m.lines)) {
       const lines: VoiceLine[] = [];
       for (const l of m.lines as unknown[]) {
@@ -262,7 +265,7 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
           gender: gender === "female" || gender === "male" ? gender : null,
           // One line each: a newline in a replayed line would start a new,
           // untagged line (or a fake GLOSS/STAGE line) in the transcript.
-          text: oneLine(line.text).slice(0, 4000),
+          text: replayLine(line.text),
           segments,
           ...(typeof gap === "number" && Number.isFinite(gap) ? { gap: Math.max(-1.5, Math.min(4, gap)) } : {}),
         });
@@ -287,7 +290,7 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
       out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}), ...(castNotes.length ? { castNotes } : {}) });
     }
   }
-  return out.slice(-HISTORY_MAX);
+  return out;
 }
 
 /** POST /api/voice/turn, mounted on its own with wrap's `learner: true`. */
@@ -299,15 +302,14 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!body?.pack || typeof body.pack !== "object") throw new HttpError(400, "body must carry the pack");
   const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (message.length > 4000) throw new HttpError(413, "message too long");
+  if (message.length > REPLAY_MAX_CHARS) throw new HttpError(413, "message too long");
   const all = cleanHistory(body.history);
   const history = all.slice(-HISTORY_WINDOW);
-  // A saved conversation must be this learner's and still open (else a 404
-  // or 409 whose code sends the Go tab to start a new one), checked before
-  // anything runs. Its part of the history starts at conversationStart.
-  const conversation = body.conversationId != null ? await openConversation(ctx.learner.id, body.conversationId) : null;
   const from = Number.isInteger(body.conversationStart) ? Math.max(0, Math.min(all.length, body.conversationStart as number)) : 0;
-  const release = takeTurnLock(turnLockKey(conversation?.id ?? null, ctx.sessionId));
+  // The lock first, before any await, so an End that comes in meanwhile
+  // either waits for this whole turn or refuses it (conversations.ts).
+  const conversationId = conversationIdOf(body.conversationId);
+  const release = takeTurnLock(ctx.learner.id, conversationId, ctx.sessionId);
 
   // Cancel the run when the browser gives up (Stop, a page reload): listen
   // on `res`, as the chat route does — readJsonBody consumed the request.
@@ -317,6 +319,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
   };
   res.on("close", onClose);
   try {
+    // A saved conversation must be this learner's and still open (else a 404
+    // or 409 whose code sends the Go tab to start a new one), checked before
+    // anything runs. Its part of the history starts at conversationStart.
+    const conversation = conversationId ? await openConversation(ctx.learner.id, conversationId) : null;
     // The active learner is the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner) };
     const { markdown, warnings } = assemble(content, body.pack, mode);

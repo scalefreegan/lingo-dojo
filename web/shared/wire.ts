@@ -344,7 +344,7 @@ export interface MeReply {
  *  re-reads /api/auth/me instead of showing it.
  *
  *  `conversation_ended` (409) and `no_conversation` (404): a voice turn named
- *  a saved conversation that is over (End, leaving Go, two idle hours) or
+ *  a saved conversation that is over or being ended (End, leaving Go, two idle hours) or
  *  that this learner doesn't have (deleted, or never theirs). The Go tab
  *  starts a new conversation from that turn on and sends it again. */
 export interface ErrorReply {
@@ -638,11 +638,15 @@ export interface VoiceTurnRequest {
    *  from it; the model has no sense of time otherwise. */
   elapsedMs?: number;
   /** The saved conversation this turn belongs to (POST /api/conversations).
-   *  Absent: the turn runs but is not saved (creating it failed). */
+   *  Absent: the turn runs but is not saved (creating it failed, or the
+   *  conversation ended while Go was hidden). */
   conversationId?: string;
   /** The index in `history` of the conversation's first entry: 0, unless it
    *  was started mid-session (after leaving Go, or two idle hours, ended the
-   *  one before). The stored turns mirror history from there on. */
+   *  one before). The stored turns mirror history from there on, as far as
+   *  the server lets a history rewrite them (DATA.md §Conversations). A
+   *  conversation made after turns went unsaved starts where saving stopped,
+   *  so those turns are stored too. */
   conversationStart?: number;
 }
 
@@ -665,7 +669,8 @@ export interface VoiceTurnReply {
   /** The assembler's warnings for the pack, so a broken pack is visible. */
   warnings: string[];
   /** With a `conversationId`: whether this turn (and the learner's message)
-   *  is stored. False when the write failed; the turn still stands. */
+   *  is stored. False when the write failed, or the conversation ended or
+   *  was deleted meanwhile; the turn still stands. */
   saved?: boolean;
 }
 
@@ -687,6 +692,10 @@ export interface ConversationSummary {
   title: string;
   mode: Mode;
   scenarioId: string | null;
+  /** The session's languages, as they were when it started (the learner's
+   *  profile under the pack's overrides); "" for none. */
+  nativeLanguage: string;
+  targetLanguage: string;
   targetVariant: string;
   /** The dojo master's model, as of the last saved turn. */
   model: string | null;
@@ -731,9 +740,10 @@ export interface ConversationTurnsReply {
   nextFrom: number | null;
   /** The session's parts (from the pack as played), for jump labels. */
   plan: VoicePlanItem[];
-  /** The target locale, for the transcript's glosses; null when unknown. */
+  /** The session's target locale, for the transcript's glosses; null when
+   *  unknown. From the conversation's saved languages, never the profile. */
   locale: string | null;
-  /** The learner's native locale, for the translate buttons' label. */
+  /** The session's native locale, for the translate buttons' label. */
   nativeLocale: string | null;
 }
 

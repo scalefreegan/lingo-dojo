@@ -287,10 +287,17 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
   // rather than making another. `saving` is what the header says: null
   // before the first turn, else whether turns are being stored (and why
   // not). `sessionEpoch` moves on at Restart and unmount, so a creation that
-  // lands for a session already gone is ended, not adopted.
+  // lands for a session already gone is ended, not adopted. `unsavedFrom` is
+  // the first transcript entry no conversation holds while saving is off
+  // (creating one failed, or a reply came after its conversation ended): the
+  // next conversation starts there, so those turns are stored after all.
+  // `inFlight` is each conversation's turn request on its way: ending waits
+  // for it, so the turn is stored in the conversation it was sent for.
   const convRef = useRef<SavedConversation | null>(null);
   const creating = useRef<Promise<SavedConversation | null> | null>(null);
   const sessionEpoch = useRef(0);
+  const unsavedFrom = useRef<number | null>(null);
+  const inFlight = useRef(new Map<string, Promise<unknown>>());
   const [saving, setSaving] = useState<{ on: true } | { on: false; why: string } | null>(null);
   // End was pressed: the session is over on screen (the transcript stays to
   // read and copy), until Restart.
@@ -469,11 +476,15 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     const gen = genRef;
     const audios = audiosRef;
     const epoch = sessionEpoch;
-    window.addEventListener("pagehide", closeConversation);
+    // The page is going: End now, with nothing to wait for (a turn on its
+    // way dies with the page).
+    const onPageHide = () => closeConversation(true);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
-      window.removeEventListener("pagehide", closeConversation);
+      window.removeEventListener("pagehide", onPageHide);
       epoch.current += 1;
-      closeConversation();
+      // Unmounting aborts the turn on its way (below): nothing to wait for.
+      closeConversation(true);
       gen.current += 1;
       ctrlRef.current?.abort();
       recRef.current?.cancel();
@@ -493,7 +504,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     // Leaving Go ends the saved conversation (DATA.md). The session on
     // screen stays, and carrying on after coming back saves into a new
     // conversation from that turn on. A turn still on its way is stored in
-    // this one first: the server's End waits for it.
+    // this one first: closeConversation sends End once it has its answer.
     closeConversation();
     const p = phaseRef.current;
     if (p === "recording" || p === "opening") {
@@ -537,30 +548,46 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     setPhase("idle");
   }
 
-  /** End the saved conversation, if one is open: fire and forget, so it
-   *  also works from pagehide and an unmount. Only refs, so it is safe from
-   *  any closure. The next turn starts a new one. */
-  function closeConversation() {
+  /** End the saved conversation, if one is open or being made: fire and
+   *  forget. The End is sent once the conversation exists and its turn on
+   *  the way, if any, has its answer, so that turn is stored in it (the
+   *  server's End also waits for a turn it already holds, but can't know of
+   *  one still in the network). `now` (pagehide, unmount) sends it at once:
+   *  the page is going, and the turn with it. Only refs, so it is safe from
+   *  any closure. The next turn starts a new conversation. */
+  function closeConversation(now = false) {
     const c = convRef.current;
     const pending = creating.current;
     convRef.current = null;
     creating.current = null;
-    if (c) void endConversation(c.id, c.learnerId);
-    // One still being made is ended once it is (its turn, if it gets there
-    // first, is stored in it: End waits for that turn).
-    else if (pending) void pending.then((made) => made && endConversation(made.id, made.learnerId));
+    if (!c && !pending) return;
+    if (now && c) {
+      void endConversation(c.id, c.learnerId);
+      return;
+    }
+    void (async () => {
+      const made = c ?? (await pending);
+      if (!made) return;
+      // A turn that was waiting on the same creation is resumed before this
+      // (it awaited first) and registers its request synchronously.
+      if (!now) for (let t = inFlight.current.get(made.id); t; t = inFlight.current.get(made.id)) await t.catch(() => {});
+      void endConversation(made.id, made.learnerId);
+    })();
   }
 
-  /** The conversation this turn saves into, made now when there is none
-   *  (`start`: the transcript index it begins at). null when it can't be
-   *  made: the session goes on unsaved, and the header says so; the next
-   *  turn tries again. Not cancelled by Stop: a conversation made for a turn
-   *  that was then stopped is the one the next turn uses. */
-  function conversationFor(turnPack: PackInput, start: number): Promise<SavedConversation | null> {
+  /** The conversation this turn saves into, made now when there is none.
+   *  It begins at `here` (this turn's transcript index), or earlier, where
+   *  saving stopped (`unsavedFrom`): its first turn then stores the turns
+   *  before it too. null when it can't be made: the session goes on
+   *  unsaved, and the header says so; the next turn tries again. Not
+   *  cancelled by Stop: a conversation made for a turn that was then
+   *  stopped is the one the next turn uses. */
+  function conversationFor(turnPack: PackInput, here: number): Promise<SavedConversation | null> {
     if (convRef.current) return Promise.resolve(convRef.current);
     if (creating.current) return creating.current;
     const epoch = sessionEpoch.current;
     const learnerId = getPageLearner() ?? "";
+    const start = Math.min(unsavedFrom.current ?? here, here);
     const made = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
       ({ conversation }) => {
         const c = { id: conversation.id, start, learnerId };
@@ -573,12 +600,16 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
           creating.current = null;
           convRef.current = c;
         }
+        unsavedFrom.current = null;
         setSaving({ on: true });
         return c;
       },
       (e: unknown) => {
         if (creating.current === made) creating.current = null;
-        if (epoch === sessionEpoch.current) setSaving({ on: false, why: errText(e) });
+        if (epoch === sessionEpoch.current) {
+          unsavedFrom.current = start;
+          setSaving({ on: false, why: errText(e) });
+        }
         return null;
       },
     );
@@ -840,10 +871,20 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
       // there was none (the first turn, or the first after one ended).
       const conv = await conversationFor(turnPack, before.length);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // Sent synchronously from here (no await before voiceTurn), and kept
+      // in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
         const elapsedMs = Date.now() - (startedAtRef.current ?? Date.now());
         const body: VoiceTurnRequest = { mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
-        return voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
+        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
+        if (c) {
+          inFlight.current.set(c.id, req);
+          const done = () => {
+            if (inFlight.current.get(c.id) === req) inFlight.current.delete(c.id);
+          };
+          req.then(done, done);
+        }
+        return req;
       };
       let r: VoiceTurnReply;
       let sent = conv;
@@ -853,17 +894,31 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
         // The conversation is over (another device's End, two idle hours)
         // or gone (deleted in History). Nothing ran: start a new one from
         // this turn and send it again. Not while Go is hidden, where the
-        // conversation was ended on purpose (the turn then goes unsaved).
+        // conversation was ended on purpose: the turn then goes unsaved for
+        // now, and the next conversation starts from it.
         const over = e instanceof ApiError && (e.code === "conversation_ended" || e.code === "no_conversation");
         if (!conv || !over) throw e;
         if (convRef.current?.id === conv.id) convRef.current = null;
         sent = activeRef.current ? await conversationFor(turnPack, before.length) : null;
         if (ctrl.signal.aborted || gen !== genRef.current) return;
+        if (!sent && unsavedFrom.current == null) {
+          // conversationFor says so itself when it fails; this is the
+          // hidden-Go case, where none was asked for.
+          unsavedFrom.current = before.length;
+          setSaving({ on: false, why: "its conversation ended while you were away; the next turn saves it in a new one" });
+        }
         r = await send(sent);
       }
       if (ctrl.signal.aborted || gen !== genRef.current) return;
-      if (sent && r.saved === false) setSaving({ on: false, why: "the server could not store the last turn" });
-      else if (sent && r.saved) setSaving({ on: true });
+      if (sent && r.saved === false) {
+        // Stored by this conversation's next turn (it reconciles the whole
+        // screen), or by the next conversation's first if this one is over.
+        unsavedFrom.current ??= before.length;
+        setSaving({ on: false, why: "the server could not store the last turn" });
+      } else if (sent && r.saved) {
+        unsavedFrom.current = null;
+        setSaving({ on: true });
+      }
       const idx = history.length;
       const notes = r.castNotes ?? [];
       setSession([
@@ -1320,6 +1375,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     // History); the next Start makes the next.
     sessionEpoch.current += 1;
     closeConversation();
+    unsavedFrom.current = null;
     setSaving(null);
     setEnded(false);
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});

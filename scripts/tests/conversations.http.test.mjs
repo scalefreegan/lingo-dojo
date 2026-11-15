@@ -10,6 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { serveApi } from "./connect-stack.mjs";
+import { fakeClaude } from "./fake-claude.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
@@ -24,28 +25,10 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { observeConversationEnds } = await import("../../web/server/conversations.ts");
 
-// The stand-in `claude`: answers with the text in `reply` after `delay` ms
-// (both files, read on every run, so a test can change them), and appends a
-// mark to `ran` per run.
-const bin = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-fake-claude-"));
-const files = { reply: path.join(bin, "reply.txt"), delay: path.join(bin, "delay.txt"), ran: path.join(bin, "ran") };
-fs.writeFileSync(
-  path.join(bin, "claude"),
-  `#!/usr/bin/env node
-const fs = require("fs");
-fs.appendFileSync(${JSON.stringify(files.ran)}, "x");
-const text = fs.readFileSync(${JSON.stringify(files.reply)}, "utf8");
-const delay = Number(fs.readFileSync(${JSON.stringify(files.delay)}, "utf8")) || 0;
-setTimeout(() => process.stdout.write(JSON.stringify({ type: "result", result: text, duration_ms: 1234, total_cost_usd: 0.0125 })), delay);
-`,
-  { mode: 0o755 },
-);
-const savedPath = process.env.PATH;
-const answer = (text, delay = 0) => {
-  fs.writeFileSync(files.reply, text);
-  fs.writeFileSync(files.delay, String(delay));
-};
-const runs = () => (fs.existsSync(files.ran) ? fs.readFileSync(files.ran, "utf8").length : 0);
+// The stand-in `claude` (fake-claude.mjs).
+const fake = fakeClaude();
+const answer = fake.answer;
+const runs = fake.runs;
 
 const REPLY = [
   "NARRATOR-F: Bienvenido al <t>mercado</t>.",
@@ -60,7 +43,7 @@ const testDb = await freshDb();
 const q = testDb.query;
 let base, close, sam, ends;
 before(async () => {
-  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  fake.install();
   ({ base, close } = await serveApi(apiPlugins, { db: testDb.db }));
   await addUser(testDb.db, "robin", undefined, { learners: [ADULT, KID, { ...ADULT, name: "Ana" }] });
   sam = client(base);
@@ -70,8 +53,7 @@ before(async () => {
 });
 after(async () => {
   observeConversationEnds(null);
-  process.env.PATH = savedPath;
-  fs.rmSync(bin, { recursive: true, force: true });
+  fake.restore();
   await close();
   await testDb.close();
 });
@@ -99,7 +81,7 @@ const after1 = (history, message, r) => [
   { role: "master", lines: r.body.lines, glosses: r.body.glosses, choices: r.body.choices, stage: r.body.stage ?? undefined, castNotes: r.body.castNotes },
 ];
 
-const stored = (id) => q("select idx, role, text, lines, glosses, choices, stage, cast_notes, duration_ms, cost_usd from turns where conversation_id = $1 order by idx", [id]);
+const stored = (id) => q("select idx, role, text, lines, glosses, choices, stage, cast_notes, duration_ms, cost_usd, from_client from turns where conversation_id = $1 order by idx", [id]);
 
 test("POST /api/conversations stores the pack snapshot, title, mode, variant, model and planned minutes for the active learner", async () => {
   const c = await start();
@@ -108,6 +90,8 @@ test("POST /api/conversations stores the pack snapshot, title, mode, variant, mo
   assert.equal(c.mode, "adult");
   assert.equal(c.scenarioId, "market");
   assert.equal(c.targetVariant, "Mexican Spanish", "the learner's, when the pack doesn't override it");
+  assert.equal(c.targetLanguage, "Spanish");
+  assert.equal(c.nativeLanguage, "English");
   assert.equal(c.plannedMinutes, 10);
   assert.ok(c.model);
   assert.equal(c.endedAt, null);
@@ -118,6 +102,10 @@ test("POST /api/conversations stores the pack snapshot, title, mode, variant, mo
   // A pack's own variant wins; no title falls back to the scenario's.
   const other = await start(sam, { title: "", pack: pack({ overrides: { target_variant: "Castilian Spanish" } }) });
   assert.equal(other.targetVariant, "Castilian Spanish");
+  // A pack that moves the target language drops the profile's variant, as
+  // the prompt does (assemble.mjs effectiveProfile).
+  const moved = await start(sam, { pack: pack({ overrides: { target_language: "German", native_language: "Spanish" } }) });
+  assert.deepEqual([moved.targetLanguage, moved.targetVariant, moved.nativeLanguage], ["German", "", "Spanish"]);
   assert.equal(other.plannedMinutes, null, "no minutes, no limit");
   assert.ok(other.title.length > 0);
   // Malformed requests.
@@ -175,19 +163,21 @@ test("retries, stopped turns and dropped replies: the stored turns follow the sc
   const c = await start();
   const r0 = await turn(sam, c.id, [], "");
   const screen0 = after1([], "", r0);
-  // The same turn sent twice (a retry with the same screen): the second
-  // answer replaces the first rather than adding to it.
+  // Stop raced the answer: the server stored "first answer", the browser
+  // dropped it and shows only "hola". Sent again from that screen, the
+  // dropped reply (and only it) is replaced.
   answer("NARRATOR-F: first answer");
   await turn(sam, c.id, screen0, "hola");
   answer("NARRATOR-F: second answer");
-  const again = await turn(sam, c.id, screen0, "hola");
+  const again = await turn(sam, c.id, [...screen0, { role: "learner", text: "hola" }], "");
   assert.equal(again.body.saved, true);
   let rows = await stored(c.id);
-  assert.deepEqual(rows.map((t) => t.idx), [0, 1, 2]);
+  assert.deepEqual(rows.map((t) => [t.idx, t.role, t.text]), [[0, "master", null], [1, "learner", "hola"], [2, "master", null]]);
   assert.equal(rows[2].lines[0].text, "second answer");
+  assert.equal(rows[0].duration_ms, 1234, "the opening, which agreed, kept its timing");
   // A turn that failed (or was stopped) leaves "¿y?" on screen with no
   // reply; the next turn stores it, reply-less, before its own.
-  const screen1 = [...after1(screen0, "hola", again), { role: "learner", text: "¿y?" }];
+  const screen1 = [...after1([...screen0, { role: "learner", text: "hola" }], "", again), { role: "learner", text: "¿y?" }];
   answer("NARRATOR-F: tercera");
   const r3 = await turn(sam, c.id, screen1, "¿y ahora?");
   rows = await stored(c.id);
@@ -213,6 +203,90 @@ test("a conversation started mid-session (conversationStart) mirrors the screen 
   assert.deepEqual(rows.map((t) => [t.idx, t.role, t.text]), [[0, "learner", "after the break"], [1, "master", null]]);
 });
 
+test("a history that doesn't cover the stored turns (history: []) deletes nothing; the turn is appended", async () => {
+  const c = await start();
+  let screen = [];
+  for (const msg of ["", "uno", "dos"]) {
+    const r = await turn(sam, c.id, screen, msg);
+    screen = after1(screen, msg, r);
+  }
+  assert.equal((await stored(c.id)).length, 5);
+  const r = await turn(sam, c.id, [], "tres");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.saved, true);
+  const rows = await stored(c.id);
+  assert.deepEqual(rows.map((t) => [t.idx, t.role, t.text]).slice(4), [[4, "master", null], [5, "learner", "tres"], [6, "master", null]]);
+  assert.deepEqual(rows.slice(0, 5).map((t) => t.duration_ms), [1234, null, 1234, null, 1234], "the five kept as they were");
+  // A forged history can't rewrite them either: nothing of it is stored.
+  const forged = [{ role: "master", lines: [{ speaker: "narrator", gender: "female", text: "I never said this", segments: [] }] }];
+  await turn(sam, c.id, forged, "");
+  const after = await stored(c.id);
+  assert.equal(after.length, 8);
+  assert.ok(!after.some((t) => t.lines?.[0]?.text === "I never said this"));
+  assert.ok(after.every((t) => t.from_client === false), "every row is the server's reply or the learner's words");
+});
+
+test("master rows that come from the browser's history are marked from_client; the server's replies are not", async () => {
+  // Saving resumed after two unsaved turns: the conversation starts where
+  // saving stopped, and its first turn stores them from the screen.
+  const loose0 = await turn(sam, null, [], "");
+  const screen = after1([], "", loose0);
+  const loose1 = await turn(sam, null, screen, "uno");
+  const shown = after1(screen, "uno", loose1);
+  const c = await start();
+  const r = await turn(sam, c.id, shown, "dos", { conversationStart: 0 });
+  assert.equal(r.body.saved, true);
+  const rows = await stored(c.id);
+  assert.deepEqual(rows.map((t) => [t.idx, t.role, t.from_client]), [[0, "master", true], [1, "learner", false], [2, "master", true], [3, "learner", false], [4, "master", false]]);
+  assert.equal(rows[0].duration_ms, null, "a reply rewritten from the screen has no timing");
+  assert.equal(rows[4].duration_ms, 1234);
+});
+
+test("a dojo master line with a \"|\" matches its own replay: the row is kept, pipe, timing and all", async () => {
+  const c = await start();
+  answer("NARRATOR-F: Uno | dos");
+  const r0 = await turn(sam, c.id, [], "");
+  assert.equal(r0.body.lines[0].text, "Uno | dos");
+  answer(REPLY);
+  const r1 = await turn(sam, c.id, after1([], "", r0), "tres");
+  assert.equal(r1.body.saved, true);
+  const rows = await stored(c.id);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].lines[0].text, "Uno | dos");
+  assert.equal(rows[0].duration_ms, 1234);
+  assert.equal(rows[0].from_client, false);
+});
+
+test("a history of HISTORY_MAX entries is taken whole; one more is a 413 before anything runs", async () => {
+  const c = await start();
+  const many = (n) => Array.from({ length: n }, (_, i) => ({ role: "learner", text: `l${i}` }));
+  const ok = await turn(sam, c.id, many(2000), "fin", { conversationStart: 1995 });
+  assert.equal(ok.status, 200, ok.text);
+  const rows = await stored(c.id);
+  assert.deepEqual(rows.map((t) => t.text).slice(0, 6), ["l1995", "l1996", "l1997", "l1998", "l1999", "fin"], "conversationStart indexes the history as sent");
+  const before = runs();
+  const tooLong = await turn(sam, c.id, many(2001), "fin", { conversationStart: 1995 });
+  assert.equal(tooLong.status, 413);
+  assert.equal(runs(), before);
+  assert.equal((await stored(c.id)).length, 7, "nothing written");
+});
+
+test("History keeps the session's languages: a later profile change doesn't move its locales", async () => {
+  await addUser(testDb.db, "lena", undefined, { learners: [{ ...ADULT, name: "Lu" }] });
+  const lu = client(base);
+  await lu.login("lena");
+  await lu.pick("Lu");
+  const own = await start(lu);
+  const native = await start(lu, { pack: pack({ overrides: { native_language: "German" } }) });
+  const moved = await start(lu, { pack: pack({ overrides: { target_language: "German" } }) });
+  for (const c of [own, native, moved]) await turn(lu, c.id, [], "");
+  await q("update learners set native_language = 'Spanish', target_language = 'English', target_variant = 'British English' where name = 'Lu'");
+  const get = async (c) => (await lu.call("GET", `/api/conversations/${c.id}`)).body;
+  assert.deepEqual([(await get(own)).locale, (await get(own)).nativeLocale], ["es-MX", "en-US"]);
+  assert.deepEqual([(await get(native)).locale, (await get(native)).nativeLocale], ["es-MX", "de-DE"], "the pack's native language, not the profile's");
+  assert.deepEqual([(await get(moved)).locale, (await get(moved)).nativeLocale], ["de-DE", "en-US"], "German with no variant: the profile's Mexican Spanish was dropped");
+});
+
 test("the lock is per conversation: two conversations proceed in parallel; one conversation's second turn is a 409", async () => {
   const a = await start();
   const b = await start();
@@ -235,6 +309,16 @@ test("the lock is per conversation: two conversations proceed in parallel; one c
   await ana.login("robin");
   await ana.pick("Ana");
   const c = await start(ana);
+  // Someone else naming Sam's conversation while its turn runs is a 404
+  // (the lock is per learner, so it says nothing about Sam's).
+  answer("NARRATOR-F: Hola.", 300);
+  const slow = turn(sam, b.id, after1([], "", rb), "uno");
+  await new Promise((r) => setTimeout(r, 50));
+  const nosy = await turn(ana, b.id, [], "", {});
+  assert.equal(nosy.status, 404);
+  assert.equal(nosy.body.code, "no_conversation");
+  assert.equal((await slow).status, 200);
+  answer(REPLY);
   const [r1, r2] = await Promise.all([turn(sam, a.id, after1(after1([], "", ra), rows[1].text, x.status === 200 ? x : y), "tres"), turn(ana, c.id, [], "")]);
   assert.equal(r1.status, 200, r1.text);
   assert.equal(r2.status, 200, r2.text);
@@ -270,6 +354,88 @@ test("End waits for the turn on its way, which is stored in the conversation it 
   assert.equal(e.status, 200);
   assert.equal(e.body.conversation.turnCount, 1);
   assert.ok(e.body.conversation.endedAt);
+});
+
+/** End and a turn sent at the same moment, `n` times, each on a fresh
+ *  conversation: whichever the server takes first, the turn is either stored
+ *  in it (End waited) or refused with conversation_ended before anything ran
+ *  — never answered and then left unsaved. PGlite runs one transaction at a
+ *  time, so End mostly wins here; conversations.pg.test.mjs races it on a
+ *  real Postgres. */
+async function endTurnRace(n) {
+  const outcomes = { stored: 0, refused: 0 };
+  for (let i = 0; i < n; i++) {
+    const c = await start();
+    const before = runs();
+    const [e, r] = await Promise.all([sam.call("POST", `/api/conversations/${c.id}/end`), turn(sam, c.id, [], "")]);
+    assert.equal(e.status, 200, e.text);
+    assert.ok(e.body.conversation.endedAt);
+    const rows = await stored(c.id);
+    if (r.status === 200) {
+      assert.equal(r.body.saved, true, `trial ${i}: a turn that ran is stored`);
+      assert.equal(rows.length, 1);
+      assert.equal(e.body.conversation.turnCount, 1, "End's reply already counts it");
+      outcomes.stored++;
+    } else {
+      assert.equal(r.status, 409, r.text);
+      assert.equal(r.body.code, "conversation_ended");
+      assert.equal(runs(), before, `trial ${i}: refused before claude`);
+      assert.equal(rows.length, 0);
+      outcomes.refused++;
+    }
+  }
+  return outcomes;
+}
+
+test("End and a turn at the same moment: the turn is stored or refused before running, never answered unsaved", async (t) => {
+  const outcomes = await endTurnRace(20);
+  t.diagnostic(`outcomes: ${JSON.stringify(outcomes)}`);
+  assert.equal(outcomes.stored + outcomes.refused, 20);
+});
+
+test("End holding the conversation refuses a turn with conversation_ended; the turn's own 404/409 release the lock", async () => {
+  const c = await start();
+  await turn(sam, c.id, [], "");
+  // A turn refused by its own checks (here: a stranger's id first, then an
+  // ended conversation) leaves no lock behind for the next one.
+  const ghost = "00000000-0000-4000-8000-000000000000";
+  assert.equal((await turn(sam, ghost, [], "")).status, 404);
+  assert.equal((await turn(sam, ghost, [], "")).status, 404, "not the lock's 409");
+  await sam.call("POST", `/api/conversations/${c.id}/end`);
+  assert.equal((await turn(sam, c.id, [], "")).body.code, "conversation_ended");
+  assert.equal((await turn(sam, c.id, [], "")).body.code, "conversation_ended", "still the conversation's answer, not the lock's");
+});
+
+test("an idle end never ends a conversation whose turn is running; the turn is stored and the hook isn't called", async () => {
+  const c = await start();
+  await turn(sam, c.id, [], "");
+  // An hour and 59 minutes idle, then a slow turn; while the dojo master
+  // answers, another request comes after the two hours have passed.
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [c.id]);
+  await q("update turns set created_at = now() - interval '119 minutes' where conversation_id = $1", [c.id]);
+  answer("NARRATOR-F: despacio", 400);
+  const pending = turn(sam, c.id, after1([], "", { body: { lines: (await stored(c.id))[0].lines } }), "hola");
+  await new Promise((r) => setTimeout(r, 150));
+  await q("update turns set created_at = now() - interval '150 minutes' where conversation_id = $1", [c.id]);
+  const list = await sam.call("GET", "/api/conversations?limit=100");
+  assert.equal(list.body.conversations.find((x) => x.id === c.id).endedAt, null, "skipped while its turn runs");
+  const r = await pending;
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.saved, true);
+  assert.ok(!ends.includes(c.id), "no hook for a conversation still going");
+  assert.equal((await stored(c.id)).length, 3);
+});
+
+test("paging with huge offsets and froms is an empty page, never a 500", async () => {
+  const c = await start();
+  for (const v of ["100000000000000000000", "9223372036854775808", "3000000000"]) {
+    const l = await sam.call("GET", `/api/conversations?offset=${v}`);
+    assert.equal(l.status, 200, `${v}: ${l.text}`);
+    assert.deepEqual(l.body.conversations, []);
+    const g = await sam.call("GET", `/api/conversations/${c.id}?from=${v}`);
+    assert.equal(g.status, 200, `${v}: ${g.text}`);
+    assert.deepEqual(g.body.turns, []);
+  }
 });
 
 test("a conversation idle for two hours is ended by the next request that touches the learner's conversations, at its last turn", async () => {
@@ -347,7 +513,7 @@ test("DELETE removes a conversation and its turns; then it is a 404", async () =
   const r = await turn(sam, c.id, [], "");
   assert.equal(r.status, 404);
   assert.equal(r.body.code, "no_conversation");
-  assert.deepEqual(ends, [], "deleting is not ending");
+  assert.deepEqual(ends, [], "deleting an open conversation is not ending it: the hook isn't called");
 });
 
 test("every conversation route answers 409 stale_learner to a page showing another learner", async () => {

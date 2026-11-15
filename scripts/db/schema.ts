@@ -231,6 +231,11 @@ export const conversations = pgTable(
     scenarioId: text("scenario_id"),
     title: text("title").notNull().default(""),
     mode: text("mode").$type<"adult" | "kids">().notNull(),
+    // The session's languages as they were (the learner's profile under the
+    // pack's overrides, assemble.mjs effectiveProfile), so History keeps its
+    // locales when the profile changes later. "" for none.
+    nativeLanguage: text("native_language").notNull().default(""),
+    targetLanguage: text("target_language").notNull().default(""),
     targetVariant: text("target_variant").notNull().default(""),
     model: text("model"),
     /** The learner's "How long do you have?" choice; null = no limit. */
@@ -266,6 +271,11 @@ export const turns = pgTable(
     choices: jsonb("choices").$type<string[]>(),
     stage: text("stage"),
     castNotes: jsonb("cast_notes").$type<VoiceCastNote[]>(),
+    /** A master turn whose words came from the browser's copy of the
+     *  history, not from a reply the server produced: true. Learner turns
+     *  and the server's own replies: false. Anything that reads stored
+     *  master turns as what the dojo master said checks it. */
+    fromClient: boolean("from_client").notNull().default(false),
     durationMs: integer("duration_ms"),
     costUsd: doublePrecision("cost_usd"),
     lookup: jsonb("lookup").$type<Record<string, unknown>>(),
