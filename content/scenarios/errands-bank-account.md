@@ -4,9 +4,9 @@ title: Opening a bank account, or the ATM ate my card
 summary: Opening a basic account with a bank clerk, or reporting a card swallowed by a cash machine.
 tags: [bank, admin, money, newly-arrived]
 collection: Work & errands
-category: Work & admin
+category: Errands & admin
 roles:
-  dojo_master: a bank clerk in her 30s at a branch in {{location}} (give her a name common in {{location}}), courteous, procedural, and a little rushed
+  dojo_master: a bank clerk in their 30s at a branch in {{location}} (give them a name common in {{location}}), courteous, procedural, and a little rushed
   learner: a newly arrived resident who needs a basic account, or whose card was just swallowed by a cash machine outside the branch
 beats:
   - Explaining why the learner came to the bank
@@ -36,9 +36,9 @@ twists:
 ---
 {{learner_name}} has walked into a bank branch in {{location}}, either to open a
 basic account after moving there or because a cash machine just kept their card.
-The clerk is polite and efficient and follows a procedure: she asks what
+The clerk is polite and efficient and follows a procedure: they ask what
 {{learner_name}} needs, which documents they have, and a string of personal
-details for the forms. She speaks {{target_variant}} at a natural pace but will
+details for the forms. They speak {{target_variant}} at a natural pace but will
 slow down when asked. Bring in whatever banking customs are normal in
 {{location}} rather than inventing your own. {{learner_name}} has to explain the
 situation in {{target_language}}, answer questions about identity and address,

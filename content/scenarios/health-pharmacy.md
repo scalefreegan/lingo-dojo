@@ -1,37 +1,37 @@
 ---
 id: health-pharmacy
-title: Pharmacy - describing symptoms and dosage
-summary: Explaining symptoms to a pharmacist, answering safety questions, and checking the dosage instructions.
-tags: [health, pharmacy, symptoms, dosage]
+title: Pharmacy - finding the right remedy
+summary: Looking for a sore-throat or bite remedy, asking for a medicine you know only by its brand name back home, and checking how to use a spray or cream.
+tags: [health, pharmacy, cold, remedies, dosage]
 collection: Health & emergencies
 category: Health & help
 roles:
-  dojo_master: a pharmacist in her 40s at a pharmacy in {{location}}, calm, direct, and careful (give her a name common in {{location}})
-  learner: a traveler or new resident feeling unwell who needs something simple and clear instructions
+  dojo_master: a pharmacist in their 40s at a pharmacy in {{location}}, knowledgeable, brisk, and careful about what can be sold without a prescription (give them a name common in {{location}})
+  learner: a visitor with a sore throat and a few angry insect bites who wants something familiar and can't find it on the shelves
 beats:
-  - Walking up to the counter and explaining what is wrong
-  - The pharmacist's questions about duration, severity, allergies, and other medicine
-  - She recommends something; the learner asks how and when to take it
-  - Asking about side effects and when to see a doctor
-  - Paying and asking for a receipt if needed
+  - Looking along the shelves, then asking where to find something for a sore throat
+  - Asking for a medicine by its brand name from home, which nobody here recognizes
+  - Working out the active ingredient together and finding a local equivalent
+  - The pharmacist explains how to use a spray, lozenges, or a cream
+  - Asking about the bites, then paying
 phrases:
-  - "My head hurts"
-  - "My stomach hurts"
-  - "I feel nauseous"
-  - "I have a fever"
-  - "Since when?"
-  - "I'm allergic to..."
-  - "How often should I take it?"
-  - "One tablet"
-  - "Should I take it with food?"
-  - "Are there any side effects?"
-  - "Do I need a prescription?"
-  - "Can I have a receipt?"
+  - "Where can I find something for a sore throat?"
+  - "Is this on the shelf, or do I ask at the counter?"
+  - "At home I use something called [brand name]"
+  - "I don't know the name of the ingredient"
+  - "Do you have something similar?"
+  - "Do I need a prescription for this?"
+  - "How many sprays at a time?"
+  - "Can I use this cream on my face?"
+  - "Is it safe with other medicine?"
+  - "Something for insect bites, please"
+  - "It itches a lot"
+  - "Is there anything natural?"
 twists:
-  - "The pharmacist asks whether {{learner_name}} is taking any other medicine, and {{learner_name}} must name it"
-  - "The medicine {{learner_name}} asks for is sold under a different name in {{location}}"
-  - "She says the symptoms sound like they need a doctor and points to a nearby clinic"
-  - "A line forms behind {{learner_name}} and the pharmacist keeps things moving"
-  - "The product needs a prescription, so she suggests an alternative"
+  - "The home brand the learner asks for is prescription-only here, so the pharmacist offers a weaker version"
+  - "The pharmacist asks the learner to show the packaging on their phone so they can read the ingredient"
+  - "The only spray in stock is for children, and the pharmacist explains how to adjust the dose"
+  - "The pharmacist asks whether the bites are swelling and suggests seeing a doctor if they spread"
+  - "A customer behind the learner recommends a local remedy, and the pharmacist has opinions about it"
 ---
-{{learner_name}} walks into a pharmacy in {{location}} feeling unwell: a pounding headache, a queasy stomach, or the start of a cold. The pharmacist is calm and direct. She asks what is wrong, how long it has lasted, how bad it is, whether {{learner_name}} has allergies or takes other medicine, and then recommends something simple. {{learner_name}} must describe symptoms in {{target_language}}, understand her questions well enough to answer honestly, and then confirm the instructions: how many tablets, how often, with food or without, and for how many days. Speak {{target_variant}} clearly and keep the pace brisk. Use whatever payment and receipt habits are customary in {{location}}. Success looks like naming symptoms without English, answering her questions, asking how often to take it, repeating the dose back correctly, and asking about side effects.
+{{learner_name}} has a scratchy sore throat and a few insect bites that won't stop itching. They have been wandering along the shelves of a pharmacy in {{location}} and can't find anything they recognize. The pharmacist is knowledgeable and brisk and follows whatever rules apply in {{location}} about what is sold on the shelf, what is kept behind the counter, and what needs a prescription. {{learner_name}} asks for the medicine they use at home by its brand name, which means nothing here, so the two of them have to work out what is in it and find a local equivalent. Then the pharmacist explains how to use it, which is a spray, lozenges, or a cream rather than tablets. Speak {{target_variant}} clearly at a working pace. Success looks like {{learner_name}} asking where to find things, describing the home medicine well enough to find an equivalent, asking whether a prescription is needed, confirming how to use the product, and asking about the bites before paying.

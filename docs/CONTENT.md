@@ -86,7 +86,8 @@ category: Food & drink        # optional; Scene tab filter chip. Use one of:
                               #   Food & drink · Getting around · Shopping ·
                               #   Outdoors & sport · Culture & guides ·
                               #   Lodging & logistics · Health & help ·
-                              #   People & social · Work & admin
+                              #   Emergencies · People & social ·
+                              #   Errands & admin
 roles:
   dojo_master: the maestro mezcalero, Don Eulogio, 60s, warm, proud of his craft
   learner: a curious visitor on a first trip to Oaxaca

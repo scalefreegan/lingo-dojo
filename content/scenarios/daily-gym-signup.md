@@ -4,7 +4,7 @@ title: Signing up at a gym or class
 summary: Asking about memberships and schedules at a gym or class studio, and handling the sign-up details.
 tags: [daily life, gym, fitness, membership]
 collection: Daily life
-category: Outdoors & sport
+category: Errands & admin
 roles:
   dojo_master: a front-desk staff member at a gym or fitness studio in {{location}}, upbeat and a little sales-minded (give them a name common in {{location}})
   learner: a newly arrived resident who wants to join a gym or a regular class and is comparing options

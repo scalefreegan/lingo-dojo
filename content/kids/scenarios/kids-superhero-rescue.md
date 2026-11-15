@@ -1,15 +1,15 @@
 ---
 id: kids-superhero-rescue
-title: Superhero rescue with Captain Zoom
+title: Superhero kitten rescue
 summary: Teaming up with a cheerful superhero to rescue a kitten stuck in a tree.
 tags: [kids, superhero, action, beginner]
 collection: Playtime
 category: Adventure
 roles:
-  dojo_master: Captain Zoom, an upbeat, slightly over-the-top superhero who narrates every move like a comic book
+  dojo_master: "an upbeat, slightly over-the-top superhero (give them a name a child would hear where {{target_language}} is spoken) who narrates every move like a comic book"
   learner: a young sidekick helping rescue a kitten stuck in a tree
 beats:
-  - Captain Zoom spots a kitten stuck high in a tree, crying for help
+  - The superhero spots a kitten stuck high in a tree, crying for help
   - "Planning the rescue: climb, jump, or fly up?"
   - Acting it out together — running, jumping, reaching
   - Catching the kitten safely
@@ -28,8 +28,8 @@ phrases:
   - "rescued!"
   - "hooray!"
 ---
-Captain Zoom has spotted trouble: a tiny kitten is stuck high in a tree
-and too scared to climb down. The Captain is big, cheerful, and a little
+The superhero has spotted trouble: a tiny kitten is stuck high in a tree
+and too scared to climb down. The superhero is big, cheerful, and a little
 dramatic, narrating every move like it's straight out of a comic book, and
 needs {{learner_name}}'s help as a sidekick to pull off the rescue.
 Together they act out running to the tree, jumping, maybe even pretending

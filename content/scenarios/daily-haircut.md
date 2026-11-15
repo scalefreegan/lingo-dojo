@@ -4,7 +4,7 @@ title: Getting a haircut
 summary: Explaining the cut you want to a hairdresser, following along as it happens, and paying at the end.
 tags: [daily life, haircut, salon, appearance]
 collection: Daily life
-category: People & social
+category: Errands & admin
 roles:
   dojo_master: an experienced hairdresser or barber at a small shop in {{location}}, chatty and confident in their taste (give them a name common in {{location}})
   learner: a resident who has not found a regular hairdresser yet and needs a cut

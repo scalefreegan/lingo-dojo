@@ -4,7 +4,7 @@ title: "Lost passport: reporting it to the police"
 summary: Reporting a lost or stolen passport at a local police station and getting the report your consulate will ask for.
 tags: [emergencies, passport, police, bureaucracy]
 collection: Health & emergencies
-category: Health & help
+category: Emergencies
 roles:
   dojo_master: a desk officer at a police station in {{location}}, 40s, procedural but kind to a worried visitor (give them a name common in {{location}})
   learner: a traveler who has lost their passport, needs a police report for their consulate, and has a flight coming up

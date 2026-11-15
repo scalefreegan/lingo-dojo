@@ -1,32 +1,32 @@
 ---
 id: errands-work-intro
 title: Introducing yourself at a work meeting
-summary: Giving a short self-introduction to new colleagues and answering their small-talk questions.
+summary: Giving a formal self-introduction to new colleagues, then asking about their roles and agreeing a first task.
 tags: [work, introductions, small-talk, professional]
 collection: Work & errands
-category: Work & admin
+category: People & social
 roles:
-  dojo_master: a team lead in her 40s at a company in {{location}} (give her a name common in {{location}}), welcoming but busy, who runs the meeting and asks everyone around the table to say a few words
+  dojo_master: a team lead in their 40s at a company in {{location}} (give them a name common in {{location}}), welcoming but busy, who runs the meeting and asks everyone around the table to say a few words
   learner: a new colleague at their first team meeting, expected to introduce themselves in {{target_language}}
 beats:
   - The team lead welcomes the learner and invites an introduction
   - The learner says who they are, their role, and where they come from
   - Colleagues ask about background and experience
-  - Small talk about life in the city and settling in
+  - Asking colleagues about their roles and how the team works
   - Wrapping up and agreeing a first task or next step
 phrases:
-  - Nice to meet you
+  - "Nice to meet you all"
   - "My name is [your name]"
   - "I am joining the team as [your role]"
-  - "I come from [your country or city]"
-  - I have been here for two weeks
-  - "I used to work in [field or company]"
-  - I am still learning the language
-  - Could you speak a little slower?
-  - What does that mean?
-  - I would like to learn from you
-  - Who should I ask about this?
-  - Thank you for the warm welcome
+  - "Before this, I worked at [company] for [number] years"
+  - "My background is in [field]"
+  - "I'm looking forward to working with you"
+  - "Could you tell me a little about your role?"
+  - "Who should I go to with questions about [topic]?"
+  - "Could you speak a little more slowly?"
+  - "What does that term mean here?"
+  - "What would you like me to start with?"
+  - "Thank you for the warm welcome"
 twists:
   - "A colleague asks a technical question about the learner's last job that needs a precise answer"
   - "The team lead mentions a project using jargon the learner does not know"

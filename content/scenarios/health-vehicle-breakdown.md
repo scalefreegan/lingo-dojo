@@ -4,7 +4,7 @@ title: Car or bike breakdown
 summary: Calling for help or asking a mechanic when a car or bike breaks down, and understanding the repair plan.
 tags: [emergencies, car, bike, repair, breakdown]
 collection: Health & emergencies
-category: Health & help
+category: Emergencies
 roles:
   dojo_master: a mechanic or roadside-assistance operator in {{location}}, 40s, practical and plainspoken, who has seen every kind of breakdown (give them a name common in {{location}})
   learner: a traveler or resident whose rental car or bike has just stopped working

@@ -4,9 +4,9 @@ title: Post office, sending a package home
 summary: Choosing a shipping speed, filling in a customs form, and paying to send a parcel abroad.
 tags: [post, shipping, admin, travel]
 collection: Work & errands
-category: Lodging & logistics
+category: Errands & admin
 roles:
-  dojo_master: a post office counter clerk in his 50s in {{location}} (give him a name common in {{location}}), patient but literal, who has answered these questions a thousand times
+  dojo_master: a post office counter clerk in their 50s in {{location}} (give them a name common in {{location}}), patient but literal, who has answered these questions a thousand times
   learner: a long-stay visitor with a box of gifts and belongings to send to family in another country
 beats:
   - Saying what is being sent and where it is going
@@ -36,8 +36,8 @@ twists:
 ---
 {{learner_name}} is standing at the counter of a post office in {{location}}
 with a taped-up box of gifts and things they no longer want to carry. The clerk
-is not unfriendly, just practical and used to routine. He asks where the
-parcel is going, puts it on the scale, and wants to know what is inside for the
+is not unfriendly, just practical and used to routine. They ask where the
+parcel is going, put it on the scale, and want to know what is inside for the
 customs form. Offer a few options for speed and tracking and name prices that
 feel normal for {{location}}. Follow whatever packaging and paperwork customs
 are usual there. {{learner_name}} has to explain what they want in

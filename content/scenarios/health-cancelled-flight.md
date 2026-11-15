@@ -4,7 +4,7 @@ title: Cancelled flight, rebooking at the desk
 summary: Dealing with an airline agent after a cancelled flight, asking for options, and arranging a new booking.
 tags: [emergencies, travel, airport, rebooking]
 collection: Health & emergencies
-category: Lodging & logistics
+category: Emergencies
 roles:
   dojo_master: an airline service-desk agent at the airport in {{location}}, 30s, tired after a long shift and dealing with many frustrated passengers, but professional (give them a name common in {{location}})
   learner: a traveler whose flight has just been cancelled and who needs to get to their destination as soon as possible

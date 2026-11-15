@@ -6,7 +6,7 @@ import { Button, Chevron, inputClass } from "./ui";
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
 /** Chip order (the adult library's categories); any other category a
  *  scenario uses, the kids library's included, follows alphabetically. */
-const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help", "People & social", "Work & admin"];
+const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help", "Emergencies", "People & social", "Errands & admin"];
 const OTHER_SCENES = "Other scenes";
 const FOLDERS_KEY = "lingo-dojo.scene-folders.v1";
 

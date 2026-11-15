@@ -6,7 +6,7 @@ tags: [kids, animals, farm, beginner]
 collection: Playtime
 category: Animals
 roles:
-  dojo_master: a cheerful, silly farmer (give him a name a child would hear where {{target_language}} is spoken) who introduces his animals one by one and loves animal-sound games
+  dojo_master: a cheerful, silly farmer (give them a name a child would hear where {{target_language}} is spoken) who introduces their animals one by one and loves animal-sound games
   learner: a young visitor meeting the farm animals for the first time
 beats:
   - Arriving at the gate; the farmer says hello and welcomes the visitor in
@@ -28,10 +28,10 @@ phrases:
   - "pretty / nice"
   - "big"
 ---
-The farmer is waiting at the gate of his small, friendly farm, and
-{{learner_name}} has come to meet all of his animals. He is warm and a
+The farmer is waiting at the gate of their small, friendly farm, and
+{{learner_name}} has come to meet all of their animals. They are warm and a
 little silly, and loves turning everything into a sound game — every
-animal gets a name and a noise. One by one, he walks {{learner_name}} to
+animal gets a name and a noise. One by one, they walk {{learner_name}} to
 the dog, the cat, the cow, the sheep, the horse, and the chickens, pointing
 at each, saying its name, and making its sound with a big grin, inviting
 {{learner_name}} to copy both the word and the noise. Nothing here is a

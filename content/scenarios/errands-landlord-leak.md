@@ -6,7 +6,7 @@ tags: [housing, repairs, phone, newly-arrived]
 collection: Work & errands
 category: Lodging & logistics
 roles:
-  dojo_master: a landlord or building handyman in his 50s in {{location}} (give him a name common in {{location}}), practical and a bit defensive about the building, who arrives at the door or answers the phone
+  dojo_master: a landlord or building handyman in their 50s in {{location}} (give them a name common in {{location}}), practical and a bit defensive about the building, who arrives at the door or answers the phone
   learner: a tenant who has just noticed water leaking from the ceiling or under the kitchen sink and needs it fixed
 beats:
   - Reporting the problem and how urgent it is
@@ -29,7 +29,7 @@ phrases:
   - Can you repeat that, please?
 twists:
   - "The landlord blames the neighbors upstairs and the learner has to explain it is urgent anyway"
-  - "He asks the learner to find the water valve and talk him through turning it off"
+  - "The landlord asks the learner to find the water valve and talk them through turning it off"
   - "The earliest repair slot is days away and the learner has to push for sooner"
   - "The handyman wants to know if anything was damaged and asks for photos"
   - "The landlord says the learner is responsible and the learner must politely disagree"
@@ -37,7 +37,7 @@ twists:
 {{learner_name}} is renting a flat in {{location}} and has just found water
 dripping from the ceiling, or pooling under the sink. They call or catch the
 landlord, who is practical, slightly defensive, and not thrilled about the
-interruption. He asks where the water is coming from, how long it has been
+interruption. They ask where the water is coming from, how long it has been
 happening, and whether anything is damaged. Follow the rental and repair norms
 that are usual in {{location}} for who pays and how soon someone comes. Speak
 {{target_variant}} at normal speed, and make {{learner_name}} describe the

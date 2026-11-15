@@ -1,36 +1,36 @@
 ---
 id: social-hallway-neighbor
-title: Chatting with a neighbor in the hallway
-summary: A short, friendly exchange with a neighbor about the building, the weather, and everyday noise or packages.
-tags: [social, neighbors, everyday, small talk]
+title: Sorting things out with a neighbor
+summary: Handling everyday building business with a neighbor you've already met, from a parcel to noise to borrowing something.
+tags: [social, neighbors, everyday, building]
 collection: Social & small talk
 category: People & social
 roles:
-  dojo_master: a neighbor in {{location}}, 60s, who has lived in the building for decades and knows everything about it (give them a name common in {{location}})
-  learner: a newly-arrived resident who moved into the building a week ago
+  dojo_master: a neighbor in {{location}}, 60s, who has lived in the building for decades, knows every rule, and is helpful but particular (give them a name common in {{location}})
+  learner: a resident who moved in a couple of months ago and already knows this neighbor by sight
 beats:
-  - Meeting in the hallway or at the mailboxes and greeting each other
-  - Introducing yourself as the new neighbor
-  - Asking about the building, garbage days, or nearby shops
-  - Some light talk about the weather or the neighborhood
-  - Ending the chat politely and promising to say hello again
+  - A quick greeting on the landing; the neighbor has something to raise
+  - Dealing with the first item, a parcel they took in
+  - The neighbor brings up noise or the bins, and the learner responds
+  - The learner asks to borrow something
+  - Agreeing on how to handle it next time and parting on good terms
 phrases:
-  - "Good morning"
-  - "I just moved into number..."
-  - "Nice to meet you, I'm your new neighbor"
-  - "Do you know where the nearest supermarket is?"
-  - "When is the garbage collected?"
-  - "Is it always this noisy?"
-  - "I'm sorry if I was loud last night"
-  - "A package came for me, did you see it?"
-  - "It's really hot / cold today"
-  - "Thanks for the tip"
-  - "Have a good day"
-  - "See you around"
+  - "Did a parcel come for me?"
+  - "Thank you for taking it in"
+  - "Sorry about the noise"
+  - "It won't happen again"
+  - "Which day do the bins go out?"
+  - "Where does the recycling go?"
+  - "Could I borrow a ladder?"
+  - "I'll bring it back tomorrow"
+  - "Just knock on my door if anything bothers you"
+  - "I didn't know that rule"
+  - "That's very kind of you"
+  - "Let me know if you need anything"
 twists:
-  - "The neighbor mentions that {{learner_name}}'s music was a bit loud and {{learner_name}} must apologize"
-  - "The neighbor has been holding a package for {{learner_name}} and needs to confirm it is theirs"
-  - "The neighbor starts a long story about the building's history and {{learner_name}} has to follow along"
-  - "The elevator is out of order and they end up talking on the stairs about it"
+  - "The parcel the neighbor took in was opened by mistake"
+  - "The neighbor is sure the noise came from {{learner_name}}'s flat, but it didn't"
+  - "The neighbor offers to lend the item only if {{learner_name}} helps with a small favor in return"
+  - "Another neighbor passes by and the conversation becomes a three-way complaint about the building"
 ---
-{{learner_name}} bumps into a neighbor in the hallway of their building in {{location}}, a week after moving in. The neighbor is curious and friendly in the way of someone who has seen every resident come and go. Greet {{learner_name}} using whatever neighborly politeness is customary in {{location}}, then ask where they are from, how the move is going, and whether they have found what they need nearby. Offer useful local tips about shops, services, and building rules. Speak in {{target_variant}}, at a natural pace, in short exchanges that feel like a real hallway chat. Keep it casual; the neighbor should not run out of things to say. Success looks like {{learner_name}} introducing themselves in {{target_language}}, asking a practical question about the neighborhood or building, responding to the weather or noise remark, and ending the chat politely.
+{{learner_name}} is heading out when the neighbor across the landing calls them over. They already know each other a little, so there is no introduction: the neighbor has building business. First, a parcel arrived for {{learner_name}} and the neighbor took it in. Then they mention noise late at night, or bins put out on the wrong day, according to whatever building customs are normal in {{location}}. Be friendly but particular, the kind of neighbor who cares about the rules. Let {{learner_name}} apologize, explain, or push back politely, then ask to borrow something. Speak {{target_variant}} at a natural pace in short, practical exchanges, with the register neighbors of different ages would use in {{location}}. Success looks like {{learner_name}} collecting the parcel with thanks, responding to the complaint without getting defensive, asking a question about the building rules, borrowing something with a promise to return it, and ending on good terms.

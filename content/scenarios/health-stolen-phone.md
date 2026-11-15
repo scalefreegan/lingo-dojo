@@ -4,7 +4,7 @@ title: Reporting a stolen phone to police
 summary: Filing a theft report at a police station, describing the phone, and understanding the paperwork.
 tags: [emergencies, police, theft, report]
 collection: Health & emergencies
-category: Health & help
+category: Emergencies
 roles:
   dojo_master: a police officer at a station in {{location}}, 30s, businesslike and patient with a visitor who is clearly stressed (give them a name common in {{location}})
   learner: a traveler or resident whose phone was just stolen, needing a report for insurance
@@ -19,7 +19,7 @@ phrases:
   - "I want to report a theft"
   - "It happened about an hour ago"
   - "It was in my bag / my pocket"
-  - "A man took it and ran away"
+  - "Someone grabbed it and ran away"
   - "It's black, with a cracked screen"
   - "Here is the model and serial number"
   - "I need a copy for my insurance"

@@ -4,7 +4,7 @@ title: Booking an appointment by phone
 summary: Calling to book a time slot, giving details, and confirming day, time, and what to bring.
 tags: [phone, appointment, admin, newly-arrived]
 collection: Work & errands
-category: Work & admin
+category: Errands & admin
 roles:
   dojo_master: a receptionist at a clinic, salon, or office in {{location}} (give them a name common in {{location}}), efficient and a little hurried, handling calls with a busy schedule in front of them
   learner: a newly arrived resident calling to book an appointment, with no visual cues, only their voice
@@ -30,14 +30,14 @@ phrases:
 twists:
   - "The first available slot is weeks away and the learner has to ask about cancellations"
   - "The line is bad and the receptionist has to repeat the date and time several times"
-  - "She takes the learner's name and number and reads them back fast, getting one detail wrong"
+  - "The receptionist takes the learner's name and number and reads them back fast, getting one detail wrong"
   - "The learner realizes they are free only on one day and has to negotiate"
-  - "She mentions a form or document to bring that the learner has to ask about"
+  - "The receptionist mentions a form or document to bring that the learner has to ask about"
 ---
 {{learner_name}} calls to book an appointment at a clinic, salon, or office in
 {{location}}. The receptionist picks up quickly, sounds busy, and has the
 calendar open. With no face to read, {{learner_name}} must explain the request,
-give a name and phone number, and agree on a day and time. She offers a slot,
+give a name and phone number, and agree on a day and time. They offer a slot,
 and may not offer the one they want. Follow whatever phone etiquette and
 booking customs are normal in {{location}}, including greetings and how
 details are confirmed. Speak {{target_variant}} at call speed, a touch fast,

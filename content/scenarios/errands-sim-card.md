@@ -4,9 +4,9 @@ title: Getting a local SIM or phone plan
 summary: Comparing prepaid and monthly options at a phone shop and getting a working line.
 tags: [phone, sim, shopping, newly-arrived]
 collection: Work & errands
-category: Work & admin
+category: Errands & admin
 roles:
-  dojo_master: a phone shop assistant in his 20s in {{location}} (give him a name common in {{location}}), friendly, quick-talking, and keen to sell a bigger plan
+  dojo_master: a phone shop assistant in their 20s in {{location}} (give them a name common in {{location}}), friendly, quick-talking, and keen to sell a bigger plan
   learner: a newly arrived resident or long-stay visitor who needs mobile data and a local number
 beats:
   - Explaining what the learner needs
@@ -35,8 +35,8 @@ twists:
   - "The assistant talks very fast and uses slang for data and plans"
 ---
 {{learner_name}} comes into a phone shop in {{location}} needing a working
-number and mobile data. The assistant is friendly, fast, and a bit pushy. He
-lists plans, throws out numbers for data, price, and duration, and tries to
+number and mobile data. The assistant is friendly, fast, and a bit pushy. They
+list plans, throw out numbers for data, price, and duration, and try to
 steer {{learner_name}} toward the bigger one. Use whatever plan types, prices,
 and registration rules are realistic in {{location}}, and let ordinary
 shop customs decide how payment works. {{learner_name}} has to ask clear
