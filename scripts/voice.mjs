@@ -712,6 +712,16 @@ export function clockLine({ minutes, elapsedMs, plan, stage, mode = "adult" }) {
  *  STAGE line). */
 export const oneLine = (s) => String(s).replace(/[\r\n|]+/g, " ").trim();
 
+/** The longest replayed line or learner message the turn route keeps. */
+export const REPLAY_MAX_CHARS = 4000;
+
+/** A dojo master line's text as the turn route keeps it from the browser's
+ *  history (web/server/voice.ts cleanHistory). The saved conversation
+ *  compares its stored lines through this too (scripts/conversations.mjs
+ *  turnKey), so a stored line and its own replay always agree: a "|" the
+ *  dojo master wrote comes back as a space. */
+export const replayLine = (s) => oneLine(s).slice(0, REPLAY_MAX_CHARS);
+
 /** A replayed turn's stage, if it is id-shaped (part ids are unit ids with
  *  a slot prefix); anything else is dropped. */
 export const replayStage = (v) => (typeof v === "string" && /^[A-Za-z0-9:_.-]{1,80}$/.test(v) ? v : "");

@@ -14,20 +14,23 @@
 
 import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
-  ContentReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
+  ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
-/** A non-2xx reply; `message` is the server's `{error}` sentence. */
+/** A non-2xx reply; `message` is the server's `{error}` sentence, and
+ *  `code` the reason beside it for the few errors the client acts on. */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly code?: ErrorCode;
+  constructor(message: string, status: number, code?: ErrorCode) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    if (code) this.code = code;
   }
 }
 
@@ -57,6 +60,11 @@ export function setPageLearner(id: string | null): void {
   pageLearner = id;
 }
 
+/** The learner this page renders now (null before one is picked). */
+export function getPageLearner(): string | null {
+  return pageLearner;
+}
+
 /** fetch with the page's learner. Every call below goes through it. */
 function send(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
@@ -82,7 +90,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     const reply = body && typeof body === "object" ? (body as Partial<ErrorReply>) : null;
     if (res.status === 409 && reply?.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
     const err = reply?.error;
-    throw new ApiError(typeof err === "string" ? err : text.slice(0, 200) || `${res.status} ${res.statusText}`, res.status);
+    throw new ApiError(typeof err === "string" ? err : text.slice(0, 200) || `${res.status} ${res.statusText}`, res.status, reply?.code);
   }
   return body as T;
 }
@@ -348,6 +356,50 @@ export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal,
 
 export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise<VoiceTurnReply> {
   return req<VoiceTurnReply>("/api/voice/turn", { ...json(body), signal });
+}
+
+/* ------------------------------ conversations ----------------------------- */
+// Saved voice sessions: the active learner's, like the turn that writes them.
+
+/** POST /api/conversations: a session's first turn is about to run. */
+export function createConversation(body: ConversationCreateRequest, signal?: AbortSignal): Promise<ConversationReply> {
+  return req<ConversationReply>("/api/conversations", { ...json(body), signal });
+}
+
+/** GET /api/conversations: History, newest first, a page at a time. */
+export function listConversations(offset = 0, limit = 20): Promise<ConversationsReply> {
+  const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return req<ConversationsReply>(`/api/conversations?${q}`);
+}
+
+/** GET /api/conversations/:id: one page of its turns, from idx `from`. */
+export function getConversation(id: string, from = 0, signal?: AbortSignal): Promise<ConversationTurnsReply> {
+  return req<ConversationTurnsReply>(`/api/conversations/${encodeURIComponent(id)}?from=${from}`, { signal });
+}
+
+export function deleteConversation(id: string): Promise<{ deleted: true }> {
+  return req<{ deleted: true }>(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/**
+ * POST /api/conversations/:id/end, fire and forget. A keepalive fetch, so it
+ * still goes out when the page is unloading (Close, a reload, the tab shut):
+ * unlike sendBeacon it can carry the X-Learner-Id header wrap() checks.
+ * `learnerId` is the learner the conversation was started for, sent as is:
+ * after a learner switch the page's learner is already the next one, and
+ * the server then answers stale_learner, which is ignored here rather than
+ * sending this page to re-read who's practising (the conversation is ended
+ * two idle hours later instead). Ending twice is harmless (idempotent).
+ */
+export function endConversation(id: string, learnerId: string): Promise<void> {
+  return fetch(`/api/conversations/${encodeURIComponent(id)}/end`, {
+    method: "POST",
+    keepalive: true,
+    headers: { [LEARNER_HEADER]: learnerId },
+  }).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 /** One line → playable audio. Errors come back as the usual {error}. */

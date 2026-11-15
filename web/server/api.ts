@@ -5,6 +5,7 @@ import {
   handleAuth, handleFirstRun, handleLearners, handleLogin, handleMe, pageLearner, sessionFor, type Ctx, type LearnerCtx, type PublicCtx,
 } from "./auth.ts";
 import { handleChat, handleSettings } from "./chat.ts";
+import { handleConversations } from "./conversations.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
@@ -148,6 +149,11 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       server.middlewares.use("/api/voice/cast", wrap(handleVoiceCast, { learner: true }));
       server.middlewares.use("/api/voice/library/add", wrap(handleVoiceLibraryAdd, { auth: "admin" }));
       server.middlewares.use("/api/voice", wrap(handleVoice));
+      // Saved conversations (conversations.ts): the learner's own, so the
+      // page must name that learner, like the turn that writes them. End
+      // comes from a page-unload keepalive fetch too, which carries the
+      // same header and cookie, so it passes the same checks.
+      server.middlewares.use("/api/conversations", wrap(handleConversations, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));

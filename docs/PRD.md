@@ -13,7 +13,7 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 | Decision | Choice |
 |---|---|
-| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. Built so far: the foundation, logins + learners (users, sessions, learners, per-user settings and agent chat), and saved packs (per learner, with revisions and soft deletes instead of git commits; the pack files are seeds) |
+| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. Built so far: the foundation, logins + learners (users, sessions, learners, per-user settings and agent chat), saved packs (per learner, with revisions and soft deletes instead of git commits; the pack files are seeds) and saved conversations (every voice session's turns, listed in the Library's History) |
 | Embedded agent | Headless `claude -p` subprocess (sibling pattern) with Read on the repo and **Write/Edit scoped to `content/`**; every agent change is auto-committed so it can be reverted |
 | Export | One self-contained markdown prompt; Copy button and a file written to `exports/` |
 | Stack | Match Atlas (`../travel-guide`): React 19 + Vite + TS strict, Vite middleware API, Tailwind 4, oxlint, `node --test`; Dock app from `macos/`; **port 38400** |
@@ -59,7 +59,10 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 ## Non-goals (v1)
 
 - A feedback loop from the session (debrief saved, progress tracked). The
-  in-app voice session itself landed 2026-11-09; its transcript is copy-only.
+  in-app voice session itself landed 2026-11-09. Its transcript has been
+  saved since 2026-11-15 (a conversation per session, listed in the
+  Library's History, docs/DATA.md §Conversations); the recap, the phrase
+  bank and progress tracking built on it are still to come.
 - In-app rich editing of unit bodies (agent or editor does that; follow-up bead).
 - JSON bundle export for a programmatic voice pipeline (follow-up bead).
 - Mimir/Obsidian export (follow-up bead).

@@ -48,6 +48,32 @@ function settingLine(location, variant) {
 const MISSING_SCENARIO_LINE = "_(No scenario selected. Pick a scenario or write a quick scenario before using this prompt.)_";
 
 /**
+ * The session's effective profile: the learner's profile with the pack's
+ * overrides (normalizePack's) on top. A blank override (an emptied form
+ * field) means "no override", not "erase". The prompt is built from it, and
+ * a saved conversation keeps its languages (web/server/conversations.ts).
+ */
+export function effectiveProfile(baseProfile, overrides = {}) {
+  const profile = { ...(baseProfile ?? {}) };
+  const overridden = new Set();
+  for (const [k, v] of Object.entries(overrides ?? {})) {
+    if (v == null || (typeof v === "string" && v.trim() === "")) continue;
+    profile[k] = v;
+    overridden.add(k);
+  }
+  // The one key that doesn't survive a merge on its own: a variant belongs
+  // to its language, so a pack that moves target_language to a different
+  // language drops the profile's target_variant unless it sets its own.
+  // Without this, "target Japanese" would still carry "Mexican Spanish
+  // (Oaxaca)" into the prompt, and no pack could say "no variant".
+  const baseTarget = baseProfile?.target_language;
+  if (overridden.has("target_language") && !overridden.has("target_variant") && String(profile.target_language) !== String(baseTarget ?? "")) {
+    delete profile.target_variant;
+  }
+  return profile;
+}
+
+/**
  * @param {{schema, frame, profile, units, scenarios}} content  loadContent()'s result
  * @param {object} rawPack  a pack (file or UI body); normalized here
  * @param {"adult"|"kids"} [mode]  which tree `content` is: the Time budget
@@ -61,24 +87,8 @@ export function assemble(content, rawPack, mode = "adult") {
     if (!warnings.includes(msg)) warnings.push(msg);
   };
 
-  // 1. Effective profile: profile.yaml with the pack's overrides on top. A
-  //    blank override (an emptied form field) means "no override", not "erase".
-  const profile = { ...(content.profile ?? {}) };
-  const overridden = new Set();
-  for (const [k, v] of Object.entries(pack.overrides)) {
-    if (v == null || (typeof v === "string" && v.trim() === "")) continue;
-    profile[k] = v;
-    overridden.add(k);
-  }
-  //    The one key that doesn't survive a merge on its own: a variant belongs
-  //    to its language, so a pack that moves target_language to a different
-  //    language drops the profile's target_variant unless it sets its own.
-  //    Without this, "target Japanese" would still carry "Mexican Spanish
-  //    (Oaxaca)" into the prompt, and no pack could say "no variant".
-  const baseTarget = content.profile?.target_language;
-  if (overridden.has("target_language") && !overridden.has("target_variant") && String(profile.target_language) !== String(baseTarget ?? "")) {
-    delete profile.target_variant;
-  }
+  // 1. Effective profile (effectiveProfile above).
+  const profile = effectiveProfile(content.profile, pack.overrides);
 
   // 2. Scenario: by id, or the quick-scenario text as an ad hoc one.
   const scenario = resolveScenario(content, pack, warn);

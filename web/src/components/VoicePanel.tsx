@@ -1,31 +1,36 @@
-import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
-  ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
+  ApiError, addLibraryVoice, createConversation, endConversation, getCast, getPageLearner, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
+  transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
-import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
-import { Glossed } from "./Glossed";
+import { Mochi, type MochiMood } from "./Mascots";
 import { SessionTimeline } from "./SessionTimeline";
+import { Transcript } from "./Transcript";
+import {
+  DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
+} from "../transcript";
 import { IsAdmin } from "../viewer";
-import { haystack, isSentence, layout, mightMatch, sentenceGlosses } from "../gloss";
 import type {
-  LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  LibrarySort, LibraryVoice, Mode, PackInput, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
+import { conversationFate, turnsSettled } from "../conversationLife";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
  * Each turn is record → transcribe → one dojo-master reply → speak each line
  * in its speaker's voice (web/server/voice.ts). The learner decides when a
  * turn ends — a tap, or a pause as long as they chose — so thinking and
- * backtracking never get talked over. The session lives in this component;
- * nothing is saved. */
+ * backtracking never get talked over. The session lives in this component,
+ * and each turn is also saved, as a conversation the Library's History lists
+ * (docs/DATA.md §Conversations; the server keeps its copy matching what this
+ * transcript shows). */
 
 type Phase = "idle" | "opening" | "recording" | "transcribing" | "thinking" | "speaking";
 
-const SPEAKER_LABEL: Record<VoiceSpeaker, string> = { narrator: "Narrator", character: "Character", sidekick: "Sidekick" };
 const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", azure: "Azure Speech", system: "macOS voices (free)" };
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
@@ -34,23 +39,12 @@ const CAST_TIMEOUT_MS = 10_000;
 const HELD_NOTICE = "Your words to the dojo master are waiting above the box.";
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
 
-/** The Skip, Help and Explain buttons' messages; scripts/voice.mjs SKIP,
- *  HELP and EXPLAIN must match (the adapter tells the dojo master what each means). */
-const SKIP = "[skip]";
-const HELP = "[help]";
-const EXPLAIN = "[explain]";
-/** Prefix of a timeline jump; scripts/voice.mjs JUMP must match. */
-const JUMP = "[jump]";
-const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
-/** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
-const DIRECT = "[direct]";
 /** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
 const EXTEND_MINUTES = 5;
 /** Whether the timeline beside the transcript is open (per browser). */
 const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
 const MASTER_ACK = "Yes? I'm listening.";
-const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
 
 export default function VoicePanel({
   mode,
@@ -60,10 +54,13 @@ export default function VoicePanel({
   onOpened,
   active = true,
   minutesPick = 0,
+  title = "",
 }: {
   mode: Mode;
   pack: PackInput;
   langs: VoiceLanguages;
+  /** What the saved conversation is called in History (the scene shown). */
+  title?: string;
   /** Bumped by every pick in the Go tab's "How long do you have?". */
   minutesPick?: number;
   /** False while the Go tab is hidden: nothing plays or listens then. */
@@ -93,10 +90,15 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} onClose={() => setOpen(false)} />;
 }
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; onClose: () => void }) {
+/** The saved conversation a session writes to: its id, the transcript index
+ *  it began at (0, unless an earlier one of this session was ended: leaving
+ *  Go, two idle hours), and the learner it was started for. */
+type SavedConversation = { id: string; start: number; learnerId: string };
+
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -270,12 +272,41 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
   // from its closure: a +5 min or a new length counts from the next turn.
   const budgetRef = useRef(budget);
   const packRef = useRef(pack);
+  const titleRef = useRef(title);
   useEffect(() => {
     budgetRef.current = budget;
     packRef.current = pack;
+    titleRef.current = title;
     // A mid-session pick moves the clock's origin in state; the turn reads the ref.
     startedAtRef.current = startedAt;
   });
+
+  // The saved conversation (docs/DATA.md §Conversations). Made by the
+  // session's first turn (POST /api/conversations), ended by End, Restart,
+  // leaving Go, Close and page unload; a turn after that starts the next
+  // one. `creating` is a creation on its way, so a second turn waits for it
+  // rather than making another. `saving` is what the header says: null
+  // before the first turn, else whether turns are being stored (and why
+  // not). `sessionEpoch` moves on at Restart and unmount, so a creation that
+  // lands for a session already gone is ended, not adopted. `unsavedFrom` is
+  // the first transcript entry no conversation holds while saving is off
+  // (creating one failed, or a reply came after its conversation ended): the
+  // next conversation starts there, so those turns are stored after all.
+  // `inFlight` is each conversation's turn request on its way: ending waits
+  // for it, so the turn is stored in the conversation it was sent for.
+  const convRef = useRef<SavedConversation | null>(null);
+  const creating = useRef<Promise<SavedConversation | null> | null>(null);
+  const sessionEpoch = useRef(0);
+  const unsavedFrom = useRef<number | null>(null);
+  const inFlight = useRef(new Map<string, Promise<unknown>>());
+  // How many times the conversation has been closed (closeConversation), and
+  // the ids an End was already sent for.
+  const closes = useRef(0);
+  const endsSent = useRef(new Set<string>());
+  const [saving, setSaving] = useState<{ on: true } | { on: false; why: string } | null>(null);
+  // End was pressed: the session is over on screen (the transcript stays to
+  // read and copy), until Restart.
+  const [ended, setEnded] = useState(false);
 
   // Mutable session plumbing the async flows read without stale closures.
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
@@ -343,55 +374,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
   // The translate button names the language it translates into, by its
   // code ("EN", "ZH", "SV"), not the first letters of its English name.
   const trLabel = nativeLocale?.split(/[-_]/)[0]?.toUpperCase() || "Tr";
-  // Each master line's translation (what its translate button shows), worked
-  // out once per transcript change rather than on every render: the level
-  // meter re-renders many times a second while recording. Glosses only grow
-  // during a session (the first wording of a term wins, sessionGlosses), so
-  // each line remembers the glosses found in it and tests only the ones added
-  // since (a substring check, mightMatch); it is laid out again only when one
-  // of them is in it. A new turn then costs its own lines plus a few
-  // substring checks per older line, not a layout of the whole session.
-  const trCache = useRef(new Map<VoiceHistoryItem, TrCacheRow>());
-  const translations = useMemo(() => {
-    const loc = locale ?? undefined;
-    const next = new Map<VoiceHistoryItem, TrCacheRow>();
-    const out = entries.map((m) => {
-      if (m.role !== "master") return [] as LineTranslation[];
-      let c = trCache.current.get(m);
-      if (!c || c.first !== glosses[0] || c.seen > glosses.length || c.locale !== loc) {
-        c = {
-          first: glosses[0],
-          seen: 0,
-          locale: loc,
-          lines: m.lines.map((l) => {
-            const texts = (l.segments ?? []).filter((g) => g.lang === "target").map((g) => g.text);
-            return { texts, hays: texts.map((t) => haystack(t, loc)), hits: [] as VoiceGloss[], tr: null as LineTranslation };
-          }),
-        };
-      }
-      if (c.seen < glosses.length) {
-        const fresh = glosses.slice(c.seen);
-        for (const line of c.lines) {
-          const found = fresh.filter((g) => line.hays.some((h) => mightMatch(h, g, loc)));
-          if (!found.length) continue;
-          line.hits = [...line.hits, ...found];
-          // Laid out with just the glosses that might be in it: one that isn't
-          // there changes nothing, so this agrees with a layout over them all.
-          const tr = sentenceGlosses(line.texts, line.hits, loc);
-          // "line" when a whole sentence is in it, else the phrase(s) it
-          // shows, so the button says which.
-          line.tr = tr.length
-            ? { gloss: tr.length === 1 ? tr[0] : { term: tr.map((t) => t.term).join(" · "), meaning: tr.map((t) => t.meaning).join(" · ") }, whole: tr.some((t) => isSentence(t, loc)) }
-            : null;
-        }
-        c = { ...c, seen: glosses.length };
-      }
-      next.set(m, c);
-      return c.lines.map((l) => l.tr);
-    });
-    trCache.current = next;
-    return out;
-  }, [entries, glosses, locale]);
+  // Each master line's translation (what its translate button shows).
+  const translations = useLineTranslations(entries, glosses, locale);
   const anyTranslation = translations.some((ls) => ls.some(Boolean));
   // Who each voice tag is now, from the dojo master's CAST lines (the latest
   // note for a slot wins), for the header.
@@ -489,11 +473,23 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
   const genRef = useRef(0);
 
   // Leaving the panel stops everything: no mic left open, no audio playing on.
+  // It ends the saved conversation too (Close; a learner or mode switch,
+  // which remounts the tab), as does the page going away (a reload, the tab
+  // shut, another site): pagehide, with a keepalive request that outlives it.
   useEffect(() => {
     const cache = urls.current;
     const gen = genRef;
     const audios = audiosRef;
+    const epoch = sessionEpoch;
+    // The page is going: End now, with nothing to wait for (a turn on its
+    // way dies with the page).
+    const onPageHide = () => closeConversation(true);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      epoch.current += 1;
+      // Unmounting aborts the turn on its way (below): nothing to wait for.
+      closeConversation(true);
       gen.current += 1;
       ctrlRef.current?.abort();
       recRef.current?.cancel();
@@ -510,6 +506,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
   useEffect(() => {
     activeRef.current = active;
     if (active) return;
+    // Leaving Go ends the saved conversation (DATA.md). The session on
+    // screen stays, and carrying on after coming back saves into a new
+    // conversation from that turn on. A turn still on its way is stored in
+    // this one first: closeConversation sends End once it has its answer.
+    // Nothing is being saved until that next turn, so the header stops
+    // saying so (an "isn't being saved" reason stays: still true).
+    closeConversation();
+    setSaving((s) => (s?.on ? null : s));
     const p = phaseRef.current;
     if (p === "recording" || p === "opening") {
       stopAll();
@@ -550,6 +554,97 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
     setPlaying(null);
     setLevel(0);
     setPhase("idle");
+  }
+
+  /** End `c`, once: a conversation can be closed by more than one path
+   *  (leaving Go, then the creation that was on its way answering). */
+  function endOnce(c: SavedConversation) {
+    if (endsSent.current.has(c.id)) return;
+    endsSent.current.add(c.id);
+    void endConversation(c.id, c.learnerId);
+  }
+
+  /** End `c` once its turn on the way, if any, has its answer, so that turn
+   *  is stored in it (the server's End also waits for a turn it already
+   *  holds, but can't know of one still in the network). */
+  function endAfterTurn(c: SavedConversation) {
+    void turnsSettled(inFlight.current, c.id).then(() => endOnce(c));
+  }
+
+  /** Close the session's saved conversation: fire and forget, only refs, so
+   *  it is safe from any closure. Bumps `closes`, which every turn checks
+   *  against the value it started with (conversationFor), so a conversation
+   *  a turn makes after this — its creation still on its way, or not even
+   *  asked for yet because the turn was loading its cast — is never adopted
+   *  and is ended after that turn (conversationLife.ts). The open one is
+   *  ended after its turn on the way; `now` (pagehide, unmount) ends it at
+   *  once, the turn going with the page. The next turn starts a new one. */
+  function closeConversation(now = false) {
+    closes.current += 1;
+    const c = convRef.current;
+    const pending = creating.current;
+    convRef.current = null;
+    creating.current = null;
+    if (c) {
+      if (now) endOnce(c);
+      else endAfterTurn(c);
+    } else if (pending && now) {
+      // The page is going: whatever lands is ended (its own fate check
+      // would wait for a turn that won't come).
+      void pending.then((made) => made && endOnce(made));
+    }
+  }
+
+  /** The conversation this turn saves into, made now when there is none.
+   *  It begins at `here` (this turn's transcript index), or earlier, where
+   *  saving stopped (`unsavedFrom`): its first turn then stores the turns
+   *  before it too. null when it can't be made: the session goes on
+   *  unsaved, and the header says so; the next turn tries again. Not
+   *  cancelled by Stop: a conversation made for a turn that was then
+   *  stopped is the one the next turn uses. `life` is `closes` as the turn
+   *  found it when it began: a close since then (or Go hidden now) means
+   *  the conversation is the turn's alone, ended after it, never the
+   *  session's (conversationFate). */
+  function conversationFor(turnPack: PackInput, here: number, life: number): Promise<SavedConversation | null> {
+    if (convRef.current) return Promise.resolve(convRef.current);
+    if (creating.current) return creating.current;
+    const epoch = sessionEpoch.current;
+    const learnerId = getPageLearner() ?? "";
+    const start = Math.min(unsavedFrom.current ?? here, here);
+    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
+      ({ conversation }) => {
+        const c = { id: conversation.id, start, learnerId };
+        if (creating.current === made) creating.current = null;
+        const fate = conversationFate({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life });
+        if (fate === "drop") {
+          // Restart, End or Close came first: no turn will use it.
+          endOnce(c);
+          return null;
+        }
+        if (fate === "end-after-turn") {
+          // Go was left (or the session closed) while this turn was on its
+          // way: the turn is stored in it, then it ends. Registered after
+          // the turn's own await on `made`, so the turn's request is in
+          // inFlight by the time this looks.
+          void made.then(() => endAfterTurn(c));
+          return c;
+        }
+        convRef.current = c;
+        unsavedFrom.current = null;
+        setSaving({ on: true });
+        return c;
+      },
+      (e: unknown) => {
+        if (creating.current === made) creating.current = null;
+        if (epoch === sessionEpoch.current) {
+          unsavedFrom.current = start;
+          setSaving({ on: false, why: errText(e) });
+        }
+        return null;
+      },
+    );
+    creating.current = made;
+    return made;
   }
 
   /** Wait for a voice draw with "Finding a voice…" showing, until the draw
@@ -758,6 +853,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
     setError(null);
     setNotice(null);
     const before = entriesRef.current;
+    // The conversation's close count as this turn begins: every await below
+    // (the cast, the create, the reply) may outlive a close (conversationFor).
+    const life = closes.current;
     const history = message ? [...before, { role: "learner" as const, text: message }] : before;
     setSession(history);
     const ctrl = freshCtrl();
@@ -802,9 +900,60 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
       const cur = packRef.current;
       const turnBudget = budgetRef.current;
       const turnPack = turnBudget == null ? cur : { ...cur, overrides: { ...cur.overrides, minutes: turnBudget } };
-      const elapsedMs = Date.now() - startedAtRef.current;
-      const r = await voiceTurn({ mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs }, ctrl.signal);
+      // The conversation this turn is saved in; it begins at this turn when
+      // there was none (the first turn, or the first after one ended).
+      const conv = await conversationFor(turnPack, before.length, life);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // Sent synchronously from here (no await before voiceTurn), and kept
+      // in inFlight until it answers, so closeConversation sees it.
+      const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
+        const elapsedMs = Date.now() - (startedAtRef.current ?? Date.now());
+        const body: VoiceTurnRequest = { mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
+        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
+        if (c) {
+          inFlight.current.set(c.id, req);
+          const done = () => {
+            if (inFlight.current.get(c.id) === req) inFlight.current.delete(c.id);
+          };
+          req.then(done, done);
+        }
+        return req;
+      };
+      let r: VoiceTurnReply;
+      let sent = conv;
+      try {
+        r = await send(conv);
+      } catch (e) {
+        // The conversation is over (another device's End, two idle hours)
+        // or gone (deleted in History). Nothing ran: start a new one from
+        // this turn and send it again. Not while Go is hidden, where the
+        // conversation was ended on purpose: the turn then goes unsaved for
+        // now, and the next conversation starts from it.
+        const over = e instanceof ApiError && (e.code === "conversation_ended" || e.code === "no_conversation");
+        if (!conv || !over) throw e;
+        if (convRef.current?.id === conv.id) convRef.current = null;
+        sent = activeRef.current ? await conversationFor(turnPack, before.length, life) : null;
+        if (ctrl.signal.aborted || gen !== genRef.current) return;
+        if (!sent && unsavedFrom.current == null) {
+          // conversationFor says so itself when it fails; this is the
+          // hidden-Go case, where none was asked for.
+          unsavedFrom.current = before.length;
+          setSaving({ on: false, why: "its conversation ended while you were away; the next turn saves it in a new one" });
+        }
+        r = await send(sent);
+      }
+      if (ctrl.signal.aborted || gen !== genRef.current) return;
+      if (sent && r.saved === false) {
+        // Stored by this conversation's next turn (it reconciles the whole
+        // screen), or by the next conversation's first if this one is over.
+        unsavedFrom.current ??= before.length;
+        setSaving({ on: false, why: "the server could not store the last turn" });
+      } else if (sent && r.saved) {
+        unsavedFrom.current = null;
+        // Stored; but if its conversation was closed meanwhile (Go left
+        // while it was on its way), nothing is being saved now.
+        if (convRef.current?.id === sent.id) setSaving({ on: true });
+      }
       const idx = history.length;
       const notes = r.castNotes ?? [];
       setSession([
@@ -1257,6 +1406,13 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
 
   function restart() {
     stopAll();
+    // A new session is a new conversation: this one ends (and goes to
+    // History); the next Start makes the next.
+    sessionEpoch.current += 1;
+    closeConversation();
+    unsavedFrom.current = null;
+    setSaving(null);
+    setEnded(false);
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});
     urls.current.clear();
     // "Characters spoken" is per session; keys start from 0 again.
@@ -1286,6 +1442,20 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
     setNotice(null);
   }
 
+  /** End: the session is over. The conversation is ended (and so listed in
+   *  History as finished); the transcript stays on screen to read and copy
+   *  until Restart starts the next session. */
+  function endSession() {
+    stopAll();
+    sessionEpoch.current += 1;
+    closeConversation();
+    setHeldRequest(null);
+    setComposer("");
+    setDirect(false);
+    setNotice(null);
+    setEnded(true);
+  }
+
   const provider = settings?.tts ?? "elevenlabs";
   const ttsReady = !!reply?.configured[provider];
   const sttReady = !!settings && !!reply?.configured[settings.stt];
@@ -1297,7 +1467,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
       if (!active || e.code !== "Space" || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.closest("input, textarea, select, button, [contenteditable]") || t.isContentEditable)) return;
-      if (!entriesRef.current.length || !sttReady) return;
+      if (!entriesRef.current.length || !sttReady || ended) return;
       e.preventDefault();
       if (phase === "recording") void finishListening("tap");
       else if (phase === "idle" || phase === "speaking") void startListening();
@@ -1338,7 +1508,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
           open={timelineOpen}
           onToggle={toggleTimeline}
           onJump={jump}
-          disabled={!canAct}
+          disabled={!canAct || ended}
           clock={budget != null && startedAt != null ? { minutes: budget, startedAt } : null}
           onExtend={() => setExtraMinutes((x) => x + EXTEND_MINUTES)}
         />
@@ -1355,6 +1525,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
             {PROVIDER_LABEL[provider]}
             {locale ? ` · ${locale}` : ""}
             {chars > 0 && ` · ${chars.toLocaleString()} characters spoken`}
+            {saving?.on && <span data-testid="voice-saved">{` · ${ended ? "saved" : "saving"} to History`}</span>}
             {cast && Object.keys(cast.cast).length > 0 && (
               // On a phone it keeps to two lines until tapped open (a touch
               // screen has no tooltip).
@@ -1439,7 +1610,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
           onReplay={onReplay}
         />
       )}
-      {lastChoices.length > 0 && canAct && (
+      {lastChoices.length > 0 && canAct && !ended && (
         <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
           {lastChoices.map((c, k) => (
             <QuickButton key={`${k}:${c}`} variant="choice" onClick={(e) => choose(c, e.detail === 0)}>
@@ -1498,8 +1669,29 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
           {error}
         </p>
       )}
+      {saving && !saving.on && (
+        <p className="rounded-md bg-warn-soft p-3 text-sm text-warn" data-testid="voice-unsaved">
+          This session isn't being saved ({saving.why}). Practice goes on; the next turn tries again. Copy transcript keeps it.
+        </p>
+      )}
 
-      {started && (
+      {started && ended && (
+        // After End: the transcript stays to read; the session is over.
+        <div className="flex flex-wrap items-center gap-2" data-testid="voice-ended">
+          <span className="text-sm text-fg-2">
+            Session ended.{saving?.on ? " It's in your History, on the Library tab." : ""}
+          </span>
+          <span className="flex-1" />
+          <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))}>
+            {copyStatus === "copied" ? "Copied" : "Copy transcript"}
+          </Button>
+          <Button variant="primary" className="px-3 py-1" onClick={restart} data-testid="voice-new-session">
+            New session
+          </Button>
+        </div>
+      )}
+
+      {started && !ended && (
         <div className="flex flex-col gap-2">
           {/* Quick requests: one tap each, no recording needed (except the
               dojo master, which opens the mic after its "yes?"). */}
@@ -1532,8 +1724,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
                 </span>
               )}
             </Button>
-            <Button variant="ghost" className="px-2 py-1" onClick={restart}>
+            <Button variant="ghost" className="px-2 py-1" onClick={restart} title="Start over: this session ends and is kept in History">
               Restart
+            </Button>
+            <Button variant="ghost" className="px-2 py-1" onClick={endSession} title="Finish this session; it stays in History" data-testid="voice-end">
+              End
             </Button>
           </div>
           {heldRequest && (
@@ -1645,25 +1840,13 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mod
   );
 }
 
-const GENDER_LABEL: Record<VoiceGender, string> = { female: "woman", male: "man" };
 
-function lineLabel(l: VoiceLine): string {
-  // The narrator is one voice for the whole session (the cast fixes it), so
-  // its line-by-line gender tag says nothing and can be wrong.
-  if (l.speaker === "narrator" || !l.gender) return SPEAKER_LABEL[l.speaker];
-  return `${SPEAKER_LABEL[l.speaker]} · ${GENDER_LABEL[l.gender]}`;
-}
 
 function slotLabel(slot: VoiceSlot): string {
   const [speaker, gender] = slot.split(":") as [VoiceSpeaker, VoiceGender];
   return `${SPEAKER_LABEL[speaker]} · ${GENDER_LABEL[gender]}`;
 }
 
-function transcriptText(entries: VoiceHistoryItem[]): string {
-  return entries
-    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : jumpTarget(m.text) != null ? `(jumped to ${jumpTarget(m.text)})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
-    .join("\n\n");
-}
 
 /* ------------------------------- settings ------------------------------- */
 
@@ -2240,317 +2423,7 @@ function VoiceWave() {
   );
 }
 
-/** Every gloss in the session so far, the first wording of a term winning:
- *  the dojo master doesn't re-gloss a word it already explained, so a word
- *  from turn two must still be tappable in turn five. */
-function sessionGlosses(entries: { role: string; glosses?: VoiceGloss[] }[]): VoiceGloss[] {
-  const seen = new Set<string>();
-  const out: VoiceGloss[] = [];
-  for (const e of entries) {
-    for (const g of e.glosses ?? []) {
-      const k = g.term.toLocaleLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(g);
-    }
-  }
-  return out;
-}
 
-type LineTranslation = { gloss: VoiceGloss; whole: boolean } | null;
-type TrCacheRow = {
-  first: VoiceGloss | undefined;
-  seen: number;
-  locale: string | undefined;
-  lines: { texts: string[]; hays: { text: string; low: string }[]; hits: VoiceGloss[]; tr: LineTranslation }[];
-};
-
-/** The session's transcript. Memoised: the session re-renders for things
- *  that don't touch it (the thinking counter, the composer). Each entry is
- *  a memoised row too, given only what concerns it (its own playing line
- *  and open definition, the glosses found in its text, its translations,
- *  each kept the same object while unchanged), so a new turn re-renders
- *  the new row, not every glossed line of the session again. (The
- *  translations are kept per line in VoicePanel too, and only a line that
- *  a new gloss lands in is laid out again.) It follows the
- *  session while the learner lets it: a new turn and the line being spoken
- *  are scrolled into view, until the learner scrolls away to reread.
- *  Scrolling back to the bottom, sending something or tapping ▶ follows
- *  again. Only the list's own scroll moves, never the page. */
-const Transcript = memo(function Transcript({
-  entries,
-  plan,
-  playing,
-  picked,
-  translations,
-  glosses,
-  locale,
-  trLabel,
-  showTr,
-  onPick,
-  onClosePick,
-  onReplay,
-}: {
-  entries: VoiceHistoryItem[];
-  plan: VoicePlanItem[];
-  playing: string | null;
-  picked: { at: string; gloss: VoiceGloss } | null;
-  translations: LineTranslation[][];
-  glosses: VoiceGloss[];
-  locale: string | null;
-  trLabel: string;
-  /** Whether any line has a translation: only then is there a column for
-   *  the translate buttons. */
-  showTr: boolean;
-  onPick: (at: string, gloss: VoiceGloss) => void;
-  onClosePick: (refocus?: boolean) => void;
-  onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
-}) {
-  const olRef = useRef<HTMLOListElement | null>(null);
-  const following = useRef(true);
-  // Where our own last scroll left the list: a scroll event landing there is
-  // ours, not the learner's, and must not stop the following.
-  const ownTop = useRef<number | null>(null);
-  const scrollTo = (el: HTMLElement, top: number) => {
-    el.scrollTop = top;
-    ownTop.current = el.scrollTop;
-  };
-  const onScroll = () => {
-    const el = olRef.current;
-    if (!el) return;
-    if (ownTop.current != null && Math.abs(el.scrollTop - ownTop.current) < 2) return;
-    ownTop.current = null;
-    following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-  };
-  const count = entries.length;
-  useLayoutEffect(() => {
-    const el = olRef.current;
-    if (!el) return;
-    // The learner's own message always comes into view: they just sent it.
-    if (entries[count - 1]?.role === "learner") following.current = true;
-    if (following.current) scrollTo(el, el.scrollHeight);
-    // Only a new entry moves the list, not a re-render of the same ones.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [count]);
-  // A turn that landed while Go was hidden couldn't scroll a list with no
-  // size: when the list is shown again, catch up if following.
-  useEffect(() => {
-    const el = olRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    let height = el.clientHeight;
-    const ro = new ResizeObserver(() => {
-      const was = height;
-      height = el.clientHeight;
-      if (was === 0 && height > 0 && following.current) {
-        el.scrollTop = el.scrollHeight;
-        ownTop.current = el.scrollTop;
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  useLayoutEffect(() => {
-    const el = olRef.current;
-    if (!el || !playing || !following.current) return;
-    const row = el.querySelector<HTMLElement>(`[data-line="${playing}"]`);
-    if (!row) return;
-    const box = el.getBoundingClientRect();
-    const r = row.getBoundingClientRect();
-    const pad = 8;
-    if (r.top < box.top + pad || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - pad);
-    else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
-  }, [playing]);
-
-  // Asking to hear a line is asking to follow it. Stable, for the rows' memo.
-  const replayRef = useRef(onReplay);
-  useEffect(() => {
-    replayRef.current = onReplay;
-  });
-  const replayLine = useCallback((i: number, j: number, lines: VoiceLine[]) => {
-    following.current = true;
-    replayRef.current(i, j, lines);
-  }, []);
-
-  // Per row, the glosses found in its target-language text. Glosses only
-  // grow during a session (the first wording of a term wins), so a row
-  // tests just the ones added since it last looked, and keeps its list (the
-  // same array) when none of them is in it. A new target locale starts over
-  // (case folding is locale-specific), as the translations cache does.
-  const glossCache = useRef(new Map<number, { m: VoiceHistoryItem; first: VoiceGloss | undefined; seen: number; list: VoiceGloss[]; locale: string | null }>());
-  const rowGlosses = (m: VoiceHistoryItem, i: number): VoiceGloss[] => {
-    if (m.role !== "master") return NO_GLOSSES;
-    let c = glossCache.current.get(i);
-    if (!c || c.m !== m || c.first !== glosses[0] || c.seen > glosses.length || c.locale !== locale) c = { m, first: glosses[0], seen: 0, list: NO_GLOSSES, locale };
-    if (c.seen < glosses.length) {
-      const texts = m.lines.flatMap((l) => (l.segments ?? []).filter((g) => g.lang === "target").map((g) => g.text.normalize("NFC")));
-      const hays = texts.map((t) => haystack(t, locale ?? undefined));
-      const found = glosses.slice(c.seen).filter((g) => texts.some((t, k) => mightMatch(hays[k], g, locale ?? undefined) && layout(t, [g], locale ?? undefined).length > 0));
-      c = { ...c, seen: glosses.length, list: found.length ? [...c.list, ...found] : c.list };
-    }
-    glossCache.current.set(i, c);
-    return c.list;
-  };
-  // Per row, its lines' translations, kept the same array while every
-  // line's translation reads the same.
-  const trCache = useRef(new Map<number, { key: string; row: LineTranslation[] }>());
-  const rowTranslations = (i: number): LineTranslation[] => {
-    const row = translations[i] ?? NO_TRANSLATIONS;
-    const key = row.map((t) => (t ? `${t.whole ? 1 : 0}\u0001${t.gloss.term}\u0001${t.gloss.meaning}` : "")).join("\u0002");
-    const c = trCache.current.get(i);
-    if (c && c.key === key) return c.row;
-    trCache.current.set(i, { key, row });
-    return row;
-  };
-
-  return (
-<ol ref={olRef} onScroll={onScroll} className="flex max-h-[min(28rem,calc(100dvh-22rem))] min-h-48 min-w-0 flex-1 lg:max-h-[max(28rem,calc(100dvh-26rem))] flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3" aria-label="Session transcript" data-testid="voice-transcript">
-  {entries.map((m, i) => {
-    const mine = (at: string | null | undefined) => !!at && at.startsWith(`${i}:`);
-    const jumpTo = m.role === "learner" ? jumpTarget(m.text) : null;
-    return (
-      <TranscriptRow
-        key={i}
-        m={m}
-        i={i}
-        jumpTitle={jumpTo != null ? planTitle(plan, jumpTo) : null}
-        playing={mine(playing) ? playing : null}
-        picked={mine(picked?.at) ? picked : null}
-        translations={rowTranslations(i)}
-        glosses={rowGlosses(m, i)}
-        locale={locale}
-        trLabel={trLabel}
-        showTr={showTr}
-        onPick={onPick}
-        onClosePick={onClosePick}
-        onReplay={replayLine}
-      />
-    );
-  })}
-</ol>
-  );
-});
-
-const NO_GLOSSES: VoiceGloss[] = [];
-const NO_TRANSLATIONS: LineTranslation[] = [];
-
-/** One entry of the transcript: the learner's message, or a turn of the
- *  dojo master's lines. */
-const TranscriptRow = memo(function TranscriptRow({
-  m,
-  i,
-  jumpTitle,
-  playing,
-  picked,
-  translations,
-  glosses,
-  locale,
-  trLabel,
-  showTr,
-  onPick,
-  onClosePick,
-  onReplay,
-}: {
-  m: VoiceHistoryItem;
-  i: number;
-  /** The part a "[jump]" message went to, by its title. */
-  jumpTitle: string | null;
-  /** The line playing, when it's one of this entry's. */
-  playing: string | null;
-  /** The definition open, when it's under one of this entry's lines. */
-  picked: { at: string; gloss: VoiceGloss } | null;
-  translations: LineTranslation[];
-  glosses: VoiceGloss[];
-  locale: string | null;
-  trLabel: string;
-  showTr: boolean;
-  onPick: (at: string, gloss: VoiceGloss) => void;
-  onClosePick: (refocus?: boolean) => void;
-  onReplay: (i: number, j: number, lines: VoiceLine[]) => void;
-}) {
-  if (m.role === "learner") {
-    return (
-      <li className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
-        {CONTROL_LABEL[m.text] ? (
-          <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
-        ) : jumpTitle != null ? (
-          <span className="text-fg-3 italic">Jumped to {jumpTitle}</span>
-        ) : directText(m.text) != null ? (
-          <>
-            <span className="text-fg-3 italic">To the dojo master: </span>
-            {directText(m.text)}
-          </>
-        ) : (
-          m.text
-        )}
-      </li>
-    );
-  }
-  return (
-      <li className="flex flex-col gap-1">
-        {m.lines.map((l, j) => (
-          <Fragment key={j}>
-          <div data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
-            <SpeakerCritter speaker={l.speaker} size={30} />
-            <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
-            <span className="min-w-0 max-w-[72ch] flex-1 text-fg break-words">
-              {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
-                <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
-                  {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
-                  {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
-                </span>
-              ))}
-            </span>
-            {/* A fixed slot for the translate button, so every line's ▶
-                sits in the same column whether it has one or not; none at
-                all while no line has a translation. */}
-            {showTr && (
-            <span className="flex w-7 shrink-0 justify-center">
-            {(() => {
-              // The line's translation: every glossed sentence (or
-              // phrase that isn't a button) in it, one tap, and the
-              // keyboard's way to them.
-              const tr = translations[j];
-              if (!tr) return null;
-              const { gloss, whole } = tr;
-              const what = whole ? "this line" : "this phrase";
-              return (
-                <button type="button" className="-my-0.5 grid min-h-6 min-w-6 place-items-center rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
-                  {trLabel}
-                </button>
-              );
-            })()}
-            </span>
-            )}
-            {/* A 24px target (WCAG 2.5.8) around the small ▶. */}
-            <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:bg-raised hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
-              ▶
-            </button>
-          </div>
-          {/* The definition under the line, the row's full width on a phone
-              (under the text column from sm up), and after the line's
-              controls in the DOM, so Tab goes opener → card. Escape or ×
-              from the keyboard closes it and puts focus back on its opener. */}
-          {picked?.at === `${i}:${j}` && (
-            <div
-              className="mx-2 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg sm:ml-[8.5rem] sm:max-w-[72ch]"
-              role="status"
-              data-testid="voice-gloss"
-            >
-              <span className="min-w-0 flex-1 break-words">
-                <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
-                <span className="text-fg-3"> — </span>
-                {picked.gloss.meaning}
-              </span>
-              <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={(e) => onClosePick(e.detail === 0)}>
-                ×
-              </button>
-            </div>
-          )}
-          </Fragment>
-        ))}
-      </li>
-  );
-});
 
 /** A quick-request chip above the composer, or a check-in answer. */
 function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: (e: MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
@@ -2633,11 +2506,4 @@ function SendIcon() {
   );
 }
 
-/** The part id of a "[jump] <id>" message; null for anything else. */
-function jumpTarget(text: string): string | null {
-  return text.startsWith(`${JUMP} `) ? text.slice(JUMP.length + 1).trim() : null;
-}
 
-function planTitle(plan: VoicePlanItem[], id: string): string {
-  return plan.find((p) => p.id === id)?.title ?? id;
-}

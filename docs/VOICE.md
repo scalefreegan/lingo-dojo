@@ -44,7 +44,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
 
 - **Turn**: the assembled pack plus a short delivery adapter
   (`scripts/voice.mjs` `voiceAdapter`) is the system prompt; the client sends the
-  session history every turn (the server keeps none). The reply comes back as
+  session history every turn, and the prompt replays its last 60 entries. The
+  server also saves each turn (Saved conversations, below), but the
+  browser's copy is what a turn is answered from. The reply comes back as
   `NARRATOR-F:` / `CHARACTER-M:` / `SIDEKICK-F:` lines: speaker plus gender,
   taken from the units and the scenario's roles (Doña Carmen is `-F`, a Don
   `-M`). Each line is spoken by the voice in that speaker's slot for that
@@ -136,6 +138,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   a length that is the pack's own: one it had, or one picked for it
   (docs/CONTENT.md). The clock starts with the first
   turn, and every `/api/voice/turn` sends `elapsedMs`, the time since then.
+  The browser keeps this clock even though the session is saved: its origin
+  moves with every mid-session pick (below), which only the browser sees, so
+  a server clock would need the pick's time from the browser anyway, and a
+  reload loses the session it would outlive (Saved conversations).
   With a budget the server adds one **clock line** after the learner's words
   (`clockLine`, given the mode): minutes used, minutes left, the current part (the last
   `STAGE`), and "behind the plan" when the split has moved on. From 80% used
@@ -184,14 +190,79 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   it twice. Glosses go back in the replay, so the model keeps the format,
   and Copy transcript includes them.
 
+## Saved conversations
+
+Every session is saved for the active learner, turn by turn, and listed in
+the Library tab's **History** (docs/DATA.md §Conversations has the tables).
+
+- **Start.** The session's first turn makes a conversation
+  (`POST /api/conversations`) with the pack as played, the scene's title,
+  the target variant, the model and the session length. Each turn then
+  names it (`conversationId`), and once the dojo master has answered, the
+  server stores the learner's words and the reply in one transaction, in
+  the shapes the transcript uses (lines with segments, gender and timing,
+  glosses, choices, stage, cast notes), with the turn's duration and cost.
+  If the conversation can't be made, the session goes on unsaved and says
+  so; the next turn tries again, and the conversation it makes starts where
+  saving stopped, so the turns in between are stored too. The conversation
+  keeps the session's languages (the profile under the pack's overrides),
+  and History shows its glosses and translations in those, whatever the
+  profile says later.
+- **What is stored is what the screen shows.** The browser still sends the
+  whole history every turn, and the server makes the stored turns match it
+  before appending (`scripts/conversations.mjs` `planTurnWrite`; the exact
+  rule is in DATA.md §Conversations, "Reconciling"): stored turns that agree
+  with the screen stay untouched, and the history may replace only the
+  final reply. So a turn that failed or was stopped (its words stay on
+  screen with no reply) is stored reply-less by the next turn, and a reply
+  the server finished but the browser dropped (Stop just as it landed) is
+  deleted by the next turn. A history that doesn't cover what is stored
+  (shorter, or different earlier on) rewrites nothing: the turn is only
+  appended. A dojo master turn stored from the browser's history rather
+  than from the server's own reply is marked `from_client`. "Check what it
+  heard" never shows: only the words finally sent reach a turn. A recast
+  changes voices, not words; the turn's `CAST` notes are stored as the
+  reply had them. Turns are numbered by their place on screen, so `idx`
+  stays gap-free and in order. A session is capped at 2000 history entries
+  (a 413 past that; Restart starts a new one).
+- **End.** End (beside Restart) finishes the session: the transcript stays
+  to read and copy, and New session starts the next. Restart, Close,
+  leaving the Go tab and leaving the page (a reload, closing the tab; a
+  `keepalive` request that outlives the page) end the conversation too.
+  Leaving Go keeps the session on screen: carrying on when you come back
+  saves into a new conversation from that turn on (until then the header
+  no longer says "saving to History": nothing is). A turn that was still
+  getting ready when Go was left (drawing the cast, creating its
+  conversation) is stored in a conversation that is never kept open: it
+  ends once that turn has its answer (`web/src/conversationLife.ts`). A turn still on its way
+  when the conversation ends is stored in it first: the browser sends End
+  once that turn has its answer (except when the page is going away), and
+  on the server End waits for a turn it already holds and refuses, before
+  anything runs, a turn that arrives while it is ending. A
+  conversation nobody ended is ended two hours after its last turn, by the
+  next request that touches that learner's conversations (not while a turn
+  for it is running), and its end is that last turn. A turn on an ended conversation (another device, two idle
+  hours) or a deleted one is refused before anything runs, and the Go tab
+  starts a new conversation with that turn and sends it again.
+- **Reload.** A reload ends the conversation (it is in History) and the Go
+  tab starts fresh: the history lives in the browser, and reading it back
+  from the database is a later step.
+- **History** lists past sessions, newest first, 20 at a time, with the
+  date, length (start to end, or to the last turn while open), turns and
+  summary (empty until the post-session recap exists). Opening one shows the
+  transcript read-only, glosses tappable as in the session, without audio.
+  Delete removes it and its turns for good, after a confirm.
+
 ## Settings
 
 Saved **per user**, in the database (`user_settings.voice`, docs/DATA.md;
 before logins this was `data/voice.json`, which now only seeds the first
 admin): two people sharing the app keep their own voices. Every voice route
 needs a login, and a turn or cast runs in the active learner's mode (a body
-`mode` that disagrees is a 400). One turn at a time per user, so two people
-practising never block each other. The settings are: voice provider, speech-to-text
+`mode` that disagrees is a 400). One turn at a time per conversation (a turn
+that isn't being saved: per login session), so two people, or two devices,
+practising never block each other, and one session can't race itself (a
+second turn while one runs is a 409). The settings are: voice provider, speech-to-text
 provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
 cheapest), Claude model for the dojo master, turn-taking, the last session
 length per mode (`sessionMinutes`, set from the Go tab's picker), and a voice per
@@ -269,4 +340,5 @@ your Claude Code login.
   master can't judge *how* something sounded (the adapter tells it so).
   Pronunciation scoring (Azure pronunciation assessment) is a follow-up.
 - Not streaming: each reply arrives whole, then plays line by line.
-- Nothing is saved; Copy transcript is the way to keep a session.
+- Only text is saved (no audio), and a saved session can be read in
+  History but not picked up again: after a reload the Go tab starts fresh.

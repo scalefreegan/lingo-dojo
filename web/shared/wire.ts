@@ -380,16 +380,21 @@ export interface MeReply {
  *  acts on, a code.
  *
  *  `stale_learner` (409): a learner-scoped route (profile, packs, folders,
- *  assemble, export, voice turn and cast) was called for a learner who isn't
+ *  assemble, export, voice turn and cast, conversations) was called for a learner who isn't
  *  the session's active one — the page's `X-Learner-Id` header (LearnerHeader)
  *  names another learner or none, or nobody is picked. Another tab switched
  *  learner, archived this one, or logged in as someone else. The client
- *  re-reads /api/auth/me instead of showing it. */
+ *  re-reads /api/auth/me instead of showing it.
+ *
+ *  `conversation_ended` (409) and `no_conversation` (404): a voice turn named
+ *  a saved conversation that is over or being ended (End, leaving Go, two idle hours) or
+ *  that this learner doesn't have (deleted, or never theirs). The Go tab
+ *  starts a new conversation from that turn on and sends it again. */
 export interface ErrorReply {
   error: string;
   code?: ErrorCode;
 }
-export type ErrorCode = "stale_learner";
+export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation";
 /** The request header naming the learner the page is rendering. */
 export type LearnerHeader = "X-Learner-Id";
 
@@ -675,6 +680,17 @@ export interface VoiceTurnRequest {
    *  `pack.overrides.minutes` set, the server adds a clock line to the turn
    *  from it; the model has no sense of time otherwise. */
   elapsedMs?: number;
+  /** The saved conversation this turn belongs to (POST /api/conversations).
+   *  Absent: the turn runs but is not saved (creating it failed, or the
+   *  conversation ended while Go was hidden). */
+  conversationId?: string;
+  /** The index in `history` of the conversation's first entry: 0, unless it
+   *  was started mid-session (after leaving Go, or two idle hours, ended the
+   *  one before). The stored turns mirror history from there on, as far as
+   *  the server lets a history rewrite them (DATA.md §Conversations). A
+   *  conversation made after turns went unsaved starts where saving stopped,
+   *  so those turns are stored too. */
+  conversationStart?: number;
 }
 
 export interface VoiceTurnReply {
@@ -695,6 +711,83 @@ export interface VoiceTurnReply {
   costUsd: number | null;
   /** The assembler's warnings for the pack, so a broken pack is visible. */
   warnings: string[];
+  /** With a `conversationId`: whether this turn (and the learner's message)
+   *  is stored. False when the write failed, or the conversation ended or
+   *  was deleted meanwhile; the turn still stands. */
+  saved?: boolean;
+}
+
+/* ------------------------------ conversations ----------------------------- */
+// Saved voice sessions (docs/DATA.md §Conversations), the active learner's.
+
+/** POST /api/conversations: the session's first turn is about to run. */
+export interface ConversationCreateRequest {
+  mode: Mode;
+  /** The pack as the first turn plays it (its minutes are the session length). */
+  pack: PackInput;
+  /** The scene title the Go tab shows. */
+  title?: string;
+}
+
+/** One conversation, as History lists it. Times are ISO strings. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  mode: Mode;
+  scenarioId: string | null;
+  /** The session's languages, as they were when it started (the learner's
+   *  profile under the pack's overrides); "" for none. */
+  nativeLanguage: string;
+  targetLanguage: string;
+  targetVariant: string;
+  /** The dojo master's model, as of the last saved turn. */
+  model: string | null;
+  /** The session length, as of the last saved turn; null = no limit. */
+  plannedMinutes: number | null;
+  startedAt: string;
+  /** null while open. An idle-ended conversation ends at its last turn. */
+  endedAt: string | null;
+  /** The last saved turn's time; null before any. */
+  lastTurnAt: string | null;
+  /** Stored turns: the learner's and the dojo master's, each one. */
+  turnCount: number;
+  /** The post-session recap's summary; null until that phase exists. */
+  summary: string | null;
+}
+
+export interface ConversationReply {
+  conversation: ConversationSummary;
+}
+
+/** GET /api/conversations?offset=&limit= : newest first. */
+export interface ConversationsReply {
+  conversations: ConversationSummary[];
+  /** The offset of the next page, or null on the last. */
+  nextOffset: number | null;
+}
+
+/** A stored turn: the transcript entry as the session showed it, plus where
+ *  and when it is, and for a dojo-master turn what it cost. */
+export type ConversationTurn = VoiceHistoryItem & {
+  idx: number;
+  at: string;
+  durationMs: number | null;
+  costUsd: number | null;
+};
+
+/** GET /api/conversations/:id?from=&limit= : turns from idx `from` on. */
+export interface ConversationTurnsReply {
+  conversation: ConversationSummary;
+  turns: ConversationTurn[];
+  /** The idx to ask for next, or null when these are the last. */
+  nextFrom: number | null;
+  /** The session's parts (from the pack as played), for jump labels. */
+  plan: VoicePlanItem[];
+  /** The session's target locale, for the transcript's glosses; null when
+   *  unknown. From the conversation's saved languages, never the profile. */
+  locale: string | null;
+  /** The session's native locale, for the translate buttons' label. */
+  nativeLocale: string | null;
 }
 
 /** POST /api/voice/speak → audio bytes (audio/mpeg, or audio/wav for
