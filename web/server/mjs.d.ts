@@ -229,6 +229,8 @@ declare module "*/scripts/auth.mjs" {
     opts?: { path?: string; maxAge?: number; httpOnly?: boolean; sameSite?: "Lax" | "Strict" | "None"; secure?: boolean },
   ): string;
   export function isSecureRequest(headers: Record<string, string | string[] | undefined>): boolean;
+  /** Loopback peer, no X-Forwarded-* headers, localhost Host: a request made on this machine. */
+  export function isDirectLocalRequest(headers: Record<string, string | string[] | undefined>, remoteAddress: string | undefined): boolean;
   export function sessionCookie(token: string, opts?: { secure?: boolean }): string;
   export function clearSessionCookie(opts?: { secure?: boolean }): string;
   export interface LoginThrottle {
@@ -281,3 +283,10 @@ declare module "*/scripts/db/migrations.mjs" {
 
 // Everything else: untyped.
 declare module "*.mjs";
+
+declare module "*/scripts/public-host.mjs" {
+  export function isPlainHostname(h: string): boolean;
+  /** LINGO_PUBLIC_HOST: the plain hostnames, and the entries that were not. */
+  export function parsePublicHosts(value: unknown): { hosts: string[]; rejected: string[] };
+  export function publicHosts(env?: Record<string, string | undefined>, file?: string): { hosts: string[]; rejected: string[] };
+}

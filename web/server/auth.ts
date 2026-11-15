@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
-  SESSION_COOKIE, SESSION_MS, SLIDE_EVERY_MS, clearSessionCookie, clientAddress, createLoginThrottle, hashPassword, isSecureRequest,
+  SESSION_COOKIE, SESSION_MS, SLIDE_EVERY_MS, clearSessionCookie, clientAddress, createLoginThrottle, hashPassword, isDirectLocalRequest, isSecureRequest,
   newSessionToken, normalizeUsername, parseCookies, passwordProblem, profileFromLearner, sessionCookie, throttleKey, tokenHash,
   usernameProblem, verifyPassword,
 } from "../../scripts/auth.mjs";
@@ -20,8 +20,8 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // Logins, sessions and learners (docs/DATA.md §Auth).
 //
 //   POST   /api/auth/login        public  {username, password} → MeReply + cookie; 401, 429
-//   GET    /api/auth/me           public  MeReply (firstRun when there are no accounts)
-//   POST   /api/auth/first-run    public  {username, password} → the first admin, seeded; 409 once anyone exists
+//   GET    /api/auth/me           public  MeReply (firstRun when there are no accounts; firstRunHere when this request may create it)
+//   POST   /api/auth/first-run    public  {username, password} → the first admin, seeded; 403 unless a direct local request; 409 once anyone exists
 //   POST   /api/auth/logout       user    deletes the session row, clears the cookie
 //   PUT    /api/auth/learner      user    {learnerId} → the session's active learner → MeReply
 //   GET    /api/learners          user    {learners} (this user's, not archived)
@@ -160,8 +160,15 @@ export function learnerInfo(l: Learner): LearnerInfo {
   };
 }
 
-async function meReply(ctx: PublicCtx): Promise<MeReply> {
-  if (!ctx.user) return { firstRun: !(await hasUsers(rawDb())), user: null, learner: null, learners: [] };
+const isLocal = (req: IncomingMessage) => isDirectLocalRequest(req.headers, req.socket.remoteAddress);
+
+async function meReply(ctx: PublicCtx, req?: IncomingMessage): Promise<MeReply> {
+  if (!ctx.user) {
+    const firstRun = !(await hasUsers(rawDb()));
+    // firstRunHere lets the page show "do this on the Mac" instead of a form
+    // the server would refuse (handleFirstRun).
+    return { firstRun, ...(firstRun ? { firstRunHere: !!req && isLocal(req) } : {}), user: null, learner: null, learners: [] };
+  }
   const learners = await listLearners(rawDb(), ctx.user.id);
   return { firstRun: false, user: ctx.user, learner: ctx.learner ? learnerInfo(ctx.learner) : null, learners: learners.map(learnerInfo) };
 }
@@ -230,7 +237,7 @@ export async function handleLogin(req: IncomingMessage, res: ServerResponse): Pr
 export async function handleMe(req: IncomingMessage, res: ServerResponse, ctx: PublicCtx): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "GET") return methodNotAllowed(res, "GET");
-  sendJson(res, 200, await meReply(ctx));
+  sendJson(res, 200, await meReply(ctx, req));
 }
 
 /**
@@ -243,6 +250,10 @@ export async function handleMe(req: IncomingMessage, res: ServerResponse, ctx: P
 export async function handleFirstRun(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  // Whoever creates the first account becomes the admin, and this route has
+  // no login in front of it. Served over a tailnet, any device on it could
+  // claim a fresh install, so only the Mac itself may (isDirectLocalRequest).
+  if (!isLocal(req)) throw new HttpError(403, "create the first account on the Mac that runs Lingo Dojo (open http://localhost:38400 there), not over the network");
   const { username, password } = credentials(await readJsonBody<unknown>(req, MAX_CREDENTIALS_BODY));
   const problem = usernameProblem(username) ?? passwordProblem(password);
   if (problem) throw new HttpError(400, problem);
