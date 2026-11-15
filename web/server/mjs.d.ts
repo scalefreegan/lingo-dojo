@@ -137,7 +137,7 @@ declare module "*/scripts/voice.mjs" {
   /** The "How long do you have?" choices per mode, in minutes. */
   export const MINUTE_CHOICES: Record<Mode, number[]>;
   /** The time-budget line for a turn's prompt; "" without a budget. */
-  export function clockLine(o: { minutes: unknown; elapsedMs: unknown; plan: import("../shared/wire.ts").VoicePlanItem[]; stage: string | null | undefined }): string;
+  export function clockLine(o: { minutes: unknown; elapsedMs: unknown; plan: import("../shared/wire.ts").VoicePlanItem[]; stage: string | null | undefined; mode?: Mode }): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;

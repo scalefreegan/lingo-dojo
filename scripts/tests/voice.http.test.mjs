@@ -86,6 +86,38 @@ test("PUT settings: the last session length merges per mode; the choices come wi
   assert.deepEqual(junk.body.settings.sessionMinutes, { adult: null, kids: null }, "not a kids length");
 });
 
+test("POST /api/voice/turn honors the mode: a kids pack with minutes gets the kids Time budget and kids clock line", async () => {
+  // A stand-in `claude` first on PATH: it records its arguments (the system
+  // prompt and the turn prompt) and answers with one line, so the route runs
+  // end to end without spawning the real CLI.
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-fake-claude-"));
+  const log = path.join(bin, "args.json");
+  fs.writeFileSync(
+    path.join(bin, "claude"),
+    `#!/usr/bin/env node\nrequire("fs").writeFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(JSON.stringify({ type: "result", result: "NARRATOR-F: Hola.\\nSTAGE: beat:1" }));\n`,
+    { mode: 0o755 },
+  );
+  const savedPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
+  try {
+    const pack = { title: "k", created: "", scenario: "farm", quick_scenario: "", units: ["intro-game", "story-quest", "game-echo"], overrides: { minutes: 5 }, notes: "" };
+    const history = [{ role: "learner", text: "[session start]" }, { role: "master", lines: [{ speaker: "narrator", gender: "female", text: "Hi", segments: [] }], stage: "beat:1" }];
+    const r = await call("POST", "/api/voice/turn", { mode: "kids", pack, history, message: "moo", elapsedMs: 4.5 * 60_000 });
+    assert.equal(r.status, 200, r.text);
+    const sent = JSON.parse(fs.readFileSync(log, "utf8")).join("\n");
+    assert.match(sent, /## Time budget\n\nThe learner has \*\*5 minutes\*\*/);
+    assert.match(sent, /- Story: [^\n]*Echo game/, "the kids plan, not the adult one");
+    assert.match(sent, /CLOCK \(from the app, not the learner\): 4 of 5 minutes used, 1 left; current part: beat:1 [^\n]*Start bringing the story to its end now/);
+    // No limit: neither the section nor the line.
+    const none = await call("POST", "/api/voice/turn", { mode: "kids", pack: { ...pack, overrides: {} }, history, message: "moo", elapsedMs: 4.5 * 60_000 });
+    assert.equal(none.status, 200, none.text);
+    assert.doesNotMatch(JSON.parse(fs.readFileSync(log, "utf8")).join("\n"), /Time budget|CLOCK/);
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
 test("unconfigured providers answer 400 with where the key goes", async () => {
   const v = await call("GET", "/api/voice/voices?provider=elevenlabs&locale=es-MX");
   assert.equal(v.status, 400);

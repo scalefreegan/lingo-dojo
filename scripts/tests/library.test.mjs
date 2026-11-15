@@ -43,7 +43,7 @@ for (const mode of MODES) {
     for (const p of c.packs) {
       if (p.scenario) assert.ok(scenarioIds.has(p.scenario), `pack ${p.id} names scenario "${p.scenario}", which ${mode} does not have`);
       for (const id of p.units) assert.ok(unitIds.has(id), `pack ${p.id} names unit "${id}", which ${mode} does not have`);
-      const { warnings } = assemble(c, p);
+      const { warnings } = assemble(c, p, mode);
       assert.deepEqual(warnings, [], `pack ${p.id} assembles with warnings`);
     }
 
@@ -54,7 +54,7 @@ for (const mode of MODES) {
       units.push(...(slot.pick === "one" ? defaults.slice(0, 1) : defaults));
     }
     const fresh = { title: "fresh", created: "", scenario: c.scenarios[0].id, quick_scenario: "", units, overrides: {}, notes: "" };
-    const { warnings, markdown } = assemble(c, fresh);
+    const { warnings, markdown } = assemble(c, fresh, mode);
     assert.deepEqual(warnings, [], "the default pack assembles clean");
     assert.ok(!/\{\{\s*\w+\s*\}\}/.test(markdown), "no placeholder leaks into the prompt");
   });

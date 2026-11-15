@@ -321,7 +321,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     // turn, and the part the last turn ended in. No budget, no line.
     let lastStage: string | null = null;
     for (const m of history) if (m.role === "master" && m.stage) lastStage = m.stage;
-    const clock = clockLine({ minutes: body.pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage });
+    const clock = clockLine({ minutes: body.pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
     const { result } = startClaude({
       prompt: voiceTurnPrompt(history, message, clock),
       // The session's narrator gender, drawn by the client at session start,

@@ -12,7 +12,7 @@ import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
-import { validMinutes } from "../draft";
+import { MAX_MINUTES, validMinutes } from "../draft";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -229,16 +229,43 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
-  // The time budget: the pack's minutes (the Go tab's picker, live) plus
-  // what +5 min added to this session, which never touches the pack. The
-  // clock starts with the first turn; each turn sends the time since then,
-  // and the server turns it into the dojo master's clock line. Restart
-  // starts both over.
+  // The time budget, in minutes since the first turn: the pack's minutes
+  // (the Go tab's picker, live) plus what +5 min added to this session,
+  // which never touches the pack. The clock starts with the first turn;
+  // each turn sends the time since then, and the server turns it into the
+  // dojo master's clock line. Restart starts it all over.
   const [extraMinutes, setExtraMinutes] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const baseMinutes = validMinutes(pack.overrides.minutes);
-  const budget = baseMinutes == null ? null : baseMinutes + extraMinutes;
+  // A length picked mid-session means that many more minutes from now, not
+  // since the first turn: picking 10 at minute 12 (from No limit, say) is
+  // 10 minutes left, not "2 min over". `offsetMinutes` is the whole minutes
+  // already used when it was picked (rounded down, so at least the picked
+  // length is left), and the picking also drops any +5 min. Adjusted while
+  // rendering, React's pattern for state that follows a prop.
+  const [offsetMinutes, setOffsetMinutes] = useState(0);
+  const [lastBase, setLastBase] = useState(baseMinutes);
+  if (baseMinutes !== lastBase) {
+    setLastBase(baseMinutes);
+    if (startedAt != null) {
+      setOffsetMinutes(Math.floor((Date.now() - startedAt) / 60_000));
+      setExtraMinutes(0);
+    }
+  }
+  // Capped where the server stops believing a budget (it would otherwise
+  // drop the clock altogether).
+  const budget = baseMinutes == null ? null : Math.min(MAX_MINUTES, offsetMinutes + baseMinutes + extraMinutes);
   const startedAtRef = useRef<number | null>(null);
+  // Turns chain through callbacks made in earlier renders (hands-free:
+  // reply → listen → auto-stop → next turn; the "Play the reply" notice), so
+  // a turn reads the budget and the pack from here at request time, never
+  // from its closure: a +5 min or a new length counts from the next turn.
+  const budgetRef = useRef(budget);
+  const packRef = useRef(pack);
+  useEffect(() => {
+    budgetRef.current = budget;
+    packRef.current = pack;
+  });
 
   // Mutable session plumbing the async flows read without stale closures.
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
@@ -735,7 +762,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts || castRef.current.locale !== locale)) {
         const wanted = latestCast(before);
         const ages = Object.fromEntries(Object.values(wanted).map((n) => [n.slot, n.age]));
-        const next = await getCast({ mode, locale, units: pack.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
+        const next = await getCast({ mode, locale, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
@@ -762,7 +789,9 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
         startedAtRef.current = Date.now();
         setStartedAt(startedAtRef.current);
       }
-      const turnPack = budget == null ? pack : { ...pack, overrides: { ...pack.overrides, minutes: budget } };
+      const cur = packRef.current;
+      const turnBudget = budgetRef.current;
+      const turnPack = turnBudget == null ? cur : { ...cur, overrides: { ...cur.overrides, minutes: turnBudget } };
       const elapsedMs = Date.now() - startedAtRef.current;
       const r = await voiceTurn({ mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
@@ -1241,6 +1270,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     startedAtRef.current = null;
     setStartedAt(null);
     setExtraMinutes(0);
+    setOffsetMinutes(0);
     setComposer("");
     setHeldRequest(null);
     setError(null);

@@ -201,7 +201,9 @@ function MinutesPicker({ value, choices, onChange }: { value: number | null; cho
               type="button"
               role="radio"
               aria-checked={on}
-              onClick={() => !on && onChange(m)}
+              // Re-picking the length already shown still counts: it makes an
+              // inherited (remembered) length the pack's own, saved with it.
+              onClick={() => onChange(m)}
               className={`rounded-full border px-3 py-1 text-sm tabular-nums transition-colors sm:px-2.5 sm:text-xs ${
                 on ? "border-accent bg-accent-soft text-accent" : "border-line bg-panel text-fg-2 hover:border-line-strong"
               }`}

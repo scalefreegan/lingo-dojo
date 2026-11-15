@@ -651,12 +651,12 @@ const MAX_ELAPSED_MS = 24 * 60 * 60 * 1000;
  * what to do about it. "" without a budget (No limit), so a session without
  * one is exactly as before. The app never cuts the session off; the line
  * only steers the dojo master.
- * @param {{ minutes: unknown, elapsedMs: unknown, plan: {id: string, title: string, kind: string}[], stage: string | null | undefined }} o
+ * @param {{ minutes: unknown, elapsedMs: unknown, plan: {id: string, title: string, kind: string}[], stage: string | null | undefined, mode?: "adult"|"kids" }} o
  *   minutes: the session's budget (the pack's overrides.minutes, plus any
  *   +5 min); elapsedMs: time since the first turn, from the browser;
  *   stage: the part the last turn ended in.
  */
-export function clockLine({ minutes, elapsedMs, plan, stage }) {
+export function clockLine({ minutes, elapsedMs, plan, stage, mode = "adult" }) {
   const budget = readMinutes(minutes).minutes;
   if (budget == null) return "";
   const ms = typeof elapsedMs === "number" && Number.isFinite(elapsedMs) ? Math.min(MAX_ELAPSED_MS, Math.max(0, elapsedMs)) : 0;
@@ -665,6 +665,10 @@ export function clockLine({ minutes, elapsedMs, plan, stage }) {
   const here = parts.find((p) => p.id === stage);
   const closing = [...parts].reverse().find((p) => p.kind === "debrief" || p.kind === "ending");
   const closingName = closing ? `the closing part (${closing.id})` : "a short closing";
+  // Kids wording matches the kids Time budget section: the story and the
+  // goodbye, not the scene and a debrief of points.
+  const kids = mode === "kids";
+  const goodbye = closing ? `the goodbye (${closing.id})` : "a short goodbye";
   const whole = (m) => `${m} minute${m === 1 ? "" : "s"}`;
   const at = here ? `current part: ${here.id} (${here.title})` : "current part: not named yet";
   let line;
@@ -676,9 +680,11 @@ export function clockLine({ minutes, elapsedMs, plan, stage }) {
     line = `CLOCK (from the app, not the learner): ${Math.floor(used)} minutes used of ${budget}, the time is up${used - budget >= 1 ? ` (${whole(Math.floor(used - budget))} over)` : ""}; ${at}.`;
   }
   if (used >= budget) {
+    if (kids) return `${line} Finish within this turn and the next: end the story happily and say ${goodbye}, with a word of praise and one word to remember. Don't start anything new. If the child wants to keep playing, go along with it.`;
     return `${line} Finish within this turn and the next: end the scene and give ${closingName}, one or two points. Don't start anything new. If the learner asks to keep going, go along with it.`;
   }
   if (used >= budget * CLOSING_AT) {
+    if (kids) return `${line} Start bringing the story to its end now: finish this bit of it, skip what's left, and move on to ${goodbye} within a turn or two.`;
     return `${line} Start closing the scene now: finish the current beat, skip the beats left, and move on to ${closingName} within a turn or two.`;
   }
   // Before that, say only whether the session is behind its plan: ahead of

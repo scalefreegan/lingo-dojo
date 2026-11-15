@@ -100,6 +100,7 @@ export function assemble(content, rawPack, mode = "adult") {
   if (budget.invalid) {
     warn(`Pack override "minutes" must be a number of minutes above 0 and at most ${MAX_MINUTES}, not ${JSON.stringify(pack.overrides.minutes)}; ignored (no time budget).`);
   }
+  if (budget.rounded) warn(`Pack override "minutes" is ${pack.overrides.minutes}; rounded to ${budget.minutes} (whole minutes only).`);
   delete profile.minutes;
 
   const values = {};

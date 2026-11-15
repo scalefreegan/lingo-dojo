@@ -131,19 +131,29 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   copied and exported has a **Time budget** section (docs/CONTENT.md). A pack
   without `minutes` starts the picker at the last choice, kept per mode as
   `sessionMinutes` in `data/voice.json` (a PUT merges it per mode); what the
-  picker shows is what the pack carries. The clock starts with the first
+  picker shows is what the session, Copy and the export use. Save writes only
+  a length that is the pack's own: one it had, or one picked for it
+  (docs/CONTENT.md). The clock starts with the first
   turn, and every `/api/voice/turn` sends `elapsedMs`, the time since then.
   With a budget the server adds one **clock line** after the learner's words
-  (`clockLine`): minutes used, minutes left, the current part (the last
+  (`clockLine`, given the mode): minutes used, minutes left, the current part (the last
   `STAGE`), and "behind the plan" when the split has moved on. From 80% used
   it says to start closing the scene; from 100% to finish within this turn
   and the next with the short debrief, and to go along if the learner wants
-  to keep going. The app never ends the session. The timeline shows the time
+  to keep going (kids: bring the story to its end and say goodbye, with a
+  word of praise and one word to remember). The app never ends the session. The timeline shows the time
   left (rounded up; "Time's up, N min over" after) and **+5 min**, which adds
   five minutes to this session only: the turn's pack carries the extended
   minutes, so the Time budget and the clock agree, but the saved pack and
-  the picker keep their length. Restart resets the clock and the extra
-  minutes. No limit is the old behaviour exactly: no Time budget, no clock line.
+  the picker keep their length. Before the session the picker sets the
+  total; **picked mid-session**, a length means that many more minutes from
+  now (the whole minutes already used are added to it, and any +5 min is
+  dropped), so picking 10 at minute 12 leaves 10 minutes, not "2 min over".
+  Each turn reads the budget and the pack at request time (refs, not the
+  closure of the render that started it), so a +5 min or a new length counts
+  from the next turn even in a hands-free chain. Restart resets the clock,
+  the extra minutes and the offset. No limit is the old behaviour exactly: no
+  Time budget, no clock line.
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
   their exact upper-case label (`OPTIONS:` is an older name for
   `CHOICES:`), with or without a speaker tag (any case) or a timing mark in

@@ -17,15 +17,21 @@ const adultPlan = [
 const sum = (rows) => rows.reduce((s, r) => s + r.minutes, 0);
 
 test("readMinutes: absent is no limit; a number in range is the budget; anything else is invalid", () => {
-  assert.deepEqual(readMinutes(undefined), { minutes: null, invalid: false });
-  assert.deepEqual(readMinutes(null), { minutes: null, invalid: false });
-  assert.deepEqual(readMinutes("  "), { minutes: null, invalid: false });
-  assert.deepEqual(readMinutes(10), { minutes: 10, invalid: false });
-  assert.deepEqual(readMinutes(7.5), { minutes: 7.5, invalid: false });
-  assert.deepEqual(readMinutes(MAX_MINUTES), { minutes: MAX_MINUTES, invalid: false });
+  assert.deepEqual(readMinutes(undefined), { minutes: null, invalid: false, rounded: false });
+  assert.deepEqual(readMinutes(null), { minutes: null, invalid: false, rounded: false });
+  assert.deepEqual(readMinutes("  "), { minutes: null, invalid: false, rounded: false });
+  assert.deepEqual(readMinutes(10), { minutes: 10, invalid: false, rounded: false });
+  assert.deepEqual(readMinutes(MAX_MINUTES), { minutes: MAX_MINUTES, invalid: false, rounded: false });
   for (const bad of ["10", 0, -5, MAX_MINUTES + 1, Number.NaN, Infinity, true, [10], { m: 10 }]) {
-    assert.deepEqual(readMinutes(bad), { minutes: null, invalid: true }, JSON.stringify(bad));
+    assert.deepEqual(readMinutes(bad), { minutes: null, invalid: true, rounded: false }, JSON.stringify(bad));
   }
+});
+
+test("readMinutes: a fraction is rounded to whole minutes, at least 1, and says so", () => {
+  assert.deepEqual(readMinutes(7.5), { minutes: 8, invalid: false, rounded: true });
+  assert.deepEqual(readMinutes(7.4), { minutes: 7, invalid: false, rounded: true });
+  assert.deepEqual(readMinutes(0.3), { minutes: 1, invalid: false, rounded: true });
+  assert.deepEqual(readMinutes(239.6), { minutes: 240, invalid: false, rounded: true });
 });
 
 test("the picker's choices are in range", () => {

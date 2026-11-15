@@ -4,7 +4,7 @@ import {
 } from "./api";
 import type { AssembleResult, Committed, ContentReply, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, effectiveMinutes, emptyOverrides, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -192,6 +192,13 @@ export default function App() {
   }
 
   const pack = useMemo(() => (draft ? draftToPack(draft, minutes) : null), [draft, minutes]);
+  // A bad `minutes` in the pack is hidden from the assembler while the
+  // remembered length stands in, so its warning is added here.
+  const extraWarning = draft ? minutesWarning(draft, minutes) : null;
+  const shownResult = useMemo(
+    () => (result && extraWarning && !result.warnings.includes(extraWarning) ? { ...result, warnings: [extraWarning, ...result.warnings] } : result),
+    [result, extraWarning],
+  );
   const assembling = !!pack && (settled?.pack !== pack || settled.version !== contentVersion);
 
   // Live preview. Each change aborts the request before it, so a slow reply
@@ -276,7 +283,9 @@ export default function App() {
     if (!overwrite && id !== src && packs.some((p) => p.id === id)) return { ok: false, conflict: id };
     const created = id === src && draft.created ? draft.created : localTimestamp();
     try {
-      const r = await savePack(mode, id, { ...pack, title, created });
+      // The pack's own minutes only (draftToPack's default): a remembered
+      // length the picker merely inherited is never written into a pack.
+      const r = await savePack(mode, id, { ...draftToPack(draft), title, created });
       setDraft((d) => (d ? { ...d, title: r.pack.title, sourceId: r.pack.id, created: r.pack.created } : d));
       await refreshPacks();
       setPackStatus(report(`Saved ${r.pack.id}`, r));
@@ -387,7 +396,7 @@ export default function App() {
         onSaveDefaults={saveDefaults}
       />
       {ready && draft && pack && (
-        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={result} pending={assembling} onTab={setTab}
+        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={shownResult} pending={assembling} onTab={setTab}
           onPractice={() => {
             setPracticeRequest(true);
             setTab("go");
@@ -419,12 +428,12 @@ export default function App() {
                 sceneTitle={scenarioTitle}
                 learnerLine={learnerLine}
                 notes={draft.notes}
-                minutes={minutes}
+                minutes={validMinutes(minutes)}
                 minuteChoices={minuteChoices?.[mode] ?? []}
                 onMinutes={chooseMinutes}
                 onNotes={(notes) => setDraft({ ...draft, notes })}
                 exportId={draft.sourceId ? splitPackId(draft.sourceId).stem : packId(draft.title || scenarioTitle || "session")}
-                result={result}
+                result={shownResult}
                 pending={assembling}
                 error={assembleError}
                 folders={folders}

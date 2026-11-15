@@ -357,4 +357,16 @@ test("kids mode splits its own parts and says story, not scene", () => {
   assert.match(section, /^The learner has \*\*3 minutes\*\*/);
   assert.match(section, /- Introduction: about/);
   assert.match(section, /- Story: /);
+  // Only the kids plan knows the games slot: with the adult plan the echo
+  // game would vanish from the split, so this fails if assemble passed the
+  // wrong mode to sessionPlan.
+  assert.match(section, /Echo game/);
+  assert.doesNotMatch(budgetOf(assemble(kids, { ...kids.packs[0], overrides: { minutes: 3 } }, "adult").markdown), /Echo game/, "the adult plan has no games");
+});
+
+test("a fractional minutes value is rounded to whole minutes with a warning", () => {
+  const { markdown, warnings } = run({ overrides: { minutes: 7.5 } });
+  assert.deepEqual(warnings, ['Pack override "minutes" is 7.5; rounded to 8 (whole minutes only).']);
+  assert.match(budgetOf(markdown), /^The learner has \*\*8 minutes\*\*/);
+  assert.match(budgetOf(run({ overrides: { minutes: 0.2 } }).markdown), /^The learner has \*\*1 minute\*\*/);
 });

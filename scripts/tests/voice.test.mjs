@@ -1223,6 +1223,26 @@ test("clockLine: from 80% it says to start closing; at 100% and beyond, to finis
   assert.match(clockLine({ minutes: 5, elapsedMs: min(6), plan: clockPlan.slice(0, 5), stage: "beat:2" }), /give a short closing, one or two points/);
 });
 
+test("clockLine: kids get the story and the goodbye, as in their Time budget section", () => {
+  const kidsPlan = [
+    { id: "intro", title: "Introduction", kind: "intro" },
+    { id: "scene", title: "The farm", kind: "scene" },
+    { id: "beat:1", title: "Cows", kind: "beat" },
+    { id: "ending:bye", title: "Goodnight", kind: "ending" },
+  ];
+  const closing = clockLine({ minutes: 5, elapsedMs: min(4), plan: kidsPlan, stage: "beat:1", mode: "kids" });
+  assert.match(closing, /Start bringing the story to its end now: finish this bit of it, skip what's left, and move on to the goodbye \(ending:bye\) within a turn or two\.$/);
+  const up = clockLine({ minutes: 5, elapsedMs: min(5), plan: kidsPlan, stage: "beat:1", mode: "kids" });
+  assert.match(up, /Finish within this turn and the next: end the story happily and say the goodbye \(ending:bye\), with a word of praise and one word to remember\./);
+  assert.doesNotMatch(`${closing} ${up}`, /scene|debrief|one or two points|closing part/);
+  // Adult wording stays the default.
+  assert.match(clockLine({ minutes: 5, elapsedMs: min(5), plan: kidsPlan, stage: "beat:1" }), /give the closing part \(ending:bye\), one or two points/);
+});
+
+test("clockLine: a fractional budget is read rounded, like the Time budget heading", () => {
+  assert.match(clockLine({ minutes: 7.5, elapsedMs: min(1), plan: clockPlan, stage: "intro" }), /: 1 of 8 minutes used, 7 left;/);
+});
+
 test("clockLine: elapsed time it can't believe is clamped, not trusted", () => {
   assert.match(clockLine({ minutes: 10, elapsedMs: -5000, plan: clockPlan, stage: "intro" }), /: 0 of 10 minutes used, 10 left/);
   assert.match(clockLine({ minutes: 10, elapsedMs: "lots", plan: clockPlan, stage: "intro" }), /: 0 of 10 minutes used, 10 left/);

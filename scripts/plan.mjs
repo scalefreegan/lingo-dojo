@@ -62,15 +62,19 @@ export const MAX_MINUTES = 240;
 /** What the +5 min button adds to a running session's budget. */
 export const EXTEND_MINUTES = 5;
 
-/** A pack's `overrides.minutes` read as a time budget. Absent (or blank) is
- *  no limit; a number in (0, MAX_MINUTES] is the budget; anything else is
- *  `invalid`, which the assembler warns about and treats as no limit.
- *  Numbers only: a quoted "10" in YAML is a typo the warning should
- *  surface, not something to guess at. */
+/** A pack's `overrides.minutes` read as a time budget: the one place a
+ *  budget is read (web/src/draft.ts validMinutes mirrors it for the
+ *  browser). Absent (or blank) is no limit; a number in (0, MAX_MINUTES] is
+ *  the budget, rounded to whole minutes and at least 1 (`rounded` says it
+ *  changed), so the heading, the split, the clock line and the timeline
+ *  can never disagree about a hand-written 7.5; anything else is `invalid`,
+ *  which the assembler warns about and treats as no limit. Numbers only: a
+ *  quoted "10" in YAML is a typo the warning should surface, not a guess. */
 export function readMinutes(v) {
-  if (v == null || (typeof v === "string" && v.trim() === "")) return { minutes: null, invalid: false };
-  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > MAX_MINUTES) return { minutes: null, invalid: true };
-  return { minutes: v, invalid: false };
+  if (v == null || (typeof v === "string" && v.trim() === "")) return { minutes: null, invalid: false, rounded: false };
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > MAX_MINUTES) return { minutes: null, invalid: true, rounded: false };
+  const minutes = Math.max(1, Math.round(v));
+  return { minutes, invalid: false, rounded: minutes !== v };
 }
 
 /** Rough shares of the session, by group. The scene is the point of the

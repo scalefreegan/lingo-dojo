@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { draftToPack, effectiveMinutes, foreignLanguage, packToDraft, validMinutes } from "../../web/src/draft.ts";
+import { draftToPack, effectiveMinutes, foreignLanguage, minutesWarning, packToDraft, validMinutes } from "../../web/src/draft.ts";
 
 const languages = [
   { name: "Spanish", variants: [], code: "es" },
@@ -65,6 +65,29 @@ test("a minutes value the picker can't hold stays an extra override, so the asse
   const draft = packToDraft(pack);
   assert.equal(draft.minutes, null);
   assert.deepEqual(draftToPack(draft).overrides, { minutes: "ten" });
-  assert.deepEqual(draftToPack(draft, 15).overrides, { minutes: 15 }, "a chosen length replaces it");
-  assert.deepEqual([validMinutes(10), validMinutes(0), validMinutes(241), validMinutes("10"), validMinutes(7.5)], [10, null, null, null, 7.5]);
+  assert.deepEqual(draftToPack(draft, 15).overrides, { minutes: 15 }, "a length standing in replaces it for the session");
+  // ...and since the assembler then can't see it, the Go tab warns instead.
+  assert.match(minutesWarning(draft, 15), /^Pack override "minutes" must be a number of minutes above 0 and at most 240, not "ten"; ignored \(using your last choice, 15 min, until you pick one\)\.$/);
+  assert.equal(minutesWarning(draft, null), null, "nothing stands in: the assembler sees it and warns itself");
+  assert.equal(minutesWarning({ ...draft, minutes: 15 }, 15), null, "a picked length is the pack's own: nothing to warn about");
+  assert.equal(minutesWarning(packToDraft({ ...pack, overrides: {} }), 15), null, "no minutes at all");
+});
+
+test("validMinutes rounds like readMinutes, so the picker and timeline agree with the prompt", () => {
+  assert.deepEqual([validMinutes(10), validMinutes(0), validMinutes(241), validMinutes("10"), validMinutes(7.5), validMinutes(0.3)], [10, null, null, null, 8, 1]);
+  // The pack keeps what it was written with; only the session reads it rounded.
+  const draft = packToDraft({ id: "p", title: "P", created: "", scenario: "s", quick_scenario: "", units: [], overrides: { minutes: 7.5 }, notes: "" });
+  assert.equal(draft.minutes, 7.5);
+  assert.equal(validMinutes(effectiveMinutes(draft, null)), 8);
+});
+
+test("a save carries only the pack's own minutes, never the remembered default", () => {
+  const pack = { id: "p", title: "P", created: "", scenario: "s", quick_scenario: "", units: [], overrides: {}, notes: "" };
+  const inherited = packToDraft(pack);
+  // The session (assemble, export, the voice turn) uses the remembered 10...
+  assert.equal(draftToPack(inherited, effectiveMinutes(inherited, 10)).overrides.minutes, 10);
+  // ...but the pack written by Save (draftToPack's default) has none.
+  assert.equal("minutes" in draftToPack(inherited).overrides, false);
+  // Picking a length in the picker (re-picking the shown 10 included) makes it the pack's own.
+  assert.equal(draftToPack({ ...inherited, minutes: 10 }).overrides.minutes, 10);
 });
