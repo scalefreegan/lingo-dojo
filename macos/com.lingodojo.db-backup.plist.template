@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily `npm run db:backup`. A template: __NODE__, __REPO__ and __HOME__ are
+     filled in by the install steps in docs/DATA.md §Backups. Nothing here is
+     loaded until you do that. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.lingodojo.db-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE__</string>
+    <string>__REPO__/scripts/db/backup-cli.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <!-- launchd's PATH is minimal; the script also looks in the Homebrew
+       PostgreSQL 17 directories for pg_dump. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/opt/homebrew/opt/postgresql@17/bin:/usr/bin:/bin</string>
+  </dict>
+  <!-- 03:30 daily; a run missed while the Mac slept happens on wake. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/LingoDojoBackup.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/LingoDojoBackup.log</string>
+</dict>
+</plist>

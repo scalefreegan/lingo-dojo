@@ -11,6 +11,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/db/setup.mjs --migrate-only",
     "db:setup": "node scripts/db/setup.mjs",
+    "db:backup": "node scripts/db/backup-cli.mjs",
     "db:import": "node scripts/import.mjs",
     "user": "node scripts/user.mjs"
   },

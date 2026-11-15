@@ -1250,12 +1250,55 @@ kids (content/kids/packs/): skipped, robin has no kids learner (add one in the a
 The first run (`createFirstAdmin`) runs the same `importPacks` for each
 learner it makes, into that learner's one language, in its transaction.
 
-## Backups (proposed)
+## Backups
 
 Personal data leaves git, so it needs its own safety net. `npm run db:backup`
-does a `pg_dump -Fc` to `backups/` (gitignored), keeping the last 14. An
-optional launchd plist (in `macos/`) runs it daily. `pack_revisions` and soft
-deletes cover undoing a single change.
+(`scripts/db/backup-cli.mjs`, pure helpers in `scripts/db/backup.mjs`) runs
+`pg_dump -Fc` on the database `DATABASE_URL` names (resolved like the other
+db scripts, so a worktree without one refuses) into `backups/` (gitignored;
+`LINGO_BACKUPS_DIR` overrides, which the tests use). Files are
+`<database>-<UTC stamp>.dump`. The dump is written to a `.partial` name and
+renamed only when `pg_dump` exits 0, so a failed dump never looks like a good
+one. The newest 14 are kept; pruning touches only that database's own files.
+`pg_dump` is found on `PATH`, then in the Homebrew PostgreSQL directories
+(`/opt/homebrew/opt/postgresql@17/bin` first), because a launchd job has a
+minimal `PATH`; one older than the server is skipped. A missing or failing
+`pg_dump` exits non-zero with a message. `pack_revisions` and soft deletes
+cover undoing a single change; the dump covers losing the database.
+
+There is deliberately no restore script: a restore that picks its own target
+is how a real database gets overwritten. Restore by hand, into a database you
+name:
+
+```sh
+createdb lingo_dojo_restored
+pg_restore --no-owner --exit-on-error -d lingo_dojo_restored backups/<file>.dump
+# check it, then point DATABASE_URL at it (or rename databases) when you mean to
+```
+
+### Daily job (optional, not installed by default)
+
+`macos/com.lingodojo.db-backup.plist.template` runs the backup at 03:30 daily
+with the logs in `~/Library/Logs/LingoDojoBackup.log`. Install (from the repo
+root; the `sed` fills in the placeholders):
+
+```sh
+sed -e "s#__NODE__#$(command -v node)#" -e "s#__REPO__#$PWD#g" -e "s#__HOME__#$HOME#g" \
+  macos/com.lingodojo.db-backup.plist.template > ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+launchctl kickstart "gui/$(id -u)/com.lingodojo.db-backup"   # run once now
+```
+
+Uninstall:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.lingodojo.db-backup"
+rm ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+```
+
+If the repo is under a TCC-protected folder (Documents, Desktop), launchd's
+`node` may be denied access to it; the log will say so. Grant it Full Disk
+Access in System Settings, or keep the checkout elsewhere.
 
 ## Testing
 
