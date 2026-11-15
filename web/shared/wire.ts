@@ -1020,6 +1020,9 @@ export interface PhraseInput {
    *  removed; none can be added by hand). New words or a new meaning drop
    *  them all: they were accepted against the old question. */
   alternates?: string[];
+  /** PATCH only: alternates to remove, leaving the rest (and any the
+   *  grader saved since the page loaded) as they are. */
+  removeAlternates?: string[];
   starred?: boolean;
   suspended?: boolean;
 }

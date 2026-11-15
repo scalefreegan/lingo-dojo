@@ -191,6 +191,77 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   and Copy transcript includes them. The turn also puts its glosses of up
   to three words in the language's phrase bank, and a tapped word's card
   has ☆ Star to keep it there starred (docs/DATA.md §Phrase capture).
+- **Pinyin and zhuyin.** For a Mandarin target (`zh-*` / `cmn-*`, but not
+  zh-HK / zh-MO, which the app uses for Cantonese) the target-language
+  segments, and only those, carry their reading over each character in a
+  `<ruby>`: pinyin with tone marks, or zhuyin (bopomofo) for learners who
+  read it. A switch above the transcript (Readings: Off / Pinyin / Zhuyin)
+  is remembered per language profile in the browser (`lingo-dojo.ruby.v1`)
+  and defaults to Pinyin; the same switch is on a History transcript,
+  the phrase bank and Practice (over the target words only where a card
+  already shows them: a recognize prompt, the answer once it is out), and
+  nothing shows for a language without a reading aid.
+  The readings come from the browser, not the dojo master or a model:
+  `web/src/script/zh.ts` runs pinyin-pro word by word (so 銀行 reads yín
+  háng, 長大 zhǎng dà) over the text spelled in simplified characters one
+  for one (its word list is simplified; the table is Unihan's), then
+  applies Taiwan's standard readings for a zh-TW profile (星期 xīng qí,
+  垃圾 lè sè). A traditional character that shares its simplified form
+  with another keeps a reading of its own (髮 fà, never 發's fā; 幹 gàn,
+  not 乾's gān). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
+  開心地) and never where it starts a word (看看地圖); 得 is de only after
+  a listed verb and before a degree word (跑得很快), never after a pronoun
+  (我得走 děi, 他得滿分 dé); 儿 / 兒 is the r of erhua closing listed words
+  (這兒, 一點兒, 小孩兒) and stays ér in 兒子, 女兒, 兒童. Anything the rules
+  don't list keeps the library's reading. Tone marks are each character's
+  own tone (no sandhi), as dictionaries print them. The
+  reading is drawn by CSS from the `rt`'s attribute and the `rt` is
+  aria-hidden, so copying a line copies its characters only and a screen
+  reader reads them once. The reader is its own chunk, fetched only for a
+  Mandarin profile with readings on. `web/src/script/script.ts` holds the
+  pure helpers (which locales, the stored choice, splitting text, pinyin →
+  zhuyin); Japanese furigana or Korean would be another entry there and
+  another reader beside zh.ts.
+- **Character card.** A tapped word's definition shows its term with each
+  Chinese character as a tile; so does an opened phrase in the bank (and
+  the card's own list). Tapping one opens the character card (a modal:
+  Escape or Close returns focus): the character large with its stroke order
+  animated by Hanzi Writer (▶ Replay, ✎ Trace it to draw it stroke by
+  stroke, 🔊 Hear it through `/api/voice/speak`), its readings in pinyin and
+  zhuyin, meaning, radical, stroke count, its simplified or traditional
+  counterpart, and the phrases in this language's bank that contain it or
+  its counterpart (the bank's own search). Transcript lines keep their one
+  tap (a glossed word's meaning); characters are reached through the
+  definition, so the two never compete. Kids mode makes the glyph bigger,
+  plays the strokes first and slower, and words it for a child. Everything
+  is served by this app: stroke data from the hanzi-writer-data package at
+  `/hanzi-data/<character>.json` (`web/server/hanzi.ts`, one small file per
+  tap; Hanzi Writer's own default would fetch a CDN), meanings, radicals,
+  stroke counts and counterparts from `web/src/script/zh-chars.json`
+  (generated from the Unicode Unihan database by
+  `scripts/gen-zh-chars.mjs`, its own chunk, fetched on the first tap).
+  Licences: pinyin-pro and Hanzi Writer are MIT; the stroke data is from
+  Make Me a Hanzi under the Arphic Public License (its text ships in the
+  package; the card credits it); Unihan is under the Unicode License v3,
+  whose notice is in the generated files and
+  `web/src/script/UNICODE-LICENSE.txt`. Unihan's meanings are terse
+  dictionary glosses ("love, be fond of, like"), not lessons; the card
+  puts the learner's own bank meaning first when the character is a phrase
+  there. The licence text itself is served at `/hanzi-data/ARPHICPL.txt`
+  (one fixed path, not a file route) and linked from the card's footer.
+- **Readings can be wrong.** They are generated, not checked by a teacher,
+  and the card's footer says so (and the switch's tooltip). Known gaps:
+  readings follow the library's (mainland) norms apart from the small
+  Taiwan table, so a zh-TW text can show a neutral tone where Taiwan says a
+  full one (頭髮 is fixed; most such words are not); a word the library
+  doesn't know is read character by character, each with its usual
+  reading; 得 meaning "must" (děi) or "get" (dé) is left
+  to the library, which reads dé for both; erhua is only fixed for the
+  listed words; 著 reads zhe or zháo by context and 著名 zhù only for the
+  listed neighbours. The fix for one is a test in
+  `scripts/tests/script.test.mjs` and an entry in the tables in
+  `web/src/script/script.ts`.
 
 ## Saved conversations
 

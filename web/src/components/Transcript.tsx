@@ -1,6 +1,7 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { Glossed } from "./Glossed";
 import { GlossStar } from "./GlossStar";
+import { CharTerm } from "./Ruby";
 import { SpeakerCritter } from "./Mascots";
 import { haystack, layout, mightMatch } from "../gloss";
 import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
@@ -299,7 +300,8 @@ const TranscriptRow = memo(function TranscriptRow({
               data-testid="voice-gloss"
             >
               <span className="min-w-0 flex-1 break-words">
-                <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
+                {/* Its characters each open the character card (Chinese). */}
+                <CharTerm text={picked.gloss.term} locale={locale} className="font-medium text-accent" />
                 <span className="text-fg-3"> — </span>
                 {picked.gloss.meaning}
               </span>

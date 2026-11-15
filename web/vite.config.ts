@@ -4,6 +4,8 @@ import tailwindcss from "@tailwindcss/vite";
 // The API is Vite `apply:"serve"` middleware on the dev server — there is no
 // separate backend. See server/api.ts.
 import { apiPlugins } from "./server/api.ts";
+// Stroke-order data for the character card, from the app's own origin.
+import { hanziDataPlugin } from "./server/hanzi.ts";
 import { publicHosts } from "../scripts/public-host.mjs";
 
 // The tailnet name `tailscale serve` answers under (docs/DATA.md, Hosting on
@@ -19,7 +21,7 @@ if (rejected.length) {
 }
 
 export default defineConfig({
-  plugins: [react(), tailwindcss(), apiPlugins()],
+  plugins: [react(), tailwindcss(), apiPlugins(), hanziDataPlugin()],
   // Fixed port so the Mac app (macos/) has a deterministic health-check and
   // dashboard URL; strict so a second instance fails loudly instead of
   // silently serving a twin on the next port. 38400 = Lingo Dojo; Atlas is

@@ -16,6 +16,7 @@ import GoTab from "./components/GoTab";
 import LibraryTab from "./components/LibraryTab";
 import PracticeView from "./components/PracticeView";
 import AgentDrawer from "./components/AgentDrawer";
+import ScriptProvider from "./components/ScriptProvider";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
 import { IsAdmin } from "./viewer";
 
@@ -406,6 +407,7 @@ export default function App({
 
   return (
     <IsAdmin.Provider value={user.isAdmin}>
+    <ScriptProvider languageId={language.id} kids={mode === "kids"}>
     <div className="flex min-h-screen flex-col">
       <TopBar
         tab={tab}
@@ -525,6 +527,7 @@ export default function App({
         </div>
       )}
     </div>
+    </ScriptProvider>
     </IsAdmin.Provider>
   );
 }
