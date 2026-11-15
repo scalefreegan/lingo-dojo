@@ -123,6 +123,43 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
   straight there, skipping what's in between (the frame's "every warm-up
   first" rule gives way to the learner asking). It collapses to a rail of dots (remembered per browser).
+  The parts live in `scripts/plan.mjs` (no imports), so the assembler's Time
+  budget splits the same parts; `scripts/voice.mjs` re-exports `sessionPlan`.
+- **Session length.** The Go tab asks **How long do you have?** before the
+  session: 5 · 10 · 15 · 20 · 30 min · No limit (kids: 3 · 5 · 10 · No
+  limit). The choice is the pack's `overrides.minutes`, so the prompt shown,
+  copied and exported has a **Time budget** section (docs/CONTENT.md). A pack
+  without `minutes` starts the picker at the last choice, kept per mode as
+  `sessionMinutes` in `data/voice.json` (a PUT merges it per mode); what the
+  picker shows is what the session, Copy and the export use. Save writes only
+  a length that is the pack's own: one it had, or one picked for it
+  (docs/CONTENT.md). The clock starts with the first
+  turn, and every `/api/voice/turn` sends `elapsedMs`, the time since then.
+  With a budget the server adds one **clock line** after the learner's words
+  (`clockLine`, given the mode): minutes used, minutes left, the current part (the last
+  `STAGE`), and "behind the plan" when the split has moved on. From 80% used
+  it says to start closing the scene; from 100% to finish within this turn
+  and the next with the short debrief, and to go along if the learner wants
+  to keep going (kids: bring the story to its end and say goodbye, with a
+  word of praise and one word to remember). The app never ends the session. The timeline shows the time
+  left (rounded up; "Time's up, N min over" after) and **+5 min**, which adds
+  five minutes to this session only: the turn's pack carries the extended
+  minutes, so the Time budget and the clock agree, but the saved pack and
+  the picker keep their length. Before the session the picker sets the
+  total; **picked mid-session** (every pick, the length already shown again
+  included), a length means that many minutes from now:
+  the pacing clock starts again at the pick, the budget is exactly the length
+  picked (any +5 min is dropped; +5 min then extends from there), and
+  `elapsedMs` counts from the pick. Picking 3 at minute 12 reads "3 min left
+  of 3" and the clock line says 0 of 3 used, not 12 of 15. The turn's Time
+  budget section still splits the whole session's parts; a session already
+  past the early ones is ahead of that split, which the clock line calls on
+  pace, never behind.
+  Each turn reads the budget and the pack at request time (refs, not the
+  closure of the render that started it), so a +5 min or a new length counts
+  from the next turn even in a hands-free chain. Restart resets the clock
+  and the extra minutes. No limit is the old behaviour exactly: no
+  Time budget, no clock line.
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
   their exact upper-case label (`OPTIONS:` is an older name for
   `CHOICES:`), with or without a speaker tag (any case) or a timing mark in
@@ -155,7 +192,8 @@ needs a login, and a turn or cast runs in the active learner's mode (a body
 `mode` that disagrees is a 400). One turn at a time per user, so two people
 practising never block each other. The settings are: voice provider, speech-to-text
 provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
-cheapest), Claude model for the dojo master, turn-taking, and a voice per
+cheapest), Claude model for the dojo master, turn-taking, the last session
+length per mode (`sessionMinutes`, set from the Go tab's picker), and a voice per
 **slot per locale**. A slot is a speaker and a gender (Narrator · woman,
 Character · man, …). Each slot is **🎲 Random** (the default) or a voice you
 chose. Voices are kept per locale, so a Mandarin voice choice survives a switch to a

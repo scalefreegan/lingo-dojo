@@ -290,3 +290,83 @@ test("location comes from the pack only, never from profile.yaml", () => {
   assert.doesNotMatch(markdown, /Lyon/);
   assert.match(markdown, /You choose the city/);
 });
+
+/* ------------------------------- time budget ------------------------------ */
+
+/** The Time budget section's body, or undefined. */
+const budgetOf = (md) => md.split("## Time budget\n\n")[1]?.split("\n\n## ")[0];
+
+test("minutes set: a Time budget section after the slots and before the notes, with the split and how to shrink", () => {
+  const { markdown, warnings } = run({ overrides: { minutes: 10 }, notes: "More numbers." });
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(h2(markdown), ["Learner", "Scenario", "Introduction", "Warm-up", "Corrections", "Debrief", "Time budget", "Notes from the learner"]);
+  const section = budgetOf(markdown);
+  assert.match(section, /^The learner has \*\*10 minutes\*\* for this whole session\./);
+  // The voice timeline's parts: intro, each warm-up, the scene with its
+  // beats folded in, the debrief.
+  assert.ok(
+    section.includes(
+      "- Introduction: about 1 minute\n- Warm-up: Vocabulary warm-up: about 2 minutes\n- Scene: Buying fruit at the market: about 5½ minutes, all 3 beats\n- Debrief: Top three takeaways: about 1½ minutes",
+    ),
+    section,
+  );
+  assert.match(section, /Play fewer beats[^\n]*A 5-minute session plays one or two\./);
+  assert.match(section, /Keep the warm-up short/);
+  assert.match(section, /Keep the debrief to one or two points\./);
+  assert.match(section, /clock line/);
+});
+
+test("a short budget plays fewer beats; the split adds up to the total; output is byte-identical run to run", () => {
+  const { markdown } = run({ overrides: { minutes: 5 } });
+  assert.equal(run({ overrides: { minutes: 5 } }).markdown, markdown);
+  const split = markdown.split("**Rough split**\n\n")[1].split("\n\n")[0];
+  assert.match(split, /Scene: Buying fruit at the market: about 3 minutes, about [12] of its 3 beats/);
+  const total = [...split.matchAll(/about (\d+)?(½)? minutes?/g)].reduce((s, m) => s + Number(m[1] ?? 0) + (m[2] ? 0.5 : 0), 0);
+  assert.equal(total, 5);
+});
+
+test("no minutes (No limit) renders exactly what it did before: no Time budget", () => {
+  const without = run().markdown;
+  assert.doesNotMatch(without, /Time budget|clock line/);
+  assert.equal(run({ overrides: { minutes: null } }).markdown, without);
+  assert.equal(run({ overrides: { minutes: "" } }).markdown, without);
+});
+
+test("minutes never appear in the Learner block, and profile.yaml can't set a budget", () => {
+  const { markdown } = run({ overrides: { minutes: 10 } }, { ...content, profile: { ...content.profile, minutes: 99 } });
+  const learner = markdown.split("## Learner\n\n")[1].split("\n\n")[0];
+  assert.doesNotMatch(learner, /Minutes|10|99/);
+  assert.match(budgetOf(markdown), /\*\*10 minutes\*\*/);
+  assert.doesNotMatch(run({}, { ...content, profile: { ...content.profile, minutes: 10 } }).markdown, /Time budget|Minutes/);
+});
+
+test("an invalid minutes value is ignored with a warning", () => {
+  for (const bad of ["ten", "10", 0, -3, 100000]) {
+    const { markdown, warnings } = run({ overrides: { minutes: bad } });
+    assert.doesNotMatch(markdown, /Time budget/, JSON.stringify(bad));
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /^Pack override "minutes" must be a number of minutes above 0 and at most 240, not .+; ignored \(no time budget\)\.$/);
+  }
+});
+
+test("kids mode splits its own parts and says story, not scene", () => {
+  const kids = loadContent(`${FIXTURE}/kids`);
+  const { markdown, warnings } = assemble(kids, { ...kids.packs[0], overrides: { minutes: 3 } }, "kids");
+  assert.deepEqual(warnings, []);
+  const section = budgetOf(markdown);
+  assert.match(section, /^The learner has \*\*3 minutes\*\*/);
+  assert.match(section, /- Introduction: about/);
+  assert.match(section, /- Story: /);
+  // Only the kids plan knows the games slot: with the adult plan the echo
+  // game would vanish from the split, so this fails if assemble passed the
+  // wrong mode to sessionPlan.
+  assert.match(section, /Echo game/);
+  assert.doesNotMatch(budgetOf(assemble(kids, { ...kids.packs[0], overrides: { minutes: 3 } }, "adult").markdown), /Echo game/, "the adult plan has no games");
+});
+
+test("a fractional minutes value is rounded to whole minutes with a warning", () => {
+  const { markdown, warnings } = run({ overrides: { minutes: 7.5 } });
+  assert.deepEqual(warnings, ['Pack override "minutes" is 7.5; rounded to 8 (whole minutes only).']);
+  assert.match(budgetOf(markdown), /^The learner has \*\*8 minutes\*\*/);
+  assert.match(budgetOf(run({ overrides: { minutes: 0.2 } }).markdown), /^The learner has \*\*1 minute\*\*/);
+});

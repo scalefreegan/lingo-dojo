@@ -19,6 +19,9 @@ export default function GoTab({
   sceneTitle,
   learnerLine,
   notes,
+  minutes,
+  minuteChoices,
+  onMinutes,
   onNotes,
   exportId,
   result,
@@ -40,6 +43,10 @@ export default function GoTab({
   sceneTitle: string;
   learnerLine: string;
   notes: string;
+  /** The session length the pack carries (null = No limit), the picker's lengths, and a pick. */
+  minutes: number | null;
+  minuteChoices: number[];
+  onMinutes: (minutes: number | null) => void;
   onNotes: (notes: string) => void;
   /** The id Export writes to: the saved pack's stem, else date + slug. */
   exportId: string;
@@ -60,6 +67,10 @@ export default function GoTab({
   onPracticeOpened?: () => void;
 }) {
   const [copyStatus, copy] = useCopyStatus();
+  // Counts picks in "How long do you have?", the same length again included:
+  // a running session restarts its pacing clock on every pick, which a
+  // change of value alone can't signal.
+  const [minutesPick, setMinutesPick] = useState(0);
   const [showPrompt, setShowPrompt] = useState(false);
   const [exported, setExported] = useState<ExportResult | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -106,6 +117,14 @@ export default function GoTab({
           {result && ` · ${result.stats.words.toLocaleString()} words · ~${result.stats.tokens.toLocaleString()} tokens`}
           {pending && " · updating"}
         </p>
+        <MinutesPicker
+          value={minutes}
+          choices={minuteChoices}
+          onChange={(m) => {
+            setMinutesPick((n) => n + 1);
+            onMinutes(m);
+          }}
+        />
       </Card>
 
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">Could not assemble: {error}</p>}
@@ -121,7 +140,7 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} />
 
       <div className={narrow}>
 
@@ -167,6 +186,43 @@ export default function GoTab({
           </pre>
         )}
       </div>
+      </div>
+    </div>
+  );
+}
+
+/** "How long do you have?": before the session, so the prompt (here, in
+ *  Copy and in an export) is paced for it. A length the pack carries that
+ *  isn't one of the choices (written by hand) is shown too, picked. The
+ *  lengths come from the server; until they arrive only No limit shows. */
+function MinutesPicker({ value, choices, onChange }: { value: number | null; choices: number[]; onChange: (minutes: number | null) => void }) {
+  const lengths = value != null && !choices.includes(value) ? [...choices, value].sort((a, b) => a - b) : choices;
+  const options: (number | null)[] = [...lengths, null];
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+      <span id="minutes-label" className="text-sm text-fg-2">
+        How long do you have?
+      </span>
+      <div role="radiogroup" aria-labelledby="minutes-label" className="flex flex-wrap gap-1.5" data-testid="minutes-picker">
+        {options.map((m) => {
+          const on = m === value;
+          return (
+            <button
+              key={m ?? "none"}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              // Re-picking the length already shown still counts: it makes an
+              // inherited (remembered) length the pack's own, saved with it.
+              onClick={() => onChange(m)}
+              className={`rounded-full border px-3 py-1 text-sm tabular-nums transition-colors sm:px-2.5 sm:text-xs ${
+                on ? "border-accent bg-accent-soft text-accent" : "border-line bg-panel text-fg-2 hover:border-line-strong"
+              }`}
+            >
+              {m == null ? "No limit" : `${m} min`}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

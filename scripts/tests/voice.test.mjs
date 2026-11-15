@@ -17,6 +17,7 @@ import {
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
 import { REPO_ROOT } from "../content.mjs";
+import { clockLine, MINUTE_CHOICES } from "../voice.mjs";
 
 /* --------------------------------- locales -------------------------------- */
 
@@ -1173,4 +1174,108 @@ test("runs of underscores or *_ never make the hidden-line patterns backtrack", 
   fast(() => parseVoiceReply(`NARRATOR-F: x ${"*_".repeat(20000)}`));
   fast(() => parseGlosses(`${"_".repeat(40000)} GLOSS: a = b`));
   fast(() => parseVoiceReply(Array.from({ length: 2000 }, () => `<pause ${"<t>".repeat(100)}`).join("\n")));
+});
+
+/* ------------------------------- time budget ------------------------------ */
+
+const clockPlan = [
+  { id: "intro", title: "Introduction", kind: "intro" },
+  { id: "warmup:phrases", title: "Phrase warm-up", kind: "warmup" },
+  { id: "scene", title: "The market", kind: "scene" },
+  { id: "beat:1", title: "Arriving", kind: "beat" },
+  { id: "beat:2", title: "Paying", kind: "beat" },
+  { id: "debrief:top", title: "Top three", kind: "debrief" },
+];
+const min = (m) => m * 60_000;
+
+test("clockLine: no budget (No limit, or an invalid one) adds nothing", () => {
+  for (const minutes of [undefined, null, "", "10", 0, -5, 1000]) {
+    assert.equal(clockLine({ minutes, elapsedMs: min(3), plan: clockPlan, stage: "intro" }), "", JSON.stringify(minutes));
+  }
+});
+
+test("clockLine: minutes used, minutes left and the current part; on pace early on", () => {
+  const line = clockLine({ minutes: 10, elapsedMs: min(0.5), plan: clockPlan, stage: "intro" });
+  assert.equal(line, "CLOCK (from the app, not the learner): 0 of 10 minutes used, 10 left; current part: intro (Introduction). On pace.");
+  // Used rounds down, left rounds up: "0 left" is never said while there is time.
+  assert.match(clockLine({ minutes: 10, elapsedMs: min(7.9), plan: clockPlan, stage: "scene" }), /: 7 of 10 minutes used, 3 left; current part: scene \(The market\)\. On pace\.$/);
+  assert.match(clockLine({ minutes: 10, elapsedMs: 0, plan: clockPlan, stage: null }), /current part: not named yet\. On pace\.$/);
+});
+
+test("clockLine: behind the plan says so; a beat counts as the scene", () => {
+  // At 10 minutes the split is intro 1, warm-up 2, scene 5½, debrief 1½: by
+  // minute 4 the plan is in the scene.
+  assert.match(clockLine({ minutes: 10, elapsedMs: min(4), plan: clockPlan, stage: "warmup:phrases" }), /Behind the plan: by now it has you in The market, so keep this part brief and move on\.$/);
+  assert.match(clockLine({ minutes: 10, elapsedMs: min(4), plan: clockPlan, stage: "beat:2" }), /On pace\.$/);
+  // Ahead of the plan is fine: the split is rough.
+  assert.match(clockLine({ minutes: 10, elapsedMs: min(0.2), plan: clockPlan, stage: "beat:1" }), /On pace\.$/);
+});
+
+test("clockLine: from 80% it says to start closing; at 100% and beyond, to finish within this turn and the next", () => {
+  assert.doesNotMatch(clockLine({ minutes: 10, elapsedMs: min(7.99), plan: clockPlan, stage: "beat:1" }), /closing/);
+  const closing = clockLine({ minutes: 10, elapsedMs: min(8), plan: clockPlan, stage: "beat:1" });
+  assert.match(closing, /: 8 of 10 minutes used, 2 left; current part: beat:1 \(Arriving\)\. Start closing the scene now: finish the current beat, skip the beats left, and move on to the closing part \(debrief:top\) within a turn or two\.$/);
+  const up = clockLine({ minutes: 10, elapsedMs: min(10), plan: clockPlan, stage: "beat:2" });
+  assert.match(up, /: 10 minutes used of 10, the time is up; current part: beat:2 \(Paying\)\. Finish within this turn and the next: end the scene and give the closing part \(debrief:top\), one or two points\./);
+  assert.match(up, /If the learner asks to keep going, go along with it\.$/, "the session is never cut off");
+  assert.match(clockLine({ minutes: 10, elapsedMs: min(13.5), plan: clockPlan, stage: "beat:2" }), /: 13 minutes used of 10, the time is up \(3 minutes over\);/);
+  // Without a debrief part it still asks for a short closing.
+  assert.match(clockLine({ minutes: 5, elapsedMs: min(6), plan: clockPlan.slice(0, 5), stage: "beat:2" }), /give a short closing, one or two points/);
+});
+
+test("clockLine: kids get the story and the goodbye, as in their Time budget section", () => {
+  const kidsPlan = [
+    { id: "intro", title: "Introduction", kind: "intro" },
+    { id: "scene", title: "The farm", kind: "scene" },
+    { id: "beat:1", title: "Cows", kind: "beat" },
+    { id: "ending:bye", title: "Goodnight", kind: "ending" },
+  ];
+  const closing = clockLine({ minutes: 5, elapsedMs: min(4), plan: kidsPlan, stage: "beat:1", mode: "kids" });
+  assert.match(closing, /Start bringing the story to its end now: finish this bit of it, skip what's left, and move on to the goodbye \(ending:bye\) within a turn or two\.$/);
+  const up = clockLine({ minutes: 5, elapsedMs: min(5), plan: kidsPlan, stage: "beat:1", mode: "kids" });
+  assert.match(up, /Finish within this turn and the next: end the story happily and say the goodbye \(ending:bye\), with a word of praise and one word to remember\./);
+  assert.doesNotMatch(`${closing} ${up}`, /scene|debrief|one or two points|closing part/);
+  // Adult wording stays the default.
+  assert.match(clockLine({ minutes: 5, elapsedMs: min(5), plan: kidsPlan, stage: "beat:1" }), /give the closing part \(ending:bye\), one or two points/);
+});
+
+test("clockLine: a length picked mid-session, already in the scene, starts on pace (the clock restarts at the pick)", () => {
+  // The browser restarts the clock at a mid-session pick and sends the
+  // picked length as the budget: 3 minutes picked in the scene is 0 of 3
+  // used, not closing time. The split puts earlier parts first; being past
+  // them is ahead of the plan, which the line never calls behind.
+  assert.equal(
+    clockLine({ minutes: 3, elapsedMs: 0, plan: clockPlan, stage: "beat:1" }),
+    "CLOCK (from the app, not the learner): 0 of 3 minutes used, 3 left; current part: beat:1 (Arriving). On pace.",
+  );
+  assert.match(clockLine({ minutes: 3, elapsedMs: min(1.5), plan: clockPlan, stage: "beat:2" }), /: 1 of 3 minutes used, 2 left; [^\n]*On pace\.$/);
+  assert.match(clockLine({ minutes: 3, elapsedMs: min(2.5), plan: clockPlan, stage: "beat:2" }), /Start closing the scene now/);
+});
+
+test("clockLine: a fractional budget is read rounded, like the Time budget heading", () => {
+  assert.match(clockLine({ minutes: 7.5, elapsedMs: min(1), plan: clockPlan, stage: "intro" }), /: 1 of 8 minutes used, 7 left;/);
+});
+
+test("clockLine: elapsed time it can't believe is clamped, not trusted", () => {
+  assert.match(clockLine({ minutes: 10, elapsedMs: -5000, plan: clockPlan, stage: "intro" }), /: 0 of 10 minutes used, 10 left/);
+  assert.match(clockLine({ minutes: 10, elapsedMs: "lots", plan: clockPlan, stage: "intro" }), /: 0 of 10 minutes used, 10 left/);
+  assert.match(clockLine({ minutes: 10, elapsedMs: Number.MAX_VALUE, plan: clockPlan, stage: "intro" }), /: 1440 minutes used of 10/);
+});
+
+test("voiceTurnPrompt: the clock line sits after the learner's words, last before the reply; none without one", () => {
+  const clock = "CLOCK (from the app, not the learner): 1 of 5 minutes used, 4 left; current part: intro (Introduction). On pace.";
+  const p = voiceTurnPrompt([], "Hola", clock);
+  assert.ok(p.includes(`[LEARNER]\nHola\n\n${clock}\n\n[DOJO MASTER]\nReply as the dojo master`), p);
+  assert.equal(voiceTurnPrompt([], "Hola", ""), voiceTurnPrompt([], "Hola"));
+  assert.doesNotMatch(voiceTurnPrompt([], "Hola"), /CLOCK/);
+});
+
+test("normalizeVoiceSettings: the last session length per mode, only from that mode's choices", () => {
+  assert.deepEqual(normalizeVoiceSettings(null).sessionMinutes, { adult: null, kids: null }, "No limit by default");
+  assert.deepEqual(normalizeVoiceSettings({ sessionMinutes: { adult: 15, kids: 3 } }).sessionMinutes, { adult: 15, kids: 3 });
+  // 3 is a kids length, 30 an adult one; "10" is a string: none of them fit.
+  assert.deepEqual(normalizeVoiceSettings({ sessionMinutes: { adult: 3, kids: 30 } }).sessionMinutes, { adult: null, kids: null });
+  assert.deepEqual(normalizeVoiceSettings({ sessionMinutes: { adult: "10", teen: 5 } }).sessionMinutes, { adult: null, kids: null });
+  assert.deepEqual(normalizeVoiceSettings({ sessionMinutes: 10 }).sessionMinutes, { adult: null, kids: null });
+  assert.deepEqual(Object.keys(MINUTE_CHOICES), ["adult", "kids"]);
 });

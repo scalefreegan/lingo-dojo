@@ -39,6 +39,15 @@ export interface Draft {
    *  kept apart from `overrides` because it describes the scene, not the
    *  learner, so the Profile popover never shows it. */
   location: string;
+  /** The pack's own session length, in minutes: one it was loaded with, or
+   *  one picked in the Go tab's "How long do you have?" for this draft
+   *  (picking counts, even re-picking the length already shown). null = the
+   *  pack has none of its own, and the picker shows the last choice
+   *  remembered in the voice settings (effectiveMinutes), which the session
+   *  uses but a save never writes into the pack. Saved as
+   *  `overrides.minutes`; kept apart from `overrides` for the same reason as
+   *  the location. */
+  minutes: number | null;
   notes: string;
   /** Overrides from a loaded pack that the form has no field for; written
    *  back untouched on save. */
@@ -122,6 +131,7 @@ export function newDraft(content: ContentReply): Draft {
     units,
     overrides: emptyOverrides(),
     location: "",
+    minutes: null,
     notes: "",
     extraOverrides: {},
   };
@@ -178,8 +188,41 @@ export function resetUnitsToDefaults(content: ContentReply, draft: Draft): Draft
   return { ...draft, units: newDraft(content).units };
 }
 
-/** The pack the server sees (assemble, export, save). */
-export function draftToPack(draft: Draft): PackInput {
+/** The session length the Go tab's picker shows and the session uses
+ *  (assemble, Copy, export, the voice turn): the pack's own, else the last
+ *  one remembered (null = No limit). A save writes only the pack's own. */
+export function effectiveMinutes(draft: Draft, remembered: number | null): number | null {
+  return draft.minutes ?? remembered;
+}
+
+/** The longest session budget; scripts/plan.mjs MAX_MINUTES must match. */
+export const MAX_MINUTES = 240;
+
+/** A pack's `overrides.minutes` as the session uses it, by the same rule as
+ *  scripts/plan.mjs readMinutes: a positive number up to MAX_MINUTES,
+ *  rounded to whole minutes and at least 1; else null. The picker and the
+ *  timeline show this, so they agree with the prompt's heading and the
+ *  clock line about a hand-written 7.5 (8). */
+export function validMinutes(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 && v <= MAX_MINUTES ? Math.max(1, Math.round(v)) : null;
+}
+
+/** The warning for a pack whose own `minutes` is unusable ("ten") while the
+ *  remembered length stands in for the session: the assembler can't see the
+ *  bad value then (the pack it gets carries the remembered one), so the Go
+ *  tab adds this to the assembler's warnings. Null when there is nothing to
+ *  say; with no length standing in, the bad value reaches the assembler,
+ *  which warns itself. */
+export function minutesWarning(draft: Draft, effective: number | null): string | null {
+  if (draft.minutes != null || effective == null || !Object.hasOwn(draft.extraOverrides, "minutes")) return null;
+  return `Pack override "minutes" must be a number of minutes above 0 and at most ${MAX_MINUTES}, not ${JSON.stringify(draft.extraOverrides.minutes)}; ignored (using your last choice, ${effective} min, until you pick one).`;
+}
+
+/** The pack the server sees. With the default `minutes` (the pack's own)
+ *  it is what a save writes; assemble, export and the voice turn pass the
+ *  picker's value (effectiveMinutes), so the prompt is paced for whatever
+ *  the picker shows without a remembered default being saved into a pack. */
+export function draftToPack(draft: Draft, minutes: number | null = draft.minutes): PackInput {
   const overrides: Record<string, unknown> = { ...draft.extraOverrides };
   for (const { key } of OVERRIDE_FIELDS) {
     const v = draft.overrides[key].trim();
@@ -188,6 +231,10 @@ export function draftToPack(draft: Draft): PackInput {
   const location = draft.location.trim();
   if (location) overrides.location = location;
   else delete overrides.location;
+  // A chosen length replaces whatever a loaded pack had there (an invalid
+  // value kept in extraOverrides included); without one, an invalid value
+  // stays, so the assembler's warning about it is seen.
+  if (minutes != null) overrides.minutes = minutes;
   const quick = draft.scenarioMode === "quick";
   return {
     title: draft.title,
@@ -204,9 +251,13 @@ export function packToDraft(pack: Pack): Draft {
   const overrides = emptyOverrides();
   const extraOverrides: Record<string, unknown> = {};
   let location = "";
+  let minutes: number | null = null;
   for (const [k, v] of Object.entries(pack.overrides ?? {})) {
     if (OVERRIDE_FIELDS.some((f) => f.key === k) && v != null) overrides[k as OverrideKey] = String(v);
     else if (k === "location") location = v == null ? "" : String(v);
+    // A value the picker can't hold stays as an extra override, written
+    // back untouched, so the assembler still warns about it.
+    else if (k === "minutes" && validMinutes(v) != null) minutes = v as number;
     else extraOverrides[k] = v;
   }
   const quick = !pack.scenario && !!pack.quick_scenario;
@@ -220,6 +271,7 @@ export function packToDraft(pack: Pack): Draft {
     units: [...pack.units],
     overrides,
     location,
+    minutes,
     notes: pack.notes,
     extraOverrides,
   };
@@ -321,7 +373,7 @@ export function loadRememberedDraft(mode: Mode): Draft | null {
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<Draft>;
     if (!Array.isArray(d.units) || typeof d.overrides !== "object" || d.overrides === null) return null;
-    return { ...newDraftShape(), ...d, overrides: { ...emptyOverrides(), ...d.overrides } } as Draft;
+    return { ...newDraftShape(), ...d, overrides: { ...emptyOverrides(), ...d.overrides }, minutes: validMinutes(d.minutes) == null ? null : d.minutes } as Draft;
   } catch {
     return null;
   }
@@ -349,6 +401,7 @@ function newDraftShape(): Draft {
     units: [],
     overrides: emptyOverrides(),
     location: "",
+    minutes: null,
     notes: "",
     extraOverrides: {},
   };

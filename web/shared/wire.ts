@@ -489,6 +489,9 @@ export interface VoiceSettings {
   review: boolean;
   /** Start listening again as soon as the dojo master finishes. */
   handsFree: boolean;
+  /** The Go tab's last "How long do you have?" choice per mode, in minutes;
+   *  null = No limit. The picker starts here when the pack has no minutes. */
+  sessionMinutes: Record<Mode, number | null>;
   /** provider → locale (BCP-47) → slot ("character:female") → voice id. */
   voices: Partial<Record<TtsProvider, Record<string, Partial<Record<VoiceSlot | VoiceSpeaker, string>>>>>;
 }
@@ -511,6 +514,9 @@ export interface VoiceSettingsReply {
   speakers: Record<Mode, VoiceSpeaker[]>;
   /** Each mode's voice slots, in picker order. */
   slots: Record<Mode, VoiceSlot[]>;
+  /** The "How long do you have?" picker's lengths per mode, in minutes
+   *  (No limit is always offered too). */
+  minuteChoices: Record<Mode, number[]>;
   /** Where the keys go, repo-relative, for the setup hint. */
   envFile: string;
   /** BCP-47 locales for the session languages named in the query
@@ -518,7 +524,8 @@ export interface VoiceSettingsReply {
   locales: { target: string | null; native: string | null };
 }
 
-export type VoiceSettingsRequest = Partial<VoiceSettings>;
+/** `sessionMinutes` merges per mode: send only the mode that changed. */
+export type VoiceSettingsRequest = Partial<Omit<VoiceSettings, "sessionMinutes">> & { sessionMinutes?: Partial<Record<Mode, number | null>> };
 
 /** One entry of a provider's voice list. `match`: it speaks the locale asked
  *  for natively (listed first). */
@@ -601,6 +608,10 @@ export interface VoiceTurnRequest {
   /** The session's narrator gender, drawn at session start (/cast); ignored
    *  when the pack's narrator unit fixes it. */
   narratorGender?: VoiceGender;
+  /** Milliseconds since the session's first turn (0 on the first). With
+   *  `pack.overrides.minutes` set, the server adds a clock line to the turn
+   *  from it; the model has no sense of time otherwise. */
+  elapsedMs?: number;
 }
 
 export interface VoiceTurnReply {

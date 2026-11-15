@@ -71,6 +71,8 @@ declare module "*/scripts/assemble.mjs" {
   export function assemble(
     content: Pick<import("../shared/wire.ts").ContentReply, "schema" | "frame" | "profile" | "units" | "scenarios">,
     pack: unknown,
+    /** Which tree `content` is; the Time budget splits that mode's parts. */
+    mode?: import("../shared/wire.ts").Mode,
   ): import("../shared/wire.ts").AssembleResult;
 }
 
@@ -131,7 +133,11 @@ declare module "*/scripts/voice.mjs" {
   export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string };
   export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
   export function voiceSystemPrompt(markdown: string, mode: Mode): string;
-  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string): string;
+  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string): string;
+  /** The "How long do you have?" choices per mode, in minutes. */
+  export const MINUTE_CHOICES: Record<Mode, number[]>;
+  /** The time-budget line for a turn's prompt; "" without a budget. */
+  export function clockLine(o: { minutes: unknown; elapsedMs: unknown; plan: import("../shared/wire.ts").VoicePlanItem[]; stage: string | null | undefined; mode?: Mode }): string;
   export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;

@@ -12,6 +12,7 @@ import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
+import { MAX_MINUTES, validMinutes } from "../draft";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -42,6 +43,8 @@ const JUMP = "[jump]";
 const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
 /** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
 const DIRECT = "[direct]";
+/** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
+const EXTEND_MINUTES = 5;
 /** Whether the timeline beside the transcript is open (per browser). */
 const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
@@ -55,10 +58,13 @@ export default function VoicePanel({
   openRequest = false,
   onOpened,
   active = true,
+  minutesPick = 0,
 }: {
   mode: Mode;
   pack: PackInput;
   langs: VoiceLanguages;
+  /** Bumped by every pick in the Go tab's "How long do you have?". */
+  minutesPick?: number;
   /** False while the Go tab is hidden: nothing plays or listens then. */
   active?: boolean;
   /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
@@ -86,10 +92,10 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} onClose={() => setOpen(false)} />;
 }
 
-function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -226,6 +232,49 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
+  // The time budget: the pack's minutes (the Go tab's picker, live) plus
+  // what +5 min added to this session, which never touches the pack.
+  // `startedAt` is the pacing clock's origin: the first turn, or the moment
+  // a length was picked mid-session. Each turn sends the time since then,
+  // and the server turns it into the dojo master's clock line. Restart
+  // starts it all over.
+  const [extraMinutes, setExtraMinutes] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const baseMinutes = validMinutes(pack.overrides.minutes);
+  // A length picked mid-session means that many minutes from now: the clock
+  // starts again at the pick, the budget is exactly the length picked (any
+  // +5 min dropped; +5 min then extends from there). Counting from the
+  // first turn instead would make "3 minutes" picked at minute 12 read as
+  // 12 of 15 used, already closing time. Adjusted while rendering, React's
+  // pattern for state that follows a prop; the ref follows in the effect
+  // below. Keyed on the pick itself (`minutesPick`), not only on the value:
+  // re-picking the length already shown (after it ran out, say) restarts
+  // the clock too. A length that changes without a pick (another pack
+  // loaded mid-session) is treated the same.
+  const [lastPick, setLastPick] = useState({ pick: minutesPick, base: baseMinutes });
+  if (minutesPick !== lastPick.pick || baseMinutes !== lastPick.base) {
+    setLastPick({ pick: minutesPick, base: baseMinutes });
+    if (startedAt != null) {
+      setStartedAt(Date.now());
+      setExtraMinutes(0);
+    }
+  }
+  // Capped where the server stops believing a budget (it would otherwise
+  // drop the clock altogether).
+  const budget = baseMinutes == null ? null : Math.min(MAX_MINUTES, baseMinutes + extraMinutes);
+  const startedAtRef = useRef<number | null>(null);
+  // Turns chain through callbacks made in earlier renders (hands-free:
+  // reply → listen → auto-stop → next turn; the "Play the reply" notice), so
+  // a turn reads the budget and the pack from here at request time, never
+  // from its closure: a +5 min or a new length counts from the next turn.
+  const budgetRef = useRef(budget);
+  const packRef = useRef(pack);
+  useEffect(() => {
+    budgetRef.current = budget;
+    packRef.current = pack;
+    // A mid-session pick moves the clock's origin in state; the turn reads the ref.
+    startedAtRef.current = startedAt;
+  });
 
   // Mutable session plumbing the async flows read without stale closures.
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
@@ -722,7 +771,7 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts || castRef.current.locale !== locale)) {
         const wanted = latestCast(before);
         const ages = Object.fromEntries(Object.values(wanted).map((n) => [n.slot, n.age]));
-        const next = await getCast({ mode, locale, units: pack.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
+        const next = await getCast({ mode, locale, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
@@ -743,7 +792,17 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
           heldBy.current.set(whoKey(n), { voice: v, fallback: next.fallbacks?.[n.slot], asked: n.age });
         }
       }
-      const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
+      // The session's budget goes to the server as the pack's minutes, so the
+      // prompt's Time budget and the clock line both see the +5 min.
+      if (startedAtRef.current == null) {
+        startedAtRef.current = Date.now();
+        setStartedAt(startedAtRef.current);
+      }
+      const cur = packRef.current;
+      const turnBudget = budgetRef.current;
+      const turnPack = turnBudget == null ? cur : { ...cur, overrides: { ...cur.overrides, minutes: turnBudget } };
+      const elapsedMs = Date.now() - startedAtRef.current;
+      const r = await voiceTurn({ mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
       const notes = r.castNotes ?? [];
@@ -1217,6 +1276,9 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     setSession([]);
     setPicked(null);
     setPlan([]);
+    startedAtRef.current = null;
+    setStartedAt(null);
+    setExtraMinutes(0);
     setComposer("");
     setHeldRequest(null);
     setError(null);
@@ -1269,7 +1331,16 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // below the session), it still clears the top bars rather than being
       // pushed up under them; its list scrolls on its own.
       <aside className={`shrink-0 lg:sticky lg:top-(--below-bars) lg:flex lg:max-h-[calc(100dvh-var(--below-bars)-var(--below-session))] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
-        <SessionTimeline plan={plan} stage={stage} open={timelineOpen} onToggle={toggleTimeline} onJump={jump} disabled={!canAct} />
+        <SessionTimeline
+          plan={plan}
+          stage={stage}
+          open={timelineOpen}
+          onToggle={toggleTimeline}
+          onJump={jump}
+          disabled={!canAct}
+          clock={budget != null && startedAt != null ? { minutes: budget, startedAt } : null}
+          onExtend={() => setExtraMinutes((x) => x + EXTEND_MINUTES)}
+        />
       </aside>
     )}
     <Card className="tatami flex min-w-0 flex-1 flex-col gap-4 border-line-strong/60" data-testid="voice-panel">

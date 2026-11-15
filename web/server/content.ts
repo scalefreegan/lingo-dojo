@@ -261,7 +261,7 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<AssembleRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack}");
-  sendJson(res, 200, assemble(learnerContent(mode, ctx), body.pack) satisfies AssembleResult);
+  sendJson(res, 200, assemble(learnerContent(mode, ctx), body.pack, mode) satisfies AssembleResult);
 }
 
 export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
@@ -270,7 +270,7 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse, ct
   const body = await readJsonBody<Partial<ExportRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack, id}");
   const id = checkId(body.id);
-  const { markdown, stats, warnings } = assemble(learnerContent(mode, ctx), body.pack);
+  const { markdown, stats, warnings } = assemble(learnerContent(mode, ctx), body.pack, mode);
   const path = writeExport(id, markdown, exportsDirFor(mode));
   sendJson(res, 200, { path, stats, warnings } satisfies ExportResult);
 }
