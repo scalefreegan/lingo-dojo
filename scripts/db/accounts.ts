@@ -350,22 +350,41 @@ export class LanguageTakenError extends Error {
 }
 
 /**
+ * Lock the learner's row (FOR UPDATE), in the caller's transaction. Every
+ * write that can give a live profile a target language (an add, the naming
+ * of a blank profile) and every archive takes it first, before any profile
+ * row: the one-per-language rule has no unique index behind it (that would
+ * need a migration), so this lock is what serialises the check-then-write,
+ * and the one order (learner, then profiles) keeps two writers from
+ * deadlocking.
+ */
+async function lockLearner(tx: Db, learnerId: string): Promise<void> {
+  await tx.select({ id: learners.id }).from(learners).where(eq(learners.id, learnerId)).for("update");
+}
+
+/** Refuse `target` when another live profile of the learner already has it
+ *  (LanguageTakenError). Call it holding lockLearner. A blank target never
+ *  clashes. */
+async function assertLanguageFree(tx: Db, learnerId: string, target: string, exceptId?: string): Promise<void> {
+  if (!target.trim()) return;
+  const clash = (await listLanguageProfiles(tx, learnerId)).find((p) => p.id !== exceptId && sameLanguage(p.targetLanguage, target));
+  if (clash) throw new LanguageTakenError(clash);
+}
+
+/**
  * Add a language to a learner. One live profile per target language: a
  * second one for a language the learner already practises is refused with
  * LanguageTakenError (a variant, say Mexican or Castilian Spanish, is a
  * setting of the one profile, not another profile). The learner's row is
- * locked first, so two adds of one language at once can't both pass the
- * check. A blank target language is allowed (a library with no
- * languages.yaml) and never clashes.
+ * locked first (lockLearner), so two adds of one language at once, or an
+ * add and the naming of a blank profile, can't both pass the check. A blank
+ * target language is allowed (a library with no languages.yaml) and never
+ * clashes.
  */
 export async function createLanguageProfile(db: Db, learnerId: string, values: NewLanguageProfile): Promise<LanguageProfile> {
   return db.transaction(async (tx) => {
-    await tx.select({ id: learners.id }).from(learners).where(eq(learners.id, learnerId)).for("update");
-    const target = values.targetLanguage ?? "";
-    if (target.trim()) {
-      const clash = (await listLanguageProfiles(tx, learnerId)).find((p) => sameLanguage(p.targetLanguage, target));
-      if (clash) throw new LanguageTakenError(clash);
-    }
+    await lockLearner(tx, learnerId);
+    await assertLanguageFree(tx, learnerId, values.targetLanguage ?? "");
     const [row] = await forLearner(tx, learnerId).insert(languageProfiles, values);
     return row;
   });
@@ -389,12 +408,15 @@ export class LanguageIdentityError extends Error {
  * the same language is a no-op for that key (the stored spelling stays).
  * The one exception is a profile with no target language yet (made with
  * none, as a library with no languages.yaml allows): it may be given one,
- * unless the learner already practises it (LanguageTakenError). The row is
- * locked for the check, so a concurrent change waits.
+ * unless the learner already practises it (LanguageTakenError). The
+ * learner's row is locked first, then the profile's (the order
+ * createLanguageProfile and archiveLanguageProfile use), so a concurrent
+ * add, naming or change waits instead of passing the same check.
  */
 export async function updateLanguageProfile(db: Db, learnerId: string, id: string, patch: LanguageProfilePatch): Promise<LanguageProfile | undefined> {
   if (!isUuid(id)) return undefined;
   return db.transaction(async (tx) => {
+    await lockLearner(tx, learnerId);
     const mine = forLearner(tx, learnerId);
     const live = and(eq(languageProfiles.id, id), isNull(languageProfiles.archivedAt))!;
     const [current] = await tx.select().from(languageProfiles).where(mine.where(languageProfiles, live)).for("update");
@@ -403,10 +425,7 @@ export async function updateLanguageProfile(db: Db, learnerId: string, id: strin
     if (next.targetLanguage !== undefined) {
       if (sameLanguage(next.targetLanguage, current.targetLanguage)) delete next.targetLanguage;
       else if (current.targetLanguage.trim()) throw new LanguageIdentityError(current.targetLanguage);
-      else {
-        const clash = (await listLanguageProfiles(tx, learnerId)).find((p) => p.id !== id && sameLanguage(p.targetLanguage, next.targetLanguage!));
-        if (clash) throw new LanguageTakenError(clash);
-      }
+      else await assertLanguageFree(tx, learnerId, next.targetLanguage, id);
     }
     if (!Object.keys(next).length) return current;
     const [row] = await mine.update(languageProfiles, next, live);
@@ -420,8 +439,9 @@ export async function updateLanguageProfile(db: Db, learnerId: string, id: strin
  * live one: a learner always keeps one. Sessions that had it active move to
  * the learner's default language in the same transaction, so no session is
  * left on an archived one (a page still showing it gets stale_learner). The
- * learner's live profiles are locked first, so two archives at once of a
- * learner's last two languages can't both pass the count.
+ * learner's row and then its live profiles are locked first (the
+ * lockLearner order), so two archives at once of a learner's last two
+ * languages can't both pass the count.
  */
 export async function archiveLanguageProfile(
   db: Db,
@@ -431,6 +451,7 @@ export async function archiveLanguageProfile(
 ): Promise<{ profile: LanguageProfile } | { refused: "missing" | "last" }> {
   if (!isUuid(id)) return { refused: "missing" };
   return db.transaction(async (tx) => {
+    await lockLearner(tx, learnerId);
     const mine = forLearner(tx, learnerId);
     const live = await tx.select().from(languageProfiles).where(mine.where(languageProfiles, isNull(languageProfiles.archivedAt))).for("update");
     if (!live.some((p) => p.id === id)) return { refused: "missing" as const };

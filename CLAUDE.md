@@ -109,7 +109,7 @@ Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DI
 never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
-except `first-run.pg.test.mjs` and `packs.pg.test.mjs` when `LINGO_TEST_PG_URL` is set (each makes and
+except the `*.pg.test.mjs` files when `LINGO_TEST_PG_URL` is set (each makes and
 drops a throwaway database on that server; point it at a scratch one).
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,

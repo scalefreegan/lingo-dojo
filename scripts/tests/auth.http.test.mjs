@@ -17,7 +17,11 @@ import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, PASSWORD, addUser, client } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { tokenHash } from "../auth.mjs";
-import { disableUser, enableUser, setPassword } from "../db/accounts.ts";
+import { drizzle } from "drizzle-orm/pglite";
+import {
+  archiveLanguageProfile, createLanguageProfile, createLearner, createUser, disableUser, enableUser, setPassword, updateLanguageProfile,
+} from "../db/accounts.ts";
+import * as schema from "../db/schema.ts";
 import { agentMessages, authSessions, languageProfiles, learners, userSettings, users } from "../db/schema.ts";
 
 const root = copyFixture();
@@ -724,4 +728,28 @@ test("PUT /api/profile is all or nothing: a language archived between the sessio
     await testDb.query("drop trigger test_archive_language on learners");
     await testDb.query("drop function test_archive_language()");
   }
+});
+
+test("every language profile write locks the learner's row before any profile row (the one lock order)", async (t) => {
+  // PGlite can't race (languages.pg.test.mjs does, on a real Postgres), so
+  // this pins the order the race-safety rests on: the learner FOR UPDATE
+  // first, then the profiles, in each write that checks the
+  // one-per-language rule or the keep-one count.
+  const fresh = await freshDb();
+  t.after(fresh.close);
+  const seen = [];
+  const db = drizzle(fresh.client, { schema, logger: { logQuery: (q) => seen.push(q) } });
+  const user = await createUser(db, { username: "order", passwordHash: "x" });
+  const learner = await createLearner(db, user.id, ADULT);
+  const locks = () => seen.filter((q) => /for update/i.test(q)).map((q) => /from "(\w+)"/.exec(q)?.[1]);
+  const run = async (fn) => {
+    seen.length = 0;
+    await fn();
+    return locks();
+  };
+  const blank = await createLanguageProfile(db, learner.id, {});
+  assert.deepEqual(await run(() => createLanguageProfile(db, learner.id, { targetLanguage: "German" })), ["learners"]);
+  assert.deepEqual(await run(() => updateLanguageProfile(db, learner.id, blank.id, { targetLanguage: "Italian" })), ["learners", "language_profiles"]);
+  assert.deepEqual(await run(() => updateLanguageProfile(db, learner.id, blank.id, { level: "B1" })), ["learners", "language_profiles"]);
+  assert.deepEqual(await run(() => archiveLanguageProfile(db, user.id, learner.id, blank.id)), ["learners", "language_profiles"]);
 });

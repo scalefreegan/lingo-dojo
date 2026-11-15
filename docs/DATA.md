@@ -260,9 +260,13 @@ conversations. The phrase bank stays the learner's (keyed by `lang`).
   setting inside the one profile, like the level. The one exception is a
   profile with no target language yet (a library with no `languages.yaml`),
   which may be given one the learner doesn't already have. The check runs
-  under a lock on the learner's row (`createLanguageProfile`) or the
-  profile's (`updateLanguageProfile`) rather than a unique index, so it
-  needed no migration; an archived profile doesn't count, so a language
+  under a lock on the learner's row rather than a unique index, so it
+  needed no migration: every write that can give a live profile a target
+  language (`createLanguageProfile`, and `updateLanguageProfile` naming a
+  blank profile) takes it first (`lockLearner`), then the profile row, as
+  `archiveLanguageProfile` does; one order, so they can't deadlock. There is
+  no unarchive, a new learner's first profile can't clash, and the import
+  and first run make no profile of their own; an archived profile doesn't count, so a language
   archived and added again is a fresh profile. In the Profile popover,
   picking another target language is this pack's override, as before; to
   make it the default the popover offers **Switch to German** (when the
@@ -1302,7 +1306,12 @@ deletes cover undoing a single change.
   `conversations.test.mjs` the pure reconciliation;
   `conversations.pg.test.mjs` (with `LINGO_TEST_PG_URL`) sends End and a
   turn at once on 60 fresh conversations (it fails on the code before the
-  phase 3 review's lock fix). Language profiles: `auth.http.test.mjs` covers
+  phase 3 review's lock fix). `languages.pg.test.mjs` (with
+  `LINGO_TEST_PG_URL`) races the naming of a blank profile against an add
+  of that language, two namings of one language, and both against an
+  archive: one wins, the other is refused, no deadlock (it fails on the
+  code before the learner lock in `updateLanguageProfile`). Language
+  profiles: `auth.http.test.mjs` covers the lock order and
   language CRUD, picking, the last-used landing, the keep-one rule, and
   another learner's or account's language on every route;
   `packs.http.test.mjs` and `conversations.http.test.mjs` one learner's two
