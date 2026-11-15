@@ -423,6 +423,24 @@ test("owned-row rules hold at runtime for untyped callers", async (t) => {
   assert.equal((await forLearner(db, b).list(phrases)).length, 1);
 });
 
+test("insertOrIgnore: stamps the owner, skips a conflict (the owner is always in the target), returns only what it inserted", async (t) => {
+  const { db, close } = await freshDb();
+  t.after(close);
+  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLearner(db, a);
+  const pack = { folder: "", slug: "2026-10-19-x", title: "X", created: "2026-10-19T00:00:00Z" };
+  const live = { target: [packs.folder, packs.slug], targetWhere: sql`${packs.deletedAt} is null` };
+  const [made] = await ana.insertOrIgnore(packs, pack, live);
+  assert.equal(made.learnerId, a);
+  assert.deepEqual(await ana.insertOrIgnore(packs, { ...pack, title: "Again" }, live), [], "a conflict inserts nothing");
+  assert.equal((await ana.list(packs)).length, 1);
+  // Ben's identical row is not a conflict with Ana's.
+  assert.equal((await forLearner(db, b).insertOrIgnore(packs, pack, live)).length, 1);
+  // No target: any unique conflict skips.
+  assert.deepEqual(await ana.insertOrIgnore(packs, pack), []);
+  await assert.rejects(ana.insertOrIgnore(packs, { ...pack, learnerId: b }), /sets learnerId itself/);
+});
+
 test("where() keeps the owner filter in hand-written queries", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);

@@ -56,6 +56,13 @@ export interface UpsertOptions<T extends PgTable, K extends OwnerKey> {
   set: SetRow<T, K>;
 }
 
+export interface InsertOrIgnoreOptions {
+  /** The unique key's columns besides the owner, which is always added. */
+  target?: PgColumn[];
+  /** The predicate of a partial unique index. */
+  targetWhere?: SQL;
+}
+
 export interface OwnedScope<K extends OwnerKey> {
   readonly ownerId: string;
   /** `owner = id and (cond)`: for hand-written queries. */
@@ -67,6 +74,10 @@ export interface OwnedScope<K extends OwnerKey> {
   /** INSERT … ON CONFLICT (owner, …target) [WHERE targetWhere] DO UPDATE SET
    *  … WHERE owner = id. Returns the inserted or updated rows. */
   upsert<T extends OwnedTable<K>>(table: T, values: NewRow<T, K> | NewRow<T, K>[], opts: UpsertOptions<T, K>): Promise<Row<T>[]>;
+  /** INSERT … ON CONFLICT [(owner, …target) [WHERE targetWhere]] DO
+   *  NOTHING: the rows actually inserted (none for a conflict). With no
+   *  target, any unique conflict skips the row. */
+  insertOrIgnore<T extends OwnedTable<K>>(table: T, values: NewRow<T, K> | NewRow<T, K>[], opts?: InsertOrIgnoreOptions): Promise<Row<T>[]>;
   /** The owner cannot be changed through a scope: it is not in `set`. */
   update<T extends OwnedTable<K>>(table: T, set: SetRow<T, K>, cond: SQL): Promise<Row<T>[]>;
   remove<T extends OwnedTable<K>>(table: T, cond: SQL): Promise<Row<T>[]>;
@@ -131,6 +142,15 @@ export function ownedBy<K extends OwnerKey>(db: Db, key: K, ownerId: string): Ow
         .values(list)
         .onConflictDoUpdate({ target, targetWhere: opts.targetWhere, set: opts.set, setWhere: sql`${own} = ${ownerId}` })
         .returning();
+    },
+    async insertOrIgnore(table, values, opts = {}) {
+      const list = stamp(table, values);
+      if (!list.length) return [];
+      const own = owner(table);
+      const conflict = opts.target
+        ? { target: opts.target.includes(own) ? opts.target : [own, ...opts.target], where: opts.targetWhere }
+        : undefined;
+      return d.insert(table).values(list).onConflictDoNothing(conflict).returning();
     },
     async update(table, set, cond) {
       needCond("update", cond);

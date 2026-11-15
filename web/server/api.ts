@@ -6,7 +6,7 @@ import {
 } from "./auth.ts";
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
-import { handleAssemble, handleContent, handleExport, handleFolders, handlePacks, handleProfile } from "./content.ts";
+import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
 import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceTurn } from "./voice.ts";
@@ -19,7 +19,7 @@ import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceTurn } 
  * Reject cross-origin requests. Without this, any website the user visits
  * while `npm run dev` is up can POST to these routes — a text/plain body is a
  * CORS "simple request" (no preflight), so the browser sends it and the
- * server would write pack files and exports (and, once the chat lands, spawn
+ * server would write packs and exports (and, once the chat lands, spawn
  * agents that edit content/). A request with no Origin (same-origin
  * navigation, curl) is allowed; one whose Origin host doesn't match the
  * request Host is refused. The session cookie is SameSite=Lax, which already
@@ -126,16 +126,15 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // edit by the agent or an editor is live on the next request. The
       // library itself (GET /api/content) is readable in either mode. The
       // rest act for the active learner (`learner: true`: the page must
-      // name that learner): the profile is its row, and the mode its
-      // packs, folders, assembles and exports work in is its mode. Saved
-      // packs are still files shared by every account in this phase: any
-      // logged-in user can write, move and delete any pack in the mode of
-      // the learner they picked. That ends when packs move to the database
-      // per learner (DATA.md phase 2).
+      // name that learner): the profile is its row, its packs, folders and
+      // pack revisions are its rows in the database (no other learner's,
+      // not even the same account's), and the mode its assembles and
+      // exports work in is its mode.
       server.middlewares.use("/api/content", wrap(handleContent));
       server.middlewares.use("/api/profile", wrap(handleProfile, { learner: true }));
       server.middlewares.use("/api/packs", wrap(handlePacks, { learner: true }));
       server.middlewares.use("/api/folders", wrap(handleFolders, { learner: true }));
+      server.middlewares.use("/api/pack-revisions", wrap(handlePackRevisions, { learner: true }));
       server.middlewares.use("/api/assemble", wrap(handleAssemble, { learner: true }));
       server.middlewares.use("/api/export", wrap(handleExport, { learner: true }));
       // The embedded agent (SSE, auto-commit of content/ after each turn) and

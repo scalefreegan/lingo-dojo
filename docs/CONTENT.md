@@ -198,7 +198,15 @@ uses. The file is optional: if it is missing the loader reports a problem and
 the UI falls back to free-text fields. The native language defaults to the
 profile's `native_language`, or English when the profile has none.
 
-## `content/packs/<date>-<slug>.yaml` — a saved pack
+## `content/packs/<date>-<slug>.yaml` — a pack
+
+Saved packs live in the database, one set per learner (docs/DATA.md §Packs):
+the app's Save, Move, Rename and Delete write rows there, never files. The
+YAML files under `content/packs/` and `content/kids/packs/` are **seed
+packs** (copied to a new install's learners at the first run, and by
+`npm run db:import` after that) and the input of the offline
+`npm run export -- content/packs/<id>.yaml` CLI. The format below is both:
+the file's shape and the fields a saved pack has.
 
 ```yaml
 title: Palenque visit, gentle corrections
@@ -247,8 +255,17 @@ grouped one level deep in subfolders of `content/packs/` (`content/packs/oaxaca/
 The pack's `id` is the path relative to `content/packs/` without the extension:
 `2026-10-19-palenque-first-visit` or `oaxaca/2026-10-19-palenque-first-visit`.
 Folder names and file stems are both kebab-case. An empty folder is kept on disk
-with a `.keep` file so it survives git. Every pack write, move, or delete made by
-the app is a git commit (`packs: <what>`), so nothing is lost: `git log -- content/packs`.
+with a `.keep` file so it survives git (the import makes it an empty folder).
+A saved pack has the same id (`<folder>/<slug>`, the slug following the same
+rule: renaming a pack re-slugs it, keeping its date), so the import keeps
+folder, slug, title and created. Only the keys above are kept: a saved pack
+has no place for others (they are dropped on import and on save). Every pack
+write, move, rename, or delete made by the app is a revision in the database,
+and a delete is soft: the Library's **Recently deleted** brings a deleted pack
+back, and `/api/pack-revisions` lists (a page at a time) and restores any
+revision of a pack's content. Folders are not revisioned: only an empty folder
+can be deleted, and undeleting a pack brings its folder back. The app itself
+reads no pack files; only the import, the first run and `npm run export` do.
 
 ## Modes: `content/` and `content/kids/`
 
@@ -257,9 +274,10 @@ The app has two modes, each a complete content tree in the same file formats.
 (story, helper, games, energy slots instead of style and difficulty), `frame.md`,
 `profile.yaml`, `units/`, `scenarios/`, and `packs/`. `languages.yaml` is shared
 from the root. The kids level scale is `First words` · `Getting going` · `Chatty`
-(not CEFR); kids units carry those in `level`. Packs are addressed by the same
-ids within their tree (`2026-10-20-first-german-adventure` in kids mode is
-`content/kids/packs/2026-10-20-first-german-adventure.yaml`). Kids scenario
+(not CEFR); kids units carry those in `level`. Seed packs are addressed by the
+same ids within their tree (`2026-10-20-first-german-adventure` in kids mode is
+`content/kids/packs/2026-10-20-first-german-adventure.yaml`), and seed a kids
+learner; a kids learner's saved packs are its own, like an adult's. Kids scenario
 categories: Animals · Numbers & colors · Food · Bedtime · Adventure.
 
 ## `content/frame.md` — the fixed preamble

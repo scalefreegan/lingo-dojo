@@ -42,25 +42,23 @@ declare module "*/scripts/content.mjs" {
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
   /** Never throws; bad files land in `problems`. The mode and its levels are
    *  the route's to add (content.ts contentReply). */
-  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels"> & {
+  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels">;
+  /** A tree's pack files (seed content and the export CLI's input; the app's
+   *  saved packs are in the database): the packs that load, every folder
+   *  under packs/, and the problems of the pack files that did not load. */
+  export function loadPackFiles(root?: string): {
     packs: import("../shared/wire.ts").Pack[];
+    folders: string[];
+    problems: import("../shared/wire.ts").Problem[];
   };
-  /** Throws on an id PACK_ID_RE rejects or a path outside content/packs. */
-  export function savePack(id: string, pack: unknown, root?: string): string;
-  /** False when there was no such pack. Throws on a bad id. */
-  export function deletePack(id: string, root?: string): boolean;
-  // The folder operations and the pack moves throw an Error whose `code` is
-  // an errno name — EINVAL (bad name or id), ENOENT, EEXIST, ENOTEMPTY — which
-  // the routes map to a status.
-  /** Every directory under content/packs, sorted. */
-  export function listFolders(root?: string): string[];
-  export function createFolder(name: string, root?: string): string;
-  /** False when there was no such folder; ENOTEMPTY when it holds a pack. */
-  export function deleteFolder(name: string, root?: string): boolean;
-  /** Returns the new id. "" moves the pack to the top level. */
-  export function movePack(id: string, folder: string, root?: string): string;
-  /** Returns the new id (`<date>-<slug of title>` in the same folder). */
-  export function renamePack(id: string, title: string, root?: string): string;
+  /** `folder/stem` → {folder, stem}; a top-level id has folder "". */
+  export function splitPackId(id: string): { folder: string; stem: string };
+  /** A pack-shaped value with every field present and of its type; unknown
+   *  keys ride along. */
+  export function normalizePack(raw: unknown, id?: string): import("../shared/wire.ts").PackInput & Record<string, unknown>;
+  /** `<date>-<slug of title>`, the date kept from the stem, else `created`,
+   *  else today. */
+  export function renamedStem(stem: string, created: string, title: string): string;
   /** Merges the patch into content/profile.yaml in place (a blank value
    *  removes the key). Throws when the existing file is not a YAML mapping. */
   export function saveProfile(patch: import("../shared/wire.ts").ProfileRequest, root?: string): string;
