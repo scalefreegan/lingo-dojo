@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, listDeletedPacks, undeletePack } from "../api";
 import HistoryView from "./HistoryView";
+import PhraseBankView from "./PhraseBankView";
 import { slugify, splitPackId } from "../draft";
 import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
@@ -26,10 +27,11 @@ type LibraryProps = PackActions & {
 /* Library tab: two views. Saved packs, every one grouped by folder ("No
  * folder" first), with a toolbar to make a folder, and the recently deleted
  * packs below with Restore (the one-line outcome of an action lives on the
- * Go tab, where saving happens). And History, the learner's saved voice
- * sessions (HistoryView). */
+ * Go tab, where saving happens). History, the learner's saved voice
+ * sessions (HistoryView). And the phrase bank (PhraseBankView): the
+ * active language's phrases with how well each is known. */
 export default function LibraryTab(props: LibraryProps) {
-  const [view, setView] = useState<"packs" | "history">("packs");
+  const [view, setView] = useState<"packs" | "history" | "bank">("packs");
   const tabClass = (on: boolean) =>
     `rounded-lg px-3 py-1 text-sm font-medium transition-colors ${on ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-raised hover:text-fg"}`;
   return (
@@ -41,8 +43,17 @@ export default function LibraryTab(props: LibraryProps) {
         <button type="button" role="tab" aria-selected={view === "history"} className={tabClass(view === "history")} onClick={() => setView("history")} data-testid="library-history">
           History
         </button>
+        <button type="button" role="tab" aria-selected={view === "bank"} className={tabClass(view === "bank")} onClick={() => setView("bank")} data-testid="library-bank">
+          Phrase bank
+        </button>
       </div>
-      {view === "history" ? <HistoryView /> : <PacksView {...props} />}
+      {view === "history" ? (
+        <HistoryView bankLanguage={props.content.profile?.target_language} />
+      ) : view === "bank" ? (
+        <PhraseBankView />
+      ) : (
+        <PacksView {...props} />
+      )}
     </div>
   );
 }

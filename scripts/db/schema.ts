@@ -22,7 +22,12 @@
 // child of such a row (a revision, a turn) reaches its parent through both
 // (parent id, learner_id) and (parent id, language_profile_id), so it can't
 // sit under another language, learner or account than its parent. The
-// phrase bank stays keyed by learner and `lang`.
+// phrase bank joined them in migration 0003: phrases, their examples, cards,
+// reviews and cloze items belong to one language profile too (a learner's
+// Spanish bank and German bank are separate), the phrase reaching its
+// profile through (language_profile_id, learner_id) and each child its
+// parent through both (parent id, learner_id) and (parent id,
+// language_profile_id).
 //
 // Deletes cascade from a parent to children that mean nothing without it
 // (a learner's packs, a conversation's turns, a phrase's cards). Links that
@@ -366,7 +371,13 @@ export const phrases = pgTable(
     learnerId: uuid("learner_id")
       .notNull()
       .references(() => learners.id, { onDelete: "cascade" }),
-    /** BCP-47 of the variant it was learned in, e.g. es-MX. */
+    /** The language whose bank it is in, one of the learner's (composite
+     *  key). Its identity is per profile: one row per target form. */
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** BCP-47 of the variant it was first met in, e.g. es-MX ("" when the
+     *  session's language has no known locale). Provenance only, not part
+     *  of the identity: a pack set in Spain, inside a Mexican Spanish
+     *  profile, glosses "gracias" into the same row. */
     lang: text("lang").notNull(),
     /** Target form; null while pending (a scenario meaning not yet paired). */
     text: text("text"),
@@ -396,16 +407,19 @@ export const phrases = pgTable(
       "phrases_complete_or_pending",
       sql`(${t.text} is not null and ${t.norm} is not null) or (${t.text} is null and ${t.norm} is null and ${t.meaningNorm} is not null)`,
     ),
-    // Identity (DATA.md): complete phrases by target form, pending ones by
-    // meaning. When a target form turns up for a pending row, the pending row
-    // is filled in if no complete phrase has that norm; otherwise it is
-    // deleted and the complete one kept. The gloss upsert targets the first
-    // index (ON CONFLICT … WHERE text IS NOT NULL).
-    uniqueIndex("phrases_identity").on(t.learnerId, t.lang, t.norm).where(sql`${t.text} is not null`),
-    uniqueIndex("phrases_pending_identity").on(t.learnerId, t.lang, t.meaningNorm).where(sql`${t.text} is null`),
+    foreignKey({ name: "phrases_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    // Identity (DATA.md), per language profile: complete phrases by target
+    // form, pending ones by meaning. When a target form turns up for a
+    // pending row, the pending row is filled in if no complete phrase has
+    // that norm; otherwise it is deleted and the complete one kept. The
+    // gloss upsert targets the first index (ON CONFLICT
+    // (language_profile_id, norm) WHERE text IS NOT NULL).
+    uniqueIndex("phrases_profile_identity").on(t.languageProfileId, t.norm).where(sql`${t.text} is not null`),
+    uniqueIndex("phrases_profile_pending_identity").on(t.languageProfileId, t.meaningNorm).where(sql`${t.text} is null`),
     unique("phrases_id_learner").on(t.id, t.learnerId),
-    // Recall and the bank list by learner + language (prefix): the identity
-    // index already leads with (learner_id, lang).
+    unique("phrases_id_profile").on(t.id, t.languageProfileId),
+    // The bank, recall and practice list one profile's rows: the identity
+    // index already leads with language_profile_id.
     // Trigram GIN indexes serve the LOOKUP direction (a short query found
     // inside phrases: `query <% text`). Per-turn retrieval runs the other way
     // (a phrase found inside the message), which these indexes don't serve;
@@ -421,6 +435,7 @@ export const phraseExamples = pgTable(
     id: id(),
     phraseId: uuid("phrase_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     conversationId: uuid("conversation_id"),
     turnId: uuid("turn_id"),
     sentence: text("sentence").notNull(),
@@ -429,6 +444,7 @@ export const phraseExamples = pgTable(
   },
   (t) => [
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "phrase_examples_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
     // Provenance, the learner's own only; hand-edited to SET NULL (col).
     foreignKey({ name: "phrase_examples_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
     foreignKey({ name: "phrase_examples_turn_fk", columns: [t.turnId, t.learnerId], foreignColumns: [turns.id, turns.learnerId] }).onDelete("set null"),
@@ -456,6 +472,7 @@ export const cards = pgTable(
     id: id(),
     phraseId: uuid("phrase_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     skill: text("skill").$type<"recognize" | "listen" | "produce">().notNull(),
     due: tz("due").notNull().defaultNow(),
     stability: doublePrecision("stability").notNull().default(0),
@@ -473,10 +490,13 @@ export const cards = pgTable(
     check("cards_skill", sql`${t.skill} in ('recognize', 'listen', 'produce')`),
     check("cards_state", sql`${t.state} between 0 and 3`),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "cards_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
     unique("cards_phrase_skill").on(t.phraseId, t.skill),
     unique("cards_id_learner").on(t.id, t.learnerId),
-    // The practice queue and the review block: a learner's due cards.
-    index("cards_learner_due_idx").on(t.learnerId, t.due),
+    unique("cards_id_profile").on(t.id, t.languageProfileId),
+    // The practice queue, the review block and the bank's "due": one
+    // language's due cards.
+    index("cards_profile_due_idx").on(t.languageProfileId, t.due),
   ],
 );
 
@@ -488,6 +508,7 @@ export const reviews = pgTable(
     id: bigserial("id", { mode: "number" }).primaryKey(),
     cardId: uuid("card_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     mode: text("mode").$type<"flashcard" | "cloze" | "listening" | "speak" | "session">().notNull(),
     rating: smallint("rating").notNull(),
     answer: text("answer"),
@@ -505,13 +526,14 @@ export const reviews = pgTable(
     check("reviews_rating", sql`${t.rating} between 1 and 4`),
     check("reviews_verdict", sql`${t.verdict} in ('exact', 'close', 'accepted', 'wrong', 'self')`),
     foreignKey({ columns: [t.cardId, t.learnerId], foreignColumns: [cards.id, cards.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "reviews_card_profile_fk", columns: [t.cardId, t.languageProfileId], foreignColumns: [cards.id, cards.languageProfileId] }).onDelete("cascade"),
     // Hand-edited to ON DELETE SET NULL ("conversation_id").
     foreignKey({ name: "reviews_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
     // At most one session review per card per conversation (DATA.md).
     uniqueIndex("reviews_one_session_review").on(t.cardId, t.conversationId).where(sql`${t.mode} = 'session'`),
     index("reviews_card_at_idx").on(t.cardId, t.reviewedAt),
-    // "Trouble": lapses in the last 30 days, per learner.
-    index("reviews_learner_at_idx").on(t.learnerId, t.reviewedAt),
+    // "Trouble": lapses in the last 30 days, per language.
+    index("reviews_profile_at_idx").on(t.languageProfileId, t.reviewedAt),
   ],
 );
 
@@ -521,6 +543,7 @@ export const clozeItems = pgTable(
     id: id(),
     phraseId: uuid("phrase_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     sentence: text("sentence").notNull(),
     /** Character offsets of the blank in `sentence`, end exclusive. */
     blankStart: integer("blank_start").notNull(),
@@ -533,6 +556,7 @@ export const clozeItems = pgTable(
     check("cloze_items_origin", sql`${t.origin} in ('example', 'generated')`),
     check("cloze_items_blank", sql`0 <= ${t.blankStart} and ${t.blankStart} < ${t.blankEnd}`),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "cloze_items_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
     index("cloze_items_phrase_idx").on(t.phraseId),
   ],
 );

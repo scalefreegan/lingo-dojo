@@ -147,7 +147,7 @@ export default function LanguageSwitcher({
               </div>
             )}
             {message && <p className="text-sm text-err sm:text-xs">{message}</p>}
-            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs and History. Change this one's level, variant, goals and notes under the profile pill.</p>
+            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs, History and phrase bank. Change this one's level, variant, goals and notes under the profile pill.</p>
           </div>
         </>
       )}

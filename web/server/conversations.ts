@@ -5,8 +5,10 @@ import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs"
 import {
   CONVERSATION_ID_RE, IDLE_END_MS, MAX_PAGE, MAX_TURN_PAGE, PAGE_SIZE, TURN_PAGE, conversationTitle, itemFromRow, planTurnWrite, readPage,
 } from "../../scripts/conversations.mjs";
-import { languageProfileRefsOfUser } from "../../scripts/db/accounts.ts";
+import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/db/accounts.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
+import { addScenarioPhrases, recordGlosses } from "../../scripts/db/phrases.ts";
+import { glossCaptures, sameLanguage, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
@@ -43,6 +45,13 @@ import { readVoiceSettings } from "./store.ts";
 // learners, in any language (endIdle; there is no timer). Whichever way, the one write
 // that sets ended_at calls onConversationEnded, exactly once. Deleting an
 // open conversation doesn't: it never ended.
+//
+// The phrase bank (scripts/db/phrases.ts) is fed from here too: a new
+// conversation's scenario lists at its start (create), and each saved
+// reply's glosses inside the turn's own transaction (saveTurn). Both only
+// when the session practises the profile's language: a pack that moves the
+// target language (a German scene from the Spanish profile) leaves the
+// Spanish bank alone.
 
 const { conversations, turns } = schema;
 export type Conversation = typeof conversations.$inferSelect;
@@ -228,6 +237,15 @@ export async function openConversation(userId: string, profile: LanguageProfileR
   return conv;
 }
 
+/** The session's target locale (es-MX), as the conversation saved it, when
+ *  it practises `profile`'s language; null when a pack moved it to another
+ *  (nothing goes into this profile's bank then). "" for a language with no
+ *  known locale. */
+function bankLocale(profile: Pick<LanguageProfile, "targetLanguage">, conv: Pick<Conversation, "targetLanguage" | "targetVariant">): string | null {
+  if (!sameLanguage(profile.targetLanguage, { language: conv.targetLanguage, variant: conv.targetVariant })) return null;
+  return localeFor(conv.targetLanguage, conv.targetVariant) ?? "";
+}
+
 /**
  * Store a turn that just succeeded, in one transaction: the stored turns are
  * made to match `screen` (the conversation's part of the history the browser
@@ -236,9 +254,16 @@ export async function openConversation(userId: string, profile: LanguageProfileR
  * or a dropped reply come out). The conversation row is held FOR UPDATE, so
  * an End landing meanwhile waits, and a conversation that ended (or was
  * deleted) since the turn began is left alone: false, the turn unsaved.
+ *
+ * The reply's glosses go into the phrase bank in the same transaction, as
+ * seen (scripts/db/phrases.ts recordGlosses, in a savepoint: a capture that
+ * fails costs the bank that turn, never the turn). Only the reply the
+ * server just produced is captured: master turns reinserted from the
+ * browser's history are its copy (from_client), and were captured, if at
+ * all, when they were the reply.
  */
 export async function saveTurn(
-  profile: LanguageProfileRef,
+  profile: LanguageProfileRef & Pick<LanguageProfile, "targetLanguage">,
   conversationId: string,
   turn: {
     screen: VoiceHistoryItem[];
@@ -258,7 +283,7 @@ export async function saveTurn(
     // nothing (DATA.md §Conversations), but a working browser never sends one.
     if (!covered) console.warn(`[lingo-dojo] conversation ${conversationId}: the turn's history doesn't cover the ${stored.length} stored turns; appended only`);
     if (keep < stored.length) await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
-    await mine.insert(
+    const written = await mine.insert(
       turns,
       insert.map((r) => ({
         ...r,
@@ -267,6 +292,12 @@ export async function saveTurn(
         costUsd: r.costUsd ?? null,
       })),
     );
+    const reply = written.findLast((t) => t.role === "master" && !t.fromClient);
+    const lang = bankLocale(profile, conv);
+    if (reply && lang != null && turn.master.role === "master") {
+      const items = glossCaptures(turn.master.glosses, turn.master.lines, lang || null);
+      await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
+    }
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.
     await mine.update(
@@ -291,7 +322,8 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const pack = body.pack;
   await endIdle(ctx.user.id);
   const scenarioId = typeof pack.scenario === "string" && pack.scenario ? pack.scenario : null;
-  const scenarioTitle = scenarioId ? loadContent(modeRoot(mode)).scenarios.find((s) => s.id === scenarioId)?.title : null;
+  const scenario = scenarioId ? loadContent(modeRoot(mode)).scenarios.find((s) => s.id === scenarioId) : undefined;
+  const scenarioTitle = scenario?.title ?? null;
   // The session's languages, as the prompt sees them (the profile under the
   // pack's overrides, a moved target language dropping the profile's
   // variant), kept so History's locales never follow a later profile edit.
@@ -310,6 +342,17 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     model: (await readVoiceSettings(ctx.user.id)).model,
     plannedMinutes: readMinutes(pack.overrides?.minutes).minutes,
   });
+  // The scenario's lists into the bank (DATA.md §Phrase capture): its
+  // vocab as phrases, its English `phrases:` as pending ones. Not part of
+  // the conversation's creation: a failure here is logged, and the session
+  // goes on.
+  const lang = bankLocale(ctx.language, row);
+  if (scenario && lang != null) {
+    const entries = scenarioEntries(scenario, lang || null);
+    await addScenarioPhrases(rawDb(), ctx.language, { lang, ...entries }).catch((e) => {
+      console.error(`[lingo-dojo] phrase bank: scenario ${scenarioId}'s lists weren't added:`, e);
+    });
+  }
   sendJson(res, 201, { conversation: summary(row, null) } satisfies ConversationReply);
 }
 

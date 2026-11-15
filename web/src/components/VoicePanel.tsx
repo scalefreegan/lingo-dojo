@@ -55,6 +55,7 @@ export default function VoicePanel({
   active = true,
   minutesPick = 0,
   title = "",
+  canStar = false,
 }: {
   mode: Mode;
   pack: PackInput;
@@ -68,6 +69,9 @@ export default function VoicePanel({
   /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
   openRequest?: boolean;
   onOpened?: () => void;
+  /** ☆ Star in the transcript's definitions (the session is in the active
+   *  language, so its words belong in that language's phrase bank). */
+  canStar?: boolean;
 }) {
   const [open, setOpen] = useState(openRequest);
   // A request while closed opens it during render (React's pattern for state
@@ -90,7 +94,7 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} canStar={canStar} onClose={() => setOpen(false)} />;
 }
 
 /** The saved conversation a session writes to: its id, the transcript index
@@ -98,7 +102,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -1616,6 +1620,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
           onPick={pick}
           onClosePick={closePick}
           onReplay={onReplay}
+          canStar={canStar}
         />
       )}
       {lastChoices.length > 0 && canAct && !ended && (

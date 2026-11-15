@@ -16,7 +16,7 @@ import { DEFAULT_DATABASE_URL, databaseName, databaseUrl, isLinkedWorktree, reda
 import { forLanguageProfile, forLearner, forUser } from "../db/owned.ts";
 import { fromRow, newCard, review, toRow } from "../fsrs.mjs";
 import {
-  agentMessages, authSessions, cards, conversations, languageProfiles, learners, packFolders, packRevisions, packs, phraseExamples, phrases,
+  agentMessages, authSessions, cards, clozeItems, conversations, languageProfiles, learners, packFolders, packRevisions, packs, phraseExamples, phrases,
   reviews, turns, users,
 } from "../db/schema.ts";
 
@@ -55,11 +55,11 @@ async function seed(db, username, ...names) {
 /** A complete phrase (target form known). */
 const word = (text, extra = {}) => ({ lang: "es-MX", text, norm: text.toLowerCase(), source: "gloss", ...extra });
 
-/** The gloss upsert: one row per (learner, lang, norm) among complete
+/** The gloss upsert: one row per (language profile, norm) among complete
  *  phrases; a repeat sighting bumps it. */
 const glossUpsert = (scope, values) =>
   scope.upsert(phrases, values, {
-    target: [phrases.lang, phrases.norm],
+    target: [phrases.norm],
     targetWhere: sql`${phrases.text} is not null`,
     set: { seenCount: sql`${phrases.seenCount} + 1`, lastSeenAt: sql`excluded.last_seen_at` },
   });
@@ -78,32 +78,40 @@ test("the migration builds every table, with pg_trgm", async (t) => {
   assert.equal((await query(`select extname from pg_extension where extname = 'pg_trgm'`)).length, 1);
 });
 
-test("a complete phrase's identity is (learner, lang, norm), and the gloss upsert bumps it", async (t) => {
+test("a complete phrase's identity is (language profile, norm), and the gloss upsert bumps it", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
+  const { learnerIds: [a], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
   const [first] = await glossUpsert(ana, word("¿A cómo?", { norm: "a como", seenCount: 1 }));
-  assert.equal(first.learnerId, a, "upsert stamps the owner");
+  assert.equal(first.learnerId, a, "upsert stamps the owners");
+  assert.equal(first.languageProfileId, pa.id);
   const [again] = await glossUpsert(ana, word("¿a cómo?", { norm: "a como", seenCount: 1 }));
   assert.equal(again.id, first.id);
   assert.equal(again.seenCount, 2);
   await rejectsWith(ana.insert(phrases, word("a cómo", { norm: "a como" })), UNIQUE);
-  // Another language, another learner, or an accent (DATA.md: papa ≠ papá)
-  // are different phrases.
-  await glossUpsert(ana, word("¿A cómo?", { norm: "a como", lang: "es-ES" }));
-  const [bens] = await glossUpsert(forLearner(db, b), word("¿A cómo?", { norm: "a como" }));
+  // Another variant of the language is the same phrase: lang is where it
+  // was first met, not part of its identity.
+  const [variant] = await glossUpsert(ana, word("¿A cómo?", { norm: "a como", lang: "es-ES" }));
+  assert.equal(variant.id, first.id);
+  assert.equal(variant.lang, "es-MX");
+  // Another learner, another of Ana's languages, or an accent (DATA.md:
+  // papa ≠ papá) are different phrases.
+  const [bens] = await glossUpsert(forLanguageProfile(db, pb), word("¿A cómo?", { norm: "a como" }));
   assert.equal(bens.seenCount, 0, "Ben's sighting is Ben's own row");
+  const [de] = await forLearner(db, a).insert(languageProfiles, { targetLanguage: "German" });
+  const [german] = await glossUpsert(forLanguageProfile(db, { id: de.id, learnerId: a }), word("¿A cómo?", { norm: "a como" }));
+  assert.notEqual(german.id, first.id, "Ana's German bank is its own");
   await glossUpsert(ana, word("a cómo", { norm: "a cómo" }));
-  assert.equal((await ana.list(phrases)).length, 3);
-  assert.equal((await ana.get(phrases, eq(phrases.id, first.id))).seenCount, 2, "Ben's upsert never touched Ana's row");
+  assert.equal((await ana.list(phrases)).length, 2);
+  assert.equal((await ana.get(phrases, eq(phrases.id, first.id))).seenCount, 3, "Ben's and the German upsert never touched this row");
 });
 
 test("pending phrases have their own namespace (meaning_norm)", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
-  const ana = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
+  const ana = forLanguageProfile(db, pa);
   /** A scenario `phrases:` line: an English meaning, no target form yet. */
   const pending = (meaning) => ({ lang: "es-MX", meaning, meaningNorm: meaning.toLowerCase(), source: "scenario" });
 
@@ -139,9 +147,9 @@ test("deleting a learner cascades to everything they own", async (t) => {
   const { db, query, close } = await freshDb();
   t.after(close);
   const { userId, learnerIds: [a, b], profiles } = await seed(db, "ana", "Ana", "Ben");
-  for (const [i, id] of [a, b].entries()) {
-    const mine = forLearner(db, id);
+  for (const i of [0, 1]) {
     const lang = forLanguageProfile(db, profiles[i]);
+    const mine = lang;
     const [conv] = await lang.insert(conversations, { packSnapshot: {}, mode: "adult" });
     const [turn] = await lang.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "hola" });
     const [ph] = await mine.insert(phrases, word("hola"));
@@ -166,8 +174,8 @@ test("deleting a conversation nulls only the provenance links, keeping the memor
   const { db, close } = await freshDb();
   t.after(close);
   const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
-  const mine = forLearner(db, a);
   const lang = forLanguageProfile(db, pa);
+  const mine = lang;
   const [conv] = await lang.insert(conversations, { packSnapshot: { title: "Market" }, mode: "adult" });
   const [turn] = await lang.insert(turns, { conversationId: conv.id, idx: 0, role: "master", lines: [] });
   const [ph] = await mine.insert(phrases, word("la vuelta", { source: "extraction" }));
@@ -213,8 +221,8 @@ test("no reference can reach another owner's row", async (t) => {
   const [b] = ben.learnerIds;
   const [conv] = await forLanguageProfile(db, ana.profiles[0]).insert(conversations, { packSnapshot: {}, mode: "adult" });
   const [turn] = await forLanguageProfile(db, ana.profiles[0]).insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "private" });
-  const [ph] = await forLearner(db, a).insert(phrases, word("hola"));
-  const benScope = forLearner(db, b);
+  const [ph] = await forLanguageProfile(db, ana.profiles[0]).insert(phrases, word("hola"));
+  const benScope = forLanguageProfile(db, ben.profiles[0]);
   // Ben's scope stamps Ben's id; the composite keys refuse Ana's parents…
   await rejectsWith(forLanguageProfile(db, ben.profiles[0]).insert(turns, { conversationId: conv.id, idx: 1, role: "learner", text: "x" }), FOREIGN_KEY);
   // …and a scope that names Ana's profile with Ben as its learner can't
@@ -266,6 +274,12 @@ test("one learner's two languages: no row can sit under the other, and each has 
   await spanish.insert(packFolders, { name: "trips" });
   await chinese.insert(packFolders, { name: "trips" });
   await rejectsWith(chinese.insert(packFolders, { name: "trips" }), UNIQUE);
+  // The phrase bank too: each language has its own, and a card can't sit
+  // under the other language's phrase.
+  const [hola] = await spanish.insert(phrases, word("hola"));
+  assert.deepEqual(await chinese.list(phrases), []);
+  await rejectsWith(chinese.insert(cards, { phraseId: hola.id, skill: "recognize" }), FOREIGN_KEY);
+  await rejectsWith(chinese.insert(phraseExamples, { phraseId: hola.id, sentence: "x" }), FOREIGN_KEY);
   // A session's language must be its learner's.
   await forUser(db, userId).insert(authSessions, { id: "hash-z", learnerId: a, languageProfileId: zh.id, expiresAt: new Date(Date.now() + 86_400_000) });
   // Deleting a language profile nulls only the session's language.
@@ -280,9 +294,9 @@ test("one learner's two languages: no row can sit under the other, and each has 
 test("the other named constraints hold", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
-  const mine = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
   const lang = forLanguageProfile(db, pa);
+  const mine = lang;
   // Usernames are stored lowercased.
   await rejectsWith(db.insert(users).values({ username: "Ana2", passwordHash: "x" }), CHECK);
   await rejectsWith(db.insert(users).values({ username: "ana", passwordHash: "x" }), UNIQUE);
@@ -310,11 +324,11 @@ test("the other named constraints hold", async (t) => {
 test("at most one session review per card per conversation", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
-  const mine = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
+  const lang = forLanguageProfile(db, pa);
+  const mine = lang;
   const [ph] = await mine.insert(phrases, word("hola"));
   const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "produce" });
-  const lang = forLanguageProfile(db, pa);
   const [conv] = await lang.insert(conversations, { packSnapshot: {}, mode: "adult" });
   const review = { cardId: card.id, mode: "session", rating: 3, conversationId: conv.id, cardBefore: BEFORE };
   await mine.insert(reviews, review);
@@ -349,8 +363,8 @@ test("agent messages and pack revisions keep insertion order within one transact
 test("a card holds every field of a ts-fsrs Card", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
-  const mine = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
+  const mine = forLanguageProfile(db, pa);
   const [ph] = await mine.insert(phrases, word("hola"));
   const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "recognize" });
   // ts-fsrs 6 `Card`, with its own snake_case names (fsrs.mjs toRow/fromRow).
@@ -367,8 +381,8 @@ test("a card holds every field of a ts-fsrs Card", async (t) => {
 test("fsrs.mjs card state round-trips through the cards table", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
-  const mine = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
+  const mine = forLanguageProfile(db, pa);
   const [ph] = await mine.insert(phrases, word("hola"));
   const t0 = new Date("2026-11-15T15:00:00Z");
   const fresh = newCard(t0);
@@ -394,12 +408,12 @@ test("fsrs.mjs card state round-trips through the cards table", async (t) => {
 
 /* ----------------------------- owned-row helper --------------------------- */
 
-test("forLearner sees, changes and deletes only its own learner's rows", async (t) => {
+test("a scope sees, changes and deletes only its own owner's rows", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
-  const ben = forLearner(db, b);
+  const { learnerIds: [a], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
+  const ben = forLanguageProfile(db, pb);
   const rows = await ana.insert(phrases, [word("hola"), word("adiós", { norm: "adios" })]);
   assert.ok(rows.every((r) => r.learnerId === a), "insert stamps the owner");
   const [bensHola] = await ben.insert(phrases, word("hola"));
@@ -426,9 +440,9 @@ test("forLearner sees, changes and deletes only its own learner's rows", async (
 test("a raw `or` condition cannot escape the owner filter", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
-  const ben = forLearner(db, b);
+  const { learnerIds: [a, b], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
+  const ben = forLanguageProfile(db, pb);
   await ana.insert(phrases, [word("hola", { meaning: "hello" }), word("taxi", { meaning: "taxi" })]);
   await ben.insert(phrases, [word("hola", { meaning: "hello" }), word("gracias", { meaning: "thanks" })]);
   // The natural trigram filter: text %> q or meaning %> q. Unparenthesized,
@@ -455,12 +469,13 @@ test("a raw `or` condition cannot escape the owner filter", async (t) => {
 test("owned-row rules hold at runtime for untyped callers", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { userId, learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
+  const { userId, learnerIds: [a, b], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
   await ana.insert(phrases, [word("hola"), word("adiós", { norm: "adios" })]);
-  await forLearner(db, b).insert(phrases, word("hola"));
+  await forLanguageProfile(db, pb).insert(phrases, word("hola"));
   // A table with no owner column.
-  await assert.rejects(ana.list(users), /no learnerId column/);
+  await assert.rejects(forLearner(db, a).list(users), /no learnerId column/);
+  await assert.rejects(ana.list(users), /no languageProfileId column/);
   await assert.rejects(forUser(db, userId).insert(turns, { idx: 0, role: "learner" }), /no userId column/);
   // No condition, no update or remove.
   await assert.rejects(ana.update(phrases, { starred: true }), /needs a condition/);
@@ -470,9 +485,10 @@ test("owned-row rules hold at runtime for untyped callers", async (t) => {
   await assert.rejects(ana.insert(phrases, { ...word("x"), learnerId: b }), /sets learnerId itself/);
   await assert.rejects(ana.update(phrases, { learnerId: b }, eq(phrases.norm, "hola")), /sets learnerId itself/);
   await assert.rejects(
-    ana.upsert(phrases, word("hola"), { target: [phrases.lang, phrases.norm], targetWhere: sql`${phrases.text} is not null`, set: { learnerId: b } }),
+    ana.upsert(phrases, word("hola"), { target: [phrases.norm], targetWhere: sql`${phrases.text} is not null`, set: { learnerId: b } }),
     /sets learnerId itself/,
   );
+  await assert.rejects(ana.update(phrases, { languageProfileId: pb.id }, eq(phrases.norm, "hola")), /sets languageProfileId itself/);
   // No owner, no scope.
   assert.throws(() => forLearner(db, ""), /need a learnerId/);
   assert.throws(() => forLearner(db, undefined), /need a learnerId/);
@@ -481,14 +497,14 @@ test("owned-row rules hold at runtime for untyped callers", async (t) => {
   assert.throws(() => forLanguageProfile(db, undefined), /need a/);
   // A language's rows only through a language scope: a learner scope would
   // reach every one of the learner's languages at once.
-  for (const table of [packs, packFolders, packRevisions, conversations, turns]) {
-    await assert.rejects(ana.list(table), /belong to a language profile: use forLanguageProfile, not forLearner/);
+  for (const table of [packs, packFolders, packRevisions, conversations, turns, phrases, phraseExamples, cards, reviews, clozeItems]) {
+    await assert.rejects(forLearner(db, a).list(table), /belong to a language profile: use forLanguageProfile, not forLearner/);
   }
   // …and a language scope reaches only tables that belong to a language.
-  await assert.rejects(forLanguageProfile(db, { id: a, learnerId: a }).list(phrases), /no languageProfileId column/);
+  await assert.rejects(ana.list(languageProfiles), /no languageProfileId column/);
   // Removing everything is its own verb, and still only the owner's rows.
   assert.equal((await ana.removeAllOwned(phrases)).length, 2);
-  assert.equal((await forLearner(db, b).list(phrases)).length, 1);
+  assert.equal((await forLanguageProfile(db, pb).list(phrases)).length, 1);
 });
 
 test("insertOrIgnore: stamps the owner, skips a conflict (the owner is always in the target), returns only what it inserted", async (t) => {
@@ -514,12 +530,12 @@ test("insertOrIgnore: stamps the owner, skips a conflict (the owner is always in
 test("where() keeps the owner filter in hand-written queries", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
+  const { profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
   const [ph] = await ana.insert(phrases, word("hola"));
   await ana.insert(cards, [{ phraseId: ph.id, skill: "recognize" }, { phraseId: ph.id, skill: "produce" }]);
-  const [bph] = await forLearner(db, b).insert(phrases, word("hola"));
-  await forLearner(db, b).insert(cards, { phraseId: bph.id, skill: "produce" });
+  const [bph] = await forLanguageProfile(db, pb).insert(phrases, word("hola"));
+  await forLanguageProfile(db, pb).insert(cards, { phraseId: bph.id, skill: "produce" });
   // A join and an aggregate: the bank's "cards per phrase".
   const rows = await db
     .select({ norm: phrases.norm, n: sql`count(${cards.id})::int` })
@@ -544,47 +560,50 @@ test("forUser scopes account rows", async (t) => {
 test("pg_trgm word_similarity ranks the phrase bank (per-turn retrieval)", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
+  const { learnerIds: [a], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
   await ana.insert(phrases, [
     word("¿A cómo?", { norm: "a como", meaning: "how much?" }),
     word("¿Me lo envuelve?", { norm: "me lo envuelve", meaning: "could you wrap it for me?", source: "extraction" }),
     word("la vuelta", { meaning: "the change (coins back)" }),
-    word("いくらですか", { lang: "ja-JP", meaning: "how much is it?" }),
   ]);
-  await forLearner(db, b).insert(phrases, word("¿A cómo?", { norm: "a como", meaning: "how much?" }));
+  const [jp] = await forLearner(db, a).insert(languageProfiles, { targetLanguage: "Japanese" });
+  const japanese = forLanguageProfile(db, { id: jp.id, learnerId: a });
+  await japanese.insert(phrases, word("いくらですか", { lang: "ja-JP", meaning: "how much is it?" }));
+  await forLanguageProfile(db, pb).insert(phrases, word("¿A cómo?", { norm: "a como", meaning: "how much?" }));
 
-  /** The bank's best matches for a message, on either side, in a language.
-   *  word_similarity(phrase, message): how well the phrase appears somewhere
-   *  in the (longer) message. Per learner, so a scan; see DATA.md. */
-  const search = async (message, langPrefix) => {
+  /** The bank's best matches for a message, on either side, in one
+   *  language's bank. word_similarity(phrase, message): how well the phrase
+   *  appears somewhere in the (longer) message. Per profile, so a scan; see
+   *  DATA.md. */
+  const search = async (scope, message) => {
     const score = sql`greatest(word_similarity(coalesce(${phrases.text}, ''), ${message}), word_similarity(coalesce(${phrases.meaning}, ''), ${message}))`;
     return db
       .select({ text: phrases.text, score: sql`${score}::float` })
       .from(phrases)
-      .where(ana.where(phrases, and(sql`${phrases.lang} like ${langPrefix + "%"}`, sql`${score} > 0.3`)))
+      .where(scope.where(phrases, sql`${score} > 0.3`))
       .orderBy(desc(score))
       .limit(6);
   };
 
-  const hits = await search("Oiga, ¿a cómo están los mangos?", "es");
+  const hits = await search(ana, "Oiga, ¿a cómo están los mangos?");
   assert.equal(hits[0].text, "¿A cómo?");
-  assert.ok(hits.every((h) => h.text !== "いくらですか"), "the language prefix keeps Japanese out");
+  assert.ok(hits.every((h) => h.text !== "いくらですか"), "the Japanese bank is another profile's");
   assert.equal(hits.filter((h) => h.text === "¿A cómo?").length, 1, "the other learner's copy is not a hit");
   // The native-language side matches too.
-  const byMeaning = await search("could you wrap it for me please?", "es");
+  const byMeaning = await search(ana, "could you wrap it for me please?");
   assert.equal(byMeaning[0].text, "¿Me lo envuelve?");
   // Trigrams work without word boundaries, which is why the doc chose them
   // over full-text search for Japanese and Mandarin.
-  const ja = await search("このりんごはいくらですか", "ja");
+  const ja = await search(japanese, "このりんごはいくらですか");
   assert.equal(ja[0]?.text, "いくらですか");
 });
 
 test("LOOKUP-direction search (query inside phrases) with the trigram operator", async (t) => {
   const { db, query, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
-  const ana = forLearner(db, a);
+  const { profiles: [pa] } = await seed(db, "ana", "Ana");
+  const ana = forLanguageProfile(db, pa);
   await ana.insert(phrases, [word("¿Me lo envuelve?", { norm: "me lo envuelve" }), word("la vuelta")]);
   // `q <% text`: the query found inside a phrase. This is the direction the
   // GIN indexes can serve.

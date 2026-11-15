@@ -932,3 +932,95 @@ export interface TranscribeReply {
   text: string;
   provider: SttProvider;
 }
+
+/* -------------------------------- phrase bank ------------------------------- */
+// The active language's phrase bank (docs/DATA.md §Phrase bank): what the
+// dojo master glossed, the scenarios' lists, and what the learner starred or
+// added. Times are ISO strings.
+
+export type MasteryBand = "New" | "Learning" | "Familiar" | "Mastered";
+export type PhraseSource = "gloss" | "extraction" | "manual" | "scenario";
+/** The bank view's filters (GET /api/phrases?show=). */
+export type PhraseShow = "all" | "starred" | "due" | "trouble" | "pending" | "suspended";
+export type PhraseSort = "recent" | "due" | "weakest" | "alpha" | "added";
+
+/** One phrase as the bank lists it, with its metrics (DATA.md §Metrics). */
+export interface PhraseSummary {
+  id: string;
+  /** The target form; null while pending (a scenario meaning, no words yet). */
+  text: string | null;
+  meaning: string | null;
+  note: string | null;
+  /** The variant it was first met in (BCP-47, e.g. es-MX); "" when unknown. */
+  lang: string;
+  source: PhraseSource;
+  pending: boolean;
+  starred: boolean;
+  suspended: boolean;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  seenCount: number;
+  lastPracticedAt: string | null;
+  createdAt: string;
+  /** The band of its weakest card; New with no cards. */
+  mastery: MasteryBand;
+  /** Its earliest card's due time; null with no cards. */
+  due: string | null;
+  /** Lapses in the last 30 days, and whether that many is "trouble". */
+  lapses: number;
+  trouble: boolean;
+  cardCount: number;
+  exampleCount: number;
+}
+
+export interface PhraseExample {
+  id: string;
+  sentence: string;
+  /** Who said it (the transcript's speaker tag); null when unknown. */
+  speaker: string | null;
+  /** The saved conversation it came from; null once that is deleted. */
+  conversationId: string | null;
+  createdAt: string;
+}
+
+/** One phrase with everything the bank shows when it is opened. */
+export interface PhraseDetail extends PhraseSummary {
+  examples: PhraseExample[];
+  /** Other target forms the grader accepted. */
+  alternates: string[];
+}
+
+/** GET /api/phrases?q=&show=&band=&sort=&offset=&limit= */
+export interface PhrasesReply {
+  phrases: PhraseSummary[];
+  /** How many match the filters (before paging). */
+  total: number;
+  nextOffset: number | null;
+  /** Over the whole bank, for the filter chips. */
+  counts: Record<Exclude<PhraseShow, "all">, number> & { all: number; bands: Record<MasteryBand, number> };
+  /** The bank's language: the active profile's target language and variant. */
+  language: { targetLanguage: string; targetVariant: string; locale: string | null };
+}
+
+/** POST /api/phrases (add or star: words already in the bank are starred
+ *  and keep their own meaning and note when they have them), and PATCH
+ *  /api/phrases/:id (any of these; null or "" clears meaning and note). */
+export interface PhraseInput {
+  text?: string;
+  meaning?: string | null;
+  note?: string | null;
+  starred?: boolean;
+  suspended?: boolean;
+}
+
+/** POST, GET /:id and PATCH /:id. `created` (POST only): false when the
+ *  words were already in the bank. */
+export interface PhraseReply {
+  phrase: PhraseDetail;
+  created?: boolean;
+}
+
+/** GET /api/phrases/lookup?text= : the phrase with these words, if any. */
+export interface PhraseLookupReply {
+  phrase: PhraseSummary | null;
+}

@@ -1,4 +1,4 @@
-// Declarations for the pure memory modules (scripts/fsrs.mjs, match.mjs,
+// Declarations for the pure memory modules (scripts/fsrs.mjs, match.mjs, phrases.mjs,
 // extraction.mjs, json-reply.mjs). Same pattern as mjs.d.ts, in its own file so
 // the two can change independently. The catch-all `*.mjs` in mjs.d.ts is
 // declared in a file that sorts after this one, so these specific patterns
@@ -100,6 +100,53 @@ declare module "*/scripts/extraction.mjs" {
     duePhrases?: (string | { text: string; meaning?: string })[];
   }): { system: string; user: string };
   export function parseExtraction(text: unknown): { ok: true; value: Extraction; dropped: number } | { ok: false; error: string };
+}
+
+declare module "*/scripts/phrases.mjs" {
+  type PhraseSummary = import("../shared/wire.ts").PhraseSummary;
+  type MasteryBand = import("*/scripts/fsrs.mjs").MasteryBand;
+  type CardInput = Parameters<typeof import("*/scripts/fsrs.mjs").fromRow>[0];
+  /** A target form to put in the bank, with its match key. */
+  export interface Capture {
+    text: string;
+    norm: string;
+    meaning: string | null;
+    meaningNorm: string | null;
+  }
+  export interface Example {
+    sentence: string;
+    speaker: string | null;
+  }
+  export const LIMITS: { text: number; meaning: number; note: number; sentence: number };
+  export const MAX_EXAMPLES: number;
+  export const TROUBLE_LAPSES: number;
+  export const TROUBLE_DAYS: number;
+  export const MAX_CAPTURE_WORDS: number;
+  export const SHOWS: import("../shared/wire.ts").PhraseShow[];
+  export const SORTS: import("../shared/wire.ts").PhraseSort[];
+  export function wordCount(text: unknown, locale?: string | null): number;
+  export function sameLanguage(profileLanguage: unknown, session: { language?: unknown; variant?: unknown } | null | undefined): boolean;
+  export function exampleFor(term: unknown, lines: unknown[] | null | undefined): Example | null;
+  export function glossCaptures(
+    glosses: { term?: unknown; meaning?: unknown }[] | null | undefined,
+    lines: unknown[] | null | undefined,
+    locale?: string | null,
+  ): (Capture & { example: Example | null })[];
+  export function scenarioEntries(
+    scenario: { language?: string | null; vocab?: unknown; phrases?: unknown } | null | undefined,
+    sessionLocale?: string | null,
+  ): { complete: Capture[]; pending: { meaning: string; meaningNorm: string }[] };
+  export function readPhraseInput(
+    body: unknown,
+    opts?: { create?: boolean },
+  ): { value: import("../shared/wire.ts").PhraseInput & { text?: string }; error?: undefined } | { error: string; value?: undefined };
+  export function phraseMetrics(cards?: CardInput[], lapses?: number): { mastery: MasteryBand; due: string | null; lapses: number; trouble: boolean; cardCount: number };
+  export function isDueNow(p: PhraseSummary, now: Date | string | number): boolean;
+  export function bankPage(
+    items: PhraseSummary[],
+    query?: { q?: string; show?: string; band?: string; sort?: string; offset?: number; limit?: number },
+    now?: Date,
+  ): Omit<import("../shared/wire.ts").PhrasesReply, "language">;
 }
 
 declare module "*/scripts/json-reply.mjs" {

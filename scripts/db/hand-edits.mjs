@@ -30,6 +30,31 @@
 //  4. auth_sessions_language_profile_fk deletes with SET NULL
 //     ("language_profile_id"), as in 0000.
 //
+// 0003_phrase_bank_per_language (the phrase bank moves under language
+// profiles, docs/DATA.md §Phrase bank). Like 0002, the generated SQL can't
+// run as it is (a foreign key before the unique key it references, NOT NULL
+// columns added to tables that may hold rows), so:
+//  1. Reordered (ORDER_0003): the new columns, the backfill, the old learner
+//     identity indexes out, then unique keys, foreign keys, indexes.
+//  2. The five `language_profile_id … NOT NULL` columns are added nullable,
+//     filled, then set NOT NULL.
+//  3. The backfill (BACKFILL_0003): every phrase goes to its learner's
+//     oldest language profile (archived or not: before 0003 the bank was
+//     the learner's one language, which is the profile 0002 made from it,
+//     and that one is the oldest). The identity becomes (profile, norm),
+//     no longer (learner, lang, norm), so rows that differed only in `lang`
+//     (one phrase met in two variants) would clash: they are merged into
+//     the oldest of them (seen counts added, the earliest first sighting
+//     and latest sightings kept, starred if any was, the first meaning and
+//     note, alternates united), their examples and cloze items moved to it,
+//     and per skill the one card kept (the kept phrase's own, else the one
+//     with most reps) takes the others' reviews; a session review that
+//     would then be a second one for the same card and conversation is the
+//     only thing dropped. Then every example, card, cloze item and review
+//     takes its parent's profile. No code wrote the bank before 0003, so on
+//     the real database all of this touches no row; it is written for one
+//     that has them all the same.
+//
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
 //                                          regenerating it (idempotent)
@@ -122,20 +147,122 @@ const ORDER = [
 const statements = (sql) => sql.split(BREAK).map((s) => s.trim()).filter(Boolean);
 const joinStatements = (list) => list.map((s) => `${s}\n`).join(`${BREAK}\n`);
 
+/** The generated statements sorted into `order`'s buckets (the first rule
+ *  a statement matches places it; a "new columns" one loses its NOT NULL,
+ *  which the backfill sets), with each `insert` bucket's hand-written
+ *  statements in place. Every generated statement must land somewhere and
+ *  every rule must catch one, or this throws: a regenerated migration with
+ *  a statement it doesn't know is a schema change to look at, not to paper
+ *  over. */
+function reorder(generated, order, tag) {
+  const buckets = order.map(() => []);
+  for (const stmt of statements(generated)) {
+    const i = order.findIndex((o) => o.re?.test(stmt));
+    if (i < 0) throw new Error(`hand-edits ${tag}: a generated statement no rule places:\n${stmt}`);
+    // Added nullable; the backfill fills it and sets NOT NULL.
+    buckets[i].push(order[i].name === "new columns" ? stmt.replace(/ NOT NULL;$/, ";") : stmt);
+  }
+  order.forEach((o, i) => {
+    if (o.insert) buckets[i].push(...o.insert);
+    else if (!buckets[i].length) throw new Error(`hand-edits ${tag}: the generated SQL has nothing for "${o.name}"`);
+  });
+  return joinStatements(buckets.flat());
+}
+
 function languageProfileEdits(generated) {
   if (generated.includes(MARK)) return generated; // already applied
-  const buckets = ORDER.map(() => []);
-  for (const stmt of statements(generated)) {
-    const i = ORDER.findIndex((o) => o.re?.test(stmt));
-    if (i < 0) throw new Error(`hand-edits 0002: a generated statement no rule places:\n${stmt}`);
-    // Added nullable; the backfill fills it and sets NOT NULL.
-    buckets[i].push(ORDER[i].name === "new columns" ? stmt.replace(/ NOT NULL;$/, ";") : stmt);
-  }
-  ORDER.forEach((o, i) => {
-    if (o.insert) buckets[i].push(...o.insert);
-    else if (!buckets[i].length) throw new Error(`hand-edits 0002: the generated SQL has nothing for "${o.name}"`);
-  });
-  return setNull(joinStatements(buckets.flat()), PROFILE_SET_NULL);
+  return setNull(reorder(generated, ORDER, "0002"), PROFILE_SET_NULL);
+}
+
+/* ---------------------- 0003_phrase_bank_per_language ---------------------- */
+
+/** The bank's tables, parents first. */
+const BANK_TABLES = ["phrases", "phrase_examples", "cards", "cloze_items", "reviews"];
+
+const MARK_0003 = "-- Hand-written (scripts/db/hand-edits.mjs, 0003 edit 3):";
+
+const BACKFILL_0003 = [
+  `${MARK_0003} every phrase goes to its
+-- learner's oldest language profile: the one 0002 made from the learner's one
+-- language, which is what the bank was in until now.
+UPDATE "phrases" SET "language_profile_id" = (
+  SELECT lp."id" FROM "language_profiles" lp WHERE lp."learner_id" = "phrases"."learner_id" ORDER BY lp."created_at", lp."id" LIMIT 1);`,
+  `${MARK_0003} rows the new identity (profile, norm),
+-- or (profile, meaning_norm) for a pending one, makes one: each maps to the
+-- oldest of them, which is kept.
+CREATE TEMPORARY TABLE "phrase_merge" AS
+SELECT p."id" AS "loser", (
+  SELECT k."id" FROM "phrases" k
+  WHERE k."language_profile_id" = p."language_profile_id"
+    AND ((p."text" IS NOT NULL AND k."text" IS NOT NULL AND k."norm" = p."norm")
+      OR (p."text" IS NULL AND k."text" IS NULL AND k."meaning_norm" = p."meaning_norm"))
+  ORDER BY k."created_at", k."id" LIMIT 1) AS "keeper"
+FROM "phrases" p;`,
+  `DELETE FROM "phrase_merge" WHERE "keeper" = "loser";`,
+  `${MARK_0003} the kept row takes what the others knew.
+UPDATE "phrases" k SET
+  "seen_count" = k."seen_count" + s."seen_count",
+  "first_seen_at" = LEAST(k."first_seen_at", s."first_seen_at"),
+  "last_seen_at" = GREATEST(k."last_seen_at", s."last_seen_at"),
+  "last_practiced_at" = GREATEST(k."last_practiced_at", s."last_practiced_at"),
+  "starred" = k."starred" OR s."starred",
+  "meaning" = COALESCE(k."meaning", s."meaning"),
+  "note" = COALESCE(k."note", s."note"),
+  "alternates" = (
+    SELECT COALESCE(jsonb_agg(u."a"), '[]'::jsonb) FROM (
+      SELECT jsonb_array_elements(k."alternates") AS "a"
+      UNION SELECT jsonb_array_elements(p."alternates") FROM "phrase_merge" m JOIN "phrases" p ON p."id" = m."loser" WHERE m."keeper" = k."id") u)
+FROM (
+  SELECT m."keeper", sum(p."seen_count")::int AS "seen_count", min(p."first_seen_at") AS "first_seen_at", max(p."last_seen_at") AS "last_seen_at",
+    max(p."last_practiced_at") AS "last_practiced_at", bool_or(p."starred") AS "starred", min(p."meaning") AS "meaning", min(p."note") AS "note"
+  FROM "phrase_merge" m JOIN "phrases" p ON p."id" = m."loser" GROUP BY m."keeper") s
+WHERE k."id" = s."keeper";`,
+  `UPDATE "phrase_examples" x SET "phrase_id" = m."keeper" FROM "phrase_merge" m WHERE x."phrase_id" = m."loser";`,
+  `UPDATE "cloze_items" x SET "phrase_id" = m."keeper" FROM "phrase_merge" m WHERE x."phrase_id" = m."loser";`,
+  `${MARK_0003} per skill, one card survives a merge:
+-- the kept phrase's own, else the one with the most reps.
+CREATE TEMPORARY TABLE "card_merge" AS
+SELECT c."id" AS "card", m."keeper" AS "phrase", (
+  SELECT k."id" FROM "cards" k
+  WHERE k."skill" = c."skill" AND (k."phrase_id" = m."keeper" OR k."phrase_id" IN (SELECT o."loser" FROM "phrase_merge" o WHERE o."keeper" = m."keeper"))
+  ORDER BY (k."phrase_id" = m."keeper") DESC, k."reps" DESC, k."id" LIMIT 1) AS "survivor"
+FROM "cards" c JOIN "phrase_merge" m ON m."loser" = c."phrase_id";`,
+  `${MARK_0003} a session review that would be a
+-- second one for the surviving card and its conversation goes (the
+-- survivor's own is kept, else the first).
+DELETE FROM "reviews" r USING "card_merge" cm
+WHERE r."card_id" = cm."card" AND cm."survivor" <> cm."card" AND r."mode" = 'session' AND r."conversation_id" IS NOT NULL
+  AND EXISTS (
+    SELECT 1 FROM "reviews" o LEFT JOIN "card_merge" om ON om."card" = o."card_id"
+    WHERE o."mode" = 'session' AND o."conversation_id" = r."conversation_id" AND o."id" <> r."id"
+      AND COALESCE(om."survivor", o."card_id") = cm."survivor" AND (o."card_id" = cm."survivor" OR o."id" < r."id"));`,
+  `UPDATE "reviews" r SET "card_id" = cm."survivor" FROM "card_merge" cm WHERE r."card_id" = cm."card" AND cm."survivor" <> cm."card";`,
+  `DELETE FROM "cards" c USING "card_merge" cm WHERE c."id" = cm."card" AND cm."survivor" <> cm."card";`,
+  `UPDATE "cards" c SET "phrase_id" = cm."phrase" FROM "card_merge" cm WHERE c."id" = cm."card" AND cm."survivor" = cm."card";`,
+  `DELETE FROM "phrases" p USING "phrase_merge" m WHERE p."id" = m."loser";`,
+  `DROP TABLE "card_merge";`,
+  `DROP TABLE "phrase_merge";`,
+  `${MARK_0003} every example, card and cloze item
+-- under its phrase's profile, every review under its card's.
+UPDATE "phrase_examples" x SET "language_profile_id" = p."language_profile_id" FROM "phrases" p WHERE p."id" = x."phrase_id";`,
+  `UPDATE "cards" x SET "language_profile_id" = p."language_profile_id" FROM "phrases" p WHERE p."id" = x."phrase_id";`,
+  `UPDATE "cloze_items" x SET "language_profile_id" = p."language_profile_id" FROM "phrases" p WHERE p."id" = x."phrase_id";`,
+  `UPDATE "reviews" x SET "language_profile_id" = c."language_profile_id" FROM "cards" c WHERE c."id" = x."card_id";`,
+  ...BANK_TABLES.map((t) => `ALTER TABLE "${t}" ALTER COLUMN "language_profile_id" SET NOT NULL;`),
+];
+
+const ORDER_0003 = [
+  { name: "new columns", re: /^ALTER TABLE "\w+" ADD COLUMN "language_profile_id" uuid( NOT NULL)?;$/ },
+  { name: "backfill", insert: BACKFILL_0003 },
+  { name: "old learner indexes out", re: /^DROP INDEX "(cards_learner_due_idx|phrases_identity|phrases_pending_identity|reviews_learner_at_idx)";$/ },
+  { name: "new unique keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" UNIQUE\(/ },
+  { name: "foreign keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" FOREIGN KEY / },
+  { name: "indexes", re: /^CREATE (UNIQUE )?INDEX "/ },
+];
+
+function phraseBankEdits(generated) {
+  if (generated.includes(MARK_0003)) return generated; // already applied
+  return reorder(generated, ORDER_0003, "0003");
 }
 
 /* ---------------------------------- all ------------------------------------ */
@@ -143,6 +270,7 @@ function languageProfileEdits(generated) {
 const EDITS = {
   "0000_init": initEdits,
   "0002_language_profiles": languageProfileEdits,
+  "0003_phrase_bank_per_language": phraseBankEdits,
 };
 
 /** The migration `tag` as committed, from drizzle-kit's output for it. */
