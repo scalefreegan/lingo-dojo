@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { ApiError } from "../api";
 import { answerCard, overrideAnswer, practiceQueue, practiceStats } from "../practiceApi";
 import type { PracticeAnswerReply, PracticeDirection, PracticeItem, PracticeRating, PracticeStatsReply, PracticeVerdict } from "../types";
+import { RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* Practice: flashcards over the active language's phrase bank (docs/DATA.md
@@ -115,6 +116,9 @@ export default function PracticeView() {
 
   const languageName = info ? info.language.targetVariant || info.language.targetLanguage : "";
   const nativeName = info?.language.nativeLanguage || "English";
+  // The profile's locale, as the phrase bank uses: it picks the reading
+  // aids (pinyin/zhuyin for Mandarin) and their remembered setting.
+  const locale = info?.language.locale ?? null;
 
   if (items && index < items.length) {
     return (
@@ -125,6 +129,7 @@ export default function PracticeView() {
         total={items.length}
         languageName={languageName}
         nativeName={nativeName}
+        locale={locale}
         onNext={(rating) => {
           if (rating) setDone((d) => [...d, { item: items[index], rating }]);
           setIndex((i) => i + 1);
@@ -158,6 +163,7 @@ export default function PracticeView() {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-fg">Practice{languageName ? ` · ${languageName}` : ""}</h2>
         <span className={`${fine} text-fg-3`}>Flashcards from your phrase bank</span>
+        <RubyToggle locale={locale} className="ml-auto" />
       </div>
       <Card className="flex flex-col gap-4">
         {s ? (
@@ -256,6 +262,7 @@ function Session({
   total,
   languageName,
   nativeName,
+  locale,
   onNext,
   onQuit,
 }: {
@@ -264,6 +271,7 @@ function Session({
   total: number;
   languageName: string;
   nativeName: string;
+  locale: string | null;
   onNext: (rating: PracticeRating | null) => void;
   onQuit: () => void;
 }) {
@@ -323,7 +331,10 @@ function Session({
     void submit({ answer });
   }
 
-  const prompt = recognize ? item.text : item.meaning;
+  // Readings go over the target words only where they are already shown:
+  // a recognize card's prompt and the answer once it is out. A produce
+  // card's prompt is the meaning, so nothing there gives the answer away.
+  const prompt = recognize ? <RubyText text={item.text} locale={locale} /> : item.meaning;
   const ask = recognize ? `What does it mean in ${nativeName}?` : `Say it in ${languageName || "the language you're learning"}`;
   const verdict = result ? VERDICT[result.review.verdict] : null;
 
@@ -336,6 +347,7 @@ function Session({
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised" aria-hidden="true">
           <div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${((position - 1) / total) * 100}%` }} />
         </div>
+        <RubyToggle locale={locale} />
         <Button variant="ghost" className="px-2 py-1 text-sm" onClick={onQuit}>
           End
         </Button>
@@ -405,7 +417,7 @@ function Session({
             {result.review.note && <p className="text-sm text-fg-2" data-testid="practice-note">{result.review.note}</p>}
             <div className="rounded-xl bg-raised px-3 py-2">
               <p className="text-lg font-medium text-fg" lang={item.lang || undefined}>
-                {result.expected.text}
+                <RubyText text={result.expected.text} locale={locale} />
               </p>
               <p className="text-sm text-fg-2">{result.expected.meaning}</p>
             </div>

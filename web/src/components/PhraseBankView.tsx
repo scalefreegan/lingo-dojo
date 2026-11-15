@@ -501,7 +501,29 @@ function PhraseDetailView({
             {detail.alternates.length > 0 && (
               <>
                 <dt>Also accepted</dt>
-                <dd>{detail.alternates.join(", ")}</dd>
+                <dd>
+                  {/* Other wordings the practice grader accepted and saved.
+                      Removal only: the PATCH keeps the ones it names, so a
+                      wrong one can go, and a right one comes back the next
+                      time the grader accepts it. */}
+                  <ul className="flex flex-wrap gap-1.5" aria-label="Also accepted">
+                    {detail.alternates.map((alt) => (
+                      <li key={alt} className="inline-flex items-center gap-0.5 rounded-full bg-raised py-0.5 pr-0.5 pl-2.5">
+                        <RubyText text={alt} locale={locale} />
+                        <button
+                          type="button"
+                          className="min-h-0 rounded-full px-1.5 text-fg-3 hover:bg-line hover:text-fg disabled:opacity-50"
+                          aria-label={`Remove “${alt}” from also accepted`}
+                          title="Remove"
+                          disabled={busy}
+                          onClick={() => void run(() => updatePhrase(id, { alternates: detail.alternates.filter((a) => a !== alt) }), onChanged)}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
               </>
             )}
           </dl>

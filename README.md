@@ -143,8 +143,8 @@ hostname or keep the others off it. Details: [`docs/DATA.md`](docs/DATA.md#hosti
   or add by hand. Each phrase shows how often and when you last met it, its
   mastery, and whether it is due or giving you trouble; search, filter, edit,
   suspend or delete it there. Each language has its own bank.
-- **Pinyin, zhuyin and the character card** (Mandarin): the transcript, History
-  and the phrase bank show pinyin (or zhuyin, or nothing: the Readings switch,
+- **Pinyin, zhuyin and the character card** (Mandarin): the transcript, History,
+  the phrase bank and Practice flashcards show pinyin (or zhuyin, or nothing: the Readings switch,
   remembered per language) over the Chinese, worked out in the browser word by
   word, traditional characters and Taiwan's readings included. Tap a character
   in a word's definition or in a bank phrase for its card: stroke order you can

@@ -197,8 +197,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `<ruby>`: pinyin with tone marks, or zhuyin (bopomofo) for learners who
   read it. A switch above the transcript (Readings: Off / Pinyin / Zhuyin)
   is remembered per language profile in the browser (`lingo-dojo.ruby.v1`)
-  and defaults to Pinyin; the same switch is on a History transcript and
-  the phrase bank, and nothing shows for a language without a reading aid.
+  and defaults to Pinyin; the same switch is on a History transcript,
+  the phrase bank and Practice (over the target words only where a card
+  already shows them: a recognize prompt, the answer once it is out), and
+  nothing shows for a language without a reading aid.
   The readings come from the browser, not the dojo master or a model:
   `web/src/script/zh.ts` runs pinyin-pro word by word (so 銀行 reads yín
   háng, 長大 zhǎng dà) over the text spelled in simplified characters one
