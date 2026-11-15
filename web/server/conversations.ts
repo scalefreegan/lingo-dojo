@@ -7,7 +7,7 @@ import {
 } from "../../scripts/conversations.mjs";
 import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/db/accounts.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
-import { addScenarioPhrases, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
+import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
@@ -287,12 +287,21 @@ export async function saveTurn(
     // nothing (DATA.md §Conversations), but a working browser never sends one.
     if (!covered) console.warn(`[lingo-dojo] conversation ${conversationId}: the turn's history doesn't cover the ${stored.length} stored turns; appended only`);
     const lang = bankLocale(profile, conv);
+    // The reply this write will capture, known before anything is written
+    // (the last master row it inserts that the server wrote).
+    const replyRow = insert.findLast((t) => t.role === "master" && !t.fromClient);
+    const items = replyRow && lang != null && turn.master.role === "master" ? glossCaptures(turn.master.glosses, turn.master.lines, lang || null) : [];
+    const dropped = stored.slice(keep).map((t) => t.id);
+    // Dropping replies and capturing the new one: both jobs' phrases locked
+    // in one norm-ordered pass first (the bank's lock order; two ordered
+    // passes one after the other deadlock with a recap or capture between).
+    const made = await lockTurnWrite(tx, profile, { turnIds: dropped, lang: lang ?? "", items });
     if (keep < stored.length) {
       // Undo what these turns' captures did (recordGlosses below, when they
       // were the reply) before they go, while their sightings and examples
       // still name them: only what was recorded, so a turn never captured
       // (a copy from the browser, a failed capture) changes nothing.
-      await unrecordGlosses(tx, profile, { turnIds: stored.slice(keep).map((t) => t.id) });
+      await unrecordGlosses(tx, profile, { turnIds: dropped });
       await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
     }
     const written = await mine.insert(
@@ -306,8 +315,8 @@ export async function saveTurn(
     );
     const reply = written.findLast((t) => t.role === "master" && !t.fromClient);
     if (reply && lang != null && turn.master.role === "master") {
-      const items = glossCaptures(turn.master.glosses, turn.master.lines, lang || null);
-      await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
+      const n = await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
+      if (n == null) await forgetUnused(tx, profile, made);
     }
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.

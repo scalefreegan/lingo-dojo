@@ -193,8 +193,8 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
             <div>
               <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">{kids ? "New words" : "Phrases kept"}</h4>
               <ul className="mt-1 flex flex-col gap-1" data-testid="recap-kept">
-                {recap.kept.map((k) => (
-                  <li key={k.text} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                {recap.kept.map((k, i) => (
+                  <li key={`${i}:${k.text}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                     <span className="font-medium text-fg">{k.text}</span>
                     <span className="text-fg-3">{k.meaning}</span>
                     {!kids && k.mastery && <Badge tone={BAND_TONE[k.mastery]}>{k.mastery}</Badge>}
@@ -216,8 +216,8 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
             <div>
               <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">{kids ? "You did it!" : "What went well"}</h4>
               <ul className="mt-1 flex flex-col gap-0.5 text-sm text-fg-2">
-                {well.map((e) => (
-                  <li key={`${e.phrase}:${e.kind}`}>
+                {well.map((e, i) => (
+                  <li key={`${i}:${e.phrase}:${e.kind}`}>
                     <span className="font-medium text-fg">{e.phrase}</span>
                     {!kids && <span className="text-fg-3">: {KIND[e.kind]}</span>}
                   </li>
@@ -225,19 +225,21 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
               </ul>
             </div>
           )}
-          {(recap.corrections.length > 0 || fix.length > 0) && (
+          {/* Kids see only the corrections here (their events aren't listed),
+              so the heading needs one of those. */}
+          {(recap.corrections.length > 0 || (!kids && fix.length > 0)) && (
             <div>
               <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">{kids ? "Try saying it like this" : "To work on"}</h4>
               <ul className="mt-1 flex flex-col gap-1 text-sm text-fg-2" data-testid="recap-corrections">
-                {recap.corrections.map((c) => (
-                  <li key={`${c.said}→${c.better}`}>
+                {recap.corrections.map((c, i) => (
+                  <li key={`${i}:${c.said}→${c.better}`}>
                     <span className="text-fg-3 line-through">{c.said}</span> → <span className="font-medium text-fg">{c.better}</span>
                     {c.note && <span className="text-fg-3"> ({c.note})</span>}
                   </li>
                 ))}
                 {!kids &&
-                  fix.map((e) => (
-                    <li key={`${e.phrase}:${e.kind}`}>
+                  fix.map((e, i) => (
+                    <li key={`${i}:${e.phrase}:${e.kind}`}>
                       <span className="font-medium text-fg">{e.phrase}</span>
                       <span className="text-fg-3">
                         : {KIND[e.kind]}

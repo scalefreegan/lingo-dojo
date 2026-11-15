@@ -107,19 +107,44 @@ export function extractAfterEnd(conversation: Conversation): void {
   );
 }
 
+/**
+ * Why a recap failed, as the learner reads it (`extraction_error`, the
+ * card's text): fixed wording only. What went wrong in detail (a CLI's
+ * stderr, a database error with its SQL and the recap's JSON) goes to the
+ * server log, never to the row or the page.
+ */
+const REASON = {
+  gone: "its learner or language is gone",
+  call: "the model call didn't work",
+  reply: "the reply wasn't a recap",
+  none: "no reply",
+  save: "the recap couldn't be saved",
+} as const;
+/** The CLI hints (scripts/claude.mjs failureHint) are fixed text too, and
+ *  worth showing: a sign-in to renew, a limit to wait out. */
+const HINTS = [/^Claude Code sign-in has expired/, /^Claude usage limit reached/, /^Claude API is overloaded/];
+/** A stored reason, if it is one of ours (rows written before this rule may hold raw text). */
+const shownReason = (s: string | null) => (s && (Object.values(REASON).includes(s as never) || HINTS.some((h) => h.test(s))) ? s : null);
+/** The error and its cause (drizzle wraps the driver's), for the log. */
+const detail = (e: unknown) => {
+  const err = e as Error & { cause?: unknown };
+  const cause = err?.cause as (Error & { code?: string }) | undefined;
+  return `${String(err?.message || e)}${cause ? ` (cause: ${cause.code ? `${cause.code} ` : ""}${String(cause.message || cause)})` : ""}`;
+};
+
 /** One run, holding `claim`: the transcript, the model (twice at most),
  *  then the write; or 'skipped' / 'failed'. */
 async function run(profile: LanguageProfileRef, conv: Conversation, claim: string): Promise<void> {
   const db = rawDb();
-  const fail = (why: string) => {
-    console.error(`[lingo-dojo] recap of conversation ${conv.id} failed: ${why}`);
+  const fail = (why: string, logged = why) => {
+    console.error(`[lingo-dojo] recap of conversation ${conv.id} failed: ${logged}`);
     return finishExtraction(db, profile, conv.id, claim, "failed", why);
   };
   try {
     const rows = await profileRows(profile).list(turns, eq(turns.conversationId, conv.id), { orderBy: asc(turns.idx) });
     if (!learnerSpoke(rows)) return void (await finishExtraction(db, profile, conv.id, claim, "skipped"));
     const owner = await languageProfileOwner(db, profile);
-    if (!owner) return void (await fail("its learner or language is gone"));
+    if (!owner) return void (await fail(REASON.gone));
     const locale = bankLocale(owner.targetLanguage, conv);
     const { system, user } = extractionPrompt({
       transcript: sessionTranscript(rows),
@@ -130,6 +155,7 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     });
     const model = await getModel(owner.userId);
     let why = "";
+    let logged = "";
     for (let attempt = 1; attempt <= TRIES; attempt++) {
       await countAttempt(db, profile, conv.id, claim);
       let text: string;
@@ -140,12 +166,15 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
         text = (await result).text;
       } catch (e) {
         const msg = String((e as Error)?.message || e);
-        why = failureHint(msg) || msg;
+        why = failureHint(msg) || REASON.call;
+        logged = msg;
+        console.warn(`[lingo-dojo] recap of conversation ${conv.id}, attempt ${attempt}: ${msg}`);
         continue;
       }
       const parsed = parseExtraction(text);
       if (!parsed.ok) {
-        why = `the reply wasn't a recap (${parsed.error})`;
+        why = REASON.reply;
+        logged = `${REASON.reply} (${parsed.error})`;
         continue;
       }
       if (parsed.dropped) console.warn(`[lingo-dojo] recap of conversation ${conv.id}: ${parsed.dropped} malformed item(s) dropped`);
@@ -154,9 +183,9 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
       await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows });
       return;
     }
-    await fail(why || "no reply");
+    await fail(why || REASON.none, logged || why || REASON.none);
   } catch (e) {
-    await fail(`couldn't be saved: ${String((e as Error)?.message || e)}`).catch(() => {});
+    await fail(REASON.save, `${REASON.save}: ${detail(e)}`).catch((e2) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: the failure couldn't be stored: ${detail(e2)}`));
   }
 }
 
@@ -193,7 +222,7 @@ async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<Se
         ? null
         : c.extractionStatus === "running"
           ? "the recap was interrupted (the server restarted)"
-          : (c.extractionError ?? "the recap couldn't be made"),
+          : (shownReason(c.extractionError) ?? "the recap couldn't be made"),
     extractedAt: c.extractedAt ? new Date(c.extractedAt).toISOString() : null,
   };
 }

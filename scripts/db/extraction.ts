@@ -33,13 +33,19 @@
 // session's end: FSRS reviews only go forward. Practice reads only the FSRS
 // fields of a session review's card_before and never regrades one (its
 // override takes mode 'flashcard' rows only). Phrases the
-// recap kept stay where they are; one only the last run had made, left
-// with no sighting, no reviewed card and nothing the learner set, goes.
+// recap kept stay where they are; one the re-run leaves with no sighting
+// goes by the rule a dropped reply's undo uses (phrases.ts settleUnseen:
+// only automatic paths held it, gloss or extraction, nothing the learner
+// set, no reviewed card).
 //
 // Lock order, the bank's (scripts/db/phrases.ts): the conversation row,
-// then every complete phrase the write touches in norm order (an upsert
-// inserts or locks it), then the pending rows the merge folds in, then
-// cards. A collision with a capture at the same moment is retried once.
+// then, in one norm-ordered pass (lockInNormOrder), every complete phrase
+// the write touches: the reply's kept phrases (an upsert inserts or locks
+// each), the phrases its events name (by norm) and the phrases the last
+// run sighted or reviewed (by id, at the norm they had when read, so one
+// renamed meanwhile is still locked, restored and recounted); then the
+// pending rows the merge folds in, then cards. A collision with a capture
+// at the same moment is retried once.
 //
 // Erasable TypeScript only: the tests import it as is.
 
@@ -51,7 +57,7 @@ import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, phraseMetrics } from "../../scripts/phrases.mjs";
 import type { MasteryBand, RecapEvent } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, recount, retrying, stronger } from "./phrases.ts";
+import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, lockById, lockInNormOrder, recount, retrying, settleUnseen, stronger } from "./phrases.ts";
 import { cards, conversations, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
 
 type Conversation = typeof conversations.$inferSelect;
@@ -262,23 +268,35 @@ async function writeBank(
   };
   const plan = planExtraction(allowed, { known, locale });
 
-  // Every complete phrase this write touches, in norm order: kept ones
-  // upserted ("extraction" when new; a meaning only filled when blank, the
-  // stronger provenance kept), the rest locked.
+  // Every complete phrase this write touches, in one norm-ordered pass:
+  // kept ones upserted ("extraction" when new; a meaning only filled when
+  // blank, the stronger provenance kept), the ones events name locked by
+  // norm, the last run's locked by id.
   const keepBy = new Map(plan.keep.map((k) => [k.norm, k]));
-  const norms = [...new Set([...plan.keep.map((k) => k.norm), ...plan.events.map((e) => e.norm), ...oldReviews.map((o) => o.norm!), ...oldSightings.map((o) => o.norm!)])].sort();
+  const norms = [...new Set([...plan.keep.map((k) => k.norm), ...plan.events.map((e) => e.norm)])];
+  const prev = new Map([...oldReviews, ...oldSightings].map((o) => [o.phraseId, o.norm ?? ""]));
+  const taken = await lockInNormOrder([
+    ...norms.map((norm) => {
+      const k = keepBy.get(norm);
+      return {
+        norm,
+        take: async () =>
+          (k
+            ? await mine.upsert(
+                phrases,
+                { lang: opts.bankLocale, text: k.text, norm, meaning: k.meaning, source: "extraction" },
+                { ...IDENTITY, set: { meaning: AUTO_MEANING, source: stronger(sql`${phrases.source}`, sql`excluded.source`) } },
+              )
+            : await tx.select().from(phrases).where(mine.where(phrases, and(COMPLETE, eq(phrases.norm, norm)) as SQL)).for("update"))[0],
+      };
+    }),
+    ...[...prev].map(([id, norm]) => ({ norm, take: () => lockById(tx, profile, id) })),
+  ]);
   const byNorm = new Map<string, PhraseRow>();
-  for (const norm of norms) {
-    const k = keepBy.get(norm);
-    const [row] = k
-      ? await mine.upsert(
-          phrases,
-          { lang: opts.bankLocale, text: k.text, norm, meaning: k.meaning, source: "extraction" },
-          { ...IDENTITY, set: { meaning: AUTO_MEANING, source: stronger(sql`${phrases.source}`, sql`excluded.source`) } },
-        )
-      : await tx.select().from(phrases).where(mine.where(phrases, and(COMPLETE, eq(phrases.norm, norm)) as SQL)).for("update");
-    if (row) byNorm.set(norm, row);
-  }
+  norms.forEach((norm, i) => {
+    if (taken[i]) byNorm.set(norm, taken[i]!);
+  });
+  const prevRows = taken.slice(norms.length).filter((r): r is PhraseRow => !!r);
   // The merge rule: a kept phrase whose meaning a scene's pending phrase
   // has absorbs it.
   await absorbPending(
@@ -286,7 +304,9 @@ async function writeBank(
     profile,
     plan.keep.flatMap((k) => (byNorm.has(k.norm) ? [{ id: byNorm.get(k.norm)!.id, meaningNorm: k.meaningNorm }] : [])),
   );
-  const ids = [...new Set([...byNorm.values()].map((r) => r.id))];
+  // The last run's phrases are in `ids` by id: recounted and settled even
+  // when renamed since that run.
+  const ids = [...new Set([...byNorm.values(), ...prevRows].map((r) => r.id))];
   const fresh = new Map((ids.length ? await mine.list(phrases, inArray(phrases.id, ids)) : []).map((r) => [r.id, r]));
 
   // Undo the last run: its sightings, and its reviews where nothing came
@@ -370,8 +390,7 @@ async function writeBank(
   }
 
   // Counts and times from the rows: seen from the sightings, last
-  // practised from the reviews.
-  // (`ids` holds the last run's phrases too: their norms were in the lock pass.)
+  // practised from the reviews. (`ids` holds the last run's phrases too.)
   const all = ids;
   await recount(tx, profile, all);
   if (all.length) {
@@ -381,18 +400,10 @@ async function writeBank(
       inArray(phrases.id, all),
     );
   }
-  // A phrase only the last run had made, and this one doesn't name, goes
-  // if nothing else holds it: as a dropped reply's gloss phrase does
-  // (scripts/db/phrases.ts unrecordGlosses).
-  const named = new Set(touched);
-  for (const id of all) {
-    if (named.has(id)) continue;
-    const row = await mine.get(phrases, eq(phrases.id, id));
-    if (!row || row.source !== "extraction" || row.editedAt != null || row.starred || row.suspended || row.note != null) continue;
-    const seen = await mine.get(phraseSightings, eq(phraseSightings.phraseId, id));
-    const practised = await mine.get(cards, and(eq(cards.phraseId, id), sql`${cards.reps} > 0`) as SQL);
-    if (!seen && !practised) await mine.remove(phrases, eq(phrases.id, id));
-  }
+  // A phrase this run leaves with no sighting goes if only automatic paths
+  // held it, as a dropped reply's does (scripts/db/phrases.ts settleUnseen,
+  // the one rule for both, whichever undo comes last).
+  await settleUnseen(tx, profile, all);
 
   return {
     ...recap,

@@ -95,13 +95,21 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
 
 /* --------------------------------- parsing --------------------------------- */
 
+/** Lone UTF-16 surrogates (half an emoji, say): not text, and Postgres
+ *  refuses them in jsonb, which would fail the whole recap's write. */
+const LONE_SURROGATES = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+/** Invisible characters with no job in a recap: zero-width space, word
+ *  joiner, BOM. ZWJ and ZWNJ stay: some scripts spell with them. */
+const INVISIBLE = /[\u200B\u2060\uFEFF]/g;
+/** Model text made safe to store: well-formed, no invisible or control
+ *  characters (phrases.mjs clean: C0, DEL, the bidi overrides and isolates). */
+export const modelText = (v) => clean(String(v).replace(LONE_SURROGATES, "").replace(INVISIBLE, ""));
 /** Trimmed string capped at `max`, or null when not a non-empty string.
- *  Control characters go first, as from every phrase-bank input
- *  (phrases.mjs clean: C0, DEL, the bidi overrides and isolates). */
+ *  Cut at `max` without leaving half a surrogate pair. */
 const str = (v, max) => {
   if (typeof v !== "string") return null;
-  const s = clean(v).replace(/\s+/g, " ").trim();
-  return s ? s.slice(0, max) : null;
+  const s = modelText(v).replace(/\s+/g, " ").trim();
+  return s ? s.slice(0, max).replace(LONE_SURROGATES, "") || null : null;
 };
 /** Optional string: "" when absent or not a string. */
 const opt = (v, max) => str(v, max) ?? "";
@@ -156,6 +164,17 @@ function cleanList(raw, clean, cap, acc, dedupe = (list) => list) {
   return good.slice(0, cap);
 }
 
+/** The first of each key: a phrase kept twice, a correction given twice. */
+const firstBy = (key) => (list) => {
+  const seen = new Set();
+  return list.filter((x) => {
+    const k = key(x);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
+
 /** One event per (phrase, skill): a repeated event would review the same card
  *  twice in one session. The worst outcome for the learner survives (lowest
  *  rating: Again beats Hard beats Good), at the position of the first. */
@@ -189,9 +208,9 @@ export function parseExtraction(text) {
   const acc = { dropped: 0 };
   const value = {
     summary: opt(raw.summary, LIMITS.summary),
-    keep: cleanList(raw.keep, cleanKeep, LIMITS.keep, acc),
+    keep: cleanList(raw.keep, cleanKeep, LIMITS.keep, acc, firstBy((k) => normKey(k.text))),
     events: cleanList(raw.events, cleanEvent, LIMITS.events, acc, dedupeEvents),
-    corrections: cleanList(raw.corrections, cleanCorrection, LIMITS.corrections, acc),
+    corrections: cleanList(raw.corrections, cleanCorrection, LIMITS.corrections, acc, firstBy((c) => `${normKey(c.said)}\u0000${normKey(c.better)}`)),
   };
   return { ok: true, value, dropped: acc.dropped };
 }

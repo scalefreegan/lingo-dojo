@@ -208,7 +208,7 @@ test("a failed call is retried once, then the recap is 'failed' with Retry recap
   assert.equal(fake.recapRuns() - runs, 2, "tried twice");
   let recap = await recapOf(sam, c.id);
   assert.equal(recap.status, "failed");
-  assert.match(recap.error, /something broke/);
+  assert.equal(recap.error, "the model call didn't work", "fixed wording: the CLI's own output stays in the server log");
   assert.equal(recap.summary, null);
   assert.equal((await sessionReviews(c.id)).length, 0, "nothing written");
   assert.equal((await sam.call("GET", "/api/conversations")).body.conversations[0].recapStatus, "failed");
@@ -217,7 +217,7 @@ test("a failed call is retried once, then the recap is 'failed' with Retry recap
   fake.recap("Sure! Here is a summary of the session.");
   recap = await retry(sam, c.id);
   assert.equal((await recapOf(sam, c.id)).status, "failed");
-  assert.match((await recapOf(sam, c.id)).error, /wasn't a recap/);
+  assert.equal((await recapOf(sam, c.id)).error, "the reply wasn't a recap");
 
   fake.recap(JSON.stringify(RECAP));
   recap = await retry(sam, c.id);
@@ -402,6 +402,53 @@ test("a scene phrase the learner deleted (a meaning dismissal) isn't brought bac
   assert.equal(got["Quédese con la vuelta"], undefined, "deleted by meaning");
   assert.equal(got["(Keep the change)"], undefined);
   assert.ok(got["¿Qué le doy?"], "the other kept phrase is made");
+});
+
+test("model text is made safe to store: a lone surrogate or zero-width character doesn't fail the recap's write", async () => {
+  const sam = await someone();
+  fake.recap(
+    JSON.stringify({
+      ...RECAP,
+      summary: "You did well \ud83d today\u200b.",
+      keep: [{ text: "¿Qué le doy?\ud83d", meaning: "What can I get you?\udc00", why: "" }],
+      corrections: [{ said: "Unos mangos\ud83d", better: "Unos mangos, por favor", note: "" }],
+    }),
+  );
+  const c = await session(sam);
+  const recap = await recapOf(sam, c.id);
+  assert.equal(recap.status, "done", recap.error ?? "");
+  assert.equal(recap.summary, "You did well today.");
+  assert.deepEqual(recap.kept.map((k) => [k.text, k.meaning]), [["¿Qué le doy?", "What can I get you?"]]);
+  assert.equal(recap.corrections[0].said, "Unos mangos");
+});
+
+test("a recap that couldn't be saved shows fixed text: no SQL, JSON or ids reach the learner; the detail is logged", async () => {
+  const sam = await someone();
+  const c = await session(sam, { end: false });
+  // The final write fails in the database, as a bad value or a constraint would.
+  await q(`create or replace function recap_fails() returns trigger language plpgsql as $f$
+    begin if new.id = '${c.id}' and new.extraction_status = 'done' then raise exception 'forced failure'; end if; return new; end $f$`);
+  await q("create trigger recap_fails before update on conversations for each row execute function recap_fails()");
+  const logged = [];
+  const orig = console.error;
+  console.error = (...a) => logged.push(a.map(String).join(" "));
+  try {
+    assert.equal((await sam.call("POST", `/api/conversations/${c.id}/end`)).status, 200);
+    await settleExtractions();
+  } finally {
+    console.error = orig;
+    await q("drop trigger recap_fails on conversations");
+    await q("drop function recap_fails()");
+  }
+  const r = await sam.call("GET", `/api/conversations/${c.id}/recap`);
+  assert.equal(r.body.recap.status, "failed");
+  assert.equal(r.body.recap.error, "the recap couldn't be saved");
+  for (const leak of [/update|select|insert/i, /[{}]/, /forced failure/, new RegExp(c.id), /mangos/]) assert.doesNotMatch(r.body.recap.error, leak);
+  assert.doesNotMatch(r.text, /update|select|forced failure/i, "nor anywhere in the reply");
+  assert.ok(logged.some((l) => /forced failure/.test(l)), "the cause is in the server log");
+  // A row from before this rule, holding raw text, is shown as the generic reason.
+  await q("update conversations set extraction_error = $2 where id = $1", [c.id, `couldn't be saved: Failed query: update "conversations" set ... ${c.id}`]);
+  assert.equal((await recapOf(sam, c.id)).error, "the recap couldn't be made");
 });
 
 test("nothing to recap: a session the learner never answered is skipped with no model call", async () => {

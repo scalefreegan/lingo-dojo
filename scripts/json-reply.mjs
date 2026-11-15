@@ -3,14 +3,23 @@
 // tool-less `claude -p` for JSON and both get, now and then, a code fence or a
 // sentence of preamble around it. Pure string in, value out.
 
+/** Each candidate "{" scans to the end of the reply when it never closes,
+ *  so a reply of unbalanced braces is quadratic: on the server's one event
+ *  loop, a stall for every user. A reply is read up to this long (well
+ *  past what a grader verdict or a recap needs) and at most this many
+ *  starts are tried (prose before the object rarely has more than a few). */
+export const MAX_REPLY_CHARS = 200_000;
+export const MAX_STARTS = 64;
+
 /** The first parseable top-level JSON object in `text`, or null. Tolerates
  *  ```json fences and prose before or after. Scans for balanced braces while
  *  honouring strings, so a "}" inside a value does not end the object early;
  *  if the first candidate does not parse, the next "{" is tried. */
 export function extractJsonObject(text) {
   if (typeof text !== "string") return null;
-  const s = text.replace(/```[a-zA-Z]*\s*/g, "");
-  for (let start = s.indexOf("{"); start !== -1; start = s.indexOf("{", start + 1)) {
+  const s = text.slice(0, MAX_REPLY_CHARS).replace(/```[a-zA-Z]*\s*/g, "");
+  let tries = 0;
+  for (let start = s.indexOf("{"); start !== -1 && tries++ < MAX_STARTS; start = s.indexOf("{", start + 1)) {
     const end = matchingBrace(s, start);
     if (end === -1) continue;
     try {
