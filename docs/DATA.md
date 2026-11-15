@@ -263,10 +263,17 @@ conversations. The phrase bank stays the learner's (keyed by `lang`).
   under a lock on the learner's row rather than a unique index, so it
   needed no migration: every write that can give a live profile a target
   language (`createLanguageProfile`, and `updateLanguageProfile` naming a
-  blank profile) takes it first (`lockLearner`), then the profile row, as
-  `archiveLanguageProfile` does; one order, so they can't deadlock. There is
-  no unarchive, a new learner's first profile can't clash, and the import
-  and first run make no profile of their own; an archived profile doesn't count, so a language
+  blank profile) takes it first (`lockLearner`), then the profile row. There
+  is no unarchive, a new learner's first profile can't clash, and the import
+  and first run make no profile of their own. **Lock order:** every
+  transaction that writes learners, language profiles or a session's
+  learner and language locks learners first (two in id order, as a switch
+  from one learner to another does), then language profiles, then session
+  rows, so no two of them can deadlock. `setSessionLearner` (the learner
+  pick, `PUT /api/auth/language`, the session's fallback to the default
+  language) reads the destination under the learner's lock, so a language
+  or learner archived meanwhile is the usual 404, never a session left on
+  it; an archived profile doesn't count, so a language
   archived and added again is a fresh profile. In the Profile popover,
   picking another target language is this pack's override, as before; to
   make it the default the popover offers **Switch to German** (when the
@@ -1310,7 +1317,10 @@ deletes cover undoing a single change.
   `LINGO_TEST_PG_URL`) races the naming of a blank profile against an add
   of that language, two namings of one language, and both against an
   archive: one wins, the other is refused, no deadlock (it fails on the
-  code before the learner lock in `updateLanguageProfile`). Language
+  code before the learner lock in `updateLanguageProfile`); and a session
+  switch against an archive, both of the destination language and of the
+  language being left, which deadlocked (40P01) before `setSessionLearner`
+  took the learner lock. Language
   profiles: `auth.http.test.mjs` covers the lock order and
   language CRUD, picking, the last-used landing, the keep-one rule, and
   another learner's or account's language on every route;

@@ -19,7 +19,8 @@ import { freshDb } from "./testdb.mjs";
 import { tokenHash } from "../auth.mjs";
 import { drizzle } from "drizzle-orm/pglite";
 import {
-  archiveLanguageProfile, createLanguageProfile, createLearner, createUser, disableUser, enableUser, setPassword, updateLanguageProfile,
+  archiveLanguageProfile, createLanguageProfile, createLearner, createSession, createUser, disableUser, enableUser, setPassword, setSessionLearner,
+  updateLanguageProfile,
 } from "../db/accounts.ts";
 import * as schema from "../db/schema.ts";
 import { agentMessages, authSessions, languageProfiles, learners, userSettings, users } from "../db/schema.ts";
@@ -730,7 +731,7 @@ test("PUT /api/profile is all or nothing: a language archived between the sessio
   }
 });
 
-test("every language profile write locks the learner's row before any profile row (the one lock order)", async (t) => {
+test("every learner, language profile and session write keeps the one lock order: learners, then profiles, then sessions", async (t) => {
   // PGlite can't race (languages.pg.test.mjs does, on a real Postgres), so
   // this pins the order the race-safety rests on: the learner FOR UPDATE
   // first, then the profiles, in each write that checks the
@@ -752,4 +753,35 @@ test("every language profile write locks the learner's row before any profile ro
   assert.deepEqual(await run(() => updateLanguageProfile(db, learner.id, blank.id, { targetLanguage: "Italian" })), ["learners", "language_profiles"]);
   assert.deepEqual(await run(() => updateLanguageProfile(db, learner.id, blank.id, { level: "B1" })), ["learners", "language_profiles"]);
   assert.deepEqual(await run(() => archiveLanguageProfile(db, user.id, learner.id, blank.id)), ["learners", "language_profiles"]);
+
+  // A session switch: the row locks and writes in order. Learners first (two
+  // in id order when the switch changes learner), then the profile's
+  // lastUsedAt, then the session.
+  const steps = () =>
+    seen
+      .map((q) => (/for update/i.test(q) ? `lock ${/from "(\w+)"/.exec(q)?.[1]}` : /^update "(\w+)"/i.exec(q) ? `update ${/^update "(\w+)"/i.exec(q)[1]}` : null))
+      .filter(Boolean);
+  const other = await createLearner(db, user.id, { ...ADULT, name: "Ash" });
+  const sessionId = "order-session";
+  await createSession(db, user.id, sessionId, new Date(Date.now() + 3_600_000));
+  const german = (await fresh.query("select id from language_profiles where learner_id = $1 and target_language = 'German'", [learner.id]))[0].id;
+  seen.length = 0;
+  await setSessionLearner(db, user.id, sessionId, learner.id, german);
+  assert.deepEqual(steps(), ["lock learners", "update language_profiles", "update auth_sessions"]);
+  seen.length = 0;
+  await setSessionLearner(db, user.id, sessionId, other.id);
+  assert.deepEqual(steps(), ["lock learners", "lock learners", "update language_profiles", "update auth_sessions"]);
+  const lockedIds = seen.filter((q) => /for update/i.test(q)).length;
+  assert.equal(lockedIds, 2, "both learners locked");
+  // Locked in id order: the query params aren't in the logged text, so
+  // compare the order setSessionLearner sorts by against the two ids.
+  seen.length = 0;
+  const params = [];
+  const db2 = drizzle(fresh.client, { schema, logger: { logQuery: (q, ps) => /for update/i.test(q) && params.push(ps[0]) } });
+  await setSessionLearner(db2, user.id, sessionId, learner.id, german);
+  assert.deepEqual(params, [learner.id, other.id].sort());
+  // Archived meanwhile: a refusal, the session unchanged.
+  await archiveLanguageProfile(db, user.id, learner.id, german);
+  const refused = await setSessionLearner(db, user.id, sessionId, learner.id, german);
+  assert.deepEqual(refused, { refused: "language" });
 });

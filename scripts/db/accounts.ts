@@ -192,24 +192,51 @@ export async function deleteSession(db: Db, userId: string, id: string): Promise
   await forUser(db, userId).remove(authSessions, eq(authSessions.id, id));
 }
 
-/** The session's active learner and language, always set together. The
- *  caller has checked the learner is this user's and the language that
- *  learner's; the composite foreign keys (learner_id, user_id) and
- *  (language_profile_id, learner_id) refuse them anyway if not. The language
- *  becomes the learner's last used, which the next pick of the learner (on
- *  any device) lands on. */
+/**
+ * Point the session at a learner and one of its live languages (always set
+ * together), or at no learner (`learnerId` null). `languageProfileId` null
+ * lands on the learner's default language (the last used; a blank one is
+ * made for a learner with none). The language becomes the learner's last
+ * used, which the next pick of the learner (on any device) lands on.
+ *
+ * Lock order, the one every learner/profile/session write keeps (see
+ * lockLearner): the learners first (the session's current one and the new
+ * one, in id order), then the profile (the lastUsedAt update), then the
+ * session row. So an archive of the destination language, which holds the
+ * learner and its profiles and then moves sessions, runs wholly before or
+ * after this instead of deadlocking with it; and since the learner and
+ * language are read under the learner's lock, one archived meanwhile is a
+ * refusal ("learner" or "language"), never a session left on it.
+ */
 export async function setSessionLearner(
   db: Db,
   userId: string,
   id: string,
   learnerId: string | null,
   languageProfileId: string | null = null,
-): Promise<void> {
-  await db.transaction(async (tx) => {
-    await forUser(tx, userId).update(authSessions, { learnerId, languageProfileId: learnerId ? languageProfileId : null }, eq(authSessions.id, id));
-    if (learnerId && languageProfileId) {
-      await forLearner(tx, learnerId).update(languageProfiles, { lastUsedAt: sql`now()` }, eq(languageProfiles.id, languageProfileId));
+): Promise<{ learner: Learner | null; language: LanguageProfile | null } | { refused: "learner" | "language" }> {
+  if (learnerId !== null && !isUuid(learnerId)) return { refused: "learner" };
+  if (languageProfileId !== null && !isUuid(languageProfileId)) return { refused: "language" };
+  return db.transaction(async (tx) => {
+    const mine = forUser(tx, userId);
+    const [current] = await tx.select({ learnerId: authSessions.learnerId }).from(authSessions).where(mine.where(authSessions, eq(authSessions.id, id)));
+    // Both learners, in id order, so two switches between the same two
+    // learners in opposite directions can't each hold the one the other wants.
+    const ids = [...new Set([current?.learnerId, learnerId].filter((v): v is string => !!v))].sort();
+    for (const l of ids) await lockLearner(tx, l);
+    if (learnerId === null) {
+      await mine.update(authSessions, { learnerId: null, languageProfileId: null }, eq(authSessions.id, id));
+      return { learner: null, language: null };
     }
+    const learner = await getLearner(tx, userId, learnerId);
+    if (!learner) return { refused: "learner" as const };
+    const language = languageProfileId
+      ? await getLanguageProfile(tx, learnerId, languageProfileId)
+      : ((await defaultLanguageProfile(tx, learnerId)) ?? (await createLanguageProfile(tx, learnerId, {})));
+    if (!language) return { refused: "language" as const };
+    const [used] = await forLearner(tx, learnerId).update(languageProfiles, { lastUsedAt: sql`now()` }, eq(languageProfiles.id, language.id));
+    await mine.update(authSessions, { learnerId, languageProfileId: language.id }, eq(authSessions.id, id));
+    return { learner, language: used ?? language };
   });
 }
 
@@ -350,13 +377,16 @@ export class LanguageTakenError extends Error {
 }
 
 /**
- * Lock the learner's row (FOR UPDATE), in the caller's transaction. Every
- * write that can give a live profile a target language (an add, the naming
- * of a blank profile) and every archive takes it first, before any profile
- * row: the one-per-language rule has no unique index behind it (that would
- * need a migration), so this lock is what serialises the check-then-write,
- * and the one order (learner, then profiles) keeps two writers from
- * deadlocking.
+ * Lock the learner's row (FOR UPDATE), in the caller's transaction. The one
+ * lock order for learners, language profiles and sessions is: learners (in
+ * id order when there are two), then language profiles, then session rows.
+ * Every write that can give a live profile a target language (an add, the
+ * naming of a blank profile), every language archive and every session
+ * switch (setSessionLearner) takes this first: the one-per-language rule
+ * has no unique index behind it (that would need a migration), so this lock
+ * is what serialises the check-then-write, and the one order keeps any two
+ * of them from deadlocking. archiveLearner and updateLearner write the
+ * learner row itself first, which is the same order.
  */
 async function lockLearner(tx: Db, learnerId: string): Promise<void> {
   await tx.select({ id: learners.id }).from(learners).where(eq(learners.id, learnerId)).for("update");

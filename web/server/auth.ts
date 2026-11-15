@@ -6,7 +6,7 @@ import {
 } from "../../scripts/auth.mjs";
 import { MODES, isMode, LEVELS_BY_MODE } from "../../scripts/content.mjs";
 import {
-  LanguageIdentityError, LanguageTakenError, archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession, defaultLanguageProfile,
+  LanguageIdentityError, LanguageTakenError, archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession,
   deleteSession, findSession, findUserByUsername, getLanguageProfile, getLearner, hasUsers, languagesByLearner, listLanguageProfiles,
   listLearners, setSessionLearner, slideSession, updateLanguageProfile, updateLearner, type LanguageProfile, type LanguageProfilePatch,
   type Learner, type LearnerPatch, type NewLearnerWithLanguage,
@@ -112,8 +112,11 @@ export async function sessionFor(req: IncomingMessage, res: ServerResponse): Pro
     await slideSession(db, user.id, id, new Date(Date.now() + SESSION_MS));
     setCookie(res, sessionCookie(token, { secure: secure(req) }));
   }
-  const learner = session.learnerId ? ((await getLearner(db, user.id, session.learnerId)) ?? null) : null;
+  let learner = session.learnerId ? ((await getLearner(db, user.id, session.learnerId)) ?? null) : null;
   const language = learner ? await sessionLanguage(db, user.id, id, learner, session.languageProfileId) : null;
+  // The learner archived between the two reads: no learner, as after an
+  // archive (the picker).
+  if (!language) learner = null;
   return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin }, learner, language, sessionId: id };
 }
 
@@ -125,13 +128,13 @@ export async function sessionFor(req: IncomingMessage, res: ServerResponse): Pro
  * showing the old one is then a stale_learner, as after a learner switch.
  * A learner with no live language (the keep-one rule never leaves one, but
  * a hand-edited database could) gets a blank one rather than a dead end.
+ * Null when the learner itself was archived meanwhile.
  */
-async function sessionLanguage(db: Db, userId: string, sessionId: string, learner: Learner, wanted: string | null): Promise<LanguageProfile> {
+async function sessionLanguage(db: Db, userId: string, sessionId: string, learner: Learner, wanted: string | null): Promise<LanguageProfile | null> {
   const named = wanted ? await getLanguageProfile(db, learner.id, wanted) : undefined;
   if (named) return named;
-  const language = (await defaultLanguageProfile(db, learner.id)) ?? (await createLanguageProfile(db, learner.id, {}));
-  await setSessionLearner(db, userId, sessionId, learner.id, language.id);
-  return language;
+  const set = await setSessionLearner(db, userId, sessionId, learner.id);
+  return "refused" in set ? null : set.language;
 }
 
 /* ------------------------------- the learner ------------------------------ */
@@ -337,17 +340,14 @@ export async function handleAuth(req: IncomingMessage, res: ServerResponse, ctx:
     if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
     const body = await readJsonBody<Partial<PickLearnerRequest>>(req);
     const id = body && typeof body === "object" ? body.learnerId : undefined;
-    let learner: Learner | null = null;
-    let language: LanguageProfile | null = null;
-    if (id !== null) {
-      // Someone else's learner reads the same as no learner at all.
-      learner = (await getLearner(rawDb(), ctx.user.id, id)) ?? null;
-      if (!learner) throw new HttpError(404, "no such learner");
-      // It lands on the language it was last practised in (on any device).
-      language = (await defaultLanguageProfile(rawDb(), learner.id)) ?? (await createLanguageProfile(rawDb(), learner.id, {}));
-    }
-    await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner?.id ?? null, language?.id ?? null);
-    return sendJson(res, 200, await meReply({ ...ctx, learner, language }));
+    // Someone else's learner reads the same as no learner at all.
+    if (id !== null && !(await getLearner(rawDb(), ctx.user.id, id))) throw new HttpError(404, "no such learner");
+    // It lands on the language it was last practised in (on any device),
+    // chosen under the learner's lock, so an archive racing the pick can't
+    // leave the session on an archived learner or language.
+    const set = await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, id === null ? null : (id as string));
+    if ("refused" in set) throw new HttpError(404, "no such learner");
+    return sendJson(res, 200, await meReply({ ...ctx, learner: set.learner, language: set.language }));
   }
   if (seg === "language") {
     if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
@@ -356,10 +356,16 @@ export async function handleAuth(req: IncomingMessage, res: ServerResponse, ctx:
     // One of the active learner's languages: another learner's (or another
     // account's) id is the same 404 as a missing one.
     const learner = activeLearner(ctx);
-    const language = (await getLanguageProfile(rawDb(), learner.id, id)) ?? null;
-    if (!language) throw new HttpError(404, "that language is gone (archived in another tab?)");
-    await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner.id, language.id);
-    return sendJson(res, 200, await meReply({ ...ctx, learner, language }));
+    // Checked again under the learner's lock (setSessionLearner): one
+    // archived between this read and the switch is the same 404.
+    const gone = () => new HttpError(404, "that language is gone (archived in another tab?)");
+    if (!(await getLanguageProfile(rawDb(), learner.id, id))) throw gone();
+    const set = await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner.id, id as string);
+    if ("refused" in set) {
+      if (set.refused === "learner") throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
+      throw gone();
+    }
+    return sendJson(res, 200, await meReply({ ...ctx, learner: set.learner!, language: set.language }));
   }
   sendJson(res, 404, { error: "no such route" });
 }
