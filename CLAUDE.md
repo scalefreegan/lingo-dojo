@@ -13,10 +13,16 @@ profile the app uses), per-user voice settings, model and agent chat;
 saved packs (phase 2): each learner's own rows, with revisions and soft
 deletes instead of git commits (`scripts/db/packs.ts`); saved
 conversations (phase 3: every voice session's turns, the Library's
-History; `web/server/conversations.ts`); and the phrase bank (phase 4: one
+History; `web/server/conversations.ts`); the phrase bank (phase 4: one
 per language profile, filled by each turn's glosses, the scene's lists and
 ☆ Star, shown in the Library's Phrase bank; `scripts/db/phrases.ts`,
-`web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`).
+`web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`); and the
+Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
+rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
+routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
+`web/src/components/PracticeView.tsx`). A practice answer locks its phrase
+then its card; it names the card's version, the phrase's revision and a
+submit id (a resend replays, anything else stale is a 409).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

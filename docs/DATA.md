@@ -3,8 +3,8 @@
 Status: **phase 0 (foundation), phase 1 (logins and learners), phase 2
 (packs in the database, and their import), phase 3 (conversations),
 language profiles (bead `ld-gf9.2`: one learner, several languages) and
-phase 4 (the phrase bank, bead `ld-5p2`) built**; phases 5–11 are plan,
-not built (2026-11-15). Epic `ld-gf9`,
+phase 4 (the phrase bank, bead `ld-5p2`) built**, and phase 7's flashcards
+(bead `ld-7p1`); the rest of phases 5–11 is plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -583,7 +583,7 @@ which is fine at the size of one learner's bank.
 
 | Metric | Source |
 |---|---|
-| Last seen | `last_seen_at`: glossed or used in a session, or a card shown in practice |
+| Last seen | `last_seen_at`: glossed or used in a session (as built, practice doesn't set it: see "As built (phase 7a)") |
 | Times seen | `seen_count` |
 | Last practiced | `last_practiced_at`: any review, practice or session |
 | Mastery | band from the weakest card: **New** (no card reviewed: never practised), **Learning** (stability < 3 days), **Familiar** (< 21 days), **Mastered** (≥ 21 days, Anki's "mature" line) |
@@ -1221,6 +1221,142 @@ practice modes above assume reading and typing, which conflicts with kids
 goals ("entirely by ear"), so the Practice tab is hidden for kids learners. A
 follow-up bead covers a kids audio game (hear a word, tap a picture).
 
+### As built (phase 7a: flashcards)
+
+Bead `ld-7p1`. No migration: `cards`, `reviews` (with `card_before`) and
+`phrases.alternates` were already there. Cloze, listening, speak-it and
+the audio cache are later beads (`ld-7dr`, `ld-6a0`); the `listen` skill's
+cards are left alone by this queue.
+
+- **Where.** A **Practice** tab beside Library (in the "…" menu below
+  `md`, like Library), hidden for kids learners; its routes answer a kids
+  learner with 403. The pure rules (queue, day, limits, input checks, local
+  match, verdicts, alternates) are `scripts/practice.mjs`; every query is in
+  `scripts/db/practice.ts` (owner scoping through `forLanguageProfile`,
+  nowhere else); the routes and the grader call are
+  `web/server/practice.ts`; the page is `web/src/components/PracticeView.tsx`
+  with its calls in `web/src/practiceApi.ts` and its wire types in
+  `web/shared/practice.ts`.
+- **Routes** (all `learner: true`, the active language's bank):
+  `GET /api/practice?tz=` (what is due and new, today's progress and
+  limits), `GET /api/practice/queue?length=5|10|20&direction=mixed|recognize|produce&tz=`
+  (a session's cards and the same stats), `POST /api/practice/answer`
+  `{phraseId, skill, version, answer? | reveal + rating, durationMs?, tz?}`
+  and `POST /api/practice/reviews/:id/override {rating, tz?}`.
+- **The day.** No timezone is stored: the page sends `tz`, its UTC offset in
+  minutes (local minus UTC, ±14 h, else 0). The learner's day starts at
+  4 a.m. there (`dayStart`), the same shift `fsrs.mjs review()` schedules by.
+- **The queue.** A phrase can be asked when it has words and a meaning and
+  isn't suspended (pending and suspended phrases never enter; a phrase with
+  no meaning has nothing to ask either). At most one card per phrase per
+  session (the two directions would show each other's answer). A reviewed
+  card (reps > 0) whose `due` has come is a review, the most overdue first;
+  a card never reviewed, or not made yet, is new: starred first, then most
+  recently seen, then the oldest added. In "both ways", produce is new for a
+  phrase only once its recognize card has been reviewed (read before you
+  are asked to say it); a one-direction session drops that rule. Reviews
+  claim the session first, up to the day's review limit; new cards fill the
+  rest up to the day's new limit, spread evenly among the reviews.
+- **Limits.** 20 new and 100 reviews a day, counted from `reviews` since
+  the day's start, without `mode = 'session'` rows (the recap isn't
+  practice): a review whose `card_before.reps` is 0 is a card's first
+  (new), any other a review. An override changes a review in place, so it
+  counts once.
+- **Cards** are made lazily, per skill, on the first answer (`INSERT … ON
+  CONFLICT DO NOTHING`, so a capture making the same recognize card at once
+  is kept). The queue makes none.
+- **Grading.** `localMatch`: produce is `matchAnswer` against the words and
+  `alternates` in the target locale (accents and CJK spacing as in Grading
+  above, typed, so an accent-only difference is close). Recognize is
+  `matchAnswer` against the meaning and each part of a meaning listed with
+  `;`, `|` or a slash **with spaces around it** ("kilo / half"), in the
+  native locale. A slash inside a word or number never splits ("1/2",
+  "24/7", "km/h", "and/or", "he/she" are one meaning each), nor does a
+  comma ("Keep the change, please"). For an English native language it
+  tries once more without a leading "the" or "to" on either side ("eat" for
+  "to eat"), never "a"/"an" ("few" is not "a few").
+  A miss with something typed costs one tool-less Haiku `claude -p` call
+  (`graderPrompt`, the answer fenced and defanged; 45 s timeout, empty
+  cwd), made before the write's transaction. Its reply is read with
+  `parseGraderReply(text, { strict: true })`: it must be one JSON object (a
+  ```json fence allowed), so a reply quoting an answer typed as
+  `{"accepted": true}` before its verdict can't grade as that (the lenient
+  first-object reading stays the default for other callers). An unusable
+  reply or a failed run is `wrong` with a note saying it couldn't be
+  checked. An empty answer ("I don't know") is `wrong` with no call. The
+  grader's note is cleaned (control characters), one line, 200 characters.
+  Verdict → rating is `ratingForVerdict`; Reveal (recognize) records
+  `self` with the learner's rating.
+- **Alternates.** An answer the grader accepts on a **produce** card is
+  added to `phrases.alternates` (deduplicated as `matchAnswer` compares, at
+  most 20), so it is exact next time, unless it holds `{` or `}` or is
+  longer than 2 × the words' length + 10 characters (`keepable`): a long or
+  template-like answer the grader let through never becomes a permanent
+  exact match. Recognize answers are not kept: `alternates` holds target
+  forms, and a meaning there would grade as the words (keeping accepted
+  meanings would need a column: not done). Editing a phrase's words or
+  meaning (to a different value) clears its alternates: every one was
+  accepted against the old question. `PATCH /api/phrases/:id {alternates}`
+  keeps only the named ones (removal only, nothing added by hand); the
+  bank's per-alternate remove button is bead `ld-gf9.4` (Phrase bank view).
+- **What a review keeps besides the card.** A flashcard review's
+  `card_before` jsonb carries, beside the FSRS fields (`fromRow`,
+  `cardVersion` and the trouble query read only those), `submit_id` (the
+  page's id for the answer that wrote it) and `added_alternate` (the answer
+  it added to the alternates, if any). No column was added.
+- **One write per answer.** In one transaction: the phrase row locked, then
+  its card (made if missing) locked: phrase before card, the order a
+  capture takes them in, and one phrase only, so no learner, profile or
+  session lock is touched. Then the `reviews` row (mode `flashcard`, the
+  card's state before in `card_before`), the card's new FSRS state, the
+  phrase's `last_practiced_at` and any alternate. `last_seen_at` is not
+  touched: as built it is always the latest sighting (§As built (phase 4)),
+  so the metrics table's "or a card shown in practice" no longer holds.
+- **Idempotency and staleness.** A queue item carries the card's
+  **version**, `reps:last_review` ("0:" for a card not made yet), which
+  every review changes, and the phrase's **revision**, a 16-hex hash of its
+  words, meaning and alternates (`phraseRevision`), which every edit that
+  changes the question changes (the version doesn't: an edit touches the
+  phrase, not the card). The page makes a **submit id** (a uuid) per card
+  shown and sends all three. A revision that no longer matches is a 409
+  before any grading (no model call), and again under the lock for an edit
+  during grading; the page offers Skip and the next session has the edited
+  card. A card still at the version takes the answer. One that moved on is
+  a replay only if a review of that card carries this submit id (a double
+  click, a retried fetch): the reply is that review with `replayed: true`,
+  nothing written, and the page says it was already recorded. Any other
+  answer at that version (another tab) is a 409, never another answer's
+  review passed off as its own. A submit already stale before grading never
+  calls the grader.
+- **Override.** Only a card's latest review can be changed (else 409). The
+  card is restored from `card_before` and reviewed again with the new
+  rating at the review's own time; the review row takes that rating and
+  verdict `self` (answer and note kept). The same rating again is a no-op.
+  Because the time is the original one, the version doesn't change, so a
+  resend of the original submit still replays (now the overridden review)
+  and the next card answer isn't refused. An **Again** takes the review's
+  `added_alternate` back out of the alternates, whatever the verdict says
+  by then (accepted → Hard → Again removes it as surely as accepted →
+  Again); a later Good doesn't put it back.
+- **The bank.** Its metrics read cards and reviews live, so mastery, due,
+  last practised and trouble (lapses: Again on a card whose `card_before`
+  was in review) change with the next read of the Phrase bank.
+- **Tests.** `practice.test.mjs` (the pure rules), `practice.http.test.mjs`
+  (the routes with a stand-in `claude`: the queue, each verdict, the
+  grader's prompt and argv, alternates, Reveal, a repeat submit, overrides,
+  trouble, the new limit and the day boundary, two languages, another
+  account, kids, a suspension or an edit while grading, a stale revision
+  before grading, a different answer at the same version, accepted → Hard
+  → Again and accepted → Again, alternates dropped on an edit and removed
+  by hand, a grader reply quoting the answer's JSON, braced and long
+  answers not kept, uuid-shaped ids that aren't uuids), and
+  `practice.pg.test.mjs` (with `LINGO_TEST_PG_URL`, PostgreSQL 17): one
+  submit sent on six connections (one written, five replayed), six
+  different answers at once (one written, five 409, none replayed), an
+  answer against a capture making the same card and an edit, an override
+  against the next answer (the lock tests fail with the row locks
+  removed).
+
 ## Session length (added 2026-11-15; does not need the database)
 
 Sessions run longer than the time available. Before a session starts, the Go
@@ -1605,7 +1741,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
 | 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |
 | 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |
-| 7 | Practice: tab and queue, the FSRS service, grader, flashcards, cloze, listening, speak-it, audio cache | 4 |
+| 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), cloze, listening, speak-it, audio cache | 4 |
 | 8 | Content agent bank MCP with the read-only role and RLS | 4 |
 | 9 | Backups | 2 |
 | 10 | Tailscale serve: allowed host, origin test (built); verify login and a voice turn from a second device (owner) | 1 |

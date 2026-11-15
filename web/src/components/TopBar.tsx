@@ -15,7 +15,10 @@ import type { Tab } from "./shared";
  * bar can't hold four tabs and the menu on a phone, nor beside the Profile
  * pill on a small tablet — and the three flow tabs scroll in their own strip
  * rather than widening the page. The language switcher sits beside the
- * Profile pill: which of the learner's languages this session practises. */
+ * Profile pill: which of the learner's languages this session practises.
+ * Practice (flashcards over the phrase bank) is a destination too, beside
+ * Library and in the menu with it below `md`; kids learners don't have it
+ * (docs/DATA.md §Kids learners). */
 export default function TopBar({
   tab,
   onTab,
@@ -92,8 +95,10 @@ export default function TopBar({
           <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}
             onSwitchLanguage={onSwitchLanguage} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} onSaveLanguageNotes={onSaveLanguageNotes} />
         )}
+        {mode !== "kids" && <TabButton label="Practice" active={tab === "practice"} onClick={() => onTab("practice")} className="hidden md:flex" />}
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
-        <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
+        <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")}
+          practiceActive={mode === "kids" ? null : tab === "practice"} onPractice={() => onTab("practice")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
     </header>
   );
@@ -128,6 +133,8 @@ function OverflowMenu({
   ready,
   libraryActive,
   onLibrary,
+  practiceActive,
+  onPractice,
   username,
   onManageLearners,
   onLogout,
@@ -138,6 +145,9 @@ function OverflowMenu({
   ready: boolean;
   libraryActive: boolean;
   onLibrary: () => void;
+  /** Whether Practice is open; null when the learner has none (kids). */
+  practiceActive: boolean | null;
+  onPractice: () => void;
   username: string;
   onManageLearners: () => void;
   onLogout: () => void;
@@ -165,6 +175,20 @@ function OverflowMenu({
             >
               Library
             </button>
+            {practiceActive !== null && (
+              <button
+                type="button"
+                role="menuitem"
+                aria-current={practiceActive ? "page" : undefined}
+                className={`${menuItemClass} border-b border-line md:hidden ${practiceActive ? "font-medium text-fg" : ""}`}
+                onClick={() => {
+                  onPractice();
+                  setOpen(false);
+                }}
+              >
+                Practice
+              </button>
+            )}
             <button
               type="button"
               role="menuitem"

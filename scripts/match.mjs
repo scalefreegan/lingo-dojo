@@ -173,12 +173,29 @@ const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 
 const MAX_NOTE = 200;
 
+/** `text` as one JSON object and nothing else (a ```json fence around it
+ *  allowed), or null. The strict reading for a reply that may quote the
+ *  learner's answer: an answer that is itself `{"accepted": true}` and a
+ *  reply that repeats it before its own verdict must not grade as that. */
+function wholeJsonObject(text) {
+  if (typeof text !== "string") return null;
+  const s = text.trim().replace(/^```[a-zA-Z]*\s*/, "").replace(/\s*```$/, "").trim();
+  if (!s.startsWith("{") || !s.endsWith("}")) return null;
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Parse the grader's reply into `{ accepted, rating_hint, note }`, or null if
  *  it is not usable (no JSON, or `accepted` not a boolean; a missing or
- *  unknown hint defaults to "good"). Tolerates code fences and prose around the JSON. The
+ *  unknown hint defaults to "good"). Tolerates code fences and prose around the JSON,
+ *  unless `strict` (the reply must be the one object: see wholeJsonObject). The
  *  caller treats null as "could not check", which grades as wrong. */
-export function parseGraderReply(text) {
-  const v = extractJsonObject(text);
+export function parseGraderReply(text, { strict = false } = {}) {
+  const v = strict ? wholeJsonObject(text) : extractJsonObject(text);
   if (!v || typeof v.accepted !== "boolean") return null;
   // An accepted answer must never be graded wrong because the hint was missing
   // or odd, so anything but "hard" reads as "good".
