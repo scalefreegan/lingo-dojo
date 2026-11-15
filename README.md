@@ -57,7 +57,7 @@
     </td>
     <td width="50%" valign="top">
       <img src="docs/screenshots/agent-drawer.png" alt="An agent that edits the library" width="100%">
-      <br><sub><i>Agent drawer: a unit added, an out-of-scope write refused.</i></sub>
+      <br><sub><i>Agent drawer: asking which units suit a scenario.</i></sub>
       <h3>An agent that edits the library</h3>
       The chat drawer runs a headless Claude that can read the repo but only write under <code>content/</code>. Every edit is a git commit, so you can revert. It uses your Claude Code login, no API key.
     </td>
