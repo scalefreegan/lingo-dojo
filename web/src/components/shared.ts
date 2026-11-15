@@ -3,7 +3,7 @@
  * contracts between App's pack actions/status and the tabs that use them. */
 import type { Pack } from "../types";
 
-export type Tab = "scene" | "customize" | "go" | "library";
+export type Tab = "scene" | "customize" | "go" | "library" | "practice";
 
 export type SaveOutcome = { ok: true; id: string } | { ok: false; conflict: string } | { ok: false; error: string };
 

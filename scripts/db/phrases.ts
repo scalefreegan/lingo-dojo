@@ -54,7 +54,7 @@ import { and, asc, desc, eq, inArray, isNotNull, sql, type SQL } from "drizzle-o
 // Spelled from the repo root so they match the typed declarations in
 // web/server/mjs-memory.d.ts (an ambient module is matched by pattern).
 import { normKey } from "../../scripts/match.mjs";
-import { MAX_EXAMPLES, TROUBLE_DAYS, clean, phraseMetrics, type Capture, type Example } from "../../scripts/phrases.mjs";
+import { MAX_EXAMPLES, TROUBLE_DAYS, clean, isUuid, phraseMetrics, type Capture, type Example } from "../../scripts/phrases.mjs";
 import type { PhraseDetail, PhraseInput, PhraseSummary } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { cards, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
@@ -70,7 +70,6 @@ export class PhraseError extends Error {
   }
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** node-postgres puts the SQLSTATE on the error, Drizzle on its cause. */
 const sqlState = (e: unknown) => {
@@ -116,7 +115,7 @@ const PENDING_IDENTITY = { target: [phrases.meaningNorm], targetWhere: PENDING }
 /** A phrase id from a request, or ENOENT (a malformed id is no phrase of
  *  anyone's, and never reaches Postgres). */
 function phraseId(id: unknown): string {
-  if (typeof id !== "string" || !UUID_RE.test(id)) throw new PhraseError("ENOENT", "no such phrase");
+  if (!isUuid(id)) throw new PhraseError("ENOENT", "no such phrase");
   return id.toLowerCase();
 }
 
@@ -541,6 +540,13 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
       }
     }
     if (input.note !== undefined) set.note = input.note;
+    // Alternates were accepted by the grader against the words and meaning
+    // as they were: new words or a new meaning is a new question, so they
+    // go. Otherwise an edit may only remove some (an `alternates` list
+    // keeps those of the phrase's it names).
+    const changed = (set.text !== undefined && set.text !== row.text) || (input.meaning !== undefined && input.meaning !== row.meaning);
+    if (changed) set.alternates = [];
+    else if (input.alternates !== undefined) set.alternates = row.alternates.filter((a) => input.alternates!.includes(a));
     if (input.starred !== undefined) set.starred = input.starred;
     if (input.suspended !== undefined) set.suspended = input.suspended;
     // Any change by hand marks it: no automatic path deletes it or
