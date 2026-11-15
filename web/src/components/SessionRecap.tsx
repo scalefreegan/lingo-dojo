@@ -15,10 +15,15 @@ import { Badge, Button } from "./ui";
  * it all more simply. */
 
 const POLL_MS = 2000;
-/** Stop asking after this long: a recap is two model calls at most. */
-const GIVE_UP_MS = 8 * 60_000;
+/** Asking slows to this after a failed request. */
+const RETRY_MS = 5000;
+/** Stop asking after this long (a recap is two model calls of 180 s at
+ *  most); then the card offers Check again, which starts a new budget. */
+const GIVE_UP_MS = 10 * 60_000;
 /** On the Go tab, just after End: how long a recap not started yet ("none",
- *  or "open" while End is on its way) still counts as about to start. */
+ *  or "open" while End is on its way) still reads as about to start.
+ *  Asking goes on after it; only the card changes, to say what is up and
+ *  offer a way on. */
 const START_GRACE_MS = 30_000;
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
@@ -38,32 +43,73 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
   const [recap, setRecap] = useState<Recap | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Bumped to start asking again (after a retry).
+  // Bumped to start asking again (after a retry, or Check again).
   const [round, setRound] = useState(0);
+  // Which round stopped asking (the recap is final, or the budget ran
+  // out) and whose start grace has passed: keyed by round, so a new round
+  // (or another id) starts out asking, in its grace.
+  const key = `${id}:${justEnded}:${round}`;
+  const [stopped, setStopped] = useState<string | null>(null);
+  const [graceDone, setGraceDone] = useState<string | null>(null);
+  const polling = stopped !== key;
+  const graceOver = graceDone === key;
 
   useEffect(() => {
     const ctrl = new AbortController();
     const began = Date.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ask = () => {
+    let inFlight = false;
+    // Cleared once this round stops asking.
+    let asking = true;
+    const grace = justEnded ? setTimeout(() => setGraceDone(key), START_GRACE_MS) : undefined;
+    const next = (ms: number) => {
+      if (Date.now() - began < GIVE_UP_MS) timer = setTimeout(ask, ms);
+      else stop();
+    };
+    const stop = () => {
+      asking = false;
+      setStopped(key);
+    };
+    // Still on its way: being made, or (just after End) about to be. A
+    // final status (done, failed, skipped; none or open seen from History)
+    // stops asking.
+    const waiting = (r: Recap) => r.status === "pending" || (justEnded && (r.status === "open" || r.status === "none"));
+    function ask() {
+      if (inFlight || ctrl.signal.aborted) return;
+      clearTimeout(timer);
+      inFlight = true;
       getRecap(id, ctrl.signal).then(
         ({ recap: r }) => {
+          inFlight = false;
           setRecap(r);
           setError(null);
-          const waiting = r.status === "pending" || ((r.status === "open" || r.status === "none") && justEnded && Date.now() - began < START_GRACE_MS);
-          if (waiting && Date.now() - began < GIVE_UP_MS) timer = setTimeout(ask, POLL_MS);
+          if (waiting(r)) next(POLL_MS);
+          else stop();
         },
         (e) => {
-          if (!ctrl.signal.aborted) setError(errText(e));
+          inFlight = false;
+          if (ctrl.signal.aborted) return;
+          // A dropped request (the network, a server restart) isn't the
+          // recap's fate: say so and keep asking, more slowly.
+          setError(errText(e));
+          next(RETRY_MS);
         },
       );
+    }
+    // A tab in the background has its timers slowed or stopped: ask at once
+    // when it is shown again.
+    const onShow = () => {
+      if (document.visibilityState === "visible" && asking) ask();
     };
+    document.addEventListener("visibilitychange", onShow);
     ask();
     return () => {
       ctrl.abort();
       clearTimeout(timer);
+      clearTimeout(grace);
+      document.removeEventListener("visibilitychange", onShow);
     };
-  }, [id, justEnded, round]);
+  }, [id, justEnded, key]);
 
   async function retry() {
     setBusy(true);
@@ -80,7 +126,13 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
 
   const kids = !!recap?.kids;
   const status = recap?.status;
-  const starting = (status === "open" || status === "none") && justEnded;
+  // Just after End, before the recap has started: quiet, for the grace.
+  const starting = (status === "open" || status === "none") && justEnded && !graceOver && polling;
+  const again = (
+    <Button variant="ghost" className="px-2 py-1 text-sm sm:text-xs" onClick={() => setRound((n) => n + 1)} data-testid="recap-check">
+      Check again
+    </Button>
+  );
   // An open session elsewhere (History) has no recap yet: nothing to show.
   if (!recap && !error) return null;
   if (status === "open" && !justEnded) return null;
@@ -92,11 +144,28 @@ export function SessionRecap({ id, justEnded = false }: { id: string; justEnded?
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-line bg-panel p-4" aria-label={heading} data-testid="session-recap" data-status={status ?? "error"}>
       <h3 className="text-sm font-medium text-fg">{heading}</h3>
-      {error && <p className="text-sm text-err">Couldn't get the recap: {error}</p>}
+      {error && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm text-err">
+            Couldn't get the recap: {error}
+            {polling ? " (trying again…)" : ""}
+          </p>
+          {!polling && again}
+        </div>
+      )}
       {(status === "pending" || starting) && (
-        <p className="text-sm text-fg-3" role="status">
-          {kids ? "Thinking about what you did…" : "Writing your recap…"}
-        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm text-fg-3" role="status">
+            {polling ? (kids ? "Thinking about what you did…" : "Writing your recap…") : "Still being written."}
+          </p>
+          {!polling && again}
+        </div>
+      )}
+      {status === "open" && justEnded && !starting && (
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm text-fg-3">The session hasn't finished closing yet; its recap starts when it has.</p>
+          {again}
+        </div>
       )}
       {status === "failed" && (
         <div className="flex flex-wrap items-center gap-2">

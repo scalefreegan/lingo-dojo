@@ -95,9 +95,15 @@ export async function claimExtraction(
   return row ? { claim, conversation: row } : null;
 }
 
-/** One more model call for this conversation's recap (the count of all runs). */
-export async function countAttempt(db: Db, profile: LanguageProfileRef, conversationId: string): Promise<void> {
-  await forLanguageProfile(db, profile).update(conversations, { extractionAttempts: sql`${conversations.extractionAttempts} + 1` }, eq(conversations.id, conversationId));
+/** One more model call for this conversation's recap (the count of all
+ *  runs), by the run holding `claim`: a run that lost its claim counts
+ *  nothing. */
+export async function countAttempt(db: Db, profile: LanguageProfileRef, conversationId: string, claim: string): Promise<void> {
+  await forLanguageProfile(db, profile).update(
+    conversations,
+    { extractionAttempts: sql`${conversations.extractionAttempts} + 1` },
+    and(eq(conversations.id, conversationId), eq(conversations.extractionClaim, claim)) as SQL,
+  );
 }
 
 /** End a run without a recap: 'failed' (with why) or 'skipped' (nothing
@@ -235,11 +241,21 @@ async function writeBank(
   // doesn't bring back a phrase they dismissed; a session's gloss would).
   const candidates = [...new Set([...opts.value.keep.map((k) => normKey(k.text)), ...opts.value.events.map((e) => normKey(e.phrase))].filter(Boolean))];
   const existing = candidates.length ? await mine.list(phrases, and(COMPLETE, inArray(phrases.norm, candidates)) as SQL) : [];
-  const gone = candidates.length
-    ? new Set((await mine.list(phraseDismissals, and(eq(phraseDismissals.kind, "text"), inArray(phraseDismissals.key, candidates)) as SQL)).map((d) => d.key))
-    : new Set<string>();
+  // Both kinds of dismissal count: the words of a deleted phrase, and the
+  // meaning of a deleted one (a scene's pending phrase has only that), so a
+  // kept phrase with that meaning doesn't bring back what was just deleted.
+  const meanings = [...new Set(opts.value.keep.map((k) => normKey(k.meaning)).filter(Boolean))];
+  const dismissedOf = async (kind: "text" | "meaning", keys: string[]) =>
+    keys.length
+      ? new Set((await mine.list(phraseDismissals, and(eq(phraseDismissals.kind, kind), inArray(phraseDismissals.key, keys)) as SQL)).map((d) => d.key))
+      : new Set<string>();
+  const goneText = await dismissedOf("text", candidates);
+  const goneMeaning = await dismissedOf("meaning", meanings);
   const known = new Set(existing.map((p) => p.norm!));
-  const allowed = { ...opts.value, keep: opts.value.keep.filter((k) => known.has(normKey(k.text)) || !gone.has(normKey(k.text))) };
+  const allowed = {
+    ...opts.value,
+    keep: opts.value.keep.filter((k) => known.has(normKey(k.text)) || (!goneText.has(normKey(k.text)) && !goneMeaning.has(normKey(k.meaning)))),
+  };
   const plan = planExtraction(allowed, { known, locale });
 
   // Every complete phrase this write touches, in norm order: kept ones

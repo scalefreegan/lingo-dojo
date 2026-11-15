@@ -1118,7 +1118,8 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
 - **Migration 0004** adds to `conversations` `extraction_status` (not
   null, default `none`; check in none|running|done|failed|skipped),
   `extraction_claim` (uuid; a check makes it set exactly while running),
-  `extraction_started_at`, `extraction_attempts` (default 0) and
+  `extraction_started_at`, `extraction_attempts` (default 0; counted only
+  by the run holding the claim) and
   `extraction_error`; and to `phrase_sightings` `source` (not null,
   default `gloss`; check gloss|extraction) with a partial unique index
   `(conversation_id, phrase_id) where source = 'extraction'`. Plain
@@ -1152,7 +1153,10 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
     phrases are matched by `normKey` within the conversation's profile.
     A kept phrase longer than 6 words (20 characters in a language
     without spaces) is a sentence and isn't kept (`MAX_KEEP_WORDS`).
-    One the learner deleted (`phrase_dismissals`) isn't brought back.
+    One the learner deleted isn't brought back: a phrase not already in
+    the bank is skipped when its text (`phrase_dismissals` kind `text`)
+    or its meaning (kind `meaning`, as a deleted scene phrase leaves) was
+    dismissed.
     The model's `example` isn't stored: a kept phrase's example is a
     line of the dojo master's own replies (not `from_client`, not the
     learner's) that holds it, as for a gloss.
@@ -1194,7 +1198,11 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   `ConversationSummary.recapStatus` gives History its "no recap" badge.
 - **UI.** `SessionRecap.tsx` under the transcript: on the Go tab after
   End (it waits quietly through `open`/`none` for 30 s while End and the
-  claim land, polls every 2 s while pending) and in History. Summary;
+  claim land, then says what is up and offers Make a recap or Check
+  again, still asking) and in History. It asks every 2 s while the
+  recap is on its way, for up to 10 min (then "Still being written" and
+  Check again); a failed request shows its error and is asked again
+  every 5 s; a tab shown again asks at once. Summary;
   phrases kept with their band, ☆ Star and "In the bank" (switches to
   Library → Phrase bank searching for it, `bankLink.ts`); what went
   well; what to work on (corrections and corrected/confused events);
@@ -1703,8 +1711,9 @@ Access in System Settings, or keep the checkout elsewhere.
   "failed" then Retry recap, an idempotent re-run and a different one
   replacing the last, a card practised since, untrusted output (control
   characters, sentences, ids, a learner's meaning, a suspension), the
-  pending merge and a dismissed phrase, skipped, another language's
-  session, kids, open/404/405, and a run that died with the server;
+  pending merge and a dismissed phrase (by text, and a deleted scene
+  phrase by meaning), skipped, another language's
+  session, kids, open/404/405, and a run that died with the server (whose late attempt counts nothing);
   `db-migration-0004.test.mjs` and `migration-0004.pg.test.mjs` the
   migration; `extraction.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races 8
   claims of one recap (one wins) and a recap's write against two gloss

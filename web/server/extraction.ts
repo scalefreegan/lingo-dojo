@@ -131,7 +131,7 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     const model = await getModel(owner.userId);
     let why = "";
     for (let attempt = 1; attempt <= TRIES; attempt++) {
-      await countAttempt(db, profile, conv.id);
+      await countAttempt(db, profile, conv.id, claim);
       let text: string;
       try {
         // No tools and an empty temp cwd, like a voice turn: the transcript

@@ -10,6 +10,7 @@
 
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +30,7 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
+const { countAttempt } = await import("../db/extraction.ts");
 
 const fake = fakeClaude();
 const REPLY = [
@@ -324,6 +326,26 @@ test("a kept phrase pairs a scene's pending phrase by meaning; a deleted phrase 
   assert.equal(got["¿Qué le doy?"], undefined, "dismissed by the learner");
 });
 
+test("a scene phrase the learner deleted (a meaning dismissal) isn't brought back by a kept phrase with that meaning", async () => {
+  const sam = await someone();
+  fs.writeFileSync(
+    path.join(root, "scenarios/errand3.md"),
+    ["---", "id: errand3", "title: Another errand", "summary: Out.", "phrases:", "  - Keep the change", "---", "An errand."].join("\n"),
+  );
+  const c = await session(sam, { p: pack({ scenario: "errand3" }), end: false });
+  const pending = (await bank(sam))["(Keep the change)"];
+  assert.ok(pending, "the scene's phrase is in the bank, pending");
+  assert.equal((await sam.call("DELETE", `/api/phrases/${pending.id}`)).status, 200);
+  assert.equal((await q("select kind, key from phrase_dismissals where learner_id = $1", [sam.learnerId])).some((d) => d.kind === "meaning" && d.key === "keep the change"), true);
+  assert.equal((await sam.call("POST", `/api/conversations/${c.id}/end`)).status, 200);
+  await settleExtractions();
+  assert.equal((await recapOf(sam, c.id)).status, "done");
+  const got = await bank(sam);
+  assert.equal(got["Quédese con la vuelta"], undefined, "deleted by meaning");
+  assert.equal(got["(Keep the change)"], undefined);
+  assert.ok(got["¿Qué le doy?"], "the other kept phrase is made");
+});
+
 test("nothing to recap: a session the learner never answered is skipped with no model call", async () => {
   const sam = await someone();
   const runs = fake.recapRuns();
@@ -370,6 +392,10 @@ test("a run that died with the server (running, its claim held by nobody) reads 
   const recap = await recapOf(sam, c.id);
   assert.equal(recap.status, "failed");
   assert.match(recap.error, /interrupted/);
+  // The dead run's model call, if it ever returned, counts nothing: its claim is gone.
+  const [{ language_profile_id: profileId, extraction_attempts: before }] = await q("select language_profile_id, extraction_attempts from conversations where id = $1", [c.id]);
+  await countAttempt(testDb.db, { id: profileId, learnerId: sam.learnerId }, c.id, crypto.randomUUID());
+  assert.equal((await q("select extraction_attempts from conversations where id = $1", [c.id]))[0].extraction_attempts, before);
   await retry(sam, c.id);
   assert.equal((await recapOf(sam, c.id)).status, "done");
 });
