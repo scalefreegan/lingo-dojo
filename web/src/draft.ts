@@ -3,7 +3,7 @@
  * live in one place and read like the contract they implement
  * (docs/CONTENT.md: "order within a slot follows the pack"). */
 
-import type { ContentReply, Language, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
+import type { ContentReply, Language, LanguageInfo, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
 
 export type OverrideKey = PickerKey;
 /** The Profile popover's fields, in display order. The level picker's
@@ -73,6 +73,12 @@ export function profileValue(profile: Profile, key: OverrideKey): string {
 export function profileDefault(profile: Profile, key: OverrideKey, target: string): string {
   if (key === "target_variant" && target !== profileValue(profile, "target_language")) return "";
   return profileValue(profile, key);
+}
+
+/** "German · B1": a language profile in one line (the language switcher,
+ *  the learner picker). */
+export function languageLine(l: LanguageInfo): string {
+  return [l.target_language || "No language set", l.level].filter(Boolean).join(" · ");
 }
 
 /** The learner line the Scene and Go tabs show, e.g. "English → Spanish ·
@@ -355,22 +361,52 @@ export function packId(title: string, d = new Date()): string {
 
 /* ------------------------- remembering the draft ------------------------- */
 
-/** A browser-storage key for one learner: the draft, the tab and the Scene
- *  filters are that learner's, so the next learner or account on the same
- *  browser starts from its own (or from the defaults), never from the last
- *  one's unsaved name, level or quick-scenario text. */
-export function learnerKey(base: string, learnerId: string): string {
+/** A browser-storage key for one language profile: the draft, the tab and
+ *  the Scene filters are that learner's in that language, so German and
+ *  Chinese each keep their own unsaved picks, and the next learner or
+ *  account on the same browser starts from its own (or from the defaults),
+ *  never from the last one's unsaved name, level or quick-scenario text. A
+ *  language profile's id is unique on its own, so it alone names the key. */
+export function languageKey(base: string, languageId: string): string {
+  return `${base}.language.${languageId}`;
+}
+
+/** Where these lived when they were per learner (before language
+ *  profiles): adopted by the learner's oldest language (adoptLearnerKeys). */
+function learnerKey(base: string, learnerId: string): string {
   return `${base}.learner.${learnerId}`;
 }
 
 const DRAFT_KEY = "lingo-dojo.draft.v1";
 
-/** The keys these lived under before logins: one per mode (adult the bare
- *  base, kids with `.kids`), shared by whoever used the browser. Dropped,
- *  not adopted by a learner — there is no telling whose they were. */
+/** Every per-profile key's base. Before logins they were one per mode
+ *  (adult the bare base, kids with `.kids`), shared by whoever used the
+ *  browser; then one per learner; now one per language profile. */
 const MODE_KEYS = ["lingo-dojo.draft.v1", "lingo-dojo.tab.v1", "lingo-dojo.scene-filter.v1", "lingo-dojo.scene-folders.v1"];
 
-/** Forget the per-mode keys (AuthGate, once per page load). */
+/** Move a learner's keys from before language profiles to `languageId`,
+ *  its oldest language (the caller passes it): a learner had one language
+ *  then, which migration 0002 made its first profile, so the draft was that
+ *  language's, whichever language this browser happens to open first.
+ *  Moved, not copied, so a second language starts from the defaults. A
+ *  language that already has its own key keeps it. */
+export function adoptLearnerKeys(learnerId: string, languageId: string): void {
+  try {
+    for (const base of MODE_KEYS) {
+      const old = learnerKey(base, learnerId);
+      const value = localStorage.getItem(old);
+      if (value === null) continue;
+      const key = languageKey(base, languageId);
+      if (localStorage.getItem(key) === null) localStorage.setItem(key, value);
+      localStorage.removeItem(old);
+    }
+  } catch {
+    /* blocked storage: nothing stored to adopt */
+  }
+}
+
+/** Forget the per-mode keys (AuthGate, once per page load). Dropped, not
+ *  adopted by a learner — there is no telling whose they were. */
 export function dropModeKeys(): void {
   try {
     for (const base of MODE_KEYS) for (const key of [base, `${base}.kids`]) localStorage.removeItem(key);
@@ -379,12 +415,12 @@ export function dropModeKeys(): void {
   }
 }
 
-/** This learner's last draft, so a refresh doesn't throw away today's
- *  selections. Browser storage only: a per-machine convenience, never the
- *  record (saved packs are). Any read failure means "start fresh". */
-export function loadRememberedDraft(learnerId: string): Draft | null {
+/** This language profile's last draft, so a refresh doesn't throw away
+ *  today's selections. Browser storage only: a per-machine convenience,
+ *  never the record (saved packs are). Any read failure means "start fresh". */
+export function loadRememberedDraft(languageId: string): Draft | null {
   try {
-    const raw = localStorage.getItem(learnerKey(DRAFT_KEY, learnerId));
+    const raw = localStorage.getItem(languageKey(DRAFT_KEY, languageId));
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<Draft>;
     if (!Array.isArray(d.units) || typeof d.overrides !== "object" || d.overrides === null) return null;
@@ -394,10 +430,10 @@ export function loadRememberedDraft(learnerId: string): Draft | null {
   }
 }
 
-export function rememberDraft(learnerId: string, draft: Draft | null): void {
+export function rememberDraft(languageId: string, draft: Draft | null): void {
   try {
-    if (draft) localStorage.setItem(learnerKey(DRAFT_KEY, learnerId), JSON.stringify(draft));
-    else localStorage.removeItem(learnerKey(DRAFT_KEY, learnerId));
+    if (draft) localStorage.setItem(languageKey(DRAFT_KEY, languageId), JSON.stringify(draft));
+    else localStorage.removeItem(languageKey(DRAFT_KEY, languageId));
   } catch {
     /* private window or blocked storage: nothing to remember into */
   }

@@ -280,7 +280,8 @@ test("History keeps the session's languages: a later profile change doesn't move
   const native = await start(lu, { pack: pack({ overrides: { native_language: "German" } }) });
   const moved = await start(lu, { pack: pack({ overrides: { target_language: "German" } }) });
   for (const c of [own, native, moved]) await turn(lu, c.id, [], "");
-  await q("update learners set native_language = 'Spanish', target_language = 'English', target_variant = 'British English' where name = 'Lu'");
+  await q("update learners set native_language = 'Spanish' where name = 'Lu'");
+  await q("update language_profiles set target_language = 'English', target_variant = 'British English' where learner_id = (select id from learners where name = 'Lu')");
   const get = async (c) => (await lu.call("GET", `/api/conversations/${c.id}`)).body;
   assert.deepEqual([(await get(own)).locale, (await get(own)).nativeLocale], ["es-MX", "en-US"]);
   assert.deepEqual([(await get(native)).locale, (await get(native)).nativeLocale], ["es-MX", "de-DE"], "the pack's native language, not the profile's");
@@ -576,4 +577,100 @@ test("another learner or user can never read, append to, end or delete a convers
   assert.equal(rows.length, 1);
   const [row] = await q("select ended_at from conversations where id = $1", [c.id]);
   assert.equal(row.ended_at, null);
+});
+
+test("one learner's two languages: each has its own History; a conversation is a 404 on every route, the voice turn included, from the other language", async () => {
+  await addUser(testDb.db, "kai", undefined, { learners: [{ ...ADULT, name: "Kim" }] });
+  const kim = client(base);
+  await kim.login("kai");
+  await kim.pick("Kim");
+  const spanish = await start(kim, { title: "Mercado" });
+  await turn(kim, spanish.id, [], "");
+  const spanishId = kim.languageId;
+  const german = await kim.addLanguage({ target_language: "German", target_variant: "", level: "B1" });
+  assert.notEqual(german.id, spanishId);
+  // German: an empty History, and Spanish's conversation is nobody's here.
+  assert.deepEqual((await kim.call("GET", "/api/conversations")).body.conversations, []);
+  for (const [method, url] of [["GET", `/api/conversations/${spanish.id}`], ["POST", `/api/conversations/${spanish.id}/end`], ["DELETE", `/api/conversations/${spanish.id}`]]) {
+    const r = await kim.call(method, url);
+    assert.equal(r.status, 404, `${method} ${url}`);
+    assert.equal(r.body.code, "no_conversation");
+  }
+  const before = runs();
+  const r = await turn(kim, spanish.id, [], "hallo");
+  assert.equal(r.status, 404);
+  assert.equal(r.body.code, "no_conversation");
+  assert.equal(runs(), before, "nothing ran");
+  // A German conversation is stored under German, with German's locale.
+  const de = await start(kim, { title: "Bäckerei" });
+  const t = await turn(kim, de.id, [], "");
+  assert.equal(t.status, 200, t.text);
+  const [row] = await q("select language_profile_id from conversations where id = $1", [de.id]);
+  assert.equal(row.language_profile_id, german.id);
+  assert.equal((await kim.call("GET", `/api/conversations/${de.id}`)).body.locale, "de-DE");
+  assert.deepEqual((await kim.call("GET", "/api/conversations")).body.conversations.map((c) => c.title), ["Bäckerei"]);
+  // Back to Spanish: its own History, untouched.
+  await kim.pickLanguage(spanishId);
+  assert.deepEqual((await kim.call("GET", "/api/conversations")).body.conversations.map((c) => c.title), ["Mercado"]);
+  assert.equal((await stored(spanish.id)).length, 1, "still its one turn");
+  const [sp] = await q("select ended_at from conversations where id = $1", [spanish.id]);
+  assert.equal(sp.ended_at, null, "German's End changed nothing");
+});
+
+test("a tab showing the learner's other language gets 409 stale_learner on every conversation route and the voice turn", async () => {
+  await addUser(testDb.db, "noa", undefined, { learners: [{ ...ADULT, name: "Nell" }] });
+  const page = client(base);
+  await page.login("noa");
+  await page.pick("Nell");
+  const c = await start(page);
+  const other = tab(base, page);
+  await other.addLanguage({ target_language: "Mandarin Chinese", level: "A1" });
+  for (const [method, url, body] of [
+    ["GET", "/api/conversations"],
+    ["POST", "/api/conversations", { mode: "adult", pack: pack() }],
+    ["GET", `/api/conversations/${c.id}`],
+    ["POST", `/api/conversations/${c.id}/end`],
+    ["DELETE", `/api/conversations/${c.id}`],
+  ]) {
+    const r = await page.call(method, url, body);
+    assert.equal(r.status, 409, `${method} ${url}`);
+    assert.equal(r.body.code, "stale_learner", `${method} ${url}`);
+  }
+  const before = runs();
+  const r = await turn(page, c.id, [], "hola");
+  assert.equal(r.status, 409);
+  assert.equal(r.body.code, "stale_learner");
+  assert.equal(runs(), before);
+  assert.equal((await stored(c.id)).length, 0);
+  // The page that switched works.
+  assert.equal((await other.call("GET", "/api/conversations")).status, 200);
+});
+
+test("the idle end covers every language and learner of the account: a German session left open ends (hook and all) on a request in Chinese, or as another learner", async () => {
+  await addUser(testDb.db, "ira", undefined, { learners: [{ ...ADULT, name: "Ines" }, { ...ADULT, name: "Ivo" }] });
+  const ines = client(base);
+  await ines.login("ira");
+  await ines.pick("Ines");
+  const spanish = await start(ines, { title: "Left open" });
+  await turn(ines, spanish.id, [], "");
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [spanish.id]);
+  await q("update turns set created_at = now() - interval '150 minutes' where conversation_id = $1", [spanish.id]);
+  // The page switched language with the session open (its End lost).
+  await ines.addLanguage({ target_language: "Mandarin Chinese", level: "A1" });
+  assert.deepEqual((await ines.call("GET", "/api/conversations")).body.conversations, [], "Chinese has its own History");
+  assert.deepEqual(ends, [spanish.id], "ended by a request in another language, hook called once");
+  const [row] = await q("select ended_at, (select max(created_at) from turns where conversation_id = $1) as last from conversations where id = $1", [spanish.id]);
+  assert.equal(new Date(row.ended_at).getTime(), new Date(row.last).getTime(), "at its last turn");
+
+  // Another learner of the account: the same.
+  const other = await start(ines, { title: "Chinese, left open" });
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [other.id]);
+  await ines.pick("Ivo");
+  await ines.call("GET", "/api/conversations");
+  assert.deepEqual(ends, [spanish.id, other.id]);
+  // Another account's requests never end this account's (or reveal them).
+  const mine = await start(ines);
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [mine.id]);
+  await sam.call("GET", "/api/conversations");
+  assert.ok(!ends.includes(mine.id), "robin's request doesn't touch ira's conversations");
 });

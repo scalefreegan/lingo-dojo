@@ -15,6 +15,13 @@
       "when": 1794763045765,
       "tag": "0001_conversation_languages_from_client",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794765373962,
+      "tag": "0002_language_profiles",
+      "breakpoints": true
     }
   ]
 }

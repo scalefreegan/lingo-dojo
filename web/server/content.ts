@@ -5,12 +5,14 @@ import type {
   AssembleRequest, AssembleResult, ContentReply, DeletedPacksReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
   PackDeleteReply, PackReply, PackRestoreReply, PackRevisionsReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
 } from "../shared/wire.ts";
-import { updateLearner, type Learner, type LearnerPatch } from "../../scripts/db/accounts.ts";
+import {
+  updateLanguageProfile, updateLearner, type LanguageProfile, type LanguageProfilePatch, type Learner, type LearnerPatch,
+} from "../../scripts/db/accounts.ts";
 import {
   PackError, createFolder, deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, parsePackId, renamePack,
   restoreRevision, savePack, undeletePack,
 } from "../../scripts/db/packs.ts";
-import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
+import { STALE_LEARNER, languageWriteError, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
@@ -27,21 +29,23 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // otherwise, auth.ts pageLearner). GET /api/content keeps its `?mode=`,
 // since an admin browses and has the agent edit both libraries.
 //
-// The profile is the active learner's row, not <tree>/profile.yaml: the
-// loader still reads that file (the offline export CLI uses it), but every
-// reply and every assemble here puts the learner in its place.
+// The profile is the active learner's row with its active language's, not
+// <tree>/profile.yaml: the loader still reads that file (the offline export
+// CLI uses it), but every reply and every assemble here puts the learner and
+// its language in its place.
 //
-// Saved packs and their folders are the active learner's rows in the
-// database (scripts/db/packs.ts, docs/DATA.md §Packs), not files: each
-// learner has its own, a kids learner's are kids packs because the learner
-// is, and no pack route writes under content/ or makes a git commit. The
+// Saved packs and their folders are the active language's rows in the
+// database (scripts/db/packs.ts, docs/DATA.md §Packs), not files: each of a
+// learner's languages has its own library, a kids learner's are kids packs
+// because the learner is, and no pack route writes under content/ or makes
+// a git commit. The
 // pack files under content/**/packs are seed content (imported at the first
 // run and by `npm run db:import`) and the export CLI's input; the app never
 // lists them. Undo is the revision log: every write records a revision, a
 // delete is soft, and /api/pack-revisions lists and restores them.
 //
 //   GET    /api/content            library (mode, levels, schema, frame, profile, languages, units, scenarios, problems)
-//   PUT    /api/profile            merge the picker keys into the active learner → {profile}
+//   PUT    /api/profile            merge the picker keys into the active learner and language → {profile}
 //   GET    /api/packs              {packs, folders, problems}
 //   GET    /api/packs/:id          one pack; an id is <slug> or <folder>/<slug>
 //   PUT    /api/packs/:id          create or replace the pack at that id from a JSON pack → {pack}
@@ -57,8 +61,9 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST   /api/export             {pack, id} → writes <exports>/<id>.md, {path, stats, warnings}
 //
 // Ids come from the request, so each is checked (a 400 the user can read)
-// before any query; the queries themselves are scoped to the learner
-// (forLearner), so another learner's pack is a 404 like a missing one.
+// before any query; the queries themselves are scoped to the language
+// (forLanguageProfile), so another language's pack, of the same learner or
+// any other, is a 404 like a missing one.
 
 /** GET /api/content's `?mode=`: the active learner's mode when absent (adult
  *  with none picked), a 400 when not a mode. Either library may be read. */
@@ -69,10 +74,10 @@ function browseMode(req: IncomingMessage, ctx: Ctx): Mode {
   return raw as Mode;
 }
 
-/** The library for assembling: the mode's tree with the active learner as
- *  its profile. */
+/** The library for assembling: the mode's tree with the active learner and
+ *  language as its profile. */
 function learnerContent(mode: Mode, ctx: Ctx) {
-  return { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner) };
+  return { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
 }
 
 /** An export id: one segment. */
@@ -88,8 +93,9 @@ function isObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** The handle the pack layer runs its transactions on. Every query it makes
- *  goes through forLearner(tx, learnerId), the scope learnerRows() is, built
- *  on the transaction rather than the pool (the accounts layer's pattern). */
+ *  goes through forLanguageProfile(tx, language), the scope profileRows()
+ *  is, built on the transaction rather than the pool (the accounts layer's
+ *  pattern). */
 const db = () => rawDb();
 
 /** PackError codes (scripts/db/packs.ts) → the status a client can act on.
@@ -108,11 +114,11 @@ async function packOp<T>(fn: () => Promise<T>): Promise<T> {
 /** GET /api/content's shape for a mode: the loader's result plus the mode
  *  and its level list, minus packs. The chat route builds its system prompt
  *  from the same shape. */
-export function contentReply(mode: Mode, learner: Learner | null): ContentReply {
+export function contentReply(mode: Mode, learner: Learner | null, language: LanguageProfile | null): ContentReply {
   const c = loadContent(modeRoot(mode));
   // The profile is the active learner's when it practises in this library;
   // the other library (an admin browsing it) has no learner, so no profile.
-  const profile = learner?.mode === mode ? learnerProfile(learner) : {};
+  const profile = learner?.mode === mode ? learnerProfile(learner, language) : {};
   return {
     mode, levels: LEVELS_BY_MODE[mode], root: c.root, schema: c.schema, frame: c.frame, profile, languages: c.languages,
     units: c.units, scenarios: c.scenarios, problems: c.problems,
@@ -122,14 +128,22 @@ export function contentReply(mode: Mode, learner: Learner | null): ContentReply 
 export function handleContent(req: IncomingMessage, res: ServerResponse, ctx: Ctx): void {
   if (req.method !== "GET") return methodNotAllowed(res, "GET");
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
-  sendJson(res, 200, contentReply(browseMode(req, ctx), ctx.learner));
+  sendJson(res, 200, contentReply(browseMode(req, ctx), ctx.learner, ctx.language));
 }
 
 /** The keys PUT /api/profile may write: what the pickers and the Name field
- *  show, profile key → learner column. Goals and notes are prose, edited
- *  through PATCH /api/learners/:id, so this route can't clobber them. */
-const PICKER_COLUMNS: Record<PickerKey, keyof LearnerPatch> = {
-  learner_name: "name", native_language: "nativeLanguage", target_language: "targetLanguage", target_variant: "targetVariant", level: "level",
+ *  show, profile key → the learner's column (the person) or the active
+ *  language's (the rest). Goals and notes are prose, edited through PATCH
+ *  /api/learners/:id/languages/:languageId, so this route can't clobber them.
+ *  `target_language` may only name the active language itself (a no-op):
+ *  it is the profile's identity, so another one is a 400 from
+ *  updateLanguageProfile, never a rename of this profile and its packs. */
+const PICKER_COLUMNS: Record<PickerKey, { learner: keyof LearnerPatch } | { language: keyof LanguageProfilePatch }> = {
+  learner_name: { learner: "name" },
+  native_language: { learner: "nativeLanguage" },
+  target_language: { language: "targetLanguage" },
+  target_variant: { language: "targetVariant" },
+  level: { language: "level" },
 };
 /** A name, a language or a variant is a few words; this is a sanity bound, not a format. */
 const MAX_PROFILE_VALUE = 80;
@@ -138,34 +152,43 @@ export async function handleProfile(req: IncomingMessage, res: ServerResponse, c
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
   learnerMode(req, ctx);
-  const learner = ctx.learner;
   const body = await readJsonBody<unknown>(req);
   if (!isObject(body)) throw new HttpError(400, "body must be an object of profile keys");
-  const patch: LearnerPatch = {};
+  const learnerSet: LearnerPatch = {};
+  const languageSet: LanguageProfilePatch = {};
   for (const [key, value] of Object.entries(body)) {
     const col = Object.prototype.hasOwnProperty.call(PICKER_COLUMNS, key) ? PICKER_COLUMNS[key as PickerKey] : undefined;
     if (!col) throw new HttpError(400, `unknown profile key "${key}" (this route takes ${Object.keys(PICKER_COLUMNS).join(", ")})`);
     if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
     if (value.length > MAX_PROFILE_VALUE) throw new HttpError(400, `${key} is too long (at most ${MAX_PROFILE_VALUE} characters)`);
     // A blank value clears the key, as it removed it from profile.yaml.
-    patch[col] = value.trim();
+    if ("learner" in col) learnerSet[col.learner] = value.trim();
+    else languageSet[col.language] = value.trim();
   }
-  if (Object.keys(patch).length === 0) throw new HttpError(400, "nothing to save: the body names no profile key");
-  if (patch.name === "") throw new HttpError(400, "a learner needs a name");
-  const row = await updateLearner(rawDb(), ctx.user.id, learner.id, patch);
-  // Archived since the session was read: the picker, not a silent no-op.
-  if (!row) throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
-  // The reply is the row as stored, not an echo of the request.
-  sendJson(res, 200, { profile: learnerProfile(row) } satisfies ProfileReply);
+  if (Object.keys(learnerSet).length + Object.keys(languageSet).length === 0) throw new HttpError(400, "nothing to save: the body names no profile key");
+  if (learnerSet.name === "") throw new HttpError(400, "a learner needs a name");
+  // One transaction: both rows change, or neither does. The learner or its
+  // language archived since the session was read throws inside it, so the
+  // learner's half rolls back too, and the page re-reads who's practising.
+  const stale = () => new HttpError(409, "choose who's practicing first", STALE_LEARNER);
+  const rows = await rawDb().transaction(async (tx) => {
+    const learner = await updateLearner(tx, ctx.user.id, ctx.learner.id, learnerSet);
+    if (!learner) throw stale();
+    const language = await updateLanguageProfile(tx, learner.id, ctx.language.id, languageSet).catch((e) => languageWriteError(e, learner.name));
+    if (!language) throw stale();
+    return { learner, language };
+  });
+  // The reply is the rows as stored, not an echo of the request.
+  sendJson(res, 200, { profile: learnerProfile(rows.learner, rows.language) } satisfies ProfileReply);
 }
 
 export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   learnerMode(req, ctx);
-  const learnerId = ctx.learner.id;
+  const language = ctx.language;
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { packs, folders } = await listPacks(db(), learnerId);
+    const { packs, folders } = await listPacks(db(), language);
     sendJson(res, 200, { packs, folders, problems: [] } satisfies PacksReply);
     return;
   }
@@ -180,7 +203,7 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
   if (action === "move") {
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body) || typeof body.folder !== "string") throw new HttpError(400, 'body must be {folder} ("" for no folder)');
-    const pack = await packOp(() => movePack(db(), learnerId, id, body.folder));
+    const pack = await packOp(() => movePack(db(), language, id, body.folder));
     sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
@@ -188,12 +211,12 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
     const body = await readJsonBody<unknown>(req);
     const title = isObject(body) ? body.title : undefined;
     if (typeof title !== "string" || !title.trim()) throw new HttpError(400, "body must be {title}, and a pack needs a title");
-    const pack = await packOp(() => renamePack(db(), learnerId, id, title));
+    const pack = await packOp(() => renamePack(db(), language, id, title));
     sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
   if (req.method === "GET") {
-    const pack = await packOp(() => getPack(db(), learnerId, id));
+    const pack = await packOp(() => getPack(db(), language, id));
     if (!pack) return sendJson(res, 404, { error: `no pack "${id}"` });
     sendJson(res, 200, { pack } satisfies PackReply);
     return;
@@ -202,12 +225,12 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body)) throw new HttpError(400, "body must be a pack object");
     if (typeof body.title !== "string" || !body.title.trim()) throw new HttpError(400, "a pack needs a title");
-    const { pack } = await packOp(() => savePack(db(), learnerId, id, body));
+    const { pack } = await packOp(() => savePack(db(), language, id, body));
     sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
   if (req.method === "DELETE") {
-    if (!(await packOp(() => deletePack(db(), learnerId, id)))) return sendJson(res, 404, { error: `no pack "${id}"` });
+    if (!(await packOp(() => deletePack(db(), language, id)))) return sendJson(res, 404, { error: `no pack "${id}"` });
     sendJson(res, 200, { ok: true } satisfies PackDeleteReply);
     return;
   }
@@ -216,20 +239,20 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
 
 export async function handleFolders(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   learnerMode(req, ctx);
-  const learnerId = ctx.learner.id;
+  const language = ctx.language;
   const name = subPath(req);
   if (!name) {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body) || typeof body.name !== "string") throw new HttpError(400, "body must be {name}");
     const folder = body.name;
-    const folders = await packOp(() => createFolder(db(), learnerId, folder)); // a bad name → 400, a taken one → 409
+    const folders = await packOp(() => createFolder(db(), language, folder)); // a bad name → 400, a taken one → 409
     sendJson(res, 200, { folder, folders } satisfies FolderReply);
     return;
   }
   if (req.method !== "DELETE") return methodNotAllowed(res, "DELETE");
-  if (!(await packOp(() => deleteFolder(db(), learnerId, name)))) return sendJson(res, 404, { error: `no folder "${name}"` });
-  const { folders } = await listPacks(db(), learnerId);
+  if (!(await packOp(() => deleteFolder(db(), language, name)))) return sendJson(res, 404, { error: `no folder "${name}"` });
+  const { folders } = await listPacks(db(), language);
   sendJson(res, 200, { ok: true, folders } satisfies FolderDeleteReply);
 }
 
@@ -239,7 +262,7 @@ export async function handleFolders(req: IncomingMessage, res: ServerResponse, c
  *  (the pack came back meanwhile) is a 409, never a silent content change. */
 export async function handlePackRevisions(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   learnerMode(req, ctx);
-  const learnerId = ctx.learner.id;
+  const language = ctx.language;
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
@@ -247,21 +270,21 @@ export async function handlePackRevisions(req: IncomingMessage, res: ServerRespo
     const id = q.get("id") ?? undefined;
     const revision = q.get("revision") ?? undefined;
     if (!id === !revision) throw new HttpError(400, "name the pack: ?id=<pack id> or ?revision=<revision id>");
-    const page = await packOp(() => listRevisions(db(), learnerId, { id, revision }, { offset: q.get("offset") ?? undefined }));
+    const page = await packOp(() => listRevisions(db(), language, { id, revision }, { offset: q.get("offset") ?? undefined }));
     sendJson(res, 200, { revisions: page.items, next: page.next } satisfies PackRevisionsReply);
     return;
   }
   if (seg === "deleted") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     const offset = new URL(req.url ?? "/", "http://localhost").searchParams.get("offset") ?? undefined;
-    const page = await packOp(() => listDeleted(db(), learnerId, { offset }));
+    const page = await packOp(() => listDeleted(db(), language, { offset }));
     sendJson(res, 200, { packs: page.items, next: page.next } satisfies DeletedPacksReply);
     return;
   }
   const m = /^([^/]+)\/(restore|undelete)$/.exec(seg);
   if (!m) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const pack = await packOp(() => (m[2] === "undelete" ? undeletePack : restoreRevision)(db(), learnerId, m[1]));
+  const pack = await packOp(() => (m[2] === "undelete" ? undeletePack : restoreRevision)(db(), language, m[1]));
   sendJson(res, 200, { pack } satisfies PackRestoreReply);
 }
 

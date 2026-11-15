@@ -7,15 +7,17 @@
  * mode it works in ("adult" → content/, "kids" → content/kids/); the server
  * keeps the two trees apart, and so does the URL. The mode is the active
  * learner's: the server answers 400 if the URL names the other one. Every
- * call also names the learner this page shows (X-Learner-Id, set in send()
- * below); a learner-scoped route answers 409 `stale_learner` when that is
- * not the session's active learner, so a stale tab can't write another
- * learner's profile or run a turn as them. */
+ * call also names the learner and the language this page shows
+ * (X-Learner-Id and X-Language-Profile-Id, set in send() below); a
+ * learner-scoped route answers 409 `stale_learner` when either is not the
+ * session's active one, so a stale tab can't write another learner's (or
+ * another language's) profile, packs or conversations, or run a turn as
+ * them. */
 
 import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
-  ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
-  DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLearnerRequest,
+  ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LanguageHeader, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
+  DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
@@ -40,35 +42,75 @@ export class ApiError extends Error {
 export const UNAUTHORIZED_EVENT = "lingo-dojo:unauthorized";
 
 /** Fired on window when a call answers 409 `stale_learner`: this page shows
- *  a learner who is no longer the session's (another tab picked someone
- *  else or archived this one, or another account logged in). The auth gate
+ *  a learner or language that is no longer the session's (another tab
+ *  picked someone else, switched language or archived this one, or another
+ *  account logged in). The auth gate
  *  re-reads /api/auth/me and shows the right learner or the picker. Any
  *  other 409 (the voice-turn lock, a folder that isn't empty) stays an
  *  ordinary error for its caller. */
 export const STALE_LEARNER_EVENT = "lingo-dojo:stale-learner";
 
 const LEARNER_HEADER: LearnerHeader = "X-Learner-Id";
+const LANGUAGE_HEADER: LanguageHeader = "X-Language-Profile-Id";
 const STALE_LEARNER: ErrorCode = "stale_learner";
 
-/** The learner this page renders, sent with every call (X-Learner-Id) so the
- *  server can refuse a learner-scoped call from a page that is out of date:
- *  the session cookie is shared by every tab, so the server can't tell
- *  otherwise. Set by the auth gate whenever what it shows changes. */
-let pageLearner: string | null = null;
-
-export function setPageLearner(id: string | null): void {
-  pageLearner = id;
+/** What this page renders: a learner and the language it is practising. */
+export interface PageLearner {
+  learnerId: string;
+  languageId: string;
 }
 
-/** The learner this page renders now (null before one is picked). */
-export function getPageLearner(): string | null {
+/** The learner and language this page renders, sent with every call
+ *  (X-Learner-Id, X-Language-Profile-Id) so the server can refuse a
+ *  learner-scoped call from a page that is out of date: the session cookie
+ *  is shared by every tab, so the server can't tell otherwise. Set by the
+ *  auth gate whenever what it shows changes. */
+let pageLearner: PageLearner | null = null;
+
+export function setPageLearner(page: PageLearner | null): void {
+  pageLearner = page;
+}
+
+/** The learner and language this page renders now (null before one is picked). */
+export function getPageLearner(): PageLearner | null {
   return pageLearner;
 }
 
-/** fetch with the page's learner. Every call below goes through it. */
+/** Work to finish while the page still shows its learner and language, run
+ *  by the auth gate before it switches learner or language: the open voice
+ *  session's End, which the server refuses (stale_learner) once the session
+ *  has moved on. Each returns a promise the switch waits for, up to
+ *  BEFORE_SWITCH_MS, so a slow network delays a switch by at most that. */
+const beforeSwitch = new Set<() => Promise<void>>();
+const BEFORE_SWITCH_MS = 1500;
+
+/** Register `fn` to run before a switch; returns the unregister. */
+export function onBeforeSwitch(fn: () => Promise<void>): () => void {
+  beforeSwitch.add(fn);
+  return () => {
+    beforeSwitch.delete(fn);
+  };
+}
+
+/** Run every registered before-switch step and wait for them, at most
+ *  BEFORE_SWITCH_MS; a step that fails doesn't stop the switch. */
+export async function settleBeforeSwitch(): Promise<void> {
+  const steps = [...beforeSwitch].map((fn) => fn().catch(() => undefined));
+  if (!steps.length) return;
+  let timer: number | undefined;
+  await Promise.race([Promise.all(steps), new Promise<void>((resolve) => (timer = window.setTimeout(resolve, BEFORE_SWITCH_MS)))]);
+  window.clearTimeout(timer);
+}
+
+/** The two headers naming a page's learner and language. */
+function pageHeaders(page: PageLearner): Record<string, string> {
+  return { [LEARNER_HEADER]: page.learnerId, [LANGUAGE_HEADER]: page.languageId };
+}
+
+/** fetch with the page's learner and language. Every call below goes through it. */
 function send(url: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
-  if (pageLearner) headers.set(LEARNER_HEADER, pageLearner);
+  if (pageLearner) for (const [k, v] of Object.entries(pageHeaders(pageLearner))) headers.set(k, v);
   return fetch(url, { ...init, headers });
 }
 
@@ -148,6 +190,32 @@ export function archiveLearner(id: string): Promise<LearnerReply> {
   return req<LearnerReply>(`/api/learners/${encodeURIComponent(id)}/archive`, json({}));
 }
 
+/** PUT /api/auth/language — which of the active learner's languages this session practises. */
+export function pickLanguage(languageId: string): Promise<MeReply> {
+  return req<MeReply>("/api/auth/language", json({ languageId } satisfies PickLanguageRequest, "PUT"));
+}
+
+const languagesUrl = (learnerId: string, languageId = "", action = "") =>
+  `/api/learners/${encodeURIComponent(learnerId)}/languages${languageId ? `/${encodeURIComponent(languageId)}` : ""}${action}`;
+
+/** A learner's languages (not archived). */
+export function listLanguages(learnerId: string): Promise<LanguagesReply> {
+  return req<LanguagesReply>(languagesUrl(learnerId));
+}
+
+export function createLanguage(learnerId: string, body: LanguageRequest): Promise<LanguageReply> {
+  return req<LanguageReply>(languagesUrl(learnerId), json(body));
+}
+
+export function updateLanguage(learnerId: string, languageId: string, body: LanguageRequest): Promise<LanguageReply> {
+  return req<LanguageReply>(languagesUrl(learnerId, languageId), json(body, "PATCH"));
+}
+
+/** Archive one of a learner's languages: a 409 for its last one. */
+export function archiveLanguage(learnerId: string, languageId: string): Promise<LanguageReply> {
+  return req<LanguageReply>(languagesUrl(learnerId, languageId, "/archive"), json({}));
+}
+
 /* --------------------------------- content -------------------------------- */
 
 /** GET /api/content — re-read from disk on every call. */
@@ -155,7 +223,7 @@ export function getContent(mode: Mode): Promise<ContentReply> {
   return req<ContentReply>(inMode("/api/content", mode));
 }
 
-/** PUT /api/profile — merges the picker keys into the active learner. */
+/** PUT /api/profile — merges the picker keys into the active learner and its active language. */
 export function saveProfile(mode: Mode, patch: ProfileRequest): Promise<ProfileReply> {
   return req<ProfileReply>(inMode("/api/profile", mode), json(patch, "PUT"));
 }
@@ -384,18 +452,18 @@ export function deleteConversation(id: string): Promise<{ deleted: true }> {
 /**
  * POST /api/conversations/:id/end, fire and forget. A keepalive fetch, so it
  * still goes out when the page is unloading (Close, a reload, the tab shut):
- * unlike sendBeacon it can carry the X-Learner-Id header wrap() checks.
- * `learnerId` is the learner the conversation was started for, sent as is:
- * after a learner switch the page's learner is already the next one, and
+ * unlike sendBeacon it can carry the headers wrap() checks. `page` is the
+ * learner and language the conversation was started for, sent as is: after
+ * a learner or language switch the page's are already the next ones, and
  * the server then answers stale_learner, which is ignored here rather than
  * sending this page to re-read who's practising (the conversation is ended
  * two idle hours later instead). Ending twice is harmless (idempotent).
  */
-export function endConversation(id: string, learnerId: string): Promise<void> {
+export function endConversation(id: string, page: PageLearner): Promise<void> {
   return fetch(`/api/conversations/${encodeURIComponent(id)}/end`, {
     method: "POST",
     keepalive: true,
-    headers: { [LEARNER_HEADER]: learnerId },
+    headers: pageHeaders(page),
   }).then(
     () => undefined,
     () => undefined,

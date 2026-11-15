@@ -27,8 +27,10 @@ History; `web/server/conversations.ts`).
   `/api` 404), `"user"` (the default: no session → 401) or `"admin"` (the
   content agent and its settings, and adding a Voice Library voice to the
   owner's ElevenLabs account: non-admin → 403). A route that acts for the active learner also takes `learner: true`: the
-  client's `X-Learner-Id` must be that learner, else 409 `stale_learner`.
-  The handler gets `ctx = { user, learner, sessionId }`; take the
+  client's `X-Learner-Id` and `X-Language-Profile-Id` must be the session's
+  learner and language, else 409 `stale_learner`.
+  The handler gets `ctx = { user, learner, language, sessionId }` (`language`
+  is the active language profile: a learner practises one or more); take the
   mode from `learnerMode(req, ctx)`, never from the request alone. Only an
   `HttpError`'s message reaches the client; anything else is a generic 500.
   Accounts come from `npm run user -- add <name> [--admin] | passwd | list |
@@ -63,11 +65,14 @@ History; `web/server/conversations.ts`).
   only seed the first admin, once, as do `content/profile.yaml` and
   `content/kids/profile.yaml` for their learners and `content/**/packs/` for
   their packs; the running app never reads or writes them after that.
-  `npm run db:import` copies pack files added later (idempotent). Saved packs
-  are per learner in the database: no pack route writes YAML or commits;
+  `npm run db:import` copies pack files added later into each learner's oldest
+  language (idempotent per learner: a pack imported into any of its languages
+  is never imported again). Saved packs
+  are per language profile (a learner's language) in the database: no pack route writes YAML or commits;
   undo is `pack_revisions` (`/api/pack-revisions`). `loadContent` no longer
   reads pack files; `loadPackFiles` does (import, first run, export CLI).
-  Owner scoping for packs lives only in `scripts/db/packs.ts`. Exports go to `exports/`
+  Owner scoping for packs lives only in `scripts/db/packs.ts`, through
+  `forLanguageProfile` (`forLearner` refuses tables with `language_profile_id`). Exports go to `exports/`
   (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.
@@ -98,13 +103,13 @@ npm --prefix web run lint      # oxlint
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
 npm run user -- add <name> [--admin]   # a login (also passwd | list | disable | enable); password prompted, or on stdin
-npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners; safe to re-run
+npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners' oldest language; safe to re-run
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
 never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
-except `first-run.pg.test.mjs` and `packs.pg.test.mjs` when `LINGO_TEST_PG_URL` is set (each makes and
+except the `*.pg.test.mjs` files when `LINGO_TEST_PG_URL` is set (each makes and
 drops a throwaway database on that server; point it at a scratch one).
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,

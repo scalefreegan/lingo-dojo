@@ -29,7 +29,7 @@ import { ADULT } from "./http-session.mjs";
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 
-/** A migrated throwaway database on the URL's server, with one learner, for `fn`; dropped after. */
+/** A migrated throwaway database on the URL's server, with one learner and its language profile, for `fn`; dropped after. */
 async function withLearner(fn) {
   const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
   const admin = new pg.Client({ connectionString: url });
@@ -43,7 +43,7 @@ async function withLearner(fn) {
     const db = drizzle(pool, { schema });
     const user = await createUser(db, { username: "racer", passwordHash: "x" });
     const learner = await createLearner(db, user.id, ADULT);
-    await fn(pool, db, learner.id);
+    await fn(pool, db, { id: learner.language.id, learnerId: learner.id });
   } finally {
     await pool.end();
     await admin.query(`drop database if exists ${name} with (force)`);
@@ -55,10 +55,10 @@ const settle = (ps) => Promise.allSettled(ps);
 const codes = (results) => results.filter((r) => r.status === "rejected").map((r) => r.reason?.code ?? String(r.reason));
 
 test("12 creates of one id at once, repeated: one live pack, every write a revision", { skip }, async () => {
-  await withLearner(async (pool, db, learnerId) => {
+  await withLearner(async (pool, db, profile) => {
     for (let round = 0; round < 5; round++) {
       const id = `2026-10-2${round}-race`;
-      const results = await settle(Array.from({ length: 12 }, (_, i) => savePack(db, learnerId, id, { title: `T${i}`, notes: String(i) })));
+      const results = await settle(Array.from({ length: 12 }, (_, i) => savePack(db, profile, id, { title: `T${i}`, notes: String(i) })));
       assert.deepEqual(codes(results), [], `round ${round}: no write failed`);
       assert.equal(results.filter((r) => r.value.created).length, 1, `round ${round}: one create`);
       const { rows } = await pool.query("select id from packs where slug = $1 and deleted_at is null", [id]);
@@ -71,77 +71,77 @@ test("12 creates of one id at once, repeated: one live pack, every write a revis
 });
 
 test("a move and a delete of one pack at once, repeated: exactly one of them happens", { skip }, async () => {
-  await withLearner(async (pool, db, learnerId) => {
+  await withLearner(async (pool, db, profile) => {
     for (let round = 0; round < 10; round++) {
       const id = `2026-10-01-r${round}`;
-      await savePack(db, learnerId, id, { title: "R" });
-      const [moved, deleted] = await settle([movePack(db, learnerId, id, "elsewhere"), deletePack(db, learnerId, id)]);
+      await savePack(db, profile, id, { title: "R" });
+      const [moved, deleted] = await settle([movePack(db, profile, id, "elsewhere"), deletePack(db, profile, id)]);
       const moveOk = moved.status === "fulfilled";
       const deleteOk = deleted.status === "fulfilled" && deleted.value === true;
       assert.ok(moveOk !== deleteOk, `round ${round}: move ${moved.status}${moveOk ? "" : ` (${moved.reason?.code})`}, delete ${deleted.value}`);
       if (!moveOk) assert.equal(moved.reason.code, "ENOENT");
-      const live = (await listPacks(db, learnerId)).packs.filter((p) => p.id.endsWith(`r${round}`));
+      const live = (await listPacks(db, profile)).packs.filter((p) => p.id.endsWith(`r${round}`));
       assert.deepEqual(live.map((p) => p.id), moveOk ? [`elsewhere/${id}`] : []);
     }
   });
 });
 
 test("renames of different packs to one title at once: one gets the id, the rest are EEXIST", { skip }, async () => {
-  await withLearner(async (_pool, db, learnerId) => {
-    for (let i = 0; i < 8; i++) await savePack(db, learnerId, `2026-10-02-p${i}`, { title: `P${i}` });
-    const results = await settle(Array.from({ length: 8 }, (_, i) => renamePack(db, learnerId, `2026-10-02-p${i}`, "Same")));
+  await withLearner(async (_pool, db, profile) => {
+    for (let i = 0; i < 8; i++) await savePack(db, profile, `2026-10-02-p${i}`, { title: `P${i}` });
+    const results = await settle(Array.from({ length: 8 }, (_, i) => renamePack(db, profile, `2026-10-02-p${i}`, "Same")));
     assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
     assert.deepEqual([...new Set(codes(results))], ["EEXIST"]);
-    const ids = (await listPacks(db, learnerId)).packs.map((p) => p.id);
+    const ids = (await listPacks(db, profile)).packs.map((p) => p.id);
     assert.equal(ids.filter((id) => id === "2026-10-02-same").length, 1);
     assert.equal(ids.length, 8, "no pack lost");
   });
 });
 
 test("a folder delete and a save into it at once, repeated: the pack's folder always exists", { skip }, async () => {
-  await withLearner(async (pool, db, learnerId) => {
+  await withLearner(async (pool, db, profile) => {
     for (let round = 0; round < 10; round++) {
       const folder = `f${round}`;
-      await pool.query("insert into pack_folders (learner_id, name) values ($1, $2)", [learnerId, folder]);
-      const [del, save] = await settle([deleteFolder(db, learnerId, folder), savePack(db, learnerId, `${folder}/2026-10-03-x`, { title: "X" })]);
+      await pool.query("insert into pack_folders (learner_id, language_profile_id, name) values ($1, $2, $3)", [profile.learnerId, profile.id, folder]);
+      const [del, save] = await settle([deleteFolder(db, profile, folder), savePack(db, profile, `${folder}/2026-10-03-x`, { title: "X" })]);
       assert.equal(save.status, "fulfilled", `round ${round}: the save stands`);
       if (del.status === "rejected") assert.equal(del.reason.code, "ENOTEMPTY");
-      const { rows } = await pool.query("select 1 from pack_folders where learner_id = $1 and name = $2", [learnerId, folder]);
+      const { rows } = await pool.query("select 1 from pack_folders where language_profile_id = $1 and name = $2", [profile.id, folder]);
       assert.equal(rows.length, 1, `round ${round}: the folder row is there for the pack in it`);
     }
   });
 });
 
 test("two undeletes of one pack at once, repeated: one brings it back, the other is ESTATE", { skip }, async () => {
-  await withLearner(async (pool, db, learnerId) => {
+  await withLearner(async (pool, db, profile) => {
     for (let round = 0; round < 10; round++) {
       const id = `f${round}/2026-10-03-u${round}`;
-      await savePack(db, learnerId, id, { title: "U", notes: "as deleted" });
-      await deletePack(db, learnerId, id);
-      await deleteFolder(db, learnerId, `f${round}`);
-      const [d] = (await listDeleted(db, learnerId)).items.filter((x) => x.pack.id === id);
-      const results = await settle([undeletePack(db, learnerId, d.revision), undeletePack(db, learnerId, d.revision)]);
+      await savePack(db, profile, id, { title: "U", notes: "as deleted" });
+      await deletePack(db, profile, id);
+      await deleteFolder(db, profile, `f${round}`);
+      const [d] = (await listDeleted(db, profile)).items.filter((x) => x.pack.id === id);
+      const results = await settle([undeletePack(db, profile, d.revision), undeletePack(db, profile, d.revision)]);
       assert.equal(results.filter((r) => r.status === "fulfilled").length, 1, `round ${round}`);
       assert.deepEqual(codes(results), ["ESTATE"]);
       const { rows } = await pool.query("select count(*)::int as n from pack_revisions where action = 'restore' and snapshot->>'id' = $1", [id]);
       assert.equal(rows[0].n, 1, "one restore recorded");
-      assert.ok((await listPacks(db, learnerId)).folders.includes(`f${round}`), "its folder is back");
+      assert.ok((await listPacks(db, profile)).folders.includes(`f${round}`), "its folder is back");
     }
   });
 });
 
 test("an undelete and a restore of one pack at once, repeated: the restore never lands on a deleted pack", { skip }, async () => {
-  await withLearner(async (_pool, db, learnerId) => {
+  await withLearner(async (_pool, db, profile) => {
     for (let round = 0; round < 10; round++) {
       const id = `2026-10-04-v${round}`;
-      await savePack(db, learnerId, id, { title: "V", notes: "v1" });
-      const [v1] = (await listRevisions(db, learnerId, { id })).items;
-      await savePack(db, learnerId, id, { title: "V", notes: "v2" });
-      await deletePack(db, learnerId, id);
-      const [d] = (await listDeleted(db, learnerId)).items.filter((x) => x.pack.id === id);
-      const [un, re] = await settle([undeletePack(db, learnerId, d.revision), restoreRevision(db, learnerId, v1.revision)]);
+      await savePack(db, profile, id, { title: "V", notes: "v1" });
+      const [v1] = (await listRevisions(db, profile, { id })).items;
+      await savePack(db, profile, id, { title: "V", notes: "v2" });
+      await deletePack(db, profile, id);
+      const [d] = (await listDeleted(db, profile)).items.filter((x) => x.pack.id === id);
+      const [un, re] = await settle([undeletePack(db, profile, d.revision), restoreRevision(db, profile, v1.revision)]);
       assert.equal(un.status, "fulfilled", `round ${round}: the undelete always succeeds`);
-      const notes = (await getPack(db, learnerId, id)).notes;
+      const notes = (await getPack(db, profile, id)).notes;
       if (re.status === "fulfilled") assert.equal(notes, "v1", "restore after the undelete");
       else {
         assert.equal(re.reason.code, "ESTATE", "restore before the undelete is refused");

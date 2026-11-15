@@ -134,7 +134,7 @@ hostname or keep the others off it. Details: [`docs/DATA.md`](docs/DATA.md#hosti
   [`docs/VOICE.md`](docs/VOICE.md)). The same tab shows the assembled prompt with a
   word/token readout and a note box for the dojo master. **Copy** puts it on the
   clipboard for any other voice agent. **Export file** writes `exports/<id>.md`.
-  **Save pack** stores it in the active learner's Library (the database), named
+  **Save pack** stores it in the Library of the active learner's current language (the database), named
   `<date>-<slug>`; saved packs can be loaded, cloned, moved into folders, renamed
   and deleted there, and **Recently deleted** brings a deleted one back.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
@@ -156,7 +156,7 @@ slots (opening, helper character, story shape, repetition games, energy and
 length), its own frame, profile, scenarios and packs, and a child-sized level
 scale. The two never mix: a kids learner's packs are its own, its seed packs
 are in `content/kids/packs/`, a kids export goes to `exports/kids/`, and the
-agent is told which library you are looking at. Each mode remembers its own draft, tab and filters in the browser.
+agent is told which library you are looking at. Each learner's language remembers its own draft, tab and filters in the browser.
 
 ## Authoring content
 
@@ -165,7 +165,9 @@ agent is told which library you are looking at. Each mode remembers its own draf
 bodies are written as second-person instructions to the dojo master and must be
 self-contained. The seed library is Mexican Spanish with Oaxaca scenarios; add a
 scenario file for any other setting or language, and pick a different target
-language in the app's Profile popover (it saves to the active learner).
+language in the app's Profile popover (it saves to the active learner's current
+language), or add a language with the top bar's language pill: a learner can
+practise several, each with its own level, packs and History.
 `content/profile.yaml` only seeds the first account's learner and serves the
 offline export CLI, and the pack files under `content/packs/` seed its packs
 (`npm run db:import` copies ones added later).

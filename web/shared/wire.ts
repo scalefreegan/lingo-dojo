@@ -88,7 +88,9 @@ export interface Scenario {
 }
 
 /** A learner profile: content/profile.yaml's keys. In the app it is the
- *  active learner's row (LearnerInfo); the file is read only by the offline
+ *  active learner's row (its name and native language, LearnerInfo) with
+ *  its active language profile's (the rest, LanguageInfo); the file is read
+ *  only by the offline
  *  export CLI and as the first run's seed. The keys below are the contract's;
  *  any other key is allowed and rendered in the Learner block. */
 export interface Profile {
@@ -154,12 +156,14 @@ export interface ContentReply {
 export type PickerKey = "learner_name" | "native_language" | "target_language" | "target_variant" | "level";
 
 /** PUT /api/profile — any subset of the picker keys, strings of at most 80
- *  characters, written to the active learner's row; a blank value clears the
- *  key (not the name, which a learner needs). Goals and notes are edited
- *  with PATCH /api/learners/:id. */
+ *  characters: the name and native language are written to the active
+ *  learner's row, the target language, variant and level to its active
+ *  language profile's; a blank value clears the key (not the name, which a
+ *  learner needs). Goals and notes are edited with PATCH
+ *  /api/learners/:id/languages/:languageId. */
 export type ProfileRequest = Partial<Record<PickerKey, string>>;
 
-/** The learner's profile as stored after the write. */
+/** The learner's profile (learner and active language) as stored after the write. */
 export interface ProfileReply {
   profile: Profile;
 }
@@ -349,12 +353,22 @@ export interface AuthUser {
 
 /** A learner: who is practising, under a login. The profile keys are
  *  profile.yaml's (snake_case, as the assembler and the pickers know them);
- *  `name` is the profile's learner_name. The mode is fixed at creation. */
+ *  `name` is the profile's learner_name. The mode is fixed at creation.
+ *  `languages` are the learner's live language profiles, oldest first (one
+ *  at least). */
 export interface LearnerInfo {
   id: string;
   name: string;
   mode: Mode;
   native_language: string;
+  languages: LanguageInfo[];
+}
+
+/** One language a learner practises (a language profile): profile.yaml's
+ *  per-language keys. Packs and conversations belong to one. */
+export interface LanguageInfo {
+  id: string;
+  learner_id: string;
   target_language: string;
   target_variant: string;
   level: string;
@@ -373,6 +387,9 @@ export interface MeReply {
   firstRunHere?: boolean;
   user: AuthUser | null;
   learner: LearnerInfo | null;
+  /** The session's active language, one of `learner.languages`; null
+   *  exactly when `learner` is. */
+  language: LanguageInfo | null;
   learners: LearnerInfo[];
 }
 
@@ -380,11 +397,13 @@ export interface MeReply {
  *  acts on, a code.
  *
  *  `stale_learner` (409): a learner-scoped route (profile, packs, folders,
- *  assemble, export, voice turn and cast, conversations) was called for a learner who isn't
- *  the session's active one — the page's `X-Learner-Id` header (LearnerHeader)
- *  names another learner or none, or nobody is picked. Another tab switched
- *  learner, archived this one, or logged in as someone else. The client
- *  re-reads /api/auth/me instead of showing it.
+ *  assemble, export, voice turn and cast, conversations) was called for a
+ *  learner or a language that isn't the session's active one — the page's
+ *  `X-Learner-Id` header (LearnerHeader) names another learner or none, its
+ *  `X-Language-Profile-Id` (LanguageHeader) another language or none, or
+ *  nobody is picked. Another tab switched learner or language, archived
+ *  one, or logged in as someone else. The client re-reads /api/auth/me
+ *  instead of showing it.
  *
  *  `conversation_ended` (409) and `no_conversation` (404): a voice turn named
  *  a saved conversation that is over or being ended (End, leaving Go, two idle hours) or
@@ -397,6 +416,8 @@ export interface ErrorReply {
 export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation";
 /** The request header naming the learner the page is rendering. */
 export type LearnerHeader = "X-Learner-Id";
+/** The request header naming the language (profile) the page is rendering. */
+export type LanguageHeader = "X-Language-Profile-Id";
 
 /** POST /api/auth/login and POST /api/auth/first-run. 401 on a wrong
  *  username or password (the same sentence for both), 429 while throttled,
@@ -406,10 +427,30 @@ export interface LoginRequest {
   password: string;
 }
 
-/** POST /api/learners (name and mode required) and PATCH /api/learners/:id
- *  (any subset; the mode can't change). Strings of at most 80 characters,
- *  goals and notes up to 2000. */
-export type LearnerRequest = Partial<Omit<LearnerInfo, "id">>;
+/** POST /api/learners: name and mode required, with the learner's first
+ *  language (its target language, variant, level, goals and notes; a
+ *  learner always has one). PATCH /api/learners/:id takes only name and
+ *  native_language (the mode can't change; a language is edited on its own
+ *  route). Strings of at most 80 characters, goals and notes up to 2000. */
+export type LearnerRequest = Partial<{ name: string; mode: Mode; native_language: string } & LanguageRequest>;
+
+/** POST /api/learners/:id/languages (a new language) and PATCH
+ *  /api/learners/:id/languages/:languageId (any subset). */
+export type LanguageRequest = Partial<Omit<LanguageInfo, "id" | "learner_id">>;
+
+export interface LanguagesReply {
+  languages: LanguageInfo[];
+}
+
+export interface LanguageReply {
+  language: LanguageInfo;
+}
+
+/** PUT /api/auth/language — make one of the active learner's languages the
+ *  session's active one. Answers with MeReply. */
+export interface PickLanguageRequest {
+  languageId: string;
+}
 
 export interface LearnersReply {
   learners: LearnerInfo[];
@@ -420,7 +461,8 @@ export interface LearnerReply {
 }
 
 /** PUT /api/auth/learner — make one of your learners the session's active
- *  one (null: back to the picker). Answers with MeReply. */
+ *  one (null: back to the picker), with its last-used language. Answers with
+ *  MeReply. */
 export interface PickLearnerRequest {
   learnerId: string | null;
 }
@@ -718,7 +760,8 @@ export interface VoiceTurnReply {
 }
 
 /* ------------------------------ conversations ----------------------------- */
-// Saved voice sessions (docs/DATA.md §Conversations), the active learner's.
+// Saved voice sessions (docs/DATA.md §Conversations), the active learner's
+// active language's.
 
 /** POST /api/conversations: the session's first turn is about to run. */
 export interface ConversationCreateRequest {

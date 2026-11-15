@@ -5,7 +5,8 @@ import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs"
 import {
   CONVERSATION_ID_RE, IDLE_END_MS, MAX_PAGE, MAX_TURN_PAGE, PAGE_SIZE, TURN_PAGE, conversationTitle, itemFromRow, planTurnWrite, readPage,
 } from "../../scripts/conversations.mjs";
-import { forLearner } from "../../scripts/db/owned.ts";
+import { languageProfileRefsOfUser } from "../../scripts/db/accounts.ts";
+import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
@@ -13,12 +14,13 @@ import type {
   PackInput, VoiceHistoryItem, VoicePlanItem,
 } from "../shared/wire.ts";
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
-import { learnerRows, rawDb, schema } from "./db.ts";
+import { profileRows, rawDb, schema } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 
 // Saved conversations (docs/DATA.md §Conversations): every voice session is
-// stored for its learner, turn by turn, and listed in the Library's History.
+// stored for its learner's language, turn by turn, and listed in the
+// Library's History (each language has its own).
 //
 //   POST   /api/conversations             {mode, pack, title?} → {conversation}  (201)
 //   GET    /api/conversations             ?offset=&limit= → {conversations, nextOffset}, newest first
@@ -26,16 +28,19 @@ import { readVoiceSettings } from "./store.ts";
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
 //   DELETE /api/conversations/:id         → {deleted: true}; the turns go with it
 //
-// All of them act for the active learner (wrap's `learner: true`), and every
-// row is read and written through that learner's scope (learnerRows), so
-// another learner's conversation id, guessed or not, is the same 404 as one
-// that doesn't exist. The turns themselves are written by the voice turn
+// All of them act for the active learner and its active language (wrap's
+// `learner: true`), and every row is read and written through that
+// language's scope (profileRows), so another language's conversation id, of
+// the same learner or any other, guessed or not, is the same 404 as one that
+// doesn't exist. The turns themselves are written by the voice turn
 // route (voice.ts) through saveTurn below, after the dojo master answered.
 //
 // Ending: End, leaving the Go tab, closing the panel, Restart and page
-// unload all call /end. A conversation nobody ended is ended lazily, two
-// hours after its last turn, by the next request that touches its learner's
-// conversations (endIdle; there is no timer). Whichever way, the one write
+// unload all call /end (and the page sends End before it switches learner
+// or language, while its headers still name the conversation's). A
+// conversation nobody ended is ended lazily, two hours after its last turn,
+// by the next conversation request or voice turn of any of its account's
+// learners, in any language (endIdle; there is no timer). Whichever way, the one write
 // that sets ended_at calls onConversationEnded, exactly once. Deleting an
 // open conversation doesn't: it never ended.
 
@@ -150,29 +155,36 @@ const lastTurnAt = sql<Date | null>`${LAST_TURN}`.mapWith(turns.createdAt);
 /** When the conversation last moved: its last turn, else its start. */
 const lastActivity = sql`coalesce(${LAST_TURN}, "conversations"."started_at")`;
 
-/** End this learner's conversations that have been idle for two hours, at
- *  their last activity (so History's length isn't two idle hours longer),
- *  and run the hook for each. Called by every route that touches the
- *  learner's conversations, the voice turn included. A conversation with a
- *  turn running is skipped (its last turn is about to be now), except
- *  `own`: the conversation the calling turn holds, which it checks itself. */
-export async function endIdle(learnerId: string, own?: string): Promise<void> {
-  const busy = turningFor(learnerId).filter((id) => id !== own);
-  const rows = await learnerRows(learnerId).update(
-    conversations,
-    { endedAt: sql`${lastActivity}` },
-    sql`${conversations.endedAt} is null and ${lastActivity} < now() - ${sql.raw(`interval '${IDLE_END_MS} milliseconds'`)}${
-      busy.length ? sql` and ${notInArray(conversations.id, busy)}` : sql``
-    }`,
-  );
-  ended(rows);
+/** End the account's conversations that have been idle for two hours, in
+ *  every language of every learner (archived ones too), at their last
+ *  activity (so History's length isn't two idle hours longer), and run the
+ *  hook for each. Called by every route that touches conversations, the
+ *  voice turn included. All of the account's, not only the active
+ *  language's: a session left open in German when the page switched to
+ *  Chinese (its End lost) still ends, and its hook still runs, on the next
+ *  request in any language. Each language is updated through its own scope.
+ *  A conversation with a turn running is skipped (its last turn is about to
+ *  be now), except `own`: the conversation the calling turn holds, which it
+ *  checks itself. */
+export async function endIdle(userId: string, own?: string): Promise<void> {
+  for (const profile of await languageProfileRefsOfUser(rawDb(), userId)) {
+    const busy = turningFor(profile.learnerId).filter((id) => id !== own);
+    const rows = await profileRows(profile).update(
+      conversations,
+      { endedAt: sql`${lastActivity}` },
+      sql`${conversations.endedAt} is null and ${lastActivity} < now() - ${sql.raw(`interval '${IDLE_END_MS} milliseconds'`)}${
+        busy.length ? sql` and ${notInArray(conversations.id, busy)}` : sql``
+      }`,
+    );
+    ended(rows);
+  }
 }
 
-async function summaryOf(learnerId: string, id: string): Promise<ConversationSummary | null> {
+async function summaryOf(profile: LanguageProfileRef, id: string): Promise<ConversationSummary | null> {
   const [row] = await rawDb()
     .select({ c: conversations, lastTurnAt })
     .from(conversations)
-    .where(learnerRows(learnerId).where(conversations, eq(conversations.id, id)));
+    .where(profileRows(profile).where(conversations, eq(conversations.id, id)));
   return row ? summary(row.c, row.lastTurnAt) : null;
 }
 
@@ -205,12 +217,12 @@ export function conversationIdOf(id: unknown): string | null {
   return id.toLowerCase();
 }
 
-/** The conversation a voice turn names, open and this learner's: else the
+/** The conversation a voice turn names, open and this language's: else the
  *  404 or 409 that sends the Go tab to start a new one. The turn holds its
  *  lock (takeTurnLock) before calling this. */
-export async function openConversation(learnerId: string, id: string): Promise<Conversation> {
-  await endIdle(learnerId, id);
-  const conv = await learnerRows(learnerId).get(conversations, eq(conversations.id, id));
+export async function openConversation(userId: string, profile: LanguageProfileRef, id: string): Promise<Conversation> {
+  await endIdle(userId, id);
+  const conv = await profileRows(profile).get(conversations, eq(conversations.id, id));
   if (!conv) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   if (conv.endedAt) throw new HttpError(409, "that conversation has ended", CONVERSATION_ENDED);
   return conv;
@@ -226,7 +238,7 @@ export async function openConversation(learnerId: string, id: string): Promise<C
  * deleted) since the turn began is left alone: false, the turn unsaved.
  */
 export async function saveTurn(
-  learnerId: string,
+  profile: LanguageProfileRef,
   conversationId: string,
   turn: {
     screen: VoiceHistoryItem[];
@@ -237,7 +249,7 @@ export async function saveTurn(
   },
 ): Promise<boolean> {
   return rawDb().transaction(async (tx) => {
-    const mine = forLearner(tx, learnerId);
+    const mine = forLanguageProfile(tx, profile);
     const [conv] = await tx.select().from(conversations).where(mine.where(conversations, eq(conversations.id, conversationId))).for("update");
     if (!conv || conv.endedAt) return false;
     const stored = await mine.list(turns, eq(turns.conversationId, conversationId), { orderBy: asc(turns.idx) });
@@ -277,15 +289,15 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
   const pack = body.pack;
-  await endIdle(ctx.learner.id);
+  await endIdle(ctx.user.id);
   const scenarioId = typeof pack.scenario === "string" && pack.scenario ? pack.scenario : null;
   const scenarioTitle = scenarioId ? loadContent(modeRoot(mode)).scenarios.find((s) => s.id === scenarioId)?.title : null;
   // The session's languages, as the prompt sees them (the profile under the
   // pack's overrides, a moved target language dropping the profile's
   // variant), kept so History's locales never follow a later profile edit.
-  const langs = effectiveProfile(learnerProfile(ctx.learner), normalizePack(pack).overrides);
+  const langs = effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(pack).overrides);
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
-  const [row] = await learnerRows(ctx.learner.id).insert(conversations, {
+  const [row] = await profileRows(ctx.language).insert(conversations, {
     // What was played, frozen: the pack changes later, and History shows
     // what this session was.
     packSnapshot: pack as unknown as Record<string, unknown>,
@@ -302,13 +314,13 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
 }
 
 async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  await endIdle(ctx.learner.id);
+  await endIdle(ctx.user.id);
   const { limit, start } = readPage(new URL(req.url ?? "/", "http://localhost").searchParams, { size: PAGE_SIZE, max: MAX_PAGE });
   // One more than asked, to know whether there is a next page.
   const rows = await rawDb()
     .select({ c: conversations, lastTurnAt })
     .from(conversations)
-    .where(learnerRows(ctx.learner.id).where(conversations))
+    .where(profileRows(ctx.language).where(conversations))
     .orderBy(desc(conversations.startedAt), desc(conversations.id))
     .limit(limit + 1)
     .offset(start);
@@ -319,10 +331,10 @@ async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx):
 }
 
 async function get(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
-  await endIdle(ctx.learner.id);
-  const mine = learnerRows(ctx.learner.id);
+  await endIdle(ctx.user.id);
+  const mine = profileRows(ctx.language);
   const conv = await mine.get(conversations, eq(conversations.id, id));
-  const head = conv && (await summaryOf(ctx.learner.id, id));
+  const head = conv && (await summaryOf(ctx.language, id));
   if (!conv || !head) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   const { limit, start } = readPage(new URL(req.url ?? "/", "http://localhost").searchParams, { size: TURN_PAGE, max: MAX_TURN_PAGE, key: "from" });
   const rows = await mine.list(turns, and(eq(turns.conversationId, id), gte(turns.idx, start)) as SQL, { orderBy: asc(turns.idx), limit: limit + 1 });
@@ -350,28 +362,28 @@ async function get(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, i
 
 async function end(res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
   const learnerId = ctx.learner.id;
-  await endIdle(learnerId);
-  if (!(await learnerRows(learnerId).get(conversations, eq(conversations.id, id)))) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
+  await endIdle(ctx.user.id);
+  if (!(await profileRows(ctx.language).get(conversations, eq(conversations.id, id)))) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   // Waits for a turn holding the conversation (stored first), and refuses
   // any turn that arrives while ending (the lock, above).
   const release = await holdForEnd(learnerId, id);
   try {
     // Only a still-open row matches, so a second End (or an idle end that
     // got there first) changes nothing and calls no hook: idempotent.
-    ended(await learnerRows(learnerId).update(conversations, { endedAt: sql`now()` }, sql`${conversations.id} = ${id} and ${conversations.endedAt} is null`));
+    ended(await profileRows(ctx.language).update(conversations, { endedAt: sql`now()` }, sql`${conversations.id} = ${id} and ${conversations.endedAt} is null`));
   } finally {
     release();
   }
-  const head = await summaryOf(learnerId, id);
+  const head = await summaryOf(ctx.language, id);
   if (!head) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   sendJson(res, 200, { conversation: head } satisfies ConversationReply);
 }
 
 async function remove(res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
-  await endIdle(ctx.learner.id);
+  await endIdle(ctx.user.id);
   // A hard delete; the turns cascade. A turn still running for it finds the
   // row gone when it comes to write, and answers unsaved.
-  const gone = await learnerRows(ctx.learner.id).remove(conversations, eq(conversations.id, id));
+  const gone = await profileRows(ctx.language).remove(conversations, eq(conversations.id, id));
   if (!gone.length) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   sendJson(res, 200, { deleted: true });
 }

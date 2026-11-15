@@ -91,3 +91,38 @@ test("a save carries only the pack's own minutes, never the remembered default",
   // Picking a length in the picker (re-picking the shown 10 included) makes it the pack's own.
   assert.equal(draftToPack({ ...inherited, minutes: 10 }).overrides.minutes, 10);
 });
+
+test("browser storage is per language profile; a learner's keys from before profiles move to the first language opened, once", async () => {
+  const { adoptLearnerKeys, languageKey, loadRememberedDraft, rememberDraft } = await import("../../web/src/draft.ts");
+  const store = new Map();
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const draft = { units: ["intro-target"], overrides: { level: "B1" }, title: "Old draft" };
+    store.set("lingo-dojo.draft.v1.learner.L1", JSON.stringify(draft));
+    store.set("lingo-dojo.tab.v1.learner.L1", "go");
+    store.set("lingo-dojo.tab.v1.learner.L2", "library");
+    store.set(languageKey("lingo-dojo.scene-filter.v1", "G1"), "already German's");
+    store.set("lingo-dojo.scene-filter.v1.learner.L1", "older");
+
+    adoptLearnerKeys("L1", "G1");
+    assert.equal(loadRememberedDraft("G1").title, "Old draft", "the draft is the first language's now");
+    assert.equal(store.get("lingo-dojo.tab.v1.language.G1"), "go");
+    assert.equal(store.get("lingo-dojo.scene-filter.v1.language.G1"), "already German's", "a language's own key wins");
+    assert.ok(![...store.keys()].some((k) => k.endsWith(".learner.L1")), "moved, not copied");
+    assert.equal(store.get("lingo-dojo.tab.v1.learner.L2"), "library", "another learner's keys wait for its own first language");
+
+    // A second language of the same learner starts fresh; each keeps its own.
+    adoptLearnerKeys("L1", "G2");
+    assert.equal(loadRememberedDraft("G2"), null);
+    rememberDraft("G2", { ...draft, title: "Chinese draft" });
+    assert.equal(loadRememberedDraft("G2").title, "Chinese draft");
+    assert.equal(loadRememberedDraft("G1").title, "Old draft");
+  } finally {
+    globalThis.localStorage = saved;
+  }
+});

@@ -249,11 +249,16 @@ declare module "*/scripts/auth.mjs" {
   /** The client for the throttle: X-Forwarded-For's last hop behind a loopback proxy, else the socket address. */
   export function clientAddress(headers: Record<string, string | string[] | undefined>, remoteAddress: string | undefined): string;
   export function throttleKey(username: string, address: string): string;
+  export const LEARNER_COLUMNS: Record<"learner_name" | "native_language", string>;
+  export const LANGUAGE_COLUMNS: Record<"target_language" | "target_variant" | "level" | "goals" | "notes", string>;
   export const PROFILE_COLUMNS: Record<import("../shared/wire.ts").PickerKey | "goals" | "notes", string>;
-  /** A learner row's values (column keys) from a profile.yaml mapping. */
+  /** A learner's and its first language's values (column keys, one object) from a profile.yaml mapping. */
   export function learnerFromProfile(profile: unknown, mode: import("../shared/wire.ts").Mode, fallbackName: string): Record<string, string>;
-  /** A learner row as the assembler's profile (blanks left out). */
-  export function profileFromLearner(learner: Record<string, unknown> | null | undefined): import("../shared/wire.ts").Profile;
+  /** A learner row and its language profile row as the assembler's profile (blanks left out). */
+  export function profileFromLearner(
+    learner: Record<string, unknown> | null | undefined,
+    language: Record<string, unknown> | null | undefined,
+  ): import("../shared/wire.ts").Profile;
 }
 
 declare module "*/scripts/db/config.mjs" {

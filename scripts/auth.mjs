@@ -277,10 +277,16 @@ export function throttleKey(username, address) {
 
 /* --------------------------------- learners ------------------------------- */
 
-/** The profile keys a learner row holds, profile.yaml key → column key. */
-export const PROFILE_COLUMNS = {
+/** The profile keys the learner row holds (the person), profile.yaml key →
+ *  column key. */
+export const LEARNER_COLUMNS = {
   learner_name: "name",
   native_language: "nativeLanguage",
+};
+
+/** The profile keys a language profile row holds (one language the learner
+ *  practises), profile.yaml key → column key. */
+export const LANGUAGE_COLUMNS = {
   target_language: "targetLanguage",
   target_variant: "targetVariant",
   level: "level",
@@ -288,8 +294,13 @@ export const PROFILE_COLUMNS = {
   notes: "notes",
 };
 
-/** A learner's values from a profile.yaml mapping (the first-run seed).
- *  Folded YAML blocks keep their text; anything not a string becomes "". */
+/** Every profile key a learner and its language hold between them. */
+export const PROFILE_COLUMNS = { ...LEARNER_COLUMNS, ...LANGUAGE_COLUMNS };
+
+/** A learner's values and its first language's, as one object of column
+ *  keys, from a profile.yaml mapping (the first-run seed; accounts.ts
+ *  createLearner splits them). Folded YAML blocks keep their text; anything
+ *  not a string becomes "". */
 export function learnerFromProfile(profile, mode, fallbackName) {
   const p = profile && typeof profile === "object" ? profile : {};
   const out = { mode };
@@ -301,14 +312,20 @@ export function learnerFromProfile(profile, mode, fallbackName) {
   return out;
 }
 
-/** A learner row as the assembler's profile: the profile.yaml keys, blanks
- *  left out (the assembler reads a blank as absent, as it did a missing key). */
-export function profileFromLearner(learner) {
+/** A learner row and its active language profile row as the assembler's
+ *  profile: the profile.yaml keys, blanks left out (the assembler reads a
+ *  blank as absent, as it did a missing key). Each row gives only its own
+ *  keys, so neither can shadow the other's. */
+export function profileFromLearner(learner, language) {
   const out = {};
-  if (!learner) return out;
-  for (const [key, col] of Object.entries(PROFILE_COLUMNS)) {
-    const v = learner[col];
-    if (typeof v === "string" && v.trim()) out[key] = v;
-  }
+  const take = (row, columns) => {
+    if (!row) return;
+    for (const [key, col] of Object.entries(columns)) {
+      const v = row[col];
+      if (typeof v === "string" && v.trim()) out[key] = v;
+    }
+  };
+  take(learner, LEARNER_COLUMNS);
+  take(language, LANGUAGE_COLUMNS);
   return out;
 }
