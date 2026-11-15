@@ -5,11 +5,17 @@
  *
  * Every content, pack, folder, assemble, export and profile call names the
  * mode it works in ("adult" → content/, "kids" → content/kids/); the server
- * keeps the two trees apart, and so does the URL. */
+ * keeps the two trees apart, and so does the URL. The mode is the active
+ * learner's: the server answers 400 if the URL names the other one. Every
+ * call also names the learner this page shows (X-Learner-Id, set in send()
+ * below); a learner-scoped route answers 409 `stale_learner` when that is
+ * not the session's active learner, so a stale tab can't write another
+ * learner's profile or run a turn as them. */
 
 import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
-  ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, FolderRequest, Mode, PackDeleteReply, PackInput,
+  ContentReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
+  PackDeleteReply, PackInput, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
@@ -25,8 +31,46 @@ export class ApiError extends Error {
   }
 }
 
+/** Fired on window when any call answers 401: the session ended (logged out
+ *  in another tab, expired, password changed). The auth gate listens and
+ *  goes back to the login screen instead of every caller handling it. */
+export const UNAUTHORIZED_EVENT = "lingo-dojo:unauthorized";
+
+/** Fired on window when a call answers 409 `stale_learner`: this page shows
+ *  a learner who is no longer the session's (another tab picked someone
+ *  else or archived this one, or another account logged in). The auth gate
+ *  re-reads /api/auth/me and shows the right learner or the picker. Any
+ *  other 409 (the voice-turn lock, a folder that isn't empty) stays an
+ *  ordinary error for its caller. */
+export const STALE_LEARNER_EVENT = "lingo-dojo:stale-learner";
+
+const LEARNER_HEADER: LearnerHeader = "X-Learner-Id";
+const STALE_LEARNER: ErrorCode = "stale_learner";
+
+/** The learner this page renders, sent with every call (X-Learner-Id) so the
+ *  server can refuse a learner-scoped call from a page that is out of date:
+ *  the session cookie is shared by every tab, so the server can't tell
+ *  otherwise. Set by the auth gate whenever what it shows changes. */
+let pageLearner: string | null = null;
+
+export function setPageLearner(id: string | null): void {
+  pageLearner = id;
+}
+
+/** fetch with the page's learner. Every call below goes through it. */
+function send(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (pageLearner) headers.set(LEARNER_HEADER, pageLearner);
+  return fetch(url, { ...init, headers });
+}
+
+function check401(res: Response): void {
+  if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+}
+
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await send(url, init);
+  check401(res);
   const text = await res.text();
   let body: unknown = null;
   try {
@@ -35,7 +79,9 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     /* non-JSON error page */
   }
   if (!res.ok) {
-    const err = body && typeof body === "object" && "error" in body ? (body as { error: unknown }).error : null;
+    const reply = body && typeof body === "object" ? (body as Partial<ErrorReply>) : null;
+    if (res.status === 409 && reply?.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
+    const err = reply?.error;
     throw new ApiError(typeof err === "string" ? err : text.slice(0, 200) || `${res.status} ${res.statusText}`, res.status);
   }
   return body as T;
@@ -50,12 +96,58 @@ function inMode(path: string, mode: Mode): string {
   return `${path}?mode=${encodeURIComponent(mode)}`;
 }
 
+/* ---------------------------------- auth --------------------------------- */
+// The session is an httpOnly cookie: the browser sends it, scripts never see
+// it. These calls only learn who is logged in and change that.
+
+/** GET /api/auth/me — who is logged in (or that no account exists yet). */
+export function getMe(): Promise<MeReply> {
+  return req<MeReply>("/api/auth/me");
+}
+
+/** POST /api/auth/login — sets the session cookie. A wrong password is not
+ *  a lost session, so this skips the 401 event. */
+export async function login(username: string, password: string): Promise<MeReply> {
+  const res = await send("/api/auth/login", json({ username, password } satisfies LoginRequest));
+  const body = (await res.json().catch(() => null)) as (MeReply & { error?: string }) | null;
+  if (!res.ok) throw new ApiError(body?.error ?? `${res.status} ${res.statusText}`, res.status);
+  return body as MeReply;
+}
+
+/** POST /api/auth/first-run — the first account (an admin), only while there are none. */
+export function createFirstAccount(username: string, password: string): Promise<MeReply> {
+  return req<MeReply>("/api/auth/first-run", json({ username, password } satisfies LoginRequest));
+}
+
+export function logout(): Promise<{ ok: true }> {
+  return req<{ ok: true }>("/api/auth/logout", json({}));
+}
+
+/** PUT /api/auth/learner — who's practising in this session (null: back to the picker). */
+export function pickLearner(learnerId: string | null): Promise<MeReply> {
+  return req<MeReply>("/api/auth/learner", json({ learnerId } satisfies PickLearnerRequest, "PUT"));
+}
+
+export function createLearner(body: LearnerRequest): Promise<LearnerReply> {
+  return req<LearnerReply>("/api/learners", json(body));
+}
+
+export function updateLearner(id: string, body: LearnerRequest): Promise<LearnerReply> {
+  return req<LearnerReply>(`/api/learners/${encodeURIComponent(id)}`, json(body, "PATCH"));
+}
+
+export function archiveLearner(id: string): Promise<LearnerReply> {
+  return req<LearnerReply>(`/api/learners/${encodeURIComponent(id)}/archive`, json({}));
+}
+
+/* --------------------------------- content -------------------------------- */
+
 /** GET /api/content — re-read from disk on every call. */
 export function getContent(mode: Mode): Promise<ContentReply> {
   return req<ContentReply>(inMode("/api/content", mode));
 }
 
-/** PUT /api/profile — merges the picker keys into that mode's profile.yaml. */
+/** PUT /api/profile — merges the picker keys into the active learner. */
 export function saveProfile(mode: Mode, patch: ProfileRequest): Promise<ProfileReply> {
   return req<ProfileReply>(inMode("/api/profile", mode), json(patch, "PUT"));
 }
@@ -127,7 +219,8 @@ export interface ChatHandlers {
  *  pattern). Resolves when the server's terminal `done` arrives; a stream
  *  that ends without one is an error, not a quiet success. */
 async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signal?: AbortSignal): Promise<void> {
-  const res = await fetch(url, { ...json(body), signal });
+  const res = await send(url, { ...json(body), signal });
+  check401(res);
   if (!res.ok || !res.body) {
     let detail = "";
     try {
@@ -213,7 +306,7 @@ export function getVoiceSettings(langs?: VoiceLanguages): Promise<VoiceSettingsR
   return req<VoiceSettingsReply>(voiceSettingsUrl(langs));
 }
 
-/** Merges into data/voice.json; `voices` replaces the whole map. */
+/** Merges into this user's voice settings; `voices` replaces the whole map. */
 export function saveVoiceSettings(patch: VoiceSettingsRequest, langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
   return req<VoiceSettingsReply>(voiceSettingsUrl(langs), json(patch, "PUT"));
 }
@@ -239,7 +332,8 @@ export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise
 
 /** One line → playable audio. Errors come back as the usual {error}. */
 export async function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
-  const res = await fetch("/api/voice/speak", { ...json(body), signal });
+  const res = await send("/api/voice/speak", { ...json(body), signal });
+  check401(res);
   if (res.ok) return res.blob();
   const text = await res.text();
   let msg = text.slice(0, 200) || `${res.status} ${res.statusText}`;

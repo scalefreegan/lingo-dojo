@@ -20,6 +20,16 @@ export type { Db };
 
 let pool: pg.Pool | null = null;
 let db: Db | null = null;
+/** A database handed in from outside (setDb): the HTTP tests' PGlite. */
+let injected: Db | null = null;
+
+/** Serve every route from this handle instead of the pool: the HTTP tests
+ *  mount the real plugin on an in-process PGlite (apiPlugins({ db })), so
+ *  they run the real routes with no Postgres server. null goes back to the
+ *  pool. */
+export function setDb(handle: Db | null): void {
+  injected = handle;
+}
 
 /** The pool, created on first call from DATABASE_URL (.env.local, default
  *  postgres://localhost/lingo_dojo). Read once: changing the URL needs a
@@ -36,6 +46,7 @@ function getPool(): pg.Pool {
 
 /** The Drizzle instance over the shared pool. */
 export function rawDb(): Db {
+  if (injected) return injected;
   if (!db) db = drizzle(getPool(), { schema });
   return db;
 }

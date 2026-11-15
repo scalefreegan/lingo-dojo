@@ -1,6 +1,8 @@
 # Lingo Dojo — PRD
 
-Personal, single-user, localhost, no auth. A **composable prompt-pack builder** for
+Personal, localhost, built for one person at first; since 2026-11-15 a few
+people share it with logins, each with one or more learners (docs/DATA.md
+§Auth). A **composable prompt-pack builder** for
 language-practice sessions run elsewhere as a real-time voice conversation with an
 AI "dojo master". It organizes the instruction material, lets you pick and
 combine it, and hands you one markdown prompt to paste into whatever voice tool
@@ -11,13 +13,13 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 | Decision | Choice |
 |---|---|
-| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. So far only the foundation exists (schema, migrations, `npm run db:setup`, boot check); no feature uses it yet |
+| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. Built so far: the foundation and logins + learners (users, sessions, learners, per-user settings and agent chat); packs are still files |
 | Embedded agent | Headless `claude -p` subprocess (sibling pattern) with Read on the repo and **Write/Edit scoped to `content/`**; every agent change is auto-committed so it can be reverted |
 | Export | One self-contained markdown prompt; Copy button and a file written to `exports/` |
 | Stack | Match Atlas (`../travel-guide`): React 19 + Vite + TS strict, Vite middleware API, Tailwind 4, oxlint, `node --test`; Dock app from `macos/`; **port 38400** |
 | Unit model | **Slots with cardinality** declared in `content/schema.yaml`; units declare their slot; assembly walks slots in schema order |
-| Learner profile | Global `content/profile.yaml` with per-pack overrides |
-| Modes | Two libraries with the same file format: `content/` (adult) and `content/kids/` (kids: its own schema, frame, profile, units, scenarios, packs). The Profile popover switches modes; every tree-scoped API route takes `?mode=`; kids exports go to `exports/kids/` |
+| Learner profile | Global `content/profile.yaml` with per-pack overrides. Since 2026-11-15 the profile is the active learner (a database row, edited from the Profile popover); the file seeds the first admin's learner and serves the offline export CLI |
+| Modes | Two libraries with the same file format: `content/` (adult) and `content/kids/` (kids: its own schema, frame, profile, units, scenarios, packs). A learner is adult or kids, and switching learner switches mode; the tree-scoped API routes use the active learner's mode (a disagreeing `?mode=` is a 400); kids exports go to `exports/kids/` |
 | Packs | Saved as `content/packs/<date>-<slug>.yaml`; seed library in Spanish (Oaxaca scenarios) |
 | Voice target | ChatGPT voice mode and Claude voice in practice (2026-10-19); export stays tool-agnostic markdown with a length readout. The frame fixes the voice: every speaker is a native speaker of the target variant, in both languages |
 | In-app voice (2026-11-09) | Push-to-talk loop on the Go tab: speech to text (ElevenLabs Scribe or Azure) → one tool-less `claude -p` turn → text to speech per speaker (ElevenLabs, Azure, or free macOS voices). The learner ends each turn (tap, or a pause length they set). Keys in gitignored `.env.local`. See docs/VOICE.md |
@@ -41,7 +43,8 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 ## User flow (v1)
 
-1. Open the app (Dock icon or `npm run dev`, http://localhost:38400).
+1. Open the app (Dock icon or `npm run dev`, http://localhost:38400), log in,
+   and pick who's practicing (the first visit creates the admin account).
 2. Pick a scenario from the library, or type a quick scenario in a text box.
 3. For each slot, choose units (radio for `one`, checkboxes for `any`). Defaults
    come pre-selected from each unit's `default: true`.
@@ -60,7 +63,7 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 - In-app rich editing of unit bodies (agent or editor does that; follow-up bead).
 - JSON bundle export for a programmatic voice pipeline (follow-up bead).
 - Mimir/Obsidian export (follow-up bead).
-- Multi-user, auth, deployment.
+- Deployment beyond this Mac (a production server, another host, public internet). Logins for a few people landed 2026-11-15 (docs/DATA.md §Auth): accounts from `npm run user`, the first one from the first-run screen.
 
 ## Architecture
 
@@ -71,17 +74,21 @@ scripts/
   assemble.mjs         pack + content -> markdown (pure, tested)
   claude.mjs           spawn headless claude for the embedded agent (sibling pattern)
   export.mjs           CLI: node scripts/export.mjs content/packs/x.yaml
+  auth.mjs             passwords, session cookie, login throttle (pure)
+  user.mjs             CLI: npm run user -- add | passwd | list | disable | enable
+  db/                  Postgres schema, migrations, accounts (docs/DATA.md)
   tests/*.test.mjs     node --test
 web/                   Vite app; API is Vite serve-middleware in web/server/*.ts
-  server/api.ts        plugins + wrap() same-origin guard (copy Atlas)
+  server/api.ts        plugins + wrap(fn, {auth}): same-origin, session, access level
+  server/auth.ts       login, logout, me, first run, learners
   server/content.ts    GET /api/content, packs CRUD, POST /api/assemble, POST /api/export
   server/chat.ts       SSE chat with the embedded agent, auto-commit after edits
   shared/wire.ts       types shared by server and client
   src/                 React UI
 exports/               rendered prompts (gitignored)
-data/                  runtime state: chat history, settings (gitignored)
+data/                  pre-login runtime state, now only the first admin's seed (gitignored)
 macos/                 Dock app (Lingo Dojo.app), copied from Atlas, port 38400
-docs/                  this PRD, CONTENT.md (file format contract)
+docs/                  this PRD, CONTENT.md (file format contract), DATA.md (database), VOICE.md
 ```
 
 See `docs/CONTENT.md` for the exact file formats and the assembly algorithm. That

@@ -39,13 +39,14 @@ export function connectStack() {
 }
 
 /** Mount the plugin on a stack behind a real node:http server on an
- *  ephemeral port. Returns the base URL and a close(). */
-export async function serveApi(apiPlugins) {
+ *  ephemeral port, serving from `db` (a freshDb() handle: the routes run on
+ *  an in-process PGlite). Returns the base URL and a close(). */
+export async function serveApi(apiPlugins, { db } = {}) {
   const stack = connectStack();
   // The plugin's own configureServer: every mount in the order the app
   // uses. Only `middlewares` is consulted. No database boot check: these
   // tests must run without a Postgres server.
-  apiPlugins({ checkDatabase: false }).configureServer({ middlewares: stack });
+  apiPlugins({ checkDatabase: false, db }).configureServer({ middlewares: stack });
   const server = http.createServer((req, res) => stack.handle(req, res));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   return {

@@ -87,8 +87,10 @@ export interface Scenario {
   uses_location: boolean;
 }
 
-/** content/profile.yaml. The keys below are the contract's; any other key
- *  is allowed and rendered in the Learner block. */
+/** A learner profile: content/profile.yaml's keys. In the app it is the
+ *  active learner's row (LearnerInfo); the file is read only by the offline
+ *  export CLI and as the first run's seed. The keys below are the contract's;
+ *  any other key is allowed and rendered in the Learner block. */
 export interface Profile {
   learner_name?: string;
   native_language?: string;
@@ -119,14 +121,17 @@ export interface Problem {
 }
 
 /** The two libraries: "adult" is content/, "kids" is content/kids/ (its own
- *  schema, frame, profile, units, scenarios and packs). Every content, pack,
- *  folder, assemble, export and profile route takes `?mode=`; adult when
- *  absent. */
+ *  schema, frame, profile, units, scenarios and packs). A learner is one or
+ *  the other, and the pack, profile, assemble, export and voice routes work
+ *  in the active learner's mode: a `?mode=` (or body `mode`) they are sent
+ *  must match it or the reply is a 400. */
 export type Mode = "adult" | "kids";
 
 /** GET /api/content?mode= — the loader's result minus packs (they have their
  *  own routes), re-read from disk on every call so an agent or editor change
- *  shows up without a restart. */
+ *  shows up without a restart. Either mode may be asked for (the active
+ *  learner's when absent); `profile` is the active learner's in its own mode
+ *  and {} in the other. */
 export interface ContentReply {
   mode: Mode;
   /** The level picker's options for this mode (CEFR for adult, a child-sized
@@ -148,13 +153,13 @@ export interface ContentReply {
 /** The profile keys the UI's pickers can write ("Save as my defaults"). */
 export type PickerKey = "learner_name" | "native_language" | "target_language" | "target_variant" | "level";
 
-/** PUT /api/profile?mode= — any subset of the picker keys, strings of at
- *  most 80 characters; a blank value removes the key from that mode's
- *  profile.yaml. Everything else in the profile (goals, notes) is edited in
- *  the file. */
+/** PUT /api/profile — any subset of the picker keys, strings of at most 80
+ *  characters, written to the active learner's row; a blank value clears the
+ *  key (not the name, which a learner needs). Goals and notes are edited
+ *  with PATCH /api/learners/:id. */
 export type ProfileRequest = Partial<Record<PickerKey, string>>;
 
-/** The profile as it reads back from disk after the write. */
+/** The learner's profile as stored after the write. */
 export interface ProfileReply {
   profile: Profile;
 }
@@ -288,9 +293,91 @@ export interface ErrorReply {
   error: string;
 }
 
+/* ---------------------------------- auth --------------------------------- */
+// Logins and learners (docs/DATA.md §Auth). The session is an httpOnly
+// cookie the browser never reads; these are the shapes around it.
+
+/** The logged-in account. */
+export interface AuthUser {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+}
+
+/** A learner: who is practising, under a login. The profile keys are
+ *  profile.yaml's (snake_case, as the assembler and the pickers know them);
+ *  `name` is the profile's learner_name. The mode is fixed at creation. */
+export interface LearnerInfo {
+  id: string;
+  name: string;
+  mode: Mode;
+  native_language: string;
+  target_language: string;
+  target_variant: string;
+  level: string;
+  goals: string;
+  notes: string;
+}
+
+/** GET /api/auth/me (public), and the reply of login and first run.
+ *  `firstRun`: there are no accounts yet, so the UI shows "Create the first
+ *  account" instead of the login form. `learner` is the session's active
+ *  learner, null until one is picked ("Who's practicing?"). */
+export interface MeReply {
+  firstRun: boolean;
+  user: AuthUser | null;
+  learner: LearnerInfo | null;
+  learners: LearnerInfo[];
+}
+
+/** Every error reply: a sentence to show, and for the few errors the client
+ *  acts on, a code.
+ *
+ *  `stale_learner` (409): a learner-scoped route (profile, packs, folders,
+ *  assemble, export, voice turn and cast) was called for a learner who isn't
+ *  the session's active one — the page's `X-Learner-Id` header (LearnerHeader)
+ *  names another learner or none, or nobody is picked. Another tab switched
+ *  learner, archived this one, or logged in as someone else. The client
+ *  re-reads /api/auth/me instead of showing it. */
+export interface ErrorReply {
+  error: string;
+  code?: ErrorCode;
+}
+export type ErrorCode = "stale_learner";
+/** The request header naming the learner the page is rendering. */
+export type LearnerHeader = "X-Learner-Id";
+
+/** POST /api/auth/login and POST /api/auth/first-run. 401 on a wrong
+ *  username or password (the same sentence for both), 429 while throttled,
+ *  409 from first-run once any account exists. */
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+/** POST /api/learners (name and mode required) and PATCH /api/learners/:id
+ *  (any subset; the mode can't change). Strings of at most 80 characters,
+ *  goals and notes up to 2000. */
+export type LearnerRequest = Partial<Omit<LearnerInfo, "id">>;
+
+export interface LearnersReply {
+  learners: LearnerInfo[];
+}
+
+export interface LearnerReply {
+  learner: LearnerInfo;
+}
+
+/** PUT /api/auth/learner — make one of your learners the session's active
+ *  one (null: back to the picker). Answers with MeReply. */
+export interface PickLearnerRequest {
+  learnerId: string | null;
+}
+
 /* ---------------------------------- chat --------------------------------- */
 
-/** One line of data/chat.jsonl. `commit` lines record an auto-commit the
+/** One message of the agent chat (agent_messages; data/chat.jsonl before
+ *  logins, the first admin's seed). `commit` lines record an auto-commit the
  *  server made after an agent turn: text is "<short hash>: <summary>". */
 export type ChatRole = "user" | "assistant" | "commit";
 
@@ -404,7 +491,8 @@ export type VoiceSlot = `${VoiceSpeaker}:${VoiceGender}`;
  *  after `silenceMs` of quiet once they have started talking. */
 export type TurnTaking = "tap" | "pause";
 
-/** data/voice.json, always complete (the server normalizes what it reads). */
+/** One user's voice settings (user_settings.voice; data/voice.json before
+ *  logins), always complete (the server normalizes what it reads). */
 export interface VoiceSettings {
   tts: TtsProvider;
   stt: SttProvider;

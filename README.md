@@ -136,8 +136,10 @@ at. Each mode remembers its own draft, tab and filters in the browser.
 (`{{learner_name}}`, `{{target_language}}`, ...), and the assembly algorithm. Unit
 bodies are written as second-person instructions to the dojo master and must be
 self-contained. The seed library is Mexican Spanish with Oaxaca scenarios; add a
-scenario file for any other setting or language, and change `content/profile.yaml`
-for a different target language.
+scenario file for any other setting or language, and pick a different target
+language in the app's Profile popover (it saves to the active learner).
+`content/profile.yaml` only seeds the first account's learner and serves the
+offline export CLI.
 
 ## Architecture
 

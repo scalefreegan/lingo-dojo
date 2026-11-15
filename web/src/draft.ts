@@ -3,7 +3,7 @@
  * live in one place and read like the contract they implement
  * (docs/CONTENT.md: "order within a slot follows the pack"). */
 
-import type { ContentReply, Language, Mode, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
+import type { ContentReply, Language, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
 
 export type OverrideKey = PickerKey;
 /** The Profile popover's fields, in display order. The level picker's
@@ -355,21 +355,36 @@ export function packId(title: string, d = new Date()): string {
 
 /* ------------------------- remembering the draft ------------------------- */
 
-/** A browser-storage key for a mode: adult keeps the original key, kids gets
- *  a `.kids` suffix, so each mode's draft, tab and Scene filters survive a
- *  switch to the other. */
-export function modeKey(base: string, mode: Mode): string {
-  return mode === "adult" ? base : `${base}.${mode}`;
+/** A browser-storage key for one learner: the draft, the tab and the Scene
+ *  filters are that learner's, so the next learner or account on the same
+ *  browser starts from its own (or from the defaults), never from the last
+ *  one's unsaved name, level or quick-scenario text. */
+export function learnerKey(base: string, learnerId: string): string {
+  return `${base}.learner.${learnerId}`;
 }
 
 const DRAFT_KEY = "lingo-dojo.draft.v1";
 
-/** The last draft in this mode, so a refresh doesn't throw away today's
+/** The keys these lived under before logins: one per mode (adult the bare
+ *  base, kids with `.kids`), shared by whoever used the browser. Dropped,
+ *  not adopted by a learner — there is no telling whose they were. */
+const MODE_KEYS = ["lingo-dojo.draft.v1", "lingo-dojo.tab.v1", "lingo-dojo.scene-filter.v1", "lingo-dojo.scene-folders.v1"];
+
+/** Forget the per-mode keys (AuthGate, once per page load). */
+export function dropModeKeys(): void {
+  try {
+    for (const base of MODE_KEYS) for (const key of [base, `${base}.kids`]) localStorage.removeItem(key);
+  } catch {
+    /* blocked storage: nothing stored to drop */
+  }
+}
+
+/** This learner's last draft, so a refresh doesn't throw away today's
  *  selections. Browser storage only: a per-machine convenience, never the
  *  record (saved packs are). Any read failure means "start fresh". */
-export function loadRememberedDraft(mode: Mode): Draft | null {
+export function loadRememberedDraft(learnerId: string): Draft | null {
   try {
-    const raw = localStorage.getItem(modeKey(DRAFT_KEY, mode));
+    const raw = localStorage.getItem(learnerKey(DRAFT_KEY, learnerId));
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<Draft>;
     if (!Array.isArray(d.units) || typeof d.overrides !== "object" || d.overrides === null) return null;
@@ -379,10 +394,10 @@ export function loadRememberedDraft(mode: Mode): Draft | null {
   }
 }
 
-export function rememberDraft(mode: Mode, draft: Draft | null): void {
+export function rememberDraft(learnerId: string, draft: Draft | null): void {
   try {
-    if (draft) localStorage.setItem(modeKey(DRAFT_KEY, mode), JSON.stringify(draft));
-    else localStorage.removeItem(modeKey(DRAFT_KEY, mode));
+    if (draft) localStorage.setItem(learnerKey(DRAFT_KEY, learnerId), JSON.stringify(draft));
+    else localStorage.removeItem(learnerKey(DRAFT_KEY, learnerId));
   } catch {
     /* private window or blocked storage: nothing to remember into */
   }

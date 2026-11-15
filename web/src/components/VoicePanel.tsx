@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
+import { Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
   ApiError, addLibraryVoice, getCast, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine, transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
@@ -6,6 +6,7 @@ import { startRecording, type Recording } from "../recorder";
 import { Mochi, SpeakerCritter, type MochiMood } from "./Mascots";
 import { Glossed } from "./Glossed";
 import { SessionTimeline } from "./SessionTimeline";
+import { IsAdmin } from "../viewer";
 import { haystack, isSentence, layout, mightMatch, sentenceGlosses } from "../gloss";
 import type {
   LibrarySort, LibraryVoice, Mode, PackInput, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
@@ -1919,6 +1920,9 @@ function LibraryBrowser({
   current: Record<string, string | undefined>;
   onUse: (slot: VoiceSlot, voiceId: string) => void;
 }) {
+  // Adding a voice changes the owner's ElevenLabs account: an admin's call
+  // (the server refuses anyone else). Others can use voices already added.
+  const isAdmin = useContext(IsAdmin);
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
   const [gender, setGender] = useState("");
@@ -2040,8 +2044,8 @@ function LibraryBrowser({
         <Button type="submit">Search</Button>
       </form>
       <p className="text-sm text-fg-3 sm:text-xs">
-        Native {locale} speakers from the ElevenLabs Voice Library{total != null ? ` · ${total.toLocaleString()} voices` : ""}. ▶ plays the sharer's sample; "Use as" adds the voice to your
-        ElevenLabs account.
+        Native {locale} speakers from the ElevenLabs Voice Library{total != null ? ` · ${total.toLocaleString()} voices` : ""}. ▶ plays the sharer's sample;{" "}
+        {isAdmin ? '"Use as" adds the voice to your ElevenLabs account.' : '"Use as" works for voices already added; only an admin can add one.'}
       </p>
       {status && (
         <p className="text-sm text-accent" role="status">
@@ -2073,6 +2077,7 @@ function LibraryBrowser({
             </div>
             {v.description && <p className="line-clamp-2 text-sm text-fg-2">{v.description}</p>}
             <div className="flex flex-wrap items-center gap-2">
+              {(isAdmin || v.added) && (
               <select
                 className={`${inputClass} w-auto`}
                 aria-label={`Use ${v.name} as`}
@@ -2089,6 +2094,7 @@ function LibraryBrowser({
                     </option>
                   ))}
               </select>
+              )}
               {inUse.has(v.id) && <span className="text-sm text-accent sm:text-xs">In use: {inUse.get(v.id)!.join(", ")}</span>}
               {v.added && !inUse.has(v.id) && <span className="text-sm text-fg-3 sm:text-xs">In your voices</span>}
             </div>

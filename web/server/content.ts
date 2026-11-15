@@ -2,13 +2,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { assemble } from "../../scripts/assemble.mjs";
 import {
   ID_RE, LEVELS_BY_MODE, MODES, PACK_ID_RE, createFolder, deleteFolder, deletePack, exportsDirFor, isMode, listFolders, loadContent,
-  modeRoot, movePack, renamePack, savePack, saveProfile, writeExport,
+  modeRoot, movePack, renamePack, savePack, writeExport,
 } from "../../scripts/content.mjs";
 import type {
   AssembleRequest, AssembleResult, Committed, ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
-  Pack, PackDeleteReply, PackReply, PackWriteReply, PacksReply, PickerKey, ProfileReply, ProfileRequest,
+  Pack, PackDeleteReply, PackReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
 } from "../shared/wire.ts";
+import { updateLearner, type Learner, type LearnerPatch } from "../../scripts/db/accounts.ts";
+import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { commitPacks } from "./commit.ts";
+import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The content routes. All of them call loadContent() per request: content/ is
@@ -16,13 +19,23 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // and a cache would be one more thing to invalidate. The loader and assembler
 // are the same modules the export CLI and the tests run.
 //
-// Every route takes `?mode=adult|kids` (adult when absent, 400 otherwise) and
-// works on that mode's tree: content/ or content/kids/ (scripts/content.mjs
-// modeRoot). The two trees never mix: a kids pack lives in content/kids/packs
-// and a kids export in exports/kids/.
+// The mode comes from the session's active learner (auth.ts learnerMode):
+// every route but GET /api/content works on that learner's tree, content/ or
+// content/kids/ (scripts/content.mjs modeRoot), and answers 400 when a
+// `?mode=` it is sent disagrees. Those routes are mounted with wrap's
+// `learner: true`, so before any of this runs the request has named the
+// learner its page shows and it is the active one (409 `stale_learner`
+// otherwise, auth.ts pageLearner). GET
+// /api/content keeps its `?mode=`, since an admin browses and has the agent
+// edit both libraries. The two trees never mix: a kids pack lives in
+// content/kids/packs and a kids export in exports/kids/.
+//
+// The profile is the active learner's row, not <tree>/profile.yaml: the
+// loader still reads that file (the offline export CLI uses it), but every
+// reply and every assemble here puts the learner in its place.
 //
 //   GET    /api/content            library (mode, levels, schema, frame, profile, languages, units, scenarios, problems)
-//   PUT    /api/profile            merge the picker keys into <tree>/profile.yaml → {profile}
+//   PUT    /api/profile            merge the picker keys into the active learner → {profile}
 //   GET    /api/packs              {packs, folders, problems}
 //   GET    /api/packs/:id          one pack; an id is <stem> or <folder>/<stem>
 //   PUT    /api/packs/:id          write <tree>/packs/<id>.yaml from a JSON pack → {pack, commit}
@@ -44,12 +57,19 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // is `commit: null` plus `error` on a 200 rather than a failed request — the
 // file is already on disk.
 
-/** `?mode=` from the request: adult when absent, a 400 when not a mode. */
-function modeOf(req: IncomingMessage): Mode {
+/** GET /api/content's `?mode=`: the active learner's mode when absent (adult
+ *  with none picked), a 400 when not a mode. Either library may be read. */
+function browseMode(req: IncomingMessage, ctx: Ctx): Mode {
   const raw = new URL(req.url ?? "/", "http://localhost").searchParams.get("mode");
-  if (raw == null || raw === "") return "adult";
+  if (raw == null || raw === "") return ctx.learner?.mode ?? "adult";
   if (!isMode(raw)) throw new HttpError(400, `unknown mode ${JSON.stringify(raw)} (one of ${MODES.join(", ")})`);
   return raw as Mode;
+}
+
+/** The library for assembling: the mode's tree with the active learner as
+ *  its profile. */
+function learnerContent(mode: Mode, ctx: Ctx) {
+  return { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner) };
 }
 
 /** An export id: one segment. */
@@ -102,50 +122,59 @@ async function committed(what: string, mode: Mode): Promise<Committed> {
 /** GET /api/content's shape for a mode: the loader's result plus the mode
  *  and its level list, minus packs. The chat route builds its system prompt
  *  from the same shape. */
-export function contentReply(mode: Mode): ContentReply {
+export function contentReply(mode: Mode, learner: Learner | null): ContentReply {
   const c = loadContent(modeRoot(mode));
+  // The profile is the active learner's when it practises in this library;
+  // the other library (an admin browsing it) has no learner, so no profile.
+  const profile = learner?.mode === mode ? learnerProfile(learner) : {};
   return {
-    mode, levels: LEVELS_BY_MODE[mode], root: c.root, schema: c.schema, frame: c.frame, profile: c.profile, languages: c.languages,
+    mode, levels: LEVELS_BY_MODE[mode], root: c.root, schema: c.schema, frame: c.frame, profile, languages: c.languages,
     units: c.units, scenarios: c.scenarios, problems: c.problems,
   };
 }
 
-export function handleContent(req: IncomingMessage, res: ServerResponse): void {
+export function handleContent(req: IncomingMessage, res: ServerResponse, ctx: Ctx): void {
   if (req.method !== "GET") return methodNotAllowed(res, "GET");
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
-  sendJson(res, 200, contentReply(modeOf(req)));
+  sendJson(res, 200, contentReply(browseMode(req, ctx), ctx.learner));
 }
 
 /** The keys PUT /api/profile may write: what the pickers and the Name field
- *  show. The rest of profile.yaml (goals, notes) is prose a person edits in
- *  the file or asks the agent for, and this route must not be a way to
- *  clobber it. */
-const PICKER_KEYS: ReadonlySet<string> = new Set<PickerKey>(["learner_name", "native_language", "target_language", "target_variant", "level"]);
+ *  show, profile key → learner column. Goals and notes are prose, edited
+ *  through PATCH /api/learners/:id, so this route can't clobber them. */
+const PICKER_COLUMNS: Record<PickerKey, keyof LearnerPatch> = {
+  learner_name: "name", native_language: "nativeLanguage", target_language: "targetLanguage", target_variant: "targetVariant", level: "level",
+};
 /** A name, a language or a variant is a few words; this is a sanity bound, not a format. */
 const MAX_PROFILE_VALUE = 80;
 
-export async function handleProfile(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleProfile(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
-  const mode = modeOf(req);
+  learnerMode(req, ctx);
+  const learner = ctx.learner;
   const body = await readJsonBody<unknown>(req);
   if (!isObject(body)) throw new HttpError(400, "body must be an object of profile keys");
-  const patch: ProfileRequest = {};
+  const patch: LearnerPatch = {};
   for (const [key, value] of Object.entries(body)) {
-    if (!PICKER_KEYS.has(key)) throw new HttpError(400, `unknown profile key "${key}" (this route takes ${[...PICKER_KEYS].join(", ")})`);
+    const col = Object.prototype.hasOwnProperty.call(PICKER_COLUMNS, key) ? PICKER_COLUMNS[key as PickerKey] : undefined;
+    if (!col) throw new HttpError(400, `unknown profile key "${key}" (this route takes ${Object.keys(PICKER_COLUMNS).join(", ")})`);
     if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
     if (value.length > MAX_PROFILE_VALUE) throw new HttpError(400, `${key} is too long (at most ${MAX_PROFILE_VALUE} characters)`);
-    patch[key as PickerKey] = value;
+    // A blank value clears the key, as it removed it from profile.yaml.
+    patch[col] = value.trim();
   }
   if (Object.keys(patch).length === 0) throw new HttpError(400, "nothing to save: the body names no profile key");
-  saveProfile(patch, modeRoot(mode));
-  // Read back through the loader, like packs: the reply is what the file now
-  // says, not an echo of the request.
-  sendJson(res, 200, { profile: loadContent(modeRoot(mode)).profile } satisfies ProfileReply);
+  if (patch.name === "") throw new HttpError(400, "a learner needs a name");
+  const row = await updateLearner(rawDb(), ctx.user.id, learner.id, patch);
+  // Archived since the session was read: the picker, not a silent no-op.
+  if (!row) throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
+  // The reply is the row as stored, not an echo of the request.
+  sendJson(res, 200, { profile: learnerProfile(row) } satisfies ProfileReply);
 }
 
-export async function handlePacks(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const mode = modeOf(req);
+export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const mode = learnerMode(req, ctx);
   const root = modeRoot(mode);
   const seg = subPath(req);
   if (!seg) {
@@ -212,8 +241,8 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse): Pr
   methodNotAllowed(res, "GET, PUT, DELETE");
 }
 
-export async function handleFolders(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const mode = modeOf(req);
+export async function handleFolders(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const mode = learnerMode(req, ctx);
   const root = modeRoot(mode);
   const name = subPath(req);
   if (!name) {
@@ -230,21 +259,21 @@ export async function handleFolders(req: IncomingMessage, res: ServerResponse): 
   sendJson(res, 200, { ok: true, folders: listFolders(root), ...(await committed(`folder ${name} deleted`, mode)) } satisfies FolderDeleteReply);
 }
 
-export async function handleAssemble(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleAssemble(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const mode = modeOf(req);
+  const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<AssembleRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack}");
-  sendJson(res, 200, assemble(loadContent(modeRoot(mode)), body.pack, mode) satisfies AssembleResult);
+  sendJson(res, 200, assemble(learnerContent(mode, ctx), body.pack, mode) satisfies AssembleResult);
 }
 
-export async function handleExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const mode = modeOf(req);
+  const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<ExportRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack, id}");
   const id = checkId(body.id);
-  const { markdown, stats, warnings } = assemble(loadContent(modeRoot(mode)), body.pack, mode);
+  const { markdown, stats, warnings } = assemble(learnerContent(mode, ctx), body.pack, mode);
   const path = writeExport(id, markdown, exportsDirFor(mode));
   sendJson(res, 200, { path, stats, warnings } satisfies ExportResult);
 }

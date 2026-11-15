@@ -205,6 +205,51 @@ declare module "*/scripts/voice.mjs" {
   export function normalizeVoiceSettings(raw: unknown): import("../shared/wire.ts").VoiceSettings;
 }
 
+declare module "*/scripts/auth.mjs" {
+  export const MIN_PASSWORD: number;
+  export const MAX_PASSWORD: number;
+  export function hashPassword(password: string): Promise<string>;
+  /** False (never a throw) for a wrong password or a malformed hash. */
+  export function verifyPassword(password: unknown, stored: unknown): Promise<boolean>;
+  export function passwordProblem(password: unknown): string | null;
+  export const USERNAME_RE: RegExp;
+  export function normalizeUsername(name: unknown): string;
+  export function usernameProblem(name: unknown): string | null;
+  export function newSessionToken(): string;
+  /** SHA-256 hex: what auth_sessions.id stores. */
+  export function tokenHash(token: string): string;
+  export const SESSION_COOKIE: string;
+  export const SESSION_DAYS: number;
+  export const SESSION_MS: number;
+  export const SLIDE_EVERY_MS: number;
+  export function parseCookies(header: string | undefined): Record<string, string>;
+  export function serializeCookie(
+    name: string,
+    value: string,
+    opts?: { path?: string; maxAge?: number; httpOnly?: boolean; sameSite?: "Lax" | "Strict" | "None"; secure?: boolean },
+  ): string;
+  export function isSecureRequest(headers: Record<string, string | string[] | undefined>): boolean;
+  export function sessionCookie(token: string, opts?: { secure?: boolean }): string;
+  export function clearSessionCookie(opts?: { secure?: boolean }): string;
+  export interface LoginThrottle {
+    /** Milliseconds this key must still wait; 0 when it may try. */
+    wait(key: string): number;
+    /** The wait (> 0: refused), or 0 with the attempt counted as a failure until succeed(). */
+    attempt(key: string): number;
+    succeed(key: string): void;
+    clear(): void;
+  }
+  export function createLoginThrottle(opts?: { max?: number; windowMs?: number; waitMs?: number; now?: () => number }): LoginThrottle;
+  /** The client for the throttle: X-Forwarded-For's last hop behind a loopback proxy, else the socket address. */
+  export function clientAddress(headers: Record<string, string | string[] | undefined>, remoteAddress: string | undefined): string;
+  export function throttleKey(username: string, address: string): string;
+  export const PROFILE_COLUMNS: Record<import("../shared/wire.ts").PickerKey | "goals" | "notes", string>;
+  /** A learner row's values (column keys) from a profile.yaml mapping. */
+  export function learnerFromProfile(profile: unknown, mode: import("../shared/wire.ts").Mode, fallbackName: string): Record<string, string>;
+  /** A learner row as the assembler's profile (blanks left out). */
+  export function profileFromLearner(learner: Record<string, unknown> | null | undefined): import("../shared/wire.ts").Profile;
+}
+
 declare module "*/scripts/db/config.mjs" {
   export const DEFAULT_DATABASE_URL: string;
   export const MIGRATIONS_DIR: string;

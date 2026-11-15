@@ -130,7 +130,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   limit). The choice is the pack's `overrides.minutes`, so the prompt shown,
   copied and exported has a **Time budget** section (docs/CONTENT.md). A pack
   without `minutes` starts the picker at the last choice, kept per mode as
-  `sessionMinutes` in `data/voice.json` (a PUT merges it per mode); what the
+  `sessionMinutes` in the user's voice settings (`user_settings.voice` in the
+  database; a PUT merges it per mode); what the
   picker shows is what the session, Copy and the export use. Save writes only
   a length that is the pack's own: one it had, or one picked for it
   (docs/CONTENT.md). The clock starts with the first
@@ -185,7 +186,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
 
 ## Settings
 
-Saved in `data/voice.json` (gitignored): voice provider, speech-to-text
+Saved **per user**, in the database (`user_settings.voice`, docs/DATA.md;
+before logins this was `data/voice.json`, which now only seeds the first
+admin): two people sharing the app keep their own voices. Every voice route
+needs a login, and a turn or cast runs in the active learner's mode (a body
+`mode` that disagrees is a 400). One turn at a time per user, so two people
+practising never block each other. The settings are: voice provider, speech-to-text
 provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
 cheapest), Claude model for the dojo master, turn-taking, the last session
 length per mode (`sessionMinutes`, set from the Go tab's picker), and a voice per
