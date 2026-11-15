@@ -509,6 +509,9 @@ async function handleLibrary(req: IncomingMessage, res: ServerResponse): Promise
   const locale = q.get("locale") ?? "";
   if (locale && !LOCALE_RE.test(locale)) throw new HttpError(400, "locale must look like es-MX");
   const keys = keysFor("elevenlabs");
+  // Cantonese: the library can only be asked for zh, which is Mandarin
+  // (elevenLibrarySearchable). No voices beats offering those as Cantonese.
+  if (locale && !elevenLibrarySearchable(locale)) return sendJson(res, 200, elevenLibrary({}) satisfies LibraryReply);
   const request = elevenLibraryRequest({
     key: keys.elevenlabs,
     locale,

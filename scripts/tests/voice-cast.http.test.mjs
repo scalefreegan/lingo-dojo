@@ -115,3 +115,15 @@ test("Cantonese is never searched as zh (that returns Mandarin voices)", async (
   assert.equal(searches.length, 0);
   assert.ok(ids(c).every((id) => id.startsWith("en_")), ids(c).join(","));
 });
+
+test("the library browser offers no Mandarin voices for Cantonese either", async () => {
+  library = (q) => ({ status: 200, body: lib("cn", 10, q.get("gender") ?? "female") });
+  searches.length = 0;
+  const hk = await session.call("GET", "/api/voice/library?locale=zh-HK");
+  assert.equal(hk.status, 200);
+  assert.deepEqual(hk.body.voices, []);
+  assert.equal(searches.length, 0);
+  const tw = await session.call("GET", "/api/voice/library?locale=zh-TW");
+  assert.equal(tw.body.voices.length, 10);
+  assert.ok(searches[0].includes("locale=cmn-TW"));
+});
