@@ -8,9 +8,10 @@ or the loader.
 
 Personal data is moving to Postgres (logins, learners, packs, conversations,
 the phrase bank); `docs/DATA.md` is its contract. Built so far: the foundation
-(phase 0) and logins + learners (phase 1): users, sessions, learners (the
-profile the app uses), per-user voice settings, model and agent chat. Packs
-are still files shared by every account (phase 2 moves them).
+(phase 0), logins + learners (phase 1): users, sessions, learners (the
+profile the app uses), per-user voice settings, model and agent chat; and
+saved packs (phase 2): each learner's own rows, with revisions and soft
+deletes instead of git commits (`scripts/db/packs.ts`).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
@@ -23,9 +24,7 @@ are still files shared by every account (phase 2 moves them).
   `auth` is `"public"` (only `/api/auth/login`, `/me`, `/first-run` and the
   `/api` 404), `"user"` (the default: no session → 401) or `"admin"` (the
   content agent and its settings, and adding a Voice Library voice to the
-  owner's ElevenLabs account: non-admin → 403). Saved packs are still shared
-  files any user may write until they move to the database (DATA.md phase 2).
-  A route that acts for the active learner also takes `learner: true`: the
+  owner's ElevenLabs account: non-admin → 403). A route that acts for the active learner also takes `learner: true`: the
   client's `X-Learner-Id` must be that learner, else 409 `stale_learner`.
   The handler gets `ctx = { user, learner, sessionId }`; take the
   mode from `learnerMode(req, ctx)`, never from the request alone. Only an
@@ -60,8 +59,12 @@ are still files shared by every account (phase 2 moves them).
   database (`user_settings`, `agent_messages`; `web/server/store.ts`). The old
   `data/voice.json`, `data/settings.json` and `data/chat.jsonl` (gitignored)
   only seed the first admin, once, as do `content/profile.yaml` and
-  `content/kids/profile.yaml` for their learners; the running app never reads
-  or writes them after that. Exports go to `exports/` (gitignored).
+  `content/kids/profile.yaml` for their learners and `content/**/packs/` for
+  their packs; the running app never reads or writes them after that.
+  `npm run db:import` copies pack files added later (idempotent). Saved packs
+  are per learner in the database: no pack route writes YAML or commits;
+  undo is `pack_revisions` (`/api/pack-revisions`). Exports go to `exports/`
+  (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.
 - Two content trees, same format: `content/` (adult mode) and `content/kids/`
@@ -72,8 +75,7 @@ are still files shared by every account (phase 2 moves them).
   switches mode): the pack/folder/assemble/export/profile/voice routes use it
   and answer 400 to a `?mode=` (or body `mode`) that disagrees, 409
   `stale_learner` with no learner picked or a page showing another. `GET /api/content?mode=` still takes either (admins browse
-  both libraries). Kids pack writes commit as `packs(kids): …` and kids
-  exports go to `exports/kids/`. The adult loader never descends into `kids/`.
+  both libraries). Kids exports go to `exports/kids/`. The adult loader never descends into `kids/`.
 
 ## Work tracking
 Beads: `bd ready` for unblocked work, `bd show <id>` for context, `bd close <id>`
@@ -92,12 +94,13 @@ npm --prefix web run lint      # oxlint
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
 npm run user -- add <name> [--admin]   # a login (also passwd | list | disable | enable); password prompted, or on stdin
+npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners; safe to re-run
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
 never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
-except `first-run.pg.test.mjs` when `LINGO_TEST_PG_URL` is set (it makes and
+except `first-run.pg.test.mjs` and `packs.pg.test.mjs` when `LINGO_TEST_PG_URL` is set (each makes and
 drops a throwaway database on that server; point it at a scratch one).
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,

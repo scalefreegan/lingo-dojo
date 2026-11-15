@@ -45,7 +45,7 @@
       <img src="docs/screenshots/assembled-prompt.png" alt="Bring your own voice agent" width="100%">
       <br><sub><i>Go: the assembled prompt, ready to copy or export.</i></sub>
       <h3>Bring your own voice agent</h3>
-      Copy the assembled prompt, export it to <code>exports/&lt;id&gt;.md</code>, or save the pack to <code>content/packs/</code> and render it from the CLI.
+      Copy the assembled prompt, export it to <code>exports/&lt;id&gt;.md</code>, or save the pack to your Library to reopen it later.
     </td>
   </tr>
   <tr>
@@ -66,7 +66,7 @@
 
 ## How it works
 
-Everything is a text file: units, scenarios, your learner profile and saved packs are markdown and YAML under `content/`, with git as the history. (A Postgres database for personal data is being built: see docs/DATA.md. No feature uses it yet.) The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
+The library is text files: units, scenarios and seed packs are markdown and YAML under `content/`, with git as the history. Personal data (logins, learners, each learner's saved packs, settings) is in Postgres: see docs/DATA.md. The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
 
 ## Get started
 
@@ -107,13 +107,14 @@ Spoken practice needs an ElevenLabs or Azure Speech key in a gitignored `.env.lo
   [`docs/VOICE.md`](docs/VOICE.md)). The same tab shows the assembled prompt with a
   word/token readout and a note box for the dojo master. **Copy** puts it on the
   clipboard for any other voice agent. **Export file** writes `exports/<id>.md`.
-  **Save pack** stores it as `content/packs/<date>-<slug>.yaml`; saved packs can be
-  loaded or cloned from the Library.
+  **Save pack** stores it in the active learner's Library (the database), named
+  `<date>-<slug>`; saved packs can be loaded, cloned, moved into folders, renamed
+  and deleted there, and **Recently deleted** brings a deleted one back.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
   language ("add a corrections unit that only flags gender agreement"). New files
   appear in the slots as soon as the commit lands.
 
-Command line export of a saved pack (a pack inside `content/kids/` renders in kids mode; or pass `--mode adult|kids`):
+Command line export of a pack file (a pack inside `content/kids/` renders in kids mode; or pass `--mode adult|kids`):
 
 ```sh
 npm run export -- content/kids/packs/2026-10-20-first-german-adventure.yaml
@@ -126,9 +127,9 @@ is `content/`: conversation practice at a CEFR level. **Kids** is `content/kids/
 story, play and short sessions for a child who does not read yet, with its own
 slots (opening, helper character, story shape, repetition games, energy and
 length), its own frame, profile, scenarios and packs, and a child-sized level
-scale. The two never mix: a kids pack lives in `content/kids/packs/`, a kids
-export in `exports/kids/`, and the agent is told which library you are looking
-at. Each mode remembers its own draft, tab and filters in the browser.
+scale. The two never mix: a kids learner's packs are its own, its seed packs
+are in `content/kids/packs/`, a kids export goes to `exports/kids/`, and the
+agent is told which library you are looking at. Each mode remembers its own draft, tab and filters in the browser.
 
 ## Authoring content
 
@@ -139,16 +140,17 @@ self-contained. The seed library is Mexican Spanish with Oaxaca scenarios; add a
 scenario file for any other setting or language, and pick a different target
 language in the app's Profile popover (it saves to the active learner).
 `content/profile.yaml` only seeds the first account's learner and serves the
-offline export CLI.
+offline export CLI, and the pack files under `content/packs/` seed its packs
+(`npm run db:import` copies ones added later).
 
 ## Architecture
 
 ```
-content/        the product: schema, frame, profile, units, scenarios, packs
+content/        the product: schema, frame, profile, units, scenarios, seed packs
 scripts/        content.mjs (loader), assemble.mjs (pack -> markdown), export.mjs (CLI),
                 claude.mjs (headless agent spawn), voice.mjs (voice session helpers), tests/ (node --test)
 web/server/     Vite serve-middleware API behind a same-origin wrap():
-                /api/content, /api/profile, /api/packs, /api/folders, /api/assemble,
+                /api/content, /api/profile, /api/packs, /api/folders, /api/pack-revisions, /api/assemble,
                 /api/export, /api/chat (SSE), /api/settings, /api/voice
 web/src/        React UI: SceneTab, CustomizeTab, GoTab, LibraryTab, VoicePanel, AgentDrawer/ChatPanel
 data/           runtime state (chat history, model setting), gitignored

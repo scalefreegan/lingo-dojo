@@ -3,17 +3,14 @@
 // stack behind a real node:http server, driven with fetch on an ephemeral
 // port. LINGO_CONTENT_DIR points the routes at a temp copy of the fixture
 // library and LINGO_EXPORTS_DIR at a temp exports/, so nothing here touches
-// the real content/ or exports/. The pack routes commit after every write,
-// so the temp dir around the content copy is made a throwaway git repo and
-// LINGO_REPO_ROOT points there: the `packs:` commits land in it, never here.
-// The routes run on an in-process PGlite (freshDb), logged in as an admin
-// with an adult learner (Sam) and a kids learner (Pip); auth itself is
-// auth.http.test.mjs.
+// the real content/ or exports/. The routes run on an in-process PGlite
+// (freshDb), logged in as an admin with an adult learner (Sam) and a kids
+// learner (Pip); auth itself is auth.http.test.mjs, and the saved-pack and
+// folder routes are packs.http.test.mjs.
 //   node --test scripts/tests/api.http.test.mjs
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -23,27 +20,14 @@ import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
-import { learners } from "../db/schema.ts";
+import { learners, packFolders, packs } from "../db/schema.ts";
 
 const root = copyFixture();
-const repo = path.dirname(root);
 const exportsDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-exports-"));
 process.env.LINGO_CONTENT_DIR = root;
 process.env.LINGO_EXPORTS_DIR = exportsDir;
-process.env.LINGO_REPO_ROOT = repo;
-// An identity for the throwaway repo, whatever the machine's git config says;
-// the server's git calls inherit process.env.
-Object.assign(process.env, {
-  GIT_AUTHOR_NAME: "test", GIT_AUTHOR_EMAIL: "test@example.invalid",
-  GIT_COMMITTER_NAME: "test", GIT_COMMITTER_EMAIL: "test@example.invalid",
-});
-const git = (...args) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
-git("init", "-q");
-git("config", "commit.gpgsign", "false");
-git("add", "-A");
-git("commit", "-q", "-m", "fixture");
-/** Commit subjects in the throwaway repo, newest first. */
-const subjects = () => git("log", "--format=%s").trim().split("\n");
+/** Every pack and folder row, any learner's: what a refused write must not have added. */
+const packRows = async () => [...(await db.select().from(packs)), ...(await db.select().from(packFolders))];
 
 const { apiPlugins, sameOrigin } = await import("../../web/server/api.ts");
 
@@ -84,6 +68,7 @@ test("sameOrigin: no Origin passes, a matching host passes, anything else is ref
 
 test("a cross-origin request is refused on every route", async () => {
   const profileBefore = fs.readFileSync(path.join(root, "profile.yaml"), "utf8");
+  const rowsBefore = await packRows();
   for (const [m, u] of [
     ["GET", "/api/content"], ["POST", "/api/assemble"], ["PUT", "/api/packs/2026-10-20-x"], ["POST", "/api/export"], ["PUT", "/api/profile"],
     ["POST", "/api/packs/2026-10-19-market-gentle/move"], ["POST", "/api/packs/2026-10-19-market-gentle/rename"],
@@ -95,7 +80,7 @@ test("a cross-origin request is refused on every route", async () => {
   assert.ok(!fs.existsSync(path.join(root, "packs", "2026-10-20-x.yaml")));
   assert.deepEqual(fs.readdirSync(path.join(root, "packs")), ["2026-10-19-market-gentle.yaml"]);
   assert.equal(fs.readFileSync(path.join(root, "profile.yaml"), "utf8"), profileBefore);
-  assert.deepEqual(subjects(), ["fixture"], "nothing was committed");
+  assert.deepEqual(await packRows(), rowsBefore, "no pack or folder row was written");
 });
 
 test("GET /api/content: the library without packs, problems included", async () => {
@@ -157,173 +142,6 @@ test("GET /api/content re-reads disk on every call", async () => {
     assert.ok(body.scenarios.some((s) => s.id === "beach"));
   } finally {
     fs.rmSync(path.join(root, "scenarios", "beach.md"));
-  }
-});
-
-test("packs: PUT writes YAML and commits, GET lists and reads it, DELETE removes it and commits", async () => {
-  const id = "2026-10-20-plaza-chat";
-  const put = await call("PUT", `/api/packs/${id}`, { ...pack, id: "ignored" });
-  assert.equal(put.status, 200);
-  assert.equal(put.body.pack.id, id);
-  assert.equal(put.body.pack.folder, "");
-  assert.deepEqual(put.body.pack.units, pack.units);
-  assert.match(fs.readFileSync(path.join(root, "packs", `${id}.yaml`), "utf8"), /^title: Plaza chat\n/);
-  assert.match(put.body.commit.hash, /^[0-9a-f]{7,}$/);
-  assert.equal(put.body.commit.summary, `saved ${id}`);
-  assert.equal(put.body.error, undefined);
-  assert.equal(subjects()[0], `packs: saved ${id}`);
-  assert.equal(git("show", "--stat", "--format=", "HEAD").trim().split("\n").length, 2, "one file in the commit");
-
-  // an identical save has nothing to commit: commit null, no error
-  const again = await call("PUT", `/api/packs/${id}`, { ...pack });
-  assert.equal(again.status, 200);
-  assert.deepEqual(again.body.commit, null);
-  assert.equal(again.body.error, undefined);
-  assert.equal(subjects().length, 2);
-
-  const list = await call("GET", "/api/packs");
-  assert.deepEqual(list.body.packs.map((p) => p.id), ["2026-10-19-market-gentle", id]);
-  assert.deepEqual(list.body.folders, []);
-  assert.equal((await call("GET", `/api/packs/${id}`)).body.pack.overrides.level, "B2");
-
-  const del = await call("DELETE", `/api/packs/${id}`);
-  assert.equal(del.status, 200);
-  assert.equal(del.body.ok, true);
-  assert.equal(del.body.commit.summary, `deleted ${id}`);
-  assert.equal(subjects()[0], `packs: deleted ${id}`);
-  assert.equal((await call("DELETE", `/api/packs/${id}`)).status, 404);
-  assert.equal((await call("GET", `/api/packs/${id}`)).status, 404);
-  assert.equal(subjects().length, 3, "a 404 commits nothing");
-});
-
-test("pack ids are validated: traversal, case, depth and junk are 400 and nothing is written", async () => {
-  const before = fs.readdirSync(path.join(root, "packs")).sort();
-  const commits = subjects().length;
-  for (const id of ["..%2Fevil", "Upper-Case", "-x", "a.b", "a%2Fb%2Fc", "a%2F..%2Fb", "%2Fa", "a%2F", "%ZZ", ".keep%2Fx"]) {
-    const r = await call("PUT", `/api/packs/${id}`, pack);
-    assert.equal(r.status, 400, id);
-    assert.match(r.body.error, /invalid id|malformed id/, id);
-  }
-  // fetch folds an encoded dot-segment before sending (/api/packs/%2E%2E is
-  // /api/), so this one never reaches handlePacks: the catch-all 404s it.
-  assert.equal((await call("PUT", "/api/packs/%2E%2E", pack)).status, 404);
-  assert.equal((await call("PUT", "/api/packs/2026-10-20-x", { ...pack, title: "  " })).status, 400);
-  assert.equal((await call("PUT", "/api/packs/2026-10-20-x", "[1,2]")).status, 400);
-  assert.equal((await call("PUT", "/api/packs/2026-10-20-x", "{not json")).status, 400);
-  assert.deepEqual(fs.readdirSync(path.join(root, "packs")).sort(), before);
-  assert.deepEqual(fs.readdirSync(repo).sort(), [".git", "content"], "nothing written beside content/");
-  assert.equal(subjects().length, commits, "nothing committed");
-});
-
-test("folders: create, save into, move, rename, delete — each a `packs:` commit of content/packs only", async () => {
-  const commits = subjects().length;
-  // create
-  const made = await call("POST", "/api/folders", { name: "oaxaca" });
-  assert.equal(made.status, 200);
-  assert.equal(made.body.folder, "oaxaca");
-  assert.deepEqual(made.body.folders, ["oaxaca"]);
-  assert.equal(made.body.commit.summary, "folder oaxaca created");
-  assert.ok(fs.existsSync(path.join(root, "packs", "oaxaca", ".keep")));
-  assert.equal((await call("POST", "/api/folders", { name: "oaxaca" })).status, 409);
-  for (const bad of [{ name: "Oaxaca" }, { name: "a/b" }, { name: ".." }, { name: "" }, { nope: 1 }, "[]"]) {
-    assert.equal((await call("POST", "/api/folders", bad)).status, 400, JSON.stringify(bad));
-  }
-  assert.equal((await call("GET", "/api/folders")).status, 405);
-  assert.deepEqual((await call("GET", "/api/packs")).body.folders, ["oaxaca"]);
-
-  // save into a folder: the id carries it, encoded or not
-  const id = "oaxaca/2026-10-20-mezcal";
-  const put = await call("PUT", "/api/packs/oaxaca%2F2026-10-20-mezcal", { ...pack, title: "Mezcal" });
-  assert.equal(put.status, 200);
-  assert.equal(put.body.pack.id, id);
-  assert.equal(put.body.pack.folder, "oaxaca");
-  assert.equal(put.body.commit.summary, `saved ${id}`);
-  assert.equal((await call("GET", `/api/packs/${id}`)).body.pack.title, "Mezcal");
-  assert.equal((await call("GET", "/api/packs/oaxaca%2F2026-10-20-mezcal")).body.pack.title, "Mezcal");
-  assert.deepEqual((await call("GET", "/api/packs")).body.packs.map((p) => p.id), ["2026-10-19-market-gentle", id]);
-  // the folder is in use now
-  assert.equal((await call("DELETE", "/api/folders/oaxaca")).status, 409);
-
-  // rename: title and stem change, date and folder stay
-  const renamed = await call("POST", `/api/packs/${id}/rename`, { title: "Mezcal, slowly" });
-  assert.equal(renamed.status, 200);
-  assert.equal(renamed.body.pack.id, "oaxaca/2026-10-20-mezcal-slowly");
-  assert.equal(renamed.body.pack.title, "Mezcal, slowly");
-  assert.equal(renamed.body.commit.summary, `renamed ${id} to oaxaca/2026-10-20-mezcal-slowly`);
-  assert.ok(!fs.existsSync(path.join(root, "packs", "oaxaca", "2026-10-20-mezcal.yaml")));
-  assert.equal((await call("POST", `/api/packs/${id}/rename`, { title: "X" })).status, 404, "the old id is gone");
-  assert.equal((await call("POST", "/api/packs/oaxaca%2F2026-10-20-mezcal-slowly/rename", { title: " " })).status, 400);
-  assert.equal((await call("POST", "/api/packs/oaxaca%2F2026-10-20-mezcal-slowly/rename", {})).status, 400);
-
-  // move to the top level, and refuse to move over an existing pack
-  const moved = await call("POST", "/api/packs/oaxaca/2026-10-20-mezcal-slowly/move", { folder: "" });
-  assert.equal(moved.status, 200);
-  assert.equal(moved.body.pack.id, "2026-10-20-mezcal-slowly");
-  assert.equal(moved.body.pack.folder, "");
-  assert.equal(moved.body.commit.summary, "moved oaxaca/2026-10-20-mezcal-slowly to no folder");
-  await call("PUT", "/api/packs/oaxaca%2F2026-10-20-mezcal-slowly", { ...pack, title: "Clash" });
-  assert.equal((await call("POST", "/api/packs/2026-10-20-mezcal-slowly/move", { folder: "oaxaca" })).status, 409);
-  assert.equal((await call("POST", "/api/packs/2026-10-20-mezcal-slowly/move", { folder: "a/b" })).status, 400);
-  assert.equal((await call("POST", "/api/packs/2026-10-20-mezcal-slowly/move", {})).status, 400);
-  assert.equal((await call("POST", "/api/packs/2026-10-20-nope/move", { folder: "oaxaca" })).status, 404);
-  // "…/explode" is not an action, so it is read as the pack id "2026-10-20-mezcal-slowly/explode" — which has no POST
-  assert.equal((await call("POST", "/api/packs/2026-10-20-mezcal-slowly/explode", { folder: "oaxaca" })).status, 405);
-  assert.equal((await call("POST", "/api/packs/a/b/c/move", { folder: "oaxaca" })).status, 400, "too deep an id");
-  assert.equal((await call("DELETE", "/api/packs/oaxaca%2F2026-10-20-mezcal-slowly")).status, 200);
-  const back = await call("POST", "/api/packs/2026-10-20-mezcal-slowly/move", { folder: "oaxaca" });
-  assert.equal(back.body.pack.id, "oaxaca/2026-10-20-mezcal-slowly");
-  assert.equal(back.body.commit.summary, "moved 2026-10-20-mezcal-slowly to oaxaca");
-
-  // delete the pack, then the (now empty) folder
-  assert.equal((await call("DELETE", "/api/packs/oaxaca%2F2026-10-20-mezcal-slowly")).status, 200);
-  const gone = await call("DELETE", "/api/folders/oaxaca");
-  assert.equal(gone.status, 200);
-  assert.deepEqual(gone.body, { ok: true, folders: [], commit: { hash: gone.body.commit.hash, summary: "folder oaxaca deleted" } });
-  assert.equal((await call("DELETE", "/api/folders/oaxaca")).status, 404);
-  assert.equal((await call("DELETE", "/api/folders/..%2Funits")).status, 400, "traversal that survives URL normalisation");
-  assert.equal((await call("DELETE", "/api/folders/Units")).status, 400);
-  assert.equal((await call("DELETE", "/api/folders/a/b")).status, 400);
-  assert.ok(!fs.existsSync(path.join(root, "packs", "oaxaca")));
-  assert.deepEqual(fs.readdirSync(path.join(root, "packs")), ["2026-10-19-market-gentle.yaml"]);
-
-  assert.deepEqual(subjects().slice(0, subjects().length - commits), [
-    "packs: folder oaxaca deleted",
-    "packs: deleted oaxaca/2026-10-20-mezcal-slowly",
-    "packs: moved 2026-10-20-mezcal-slowly to oaxaca",
-    "packs: deleted oaxaca/2026-10-20-mezcal-slowly",
-    "packs: saved oaxaca/2026-10-20-mezcal-slowly",
-    "packs: moved oaxaca/2026-10-20-mezcal-slowly to no folder",
-    "packs: renamed oaxaca/2026-10-20-mezcal to oaxaca/2026-10-20-mezcal-slowly",
-    "packs: saved oaxaca/2026-10-20-mezcal",
-    "packs: folder oaxaca created",
-  ]);
-  // only content/packs was ever staged: a stray change elsewhere stays uncommitted
-  fs.writeFileSync(path.join(root, "stray.txt"), "untouched\n");
-  await call("PUT", "/api/packs/2026-10-21-x", { ...pack, title: "X" });
-  assert.match(git("status", "--porcelain"), /\?\? content\/stray\.txt/);
-  await call("DELETE", "/api/packs/2026-10-21-x");
-  fs.rmSync(path.join(root, "stray.txt"));
-});
-
-test("a git failure is reported beside a successful write, not as a failed request", async () => {
-  const noRepo = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-norepo-"));
-  const quiet = console.error;
-  const logged = [];
-  console.error = (...a) => logged.push(a.join(" "));
-  process.env.LINGO_REPO_ROOT = noRepo;
-  try {
-    const r = await call("PUT", "/api/packs/2026-10-22-orphan", { ...pack, title: "Orphan" });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.pack.id, "2026-10-22-orphan");
-    assert.equal(r.body.commit, null);
-    assert.match(r.body.error, /git did not commit/);
-    assert.ok(fs.existsSync(path.join(root, "packs", "2026-10-22-orphan.yaml")), "the write stands");
-    assert.ok(logged.some((l) => /packs: commit failed \(saved 2026-10-22-orphan\)/.test(l)), logged.join("\n"));
-  } finally {
-    process.env.LINGO_REPO_ROOT = repo;
-    console.error = quiet;
-    fs.rmSync(path.join(root, "packs", "2026-10-22-orphan.yaml"));
-    fs.rmSync(noRepo, { recursive: true, force: true });
   }
 });
 
@@ -440,47 +258,6 @@ test("a ?mode= that disagrees with the active learner is a 400 on pack, profile,
   assert.equal((await call("GET", "/api/packs?mode=adult")).status, 200);
 });
 
-test("kids packs live in content/kids/packs and commit as `packs(kids):`; the adult list never sees them", async () => {
-  await session.pick("Pip");
-  try {
-    const listed = await call("GET", "/api/packs");
-    assert.deepEqual(listed.body.packs.map((p) => p.id), ["2026-10-20-farm-first"]);
-    assert.deepEqual((await call("GET", "/api/packs?mode=kids")).body.packs.map((p) => p.id), ["2026-10-20-farm-first"]);
-    const kidsPack = { title: "Farm again", created: "2026-10-21T09:00:00-06:00", scenario: "farm", quick_scenario: "", units: ["intro-game", "story-quest"], overrides: {}, notes: "" };
-    const put = await call("PUT", "/api/packs/2026-10-21-farm-again?mode=kids", kidsPack);
-    assert.equal(put.status, 200, JSON.stringify(put.body));
-    assert.ok(fs.existsSync(path.join(root, "kids", "packs", "2026-10-21-farm-again.yaml")));
-    assert.ok(!fs.existsSync(path.join(root, "packs", "2026-10-21-farm-again.yaml")));
-    assert.equal(subjects()[0], "packs(kids): saved 2026-10-21-farm-again");
-    assert.equal((await call("GET", "/api/packs?mode=adult")).status, 400, "Pip can't list the adult packs");
-    assert.equal((await call("GET", "/api/packs/2026-10-21-farm-again")).status, 200);
-    // Folders, move and rename follow the learner's mode too.
-    const folder = await call("POST", "/api/folders", { name: "german" });
-    assert.equal(folder.status, 200);
-    assert.ok(fs.existsSync(path.join(root, "kids", "packs", "german", ".keep")));
-    assert.equal(subjects()[0], "packs(kids): folder german created");
-    const moved = await call("POST", "/api/packs/2026-10-21-farm-again/move", { folder: "german" });
-    assert.equal(moved.body.pack.id, "german/2026-10-21-farm-again");
-    // Assemble and export in kids mode use the kids frame, Pip as the
-    // profile, and exports/kids/.
-    const assembled = await call("POST", "/api/assemble", { pack: kidsPack });
-    assert.match(assembled.body.markdown, /short play session for Pip/);
-    assert.deepEqual(assembled.body.warnings, []);
-    const exported = await call("POST", "/api/export?mode=kids", { pack: kidsPack, id: "2026-10-21-farm-again" });
-    assert.equal(exported.body.path, path.join(exportsDir, "kids", "2026-10-21-farm-again.md"));
-    assert.equal(fs.readFileSync(exported.body.path, "utf8"), assembled.body.markdown);
-    // Clean up: delete the pack and the folder, each a kids commit.
-    assert.equal((await call("DELETE", "/api/packs/german/2026-10-21-farm-again")).status, 200);
-    assert.equal((await call("DELETE", "/api/folders/german")).status, 200);
-    assert.equal(subjects()[0], "packs(kids): folder german deleted");
-    assert.ok(!fs.existsSync(path.join(root, "kids", "packs", "german")));
-  } finally {
-    await session.pick("Sam");
-  }
-  assert.ok(!(await call("GET", "/api/packs")).body.packs.some((p) => p.id.endsWith("farm-again")), "adult list");
-  assert.ok(!(await call("GET", "/api/packs")).body.folders.includes("german"), "adult folders");
-});
-
 test("the assembled prompt's Learner block is the active learner's row, not profile.yaml", async () => {
   const before = await samRow();
   try {
@@ -546,7 +323,7 @@ test("a stale tab (another tab picked a learner of the same mode) gets 409 stale
   const anaRow = async () => (await db.select().from(learners).where(eq(learners.id, anaId)))[0];
   try {
     const anaBefore = await anaRow();
-    const commits = subjects().length;
+    const rowsBefore = await packRows();
     // Tab 1 still shows Sam: "Save as my defaults" must not land on Ana.
     for (const [m, u, body] of [
       ["PUT", "/api/profile", { learner_name: "Sam", level: "C2" }], ["GET", "/api/packs"], ["PUT", "/api/packs/2026-10-20-stale", pack],
@@ -560,7 +337,7 @@ test("a stale tab (another tab picked a learner of the same mode) gets 409 stale
     assert.ok(!fs.existsSync(path.join(root, "packs", "2026-10-20-stale.yaml")));
     assert.ok(!fs.existsSync(path.join(root, "packs", "stale")));
     assert.ok(!fs.existsSync(path.join(exportsDir, "stale.md")));
-    assert.equal(subjects().length, commits, "no commit");
+    assert.deepEqual(await packRows(), rowsBefore, "no pack or folder row");
     // A call that names no learner is refused the same way.
     const bare = await other.call("POST", "/api/assemble", { pack }, { "X-Learner-Id": "" });
     assert.equal(bare.body.code, "stale_learner");

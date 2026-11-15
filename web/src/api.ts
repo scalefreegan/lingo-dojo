@@ -15,7 +15,7 @@
 import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
   ContentReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
-  PackDeleteReply, PackInput, PickLearnerRequest,
+  DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
@@ -160,14 +160,13 @@ function packUrl(id: string, mode: Mode, action = ""): string {
   return inMode(`/api/packs/${id.split("/").map(encodeURIComponent).join("/")}${action}`, mode);
 }
 
-/** GET /api/packs — the saved packs and the folders under the tree's packs/. */
+/** GET /api/packs — the active learner's saved packs and folders. */
 export function listPacks(mode: Mode): Promise<PacksReply> {
   return req<PacksReply>(inMode("/api/packs", mode));
 }
 
-/** PUT /api/packs/:id — creates or overwrites <tree>/packs/<id>.yaml and
- *  commits it. Every write below answers with the pack as it reads back and
- *  the commit that recorded it (see Committed in the wire types). */
+/** PUT /api/packs/:id — creates or replaces the pack at that id. Every
+ *  write below answers with the pack as stored, and records a revision. */
 export function savePack(mode: Mode, id: string, pack: PackInput): Promise<PackWriteReply> {
   return req<PackWriteReply>(packUrl(id, mode), json(pack, "PUT"));
 }
@@ -181,9 +180,25 @@ export function movePack(mode: Mode, id: string, folder: string): Promise<PackWr
   return req<PackWriteReply>(packUrl(id, mode, "/move"), json({ folder } satisfies PackMoveRequest));
 }
 
-/** POST /api/packs/:id/rename — new title, and a file renamed to match. */
+/** POST /api/packs/:id/rename — new title, and an id renamed to match. */
 export function renamePack(mode: Mode, id: string, title: string): Promise<PackWriteReply> {
   return req<PackWriteReply>(packUrl(id, mode, "/rename"), json({ title } satisfies PackRenameRequest));
+}
+
+/** GET /api/pack-revisions?id= — a saved pack's revisions, newest first. */
+export function listPackRevisions(mode: Mode, id: string): Promise<PackRevisionsReply> {
+  return req<PackRevisionsReply>(`${inMode("/api/pack-revisions", mode)}&id=${encodeURIComponent(id)}`);
+}
+
+/** GET /api/pack-revisions/deleted — the soft-deleted packs, newest first. */
+export function listDeletedPacks(mode: Mode): Promise<DeletedPacksReply> {
+  return req<DeletedPacksReply>(inMode("/api/pack-revisions/deleted", mode));
+}
+
+/** POST /api/pack-revisions/:revision/restore — a deleted pack's delete
+ *  revision undeletes it; any other revision puts its content back. */
+export function restorePackRevision(mode: Mode, revision: string): Promise<PackRestoreReply> {
+  return req<PackRestoreReply>(inMode(`/api/pack-revisions/${encodeURIComponent(revision)}/restore`, mode), { method: "POST" });
 }
 
 export function createFolder(mode: Mode, name: string): Promise<FolderReply> {

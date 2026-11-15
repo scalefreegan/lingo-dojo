@@ -1,14 +1,14 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { REPO_ROOT, contentRoot, modeRoot, packsDir } from "../../scripts/content.mjs";
-import type { ChatCommit, Mode } from "../shared/wire.ts";
+import { REPO_ROOT, contentRoot } from "../../scripts/content.mjs";
+import type { ChatCommit } from "../shared/wire.ts";
 
-// Auto-commit of content/ after an agent turn, and of content/packs after
-// every pack write the UI makes, so each change is one `git log` entry and
-// one `git revert` away. Only the directory in question is ever staged: the
-// rest of the working tree may be dirty with the user's own work and must
-// stay that way. Never a push.
+// Auto-commit of content/ after an agent turn, so each change the agent makes
+// to the library is one `git log` entry and one `git revert` away (saved packs
+// are database rows with their own revisions, docs/DATA.md §Packs). Only
+// content/ is ever staged: the rest of the working tree may be dirty with the
+// user's own work and must stay that way. Never a push.
 
 const execFileP = promisify(execFile);
 
@@ -22,7 +22,7 @@ export function gitRoot(): string {
 }
 
 /** Every git call is execFile with an argv — never a shell string, since the
- *  commit subject is agent-written text or a pack title. */
+ *  commit subject is agent-written text. */
 async function git(args: string[], cwd: string): Promise<string> {
   const { stdout } = await execFileP("git", args, { cwd, maxBuffer: 1 << 20 });
   return stdout;
@@ -81,10 +81,3 @@ export function commitContent(reply: string, { repoRoot = gitRoot(), contentDir 
   return commitDir("agent", commitSubject(reply), contentDir, repoRoot);
 }
 
-/** After a pack save, move, rename or delete from the UI: `packs: <what>`,
- *  staging that mode's packs dir only (content/packs, or content/kids/packs
- *  with the subject `packs(kids): <what>`). `what` is a phrase like
- *  "saved oaxaca/2026-10-19-x". */
-export function commitPacks(what: string, { repoRoot = gitRoot(), mode = "adult" as Mode, dir = packsDir(modeRoot(mode)) } = {}): Promise<ChatCommit> {
-  return commitDir(mode === "adult" ? "packs" : `packs(${mode})`, what, dir, repoRoot);
-}

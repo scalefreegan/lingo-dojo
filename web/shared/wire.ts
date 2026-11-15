@@ -166,11 +166,12 @@ export interface ProfileReply {
 
 /* --------------------------------- packs --------------------------------- */
 
-/** The profile keys a pack may override from the UI. Overrides on disk may
- *  carry any profile key. */
+/** The profile keys a pack may override from the UI. Overrides may carry any
+ *  profile key. */
 export type Overrides = Partial<Record<PickerKey, string>> & Record<string, unknown>;
 
-/** What a pack file holds (content/packs/<id>.yaml), and the body of PUT
+/** A pack's content: a row of the `packs` table (docs/DATA.md §Packs), the
+ *  shape of a seed file (content/packs/<id>.yaml), and the body of PUT
  *  /api/packs/:id and POST /api/assemble. */
 export interface PackInput {
   title: string;
@@ -185,17 +186,18 @@ export interface PackInput {
   notes: string;
 }
 
-/** A saved pack: the file plus its id — the path under content/packs
- *  without .yaml, `<stem>` or `<folder>/<stem>` — and the folder it is in
- *  ("" at the top level). */
+/** A saved pack, the active learner's: its content plus its id — `<slug>`
+ *  or `<folder>/<slug>`, the path its seed file would have under packs/
+ *  without .yaml — and the folder it is in ("" at the top level). */
 export interface Pack extends PackInput {
   id: string;
   folder: string;
 }
 
-/** GET /api/packs — packs sorted by id (top-level ones first, by date);
- *  `folders` is every directory under content/packs, an empty one included,
- *  sorted. `problems` are the pack files that failed to load. */
+/** GET /api/packs — the active learner's packs sorted by id (top-level ones
+ *  first, by date); `folders` is every folder it has, an empty one
+ *  included, sorted. `problems` is always empty now that packs are rows, not
+ *  files that can fail to load; kept so the Library's list stays one shape. */
 export interface PacksReply {
   packs: Pack[];
   folders: string[];
@@ -207,32 +209,25 @@ export interface PackReply {
   pack: Pack;
 }
 
-/** The git half of a pack write (the server commits content/packs after
- *  each one as `packs: <summary>`). `commit` is null when there was nothing
- *  to commit (an identical save) or when git failed; only the failure sets
- *  `error`. Either way the write itself succeeded — this rides on a 200. */
-export interface Committed {
-  commit: { hash: string; summary: string } | null;
-  error?: string;
-}
+/** PUT /api/packs/:id, POST /api/packs/:id/move and /rename: the pack as
+ *  stored (after a move or rename, `pack.id` is the new id). Every write is
+ *  also a revision (GET /api/pack-revisions). */
+export type PackWriteReply = PackReply;
 
-/** PUT /api/packs/:id, POST /api/packs/:id/move and /rename: the pack as it
- *  reads back from disk (after a move or rename, `pack.id` is the new id). */
-export interface PackWriteReply extends PackReply, Committed {}
-
-/** DELETE /api/packs/:id */
-export interface PackDeleteReply extends Committed {
+/** DELETE /api/packs/:id — a soft delete: the pack is listed under
+ *  GET /api/pack-revisions/deleted until it is restored. */
+export interface PackDeleteReply {
   ok: true;
 }
 
 /** POST /api/packs/:id/move — "" moves the pack to the top level. 409 when
- *  the destination already has a pack with that stem. */
+ *  the destination already has a pack with that slug. */
 export interface PackMoveRequest {
   folder: string;
 }
 
-/** POST /api/packs/:id/rename — the new title; the file is renamed to
- *  `<its date>-<slug of title>` too. 409 when that name is taken. */
+/** POST /api/packs/:id/rename — the new title; the slug becomes
+ *  `<its date>-<slug of title>` too. 409 when that id is taken. */
 export interface PackRenameRequest {
   title: string;
 }
@@ -242,16 +237,56 @@ export interface FolderRequest {
   name: string;
 }
 
-export interface FolderReply extends Committed {
+export interface FolderReply {
   folder: string;
   folders: string[];
 }
 
-/** DELETE /api/folders/:name — only an empty folder; 409 otherwise. */
-export interface FolderDeleteReply extends Committed {
+/** DELETE /api/folders/:name — only a folder with no packs; 409 otherwise. */
+export interface FolderDeleteReply {
   ok: true;
   folders: string[];
 }
+
+/** What a revision recorded: each write of a pack, and its import. */
+export type PackAction = "create" | "update" | "move" | "rename" | "delete" | "restore" | "import";
+
+/** One pack revision: the pack as it was after `action` (before it, for a
+ *  delete: the content that was deleted). */
+export interface PackRevision {
+  /** The revision's id: what POST /api/pack-revisions/:revision/restore takes. */
+  revision: string;
+  action: PackAction;
+  /** ISO timestamp. */
+  at: string;
+  pack: Pack;
+}
+
+/** GET /api/pack-revisions?id=<pack id> — a live pack's revisions, newest
+ *  first (renames and moves included: they are the same pack). */
+export interface PackRevisionsReply {
+  revisions: PackRevision[];
+}
+
+/** A soft-deleted pack: `revision` is its delete, whose restore brings it
+ *  back where it was. */
+export interface DeletedPack {
+  revision: string;
+  /** ISO timestamp. */
+  deletedAt: string;
+  pack: Pack;
+}
+
+/** GET /api/pack-revisions/deleted — the most recently deleted first. */
+export interface DeletedPacksReply {
+  packs: DeletedPack[];
+}
+
+/** POST /api/pack-revisions/:revision/restore — the pack with that
+ *  revision's content: a live pack keeps its id; a deleted one comes back at
+ *  the id it had (409 when a live pack has taken it). The restore is itself
+ *  a revision. */
+export type PackRestoreReply = PackReply;
 
 /* ------------------------------- assembly -------------------------------- */
 

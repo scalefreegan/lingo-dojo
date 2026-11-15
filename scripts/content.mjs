@@ -562,77 +562,11 @@ export function packsDir(root = contentRoot()) {
   return path.join(root, "packs");
 }
 
-/** Resolve content/packs/<id>.yaml for a pack id (`stem` or `folder/stem`)
- *  and prove it stays inside content/packs, at most one level down. Same
- *  two-lock shape as safeJoin: PACK_ID_RE rules out `..`, a leading slash and
- *  a second folder; the path check is there so a loosening of the regex
- *  cannot become a write outside the directory. */
-export function packPath(id, root = contentRoot()) {
-  if (typeof id !== "string" || !PACK_ID_RE.test(id)) {
-    throw fail("EINVAL", `invalid id ${JSON.stringify(id)}: use lowercase letters, digits and hyphens, with at most one folder`);
-  }
-  const base = path.resolve(packsDir(root));
-  const abs = path.resolve(base, `${id}.yaml`);
-  const rel = path.relative(base, abs);
-  if (rel.startsWith("..") || path.isAbsolute(rel) || rel.split(path.sep).length > 2) throw fail("EINVAL", `path escapes ${base}: ${abs}`);
-  return abs;
-}
-
-/** Resolve content/packs/<name> for a folder name and prove it is a direct
- *  child of content/packs. */
-function folderPath(name, root) {
-  if (typeof name !== "string" || !ID_RE.test(name)) {
-    throw fail("EINVAL", `invalid folder name ${JSON.stringify(name)}: use lowercase letters, digits and hyphens`);
-  }
-  const base = path.resolve(packsDir(root));
-  const abs = path.resolve(base, name);
-  if (path.dirname(abs) !== base) throw fail("EINVAL", `path escapes ${base}: ${abs}`);
-  return abs;
-}
-
-/** The keys a pack file carries, in the contract's order; anything else the
- *  caller sent rides along after them (unknown keys are preserved). */
-const PACK_KEYS = ["title", "created", "scenario", "quick_scenario", "units", "overrides", "notes"];
-
-/** Serialise a pack-shaped value to `abs` (mkdir -p). The id and folder are
- *  the path on disk; storing them in the file too invites the two to disagree. */
-function writePackFile(abs, raw) {
-  const pack = normalizePack(raw);
-  delete pack.id;
-  delete pack.folder;
-  const ordered = {};
-  for (const k of PACK_KEYS) ordered[k] = pack[k];
-  for (const [k, v] of Object.entries(pack)) if (!(k in ordered)) ordered[k] = v;
-  fs.mkdirSync(path.dirname(abs), { recursive: true });
-  fs.writeFileSync(abs, YAML.stringify(ordered));
-}
-
-/** Write content/packs/<id>.yaml, creating the folder if the id names one
- *  that does not exist yet. Returns the absolute path. */
-export function savePack(id, raw, root = contentRoot()) {
-  const abs = packPath(id, root);
-  writePackFile(abs, raw);
-  return abs;
-}
-
-/** Delete content/packs/<id>.yaml. Returns false when there was no such pack.
- *  The folder it was in is left alone, even when now empty. */
-export function deletePack(id, root = contentRoot()) {
-  const abs = packPath(id, root);
-  try {
-    fs.unlinkSync(abs);
-    return true;
-  } catch (e) {
-    if (e?.code === "ENOENT") return false;
-    throw e;
-  }
-}
-
 /* ------------------------------- folders --------------------------------- */
 
 /** The folders under content/packs, sorted: every directory that is not a
- *  dot-directory, whether or not it holds a pack yet. A missing packs/ is no
- *  folders. */
+ *  dot-directory, whether or not it holds a pack yet (an empty one keeps a
+ *  `.keep` so git tracks it). A missing packs/ is no folders. */
 export function listFolders(root = contentRoot()) {
   let entries;
   try {
@@ -643,50 +577,17 @@ export function listFolders(root = contentRoot()) {
   return entries.filter((d) => d.isDirectory() && !d.name.startsWith(".")).map((d) => d.name).sort();
 }
 
-/** mkdir content/packs/<name> with a `.keep` inside, so the empty folder
- *  survives git. EEXIST when there is already something by that name. */
-export function createFolder(name, root = contentRoot()) {
-  const abs = folderPath(name, root);
-  if (fs.existsSync(abs)) throw fail("EEXIST", `folder "${name}" already exists`);
-  fs.mkdirSync(abs, { recursive: true });
-  fs.writeFileSync(path.join(abs, ".keep"), "");
-  return abs;
-}
-
-/** Remove content/packs/<name>, but only when nothing is in it apart from
- *  the `.keep` (ENOTEMPTY otherwise: a pack is never deleted as a side
- *  effect). Returns false when there was no such folder. */
-export function deleteFolder(name, root = contentRoot()) {
-  const abs = folderPath(name, root);
-  let entries;
-  try {
-    entries = fs.readdirSync(abs);
-  } catch (e) {
-    if (e?.code === "ENOENT") return false;
-    throw e;
-  }
-  const rest = entries.filter((n) => n !== ".keep");
-  if (rest.length) throw fail("ENOTEMPTY", `folder "${name}" is not empty (${rest.length} item${rest.length === 1 ? "" : "s"}); move or delete its packs first`);
-  fs.rmSync(abs, { recursive: true });
-  return true;
-}
-
-/** Move content/packs/<id>.yaml into `folder` ("" for the top level): a
- *  rename, so the file's text is untouched. Returns the new id. ENOENT when
- *  there is no such pack, EEXIST when the destination already has one with
- *  that stem (nothing is overwritten by a move). Moving a pack to where it
- *  already is returns its id and changes nothing. */
-export function movePack(id, folder, root = contentRoot()) {
-  const from = packPath(id, root);
-  if (typeof folder !== "string") throw fail("EINVAL", "folder must be a string (\"\" for no folder)");
-  const target = folder ? `${folder}/${splitPackId(id).stem}` : splitPackId(id).stem;
-  const to = packPath(target, root);
-  if (to === from) return target;
-  if (!fs.existsSync(from)) throw fail("ENOENT", `no pack "${id}"`);
-  if (fs.existsSync(to)) throw fail("EEXIST", `a pack "${target}" already exists`);
-  fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.renameSync(from, to);
-  return target;
+/**
+ * A tree's pack files, for the import into the database (the `db:import`
+ * CLI and the first run's seed; scripts/db/packs.ts importPacks): the packs
+ * that load, every folder (an empty one included), and the problems of the
+ * pack files that did not load. The running app keeps saved packs in the
+ * database and never lists these: they are seed content and the export
+ * CLI's input (docs/DATA.md §Packs).
+ */
+export function loadPackFiles(root = contentRoot()) {
+  const { packs, problems } = loadContent(root);
+  return { packs, folders: listFolders(root), problems: problems.filter((p) => /(^|[\\/])packs[\\/]/.test(p.file)) };
 }
 
 /** Lowercase ASCII kebab-case, accents folded ("Café en Oaxaca" →
@@ -695,7 +596,7 @@ export function movePack(id, folder, root = contentRoot()) {
 export function slugify(s) {
   const slug = s
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -710,35 +611,14 @@ function localDate(d = new Date()) {
 }
 
 /**
- * Give the pack a new title and the filename that goes with it: the stem
- * becomes `<date>-<slug of title>`, keeping the date the stem already had (a
- * pack stays sorted where it was), else the date in `created`, else today.
- * The folder is kept. Returns the new id. EEXIST when another pack already
- * has the new name; a title whose slug does not change rewrites the file in
- * place. The file is re-serialised the way savePack writes it.
+ * The stem a pack takes when it is renamed to `title`: `<date>-<slug of
+ * title>`, keeping the date the stem already had (a pack stays sorted where
+ * it was), else the date in `created`, else today. Pure: the rename itself
+ * is the database's (scripts/db/packs.ts renamePack).
  */
-export function renamePack(id, title, root = contentRoot()) {
-  const from = packPath(id, root);
-  if (typeof title !== "string" || !title.trim()) throw fail("EINVAL", "a pack needs a title");
-  const read = readText(from);
-  if (read.error) throw fail(read.error === "file is missing" ? "ENOENT" : "EIO", `no pack "${id}": ${read.error}`);
-  let raw;
-  try {
-    raw = YAML.parse(read.text);
-  } catch (e) {
-    throw fail("EINVAL", `${displayPath(from)} is not valid YAML (${firstLine(e)}); fix it before renaming`);
-  }
-  if (!isObj(raw)) throw fail("EINVAL", `${displayPath(from)} must be a YAML mapping; fix it before renaming`);
-  const { folder, stem } = splitPackId(id);
-  const created = typeof raw.created === "string" ? raw.created : raw.created instanceof Date ? raw.created.toISOString() : "";
-  const date = stem.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? created.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? localDate();
-  const newStem = `${date}-${slugify(title)}`;
-  const target = folder ? `${folder}/${newStem}` : newStem;
-  const to = packPath(target, root);
-  if (to !== from && fs.existsSync(to)) throw fail("EEXIST", `a pack "${target}" already exists`);
-  writePackFile(to, { ...raw, title: title.trim() });
-  if (to !== from) fs.unlinkSync(from);
-  return target;
+export function renamedStem(stem, created, title) {
+  const date = String(stem).match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? String(created ?? "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? localDate();
+  return `${date}-${slugify(title)}`;
 }
 
 /* -------------------------------- profile -------------------------------- */

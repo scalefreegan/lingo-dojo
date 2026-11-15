@@ -1,61 +1,64 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { assemble } from "../../scripts/assemble.mjs";
-import {
-  ID_RE, LEVELS_BY_MODE, MODES, PACK_ID_RE, createFolder, deleteFolder, deletePack, exportsDirFor, isMode, listFolders, loadContent,
-  modeRoot, movePack, renamePack, savePack, writeExport,
-} from "../../scripts/content.mjs";
+import { ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isMode, loadContent, modeRoot, writeExport } from "../../scripts/content.mjs";
 import type {
-  AssembleRequest, AssembleResult, Committed, ContentReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
-  Pack, PackDeleteReply, PackReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
+  AssembleRequest, AssembleResult, ContentReply, DeletedPacksReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
+  PackDeleteReply, PackReply, PackRestoreReply, PackRevisionsReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
 } from "../shared/wire.ts";
 import { updateLearner, type Learner, type LearnerPatch } from "../../scripts/db/accounts.ts";
+import {
+  PackError, createFolder, deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, parsePackId, renamePack,
+  restoreRevision, savePack,
+} from "../../scripts/db/packs.ts";
 import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
-import { commitPacks } from "./commit.ts";
 import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
-// The content routes. All of them call loadContent() per request: content/ is
-// small, the agent and the user's editor change it under the running server,
-// and a cache would be one more thing to invalidate. The loader and assembler
-// are the same modules the export CLI and the tests run.
+// The content routes. The library ones call loadContent() per request:
+// content/ is small, the agent and the user's editor change it under the
+// running server, and a cache would be one more thing to invalidate. The
+// loader and assembler are the same modules the export CLI and the tests run.
 //
 // The mode comes from the session's active learner (auth.ts learnerMode):
-// every route but GET /api/content works on that learner's tree, content/ or
-// content/kids/ (scripts/content.mjs modeRoot), and answers 400 when a
-// `?mode=` it is sent disagrees. Those routes are mounted with wrap's
+// every route but GET /api/content works for that learner, and answers 400
+// when a `?mode=` it is sent disagrees. Those routes are mounted with wrap's
 // `learner: true`, so before any of this runs the request has named the
 // learner its page shows and it is the active one (409 `stale_learner`
-// otherwise, auth.ts pageLearner). GET
-// /api/content keeps its `?mode=`, since an admin browses and has the agent
-// edit both libraries. The two trees never mix: a kids pack lives in
-// content/kids/packs and a kids export in exports/kids/.
+// otherwise, auth.ts pageLearner). GET /api/content keeps its `?mode=`,
+// since an admin browses and has the agent edit both libraries.
 //
 // The profile is the active learner's row, not <tree>/profile.yaml: the
 // loader still reads that file (the offline export CLI uses it), but every
 // reply and every assemble here puts the learner in its place.
 //
+// Saved packs and their folders are the active learner's rows in the
+// database (scripts/db/packs.ts, docs/DATA.md §Packs), not files: each
+// learner has its own, a kids learner's are kids packs because the learner
+// is, and no pack route writes under content/ or makes a git commit. The
+// pack files under content/**/packs are seed content (imported at the first
+// run and by `npm run db:import`) and the export CLI's input; the app never
+// lists them. Undo is the revision log: every write records a revision, a
+// delete is soft, and /api/pack-revisions lists and restores them.
+//
 //   GET    /api/content            library (mode, levels, schema, frame, profile, languages, units, scenarios, problems)
 //   PUT    /api/profile            merge the picker keys into the active learner → {profile}
 //   GET    /api/packs              {packs, folders, problems}
-//   GET    /api/packs/:id          one pack; an id is <stem> or <folder>/<stem>
-//   PUT    /api/packs/:id          write <tree>/packs/<id>.yaml from a JSON pack → {pack, commit}
-//   DELETE /api/packs/:id          → {ok, commit}
-//   POST   /api/packs/:id/move     {folder} → {pack, commit}, pack.id being the new id
-//   POST   /api/packs/:id/rename   {title} → {pack, commit}, likewise
-//   POST   /api/folders            {name} → {folder, folders, commit}
-//   DELETE /api/folders/:name      → {ok, folders, commit}; only an empty folder
+//   GET    /api/packs/:id          one pack; an id is <slug> or <folder>/<slug>
+//   PUT    /api/packs/:id          create or replace the pack at that id from a JSON pack → {pack}
+//   DELETE /api/packs/:id          soft delete → {ok}
+//   POST   /api/packs/:id/move     {folder} → {pack}, pack.id being the new id
+//   POST   /api/packs/:id/rename   {title} → {pack}, likewise
+//   POST   /api/folders            {name} → {folder, folders}
+//   DELETE /api/folders/:name      → {ok, folders}; only a folder with no packs
+//   GET    /api/pack-revisions?id=<pack id>          → {revisions}, newest first
+//   GET    /api/pack-revisions/deleted               → {packs}, the deleted packs
+//   POST   /api/pack-revisions/:revision/restore     → {pack}
 //   POST   /api/assemble           {pack} → {markdown, warnings, stats}
 //   POST   /api/export             {pack, id} → writes <exports>/<id>.md, {path, stats, warnings}
 //
-// Ids come from the request, so each is checked here (a 400 the user can
-// read) and again inside the loader's write functions, which also prove the
-// resolved path stays inside the tree's packs dir or exports/.
-//
-// Every pack write, move, rename or delete is followed by a `packs: …` commit
-// (`packs(kids): …` for the kids tree) of that packs dir (commit.ts). The
-// write is the result; the commit is reported beside it, and a git failure
-// is `commit: null` plus `error` on a 200 rather than a failed request — the
-// file is already on disk.
+// Ids come from the request, so each is checked (a 400 the user can read)
+// before any query; the queries themselves are scoped to the learner
+// (forLearner), so another learner's pack is a 404 like a missing one.
 
 /** GET /api/content's `?mode=`: the active learner's mode when absent (adult
  *  with none picked), a 400 when not a mode. Either library may be read. */
@@ -80,43 +83,26 @@ function checkId(id: unknown): string {
   return id;
 }
 
-/** A pack id from the path: `<stem>` or `<folder>/<stem>`. */
-function checkPackId(id: unknown): string {
-  if (typeof id !== "string" || !PACK_ID_RE.test(id)) {
-    throw new HttpError(400, `invalid id ${JSON.stringify(id)}: use lowercase letters, digits and hyphens, with at most one folder`);
-  }
-  return id;
-}
-
 function isObject(v: unknown): v is Record<string, unknown> {
   return v != null && typeof v === "object" && !Array.isArray(v);
 }
 
-/** The loader's refusals carry an errno-style `code`; the ones a client can
- *  act on become a status. Anything else is a 500, like any thrown error. */
-const STATUS_BY_CODE: Record<string, number> = { EINVAL: 400, ENOENT: 404, EEXIST: 409, ENOTEMPTY: 409 };
+/** The handle the pack layer runs its transactions on. Every query it makes
+ *  goes through forLearner(tx, learnerId), the scope learnerRows() is, built
+ *  on the transaction rather than the pool (the accounts layer's pattern). */
+const db = () => rawDb();
 
-function fromLoader<T>(fn: () => T): T {
+/** PackError codes (scripts/db/packs.ts) → the status a client can act on.
+ *  Anything else is a 500, like any thrown error. */
+const STATUS_BY_CODE: Record<PackError["code"], number> = { EINVAL: 400, ENOENT: 404, EEXIST: 409, ENOTEMPTY: 409 };
+
+async function packOp<T>(fn: () => Promise<T>): Promise<T> {
   try {
-    return fn();
+    return await fn();
   } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    const status = typeof code === "string" ? STATUS_BY_CODE[code] : undefined;
-    if (status) throw new HttpError(status, (e as Error).message);
+    if (e instanceof PackError) throw new HttpError(STATUS_BY_CODE[e.code], e.message);
     throw e;
   }
-}
-
-/** The commit half of a write reply. A git failure is logged and reported,
- *  never thrown: the write it was recording has already happened. */
-async function committed(what: string, mode: Mode): Promise<Committed> {
-  const c = await commitPacks(what, { mode });
-  if ("hash" in c) return { commit: { hash: c.hash, summary: c.summary } };
-  if ("error" in c) {
-    console.error(`[lingo-dojo] ${mode === "adult" ? "packs" : `packs(${mode})`}: commit failed (${what}): ${c.error}`);
-    return { commit: null, error: `written, but git did not commit it: ${c.error}` };
-  }
-  return { commit: null };
 }
 
 /** GET /api/content's shape for a mode: the loader's result plus the mode
@@ -174,14 +160,13 @@ export async function handleProfile(req: IncomingMessage, res: ServerResponse, c
 }
 
 export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  const mode = learnerMode(req, ctx);
-  const root = modeRoot(mode);
+  learnerMode(req, ctx);
+  const learnerId = ctx.learner.id;
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { packs, problems } = loadContent(root);
-    const packProblems = problems.filter((p) => /(^|[\\/])packs[\\/]/.test(p.file));
-    sendJson(res, 200, { packs, folders: listFolders(root), problems: packProblems } satisfies PacksReply);
+    const { packs, folders } = await listPacks(db(), learnerId);
+    sendJson(res, 200, { packs, folders, problems: [] } satisfies PacksReply);
     return;
   }
   // POST /api/packs/<id>/<action>: the action is the last segment and the id
@@ -189,35 +174,26 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
   // a lookup of the pack "oaxaca/move".
   const parts = seg.split("/");
   const action = req.method === "POST" && parts.length > 1 && ["move", "rename"].includes(parts[parts.length - 1]) ? parts.pop() : null;
-  const id = checkPackId(parts.join("/"));
-  // Every write reads back through the loader, so the reply is what the file
-  // now says (and what GET /api/packs will list), not an echo of the request.
-  const readBack = (packId: string, verb: string): Pack => {
-    const pack = loadContent(root).packs.find((p) => p.id === packId);
-    if (!pack) throw new Error(`pack ${packId} was ${verb} but does not load back`);
-    return pack;
-  };
+  const id = parts.join("/");
+  await packOp(async () => parsePackId(id)); // a 400 before the body is read
 
   if (action === "move") {
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body) || typeof body.folder !== "string") throw new HttpError(400, 'body must be {folder} ("" for no folder)');
-    const folder = body.folder;
-    const newId = fromLoader(() => movePack(id, folder, root));
-    const pack = readBack(newId, "moved");
-    sendJson(res, 200, { pack, ...(await committed(`moved ${id} to ${folder || "no folder"}`, mode)) } satisfies PackWriteReply);
+    const pack = await packOp(() => movePack(db(), learnerId, id, body.folder));
+    sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
   if (action === "rename") {
     const body = await readJsonBody<unknown>(req);
     const title = isObject(body) ? body.title : undefined;
     if (typeof title !== "string" || !title.trim()) throw new HttpError(400, "body must be {title}, and a pack needs a title");
-    const newId = fromLoader(() => renamePack(id, title, root));
-    const pack = readBack(newId, "renamed");
-    sendJson(res, 200, { pack, ...(await committed(`renamed ${id} to ${newId}`, mode)) } satisfies PackWriteReply);
+    const pack = await packOp(() => renamePack(db(), learnerId, id, title));
+    sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
   if (req.method === "GET") {
-    const pack = loadContent(root).packs.find((p) => p.id === id);
+    const pack = await packOp(() => getPack(db(), learnerId, id));
     if (!pack) return sendJson(res, 404, { error: `no pack "${id}"` });
     sendJson(res, 200, { pack } satisfies PackReply);
     return;
@@ -226,37 +202,61 @@ export async function handlePacks(req: IncomingMessage, res: ServerResponse, ctx
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body)) throw new HttpError(400, "body must be a pack object");
     if (typeof body.title !== "string" || !body.title.trim()) throw new HttpError(400, "a pack needs a title");
-    const title = body.title.trim();
-    const created = typeof body.created === "string" && body.created ? body.created : new Date().toISOString();
-    fromLoader(() => savePack(id, { ...body, title, created }, root));
-    const pack = readBack(id, "written");
-    sendJson(res, 200, { pack, ...(await committed(`saved ${id}`, mode)) } satisfies PackWriteReply);
+    const { pack } = await packOp(() => savePack(db(), learnerId, id, body));
+    sendJson(res, 200, { pack } satisfies PackWriteReply);
     return;
   }
   if (req.method === "DELETE") {
-    if (!fromLoader(() => deletePack(id, root))) return sendJson(res, 404, { error: `no pack "${id}"` });
-    sendJson(res, 200, { ok: true, ...(await committed(`deleted ${id}`, mode)) } satisfies PackDeleteReply);
+    if (!(await packOp(() => deletePack(db(), learnerId, id)))) return sendJson(res, 404, { error: `no pack "${id}"` });
+    sendJson(res, 200, { ok: true } satisfies PackDeleteReply);
     return;
   }
   methodNotAllowed(res, "GET, PUT, DELETE");
 }
 
 export async function handleFolders(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  const mode = learnerMode(req, ctx);
-  const root = modeRoot(mode);
+  learnerMode(req, ctx);
+  const learnerId = ctx.learner.id;
   const name = subPath(req);
   if (!name) {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     const body = await readJsonBody<unknown>(req);
     if (!isObject(body) || typeof body.name !== "string") throw new HttpError(400, "body must be {name}");
     const folder = body.name;
-    fromLoader(() => createFolder(folder, root)); // EINVAL on a bad name → 400, EEXIST → 409
-    sendJson(res, 200, { folder, folders: listFolders(root), ...(await committed(`folder ${folder} created`, mode)) } satisfies FolderReply);
+    const folders = await packOp(() => createFolder(db(), learnerId, folder)); // a bad name → 400, a taken one → 409
+    sendJson(res, 200, { folder, folders } satisfies FolderReply);
     return;
   }
   if (req.method !== "DELETE") return methodNotAllowed(res, "DELETE");
-  if (!fromLoader(() => deleteFolder(name, root))) return sendJson(res, 404, { error: `no folder "${name}"` });
-  sendJson(res, 200, { ok: true, folders: listFolders(root), ...(await committed(`folder ${name} deleted`, mode)) } satisfies FolderDeleteReply);
+  if (!(await packOp(() => deleteFolder(db(), learnerId, name)))) return sendJson(res, 404, { error: `no folder "${name}"` });
+  const { folders } = await listPacks(db(), learnerId);
+  sendJson(res, 200, { ok: true, folders } satisfies FolderDeleteReply);
+}
+
+/** The undo surface: a pack's revisions, the deleted packs, and restoring
+ *  either (restoring a deleted pack's delete revision undeletes it). */
+export async function handlePackRevisions(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  learnerMode(req, ctx);
+  const learnerId = ctx.learner.id;
+  const seg = subPath(req);
+  if (!seg) {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    const id = new URL(req.url ?? "/", "http://localhost").searchParams.get("id");
+    if (!id) throw new HttpError(400, "name the pack: ?id=<pack id>");
+    const revisions = await packOp(() => listRevisions(db(), learnerId, id));
+    sendJson(res, 200, { revisions } satisfies PackRevisionsReply);
+    return;
+  }
+  if (seg === "deleted") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    sendJson(res, 200, { packs: await listDeleted(db(), learnerId) } satisfies DeletedPacksReply);
+    return;
+  }
+  const m = /^([^/]+)\/restore$/.exec(seg);
+  if (!m) return sendJson(res, 404, { error: "no such route" });
+  if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  const pack = await packOp(() => restoreRevision(db(), learnerId, m[1]));
+  sendJson(res, 200, { pack } satisfies PackRestoreReply);
 }
 
 export async function handleAssemble(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
