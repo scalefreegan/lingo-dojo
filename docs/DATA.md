@@ -727,11 +727,12 @@ Built (bead 10):
 - HMR needs no `server.hmr`/`server.ws` options: the Vite client opens its
   websocket on the page's own host and port (wss on an https page), and
   Tailscale Serve proxies websocket upgrades.
-- What `tailscale serve` sends the backend (from Tailscale's source,
-  `ipn/ipnlocal/serve.go`; the KB pages don't document these headers):
+- What `tailscale serve` sends the backend. This was taken from Tailscale's
+  source (`ipn/ipnlocal/serve.go`), not from its docs: the KB pages don't
+  document these headers, so a future Tailscale release could change them:
   `Host` is the public name as the client sent it, `X-Forwarded-Host` the same,
   `X-Forwarded-Proto: https` for TLS requests, `X-Forwarded-For` set to the
-  peer's tailnet address (replaced, not appended), and `Origin` passes
+  peer's tailnet address (set, not appended to a client-sent value), and `Origin` passes
   through. So the same-origin check (`Origin` host equals `Host`) passes for
   the tailnet name, the cookie gets `Secure` from `X-Forwarded-Proto`, and the
   login throttle keys on the forwarded address. Tests pin all three.

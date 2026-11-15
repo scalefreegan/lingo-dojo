@@ -105,7 +105,8 @@ tailnet with Tailscale. The dev server still listens on localhost only;
    `LINGO_PUBLIC_HOST=<mac>.<tailnet>.ts.net`. A comma-separated list works;
    anything that isn't a plain hostname is ignored with a warning at startup.
    Unset, only localhost is accepted.
-2. Run `tailscale serve --bg 38400` once. It prints the `https://` URL (check
+2. Run `tailscale serve --bg --https=443 localhost:38400` once (the form in
+   Tailscale's KB page; `tailscale serve --help` shows the flags). It prints the `https://` URL (check
    with `tailscale serve status`; `tailscale serve reset` turns it off).
 3. Open that URL from another device on the tailnet and log in.
 
