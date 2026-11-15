@@ -20,6 +20,7 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 const SHOWS: [PhraseShow, string][] = [
   ["all", "All"],
   ["starred", "Starred"],
+  ["new", "New"],
   ["due", "Due"],
   ["trouble", "Trouble"],
   ["pending", "No words yet"],
@@ -53,9 +54,12 @@ function ago(iso: string | null): string {
   return new Date(iso).toLocaleDateString(undefined, { dateStyle: "medium" });
 }
 
-/** "due now", "due within a day", "due in 4 days"; "" with no cards, or pending or suspended. */
+/** "due now", "due within a day", "due in 4 days"; "new, ready to learn"
+ *  for a phrase whose cards are all unreviewed; "" with no cards, or
+ *  pending or suspended. */
 function dueLabel(p: PhraseSummary): string {
-  if (!p.due || p.pending || p.suspended) return "";
+  if (p.pending || p.suspended) return "";
+  if (!p.due) return p.newCards > 0 ? "new, ready to learn" : "";
   const ms = new Date(p.due).getTime() - Date.now();
   if (ms <= 0) return "due now";
   const days = Math.ceil(ms / DAY);
@@ -73,6 +77,12 @@ export default function PhraseBankView() {
   // Bumped to re-read what is listed (after a write).
   const [reload, setReload] = useState(0);
   const shown = useRef(PAGE);
+  // Which list a reply belongs to: bumped whenever the list is read afresh
+  // (new filters, a write), so a Show more page still on its way for the
+  // old one is dropped instead of appended to the new one (and its counts
+  // and offsets kept). The in-flight Show more is aborted too.
+  const generation = useRef(0);
+  const moreCtrl = useRef<AbortController | null>(null);
 
   // The search box settles for a moment before it asks.
   useEffect(() => {
@@ -85,6 +95,8 @@ export default function PhraseBankView() {
   // from the reply.
   useEffect(() => {
     const ctrl = new AbortController();
+    generation.current++;
+    moreCtrl.current?.abort();
     listPhrases({ ...query, offset: 0, limit: Math.min(200, Math.max(PAGE, shown.current)) }, ctrl.signal).then(
       (r) => {
         shown.current = r.phrases.length;
@@ -108,14 +120,19 @@ export default function PhraseBankView() {
   }
 
   async function more(offset: number) {
+    const mine = generation.current;
+    moreCtrl.current?.abort();
+    const ctrl = (moreCtrl.current = new AbortController());
     setLoading(true);
     try {
-      const r = await listPhrases({ ...query, offset, limit: PAGE });
+      const r = await listPhrases({ ...query, offset, limit: PAGE }, ctrl.signal);
+      if (mine !== generation.current) return; // a page of a list no longer shown
       setData((was) => (was ? { ...r, phrases: [...was.phrases, ...r.phrases.filter((p) => !was.phrases.some((x) => x.id === p.id))] } : r));
       shown.current += r.phrases.length;
+      setLoading(false);
     } catch (e) {
+      if (ctrl.signal.aborted || mine !== generation.current) return;
       setError(errText(e));
-    } finally {
       setLoading(false);
     }
   }
@@ -432,7 +449,7 @@ function PhraseDetailView({
 
   function remove() {
     const label = detail?.text ?? detail?.meaning ?? "this phrase";
-    if (!window.confirm(`Delete “${label}” from your phrase bank?\nIts examples and practice history go with it.`)) return;
+    if (!window.confirm(`Delete “${label}” from your phrase bank?\nIts examples and practice history go with it. A scene's word list won't add it back; if a session explains it again, it comes back then.`)) return;
     void run(() => deletePhrase(id), onDeleted);
   }
 
@@ -463,7 +480,7 @@ function PhraseDetailView({
               {detail.lang ? ` (${detail.lang})` : ""} · from {SOURCE[detail.source]}
             </dd>
             <dt>Cards</dt>
-            <dd>{detail.cardCount ? `${detail.cardCount} (${detail.mastery}${detail.due ? `, ${dueLabel(detail)}` : ""})` : "none yet"}</dd>
+            <dd>{detail.cardCount ? `${detail.cardCount} (${detail.mastery}${dueLabel(detail) ? `, ${dueLabel(detail)}` : ""})` : "none yet"}</dd>
             {detail.lapses > 0 && (
               <>
                 <dt>Lapses</dt>

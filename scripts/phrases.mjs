@@ -26,8 +26,25 @@ export const TROUBLE_DAYS = 30;
  *  as a word (web/src/gloss.ts isSentence, the same count), and the turn
  *  doesn't put it in the bank. Starring it by hand still does. */
 export const MAX_CAPTURE_WORDS = 3;
+/** The same limit for a language written without spaces (Japanese,
+ *  Chinese, Thai, …), in characters (letters and digits, punctuation not
+ *  counted): a word segmenter splits their particles and endings off as
+ *  words, so "いくらですか" would be three and "ありがとうございます" more. Twelve
+ *  holds the everyday phrases of those languages (お願いします, 请再说一遍,
+ *  ขอบคุณครับ) and stops at a clause. */
+export const MAX_CAPTURE_CHARS = 12;
+/** Languages written without spaces between words (ISO 639-1). */
+const UNSPACED = new Set(["ja", "zh", "th", "lo", "km", "my", "bo"]);
 
-const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+/** Control characters a phrase never needs: C0 (but tab and newline, which
+ *  oneLine folds or a note keeps), DEL, and the bidi embeddings, overrides
+ *  and isolates, which can make text read differently from what it is. */
+const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g;
+/** `s` as text a phrase may hold: the controls above removed. */
+export const clean = (s) => String(s ?? "").replace(CONTROLS, "");
+const oneLine = (s) => clean(s).replace(/\s+/g, " ").trim();
+/** A note: its own line breaks kept (CR LF as LF), other controls gone. */
+const noteText = (s) => clean(String(s ?? "").replace(/\r\n?/g, "\n")).replace(/\r/g, "").trim();
 
 /* --------------------------------- language -------------------------------- */
 
@@ -43,6 +60,27 @@ export function wordCount(text, locale) {
     return s.trim() ? s.trim().split(/\s+/).length : 0;
   }
 }
+
+/** Whether `locale`'s language is written without spaces between words. */
+export const unspaced = (locale) => {
+  try {
+    return UNSPACED.has(new Intl.Locale(String(locale)).language);
+  } catch {
+    return false;
+  }
+};
+
+/** Letters and digits in `text` (graphemes, so a Thai vowel mark or an
+ *  accent isn't a second character). */
+export function charCount(text) {
+  let n = 0;
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(String(text ?? ""))) if (/[\p{L}\p{N}]/u.test(segment)) n++;
+  return n;
+}
+
+/** Too long to be a phrase the turn captures: more than MAX_CAPTURE_WORDS
+ *  words, or MAX_CAPTURE_CHARS characters in a language without spaces. */
+export const tooLongToCapture = (text, locale) => (unspaced(locale) ? charCount(text) > MAX_CAPTURE_CHARS : wordCount(text, locale) > MAX_CAPTURE_WORDS);
 
 const langKey = (language, variant = "") => {
   const locale = localeFor(language, variant);
@@ -70,18 +108,42 @@ export function sameLanguage(profileLanguage, session) {
 /** A gloss term's letters, for finding the line it came from. */
 const bare = (s) => oneLine(s).normalize("NFC").toLowerCase().replace(/^[\p{P}\s]+|[\p{P}\s]+$/gu, "");
 
-/** The line of a reply that holds `term`: its target-language words (the
- *  line's text when it has no segments), and who said it. null when no line
- *  has it (a gloss of a word the reply only implied). */
-export function exampleFor(term, lines) {
+/** `s`'s words, lowercased, by the language's segmenter (spaces without one). */
+function words(s, locale) {
+  const t = oneLine(s).normalize("NFC").toLowerCase();
+  try {
+    return [...new Intl.Segmenter(locale || undefined, { granularity: "word" }).segment(t)].filter((w) => w.isWordLike).map((w) => w.segment);
+  } catch {
+    return t.split(/[\s\p{P}]+/u).filter(Boolean);
+  }
+}
+
+/** Whether `sentence` has `term` in it as whole words ("mar" is not in "el
+ *  mercado"). A language without spaces has no word edges to trust (its
+ *  segmenter may cut the term differently inside a sentence), so there it is
+ *  found as text. */
+function holds(sentence, term, locale) {
+  if (unspaced(locale)) return sentence.normalize("NFC").toLowerCase().includes(bare(term));
+  const hay = words(sentence, locale);
+  const needle = words(term, locale);
+  if (!needle.length) return false;
+  for (let i = 0; i + needle.length <= hay.length; i++) if (needle.every((w, j) => hay[i + j] === w)) return true;
+  return false;
+}
+
+/** The line of a reply that holds `term` as whole words: its
+ *  target-language words (the line's text when it has no segments), and who
+ *  said it. null when no line has it (a gloss of a word the reply only
+ *  implied), or when the only such line is the term itself, which shows
+ *  nothing of how it is used. */
+export function exampleFor(term, lines, locale) {
   const needle = bare(term);
   if (!needle) return null;
   for (const l of lines ?? []) {
     const target = Array.isArray(l?.segments) && l.segments.length ? l.segments.filter((g) => g?.lang === "target").map((g) => g.text).join(" ") : l?.text;
     const sentence = oneLine(target);
-    if (sentence && sentence.normalize("NFC").toLowerCase().includes(needle)) {
-      return { sentence: sentence.slice(0, LIMITS.sentence), speaker: typeof l.speaker === "string" ? l.speaker : null };
-    }
+    if (!sentence || bare(sentence) === needle || !holds(sentence, term, locale)) continue;
+    return { sentence: sentence.slice(0, LIMITS.sentence), speaker: typeof l.speaker === "string" ? l.speaker : null };
   }
   return null;
 }
@@ -89,8 +151,9 @@ export function exampleFor(term, lines) {
 /**
  * What a dojo-master reply's glosses put into the bank: one item per
  * distinct target form (its match key), with its meaning and the line that
- * holds it. Sentence-length glosses (more than MAX_CAPTURE_WORDS words) are
- * translations and left out. Sorted by key, so two writers that touch the
+ * holds it. Sentence-length glosses (tooLongToCapture: more than
+ * MAX_CAPTURE_WORDS words, or MAX_CAPTURE_CHARS characters in a language
+ * without spaces) are translations and left out. Sorted by key, so two writers that touch the
  * same phrases lock their rows in the same order and can't deadlock.
  */
 export function glossCaptures(glosses, lines, locale) {
@@ -99,9 +162,9 @@ export function glossCaptures(glosses, lines, locale) {
     const text = oneLine(g?.term).slice(0, LIMITS.text);
     const norm = normKey(text);
     if (!norm || out.has(norm)) continue;
-    if (wordCount(text, locale) > MAX_CAPTURE_WORDS) continue;
+    if (tooLongToCapture(text, locale)) continue;
     const meaning = oneLine(g?.meaning).slice(0, LIMITS.meaning) || null;
-    out.set(norm, { text, norm, meaning, meaningNorm: meaning ? normKey(meaning) || null : null, example: exampleFor(text, lines) });
+    out.set(norm, { text, norm, meaning, meaningNorm: meaning ? normKey(meaning) || null : null, example: exampleFor(text, lines, locale) });
   }
   return [...out.values()].sort((a, b) => (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
 }
@@ -145,15 +208,18 @@ function badString(v, field, max, required) {
   if (v === null) return required ? `${field} is required` : null;
   if (typeof v !== "string") return `${field} must be a string`;
   if (v.includes("\u0000")) return `${field} can't contain a NUL character`;
-  if (required && !oneLine(v)) return `${field} can't be blank`;
-  if (oneLine(v).length > max) return `${field} is longer than ${max} characters`;
+  // Measured as it would be stored: one line, or a note's own lines.
+  const stored = field === "note" ? noteText(v) : oneLine(v);
+  if (required && !stored) return `${field} can't be blank`;
+  if (stored.length > max) return `${field} is longer than ${max} characters`;
   return null;
 }
 
 /**
  * A phrase add (`create`) or edit body, checked and trimmed: `{ value }`,
  * or `{ error }` for a 400. text and meaning are one line; a note keeps its
- * line breaks. An edit takes any of text, meaning, note, starred,
+ * line breaks. Control characters (C0 but newlines, bidi overrides) are
+ * dropped from all three, and the lengths are those of what is stored. An edit takes any of text, meaning, note, starred,
  * suspended; null or "" clears meaning and note. Unknown keys are ignored.
  */
 export function readPhraseInput(body, { create = false } = {}) {
@@ -170,7 +236,7 @@ export function readPhraseInput(body, { create = false } = {}) {
     const err = badString(body[key], key, max, false);
     if (err) return { error: err };
     if (body[key] !== undefined) {
-      const v = key === "note" ? String(body[key] ?? "").trim() : oneLine(body[key]);
+      const v = key === "note" ? noteText(body[key]) : oneLine(body[key]);
       value[key] = v || null;
     }
   }
@@ -188,18 +254,24 @@ export function readPhraseInput(body, { create = false } = {}) {
 const ms = (d) => (d == null ? null : new Date(d).getTime());
 const iso = (d) => (d == null ? null : new Date(d).toISOString());
 
+/** A card never reviewed: FSRS state New (0), no reps. */
+const unreviewed = (c) => c.state === 0 || !c.reps;
+
 /**
  * One phrase's metrics (DATA.md §Metrics) from its cards (rows of `cards`,
- * any shape fromRow takes) and its lapses in the last TROUBLE_DAYS:
- * the mastery band of its weakest card (New with none), its earliest due,
- * and whether it is in trouble.
+ * any shape fromRow takes) and its lapses in the last TROUBLE_DAYS: the
+ * mastery band of its weakest card (New with none), the earliest due of the
+ * cards that have been reviewed (a card never reviewed is new, waiting to
+ * be learned, not due: counting it would make every phrase met in a session
+ * due at once), how many cards are new, and whether it is in trouble.
  */
 export function phraseMetrics(cards = [], lapses = 0) {
   const states = cards.map((c) => fromRow(c));
-  const dues = states.map((c) => ms(c.due)).filter((t) => t != null);
+  const dues = states.filter((c) => !unreviewed(c)).map((c) => ms(c.due)).filter((t) => t != null);
   return {
     mastery: phraseMastery(states),
     due: dues.length ? iso(Math.min(...dues)) : null,
+    newCards: states.filter(unreviewed).length,
     lapses,
     trouble: lapses >= TROUBLE_LAPSES,
     cardCount: cards.length,
@@ -208,21 +280,25 @@ export function phraseMetrics(cards = [], lapses = 0) {
 
 /* ------------------------------ the bank's list ----------------------------- */
 
-export const SHOWS = ["all", "starred", "due", "trouble", "pending", "suspended"];
+export const SHOWS = ["all", "starred", "new", "due", "trouble", "pending", "suspended"];
 export const SORTS = ["recent", "due", "weakest", "alpha", "added"];
 
 /** Lowercased, accent-folded text for the bank's search box: "cafe" finds
  *  "café", and case never matters. */
 const fold = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 
-/** Whether a phrase is due for practice at `now`: it has a card due, and is
- *  neither pending nor suspended. */
+/** Whether a phrase is due for practice at `now`: a card of it that has
+ *  been reviewed is due, and it is neither pending nor suspended. */
 export const isDueNow = (p, now) => !p.pending && !p.suspended && p.due != null && ms(p.due) <= ms(now);
+/** Whether a phrase has a card waiting to be learned (never reviewed), and
+ *  is neither pending nor suspended. */
+export const isNew = (p) => !p.pending && !p.suspended && p.newCards > 0;
 
 /** What each "show" filter keeps. */
 const SHOW = {
   all: () => true,
   starred: (p) => p.starred,
+  new: (p) => isNew(p),
   due: (p, now) => isDueNow(p, now),
   trouble: (p) => p.trouble,
   pending: (p) => p.pending,
@@ -251,7 +327,7 @@ const SORT = {
  * default.
  */
 export function bankPage(items, { q = "", show = "all", band = "", sort = "recent", offset = 0, limit = 50 } = {}, now = new Date()) {
-  const counts = { all: items.length, starred: 0, due: 0, trouble: 0, pending: 0, suspended: 0, bands: Object.fromEntries(BANDS.map((b) => [b, 0])) };
+  const counts = { all: items.length, starred: 0, new: 0, due: 0, trouble: 0, pending: 0, suspended: 0, bands: Object.fromEntries(BANDS.map((b) => [b, 0])) };
   for (const p of items) {
     for (const k of SHOWS.slice(1)) if (SHOW[k](p, now)) counts[k]++;
     if (!p.pending) counts.bands[p.mastery]++;

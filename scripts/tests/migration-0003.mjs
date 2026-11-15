@@ -1,59 +1,44 @@
 // Migration 0003 (the phrase bank moves under language profiles) against a
-// database that already has data: built at 0002, filled the way rows could
-// be written before 0003 (a bank keyed by learner and `lang`, with one
-// phrase met in two variants, which the new per-profile identity makes one
-// row), then migrated. Shared by the PGlite test (db-migration-0003.test.mjs)
-// and the real-Postgres one (migration-0003.pg.test.mjs, PostgreSQL 17 under
+// database at 0002 with data in it. 0003 moves no bank row: it refuses to run
+// while any bank table has one (hand-edits.mjs, GUARD_0003), because nothing
+// wrote the bank before it and no rule can say which language an old phrase
+// belongs to. So: with accounts, learners, languages, conversations and turns
+// but an empty bank it applies, leaves those rows as they were, and gives the
+// same schema as a database built from nothing; with any bank row it fails
+// in its own transaction and leaves the 0002 schema and every row in place.
+// Shared by the PGlite test (db-migration-0003.test.mjs) and the
+// real-Postgres one (migration-0003.pg.test.mjs, PostgreSQL 17 under
 // LINGO_TEST_PG_URL). Not a test itself (the npm glob is *.test.mjs). Every
 // name here is made up.
 
 import assert from "node:assert/strict";
+import { GUARD_0003_MESSAGE } from "../db/hand-edits.mjs";
 import { applyMigrations, migrationState, migrationsOnDisk } from "../db/migrations.mjs";
 
-/** The migrations up to and including 0002. */
-export function migrationsBefore0003() {
+const upTo = (marker, what) => {
   const disk = migrationsOnDisk();
-  const i = disk.findIndex((m) => m.sql.some((s) => s.includes('CREATE TABLE "language_profiles"')));
-  assert.ok(i >= 0, "0002 is on disk");
+  const i = disk.findIndex((m) => m.sql.some((s) => s.includes(marker)));
+  assert.ok(i >= 0, `${what} is on disk`);
   return disk.slice(0, i + 1);
-}
+};
+
+/** The migrations up to and including 0002. */
+export const migrationsBefore0003 = () => upTo('CREATE TABLE "language_profiles"', "0002");
 
 /** The migrations up to and including 0003. */
-export function migrationsThrough0003() {
-  const disk = migrationsOnDisk();
-  const i = disk.findIndex((m) => m.sql.some((s) => s.includes('CREATE TEMPORARY TABLE "phrase_merge"')));
-  assert.ok(i >= 0, "0003 is on disk");
-  return disk.slice(0, i + 1);
-}
+export const migrationsThrough0003 = () => upTo('CREATE TABLE "phrase_dismissals"', "0003");
 
 const U = { robin: "00000000-0000-4000-8000-000000000001", lee: "00000000-0000-4000-8000-000000000002" };
 const L = { sam: "00000000-0000-4000-8000-0000000000a1", ana: "00000000-0000-4000-8000-0000000000b1" };
-/** Sam's Spanish (the oldest: what the bank was in) and German (added later). */
 const LP = {
   samEs: "00000000-0000-4000-8000-0000000000e1",
   samDe: "00000000-0000-4000-8000-0000000000e2",
   ana: "00000000-0000-4000-8000-0000000000e3",
 };
 const C = { sam: "00000000-0000-4000-8000-0000000000d1", samDe: "00000000-0000-4000-8000-0000000000d2" };
-const PH = {
-  keep: "00000000-0000-4000-8000-0000000000f1", // ¿A cómo? (es-MX), the older
-  dupe: "00000000-0000-4000-8000-0000000000f2", // a cómo (es-ES): merged into keep
-  hola: "00000000-0000-4000-8000-0000000000f3",
-  taxi: "00000000-0000-4000-8000-0000000000f4", // pending, es-MX
-  taxi2: "00000000-0000-4000-8000-0000000000f5", // pending, es-ES: merged into taxi
-  ana: "00000000-0000-4000-8000-0000000000f6",
-};
-const CARD = {
-  keepRecognize: "00000000-0000-4000-8000-000000000101",
-  dupeRecognize: "00000000-0000-4000-8000-000000000102",
-  dupeProduce: "00000000-0000-4000-8000-000000000103",
-  hola: "00000000-0000-4000-8000-000000000104",
-  ana: "00000000-0000-4000-8000-000000000105",
-};
 
-/** Fill a database at 0002: two accounts, a learner with two languages,
- *  conversations and turns, and a bank (phrases, examples, cards, reviews,
- *  a cloze item) keyed by learner and lang. */
+/** Fill a database at 0002 with everything but the bank: two accounts, a
+ *  learner with two languages, another with one, conversations and turns. */
 export async function seedBefore0003(query) {
   await query(`insert into users (id, username, password_hash) values ($1, 'robin', 'scrypt$x'), ($2, 'lee', 'scrypt$x')`, [U.robin, U.lee]);
   await query(
@@ -78,126 +63,73 @@ export async function seedBefore0003(query) {
        ($1, $2, $3, 0, 'learner', '¿A cómo?'), ($4, $2, $5, 0, 'learner', 'Hallo')`,
     [C.sam, L.sam, LP.samEs, C.samDe, LP.samDe],
   );
-  const [turn] = await query(`select id from turns where conversation_id = $1`, [C.sam]);
-  await query(
-    `insert into phrases (id, learner_id, lang, text, norm, meaning, meaning_norm, source, alternates, starred, first_seen_at, last_seen_at, seen_count, last_practiced_at, created_at) values
-       ($1, $7, 'es-MX', '¿A cómo?', 'a cómo', 'how much?', null, 'gloss', '["a como"]', false, '2026-10-02T09:00:00Z', '2026-10-03T09:00:00Z', 2, null, '2026-10-02T09:00:00Z'),
-       ($2, $7, 'es-ES', 'a cómo', 'a cómo', null, null, 'manual', '["¿a cómo?", "a como"]', true, '2026-10-01T09:00:00Z', '2026-10-09T09:00:00Z', 1, '2026-10-08T09:00:00Z', '2026-10-04T09:00:00Z'),
-       ($3, $7, 'es-MX', 'hola', 'hola', 'hello', null, 'gloss', '[]', false, null, null, 0, null, '2026-10-02T09:00:00Z'),
-       ($4, $7, 'es-MX', null, null, 'taxi', 'taxi', 'scenario', '[]', false, null, null, 0, null, '2026-10-02T09:00:00Z'),
-       ($5, $7, 'es-ES', null, null, 'Taxi', 'taxi', 'scenario', '[]', true, null, null, 0, null, '2026-10-06T09:00:00Z'),
-       ($6, $8, 'fr-FR', 'bonjour', 'bonjour', 'hello', null, 'gloss', '[]', false, null, null, 1, null, '2026-10-06T09:00:00Z')`,
-    [PH.keep, PH.dupe, PH.hola, PH.taxi, PH.taxi2, PH.ana, L.sam, L.ana],
-  );
-  await query(
-    `insert into phrase_examples (phrase_id, learner_id, conversation_id, turn_id, sentence) values
-       ($1, $3, $4, $5, '¿A cómo el kilo?'), ($2, $3, null, null, 'Y esto, ¿a cómo?')`,
-    [PH.keep, PH.dupe, L.sam, C.sam, turn.id],
-  );
-  await query(`insert into cloze_items (phrase_id, learner_id, sentence, blank_start, blank_end, origin) values ($1, $2, 'Y esto, ¿a cómo?', 9, 15, 'example')`, [PH.dupe, L.sam]);
-  await query(
-    `insert into cards (id, phrase_id, learner_id, skill, reps, stability, state) values
-       ($1, $6, $9, 'recognize', 1, 1.5, 1), ($2, $7, $9, 'recognize', 3, 9, 2), ($3, $7, $9, 'produce', 2, 4, 2),
-       ($4, $8, $9, 'recognize', 0, 0, 0), ($5, $10, $11, 'recognize', 0, 0, 0)`,
-    [CARD.keepRecognize, CARD.dupeRecognize, CARD.dupeProduce, CARD.hola, CARD.ana, PH.keep, PH.dupe, PH.hola, L.sam, PH.ana, L.ana],
-  );
-  await query(
-    `insert into reviews (card_id, learner_id, mode, rating, conversation_id, card_before) values
-       ($1, $4, 'session', 3, $5, '{"state":1}'),
-       ($2, $4, 'session', 1, $5, '{"state":2}'),
-       ($2, $4, 'flashcard', 3, null, '{"state":2}'),
-       ($3, $4, 'session', 3, $5, '{"state":2}')`,
-    [CARD.keepRecognize, CARD.dupeRecognize, CARD.dupeProduce, L.sam, C.sam],
-  );
 }
 
-const SAME = ["users", "learners", "language_profiles", "conversations", "turns", "packs", "pack_folders", "pack_revisions", "auth_sessions"];
+/** One row in `table` of the 0002 bank (keyed by learner and lang), with
+ *  the parents it needs. */
+export async function seedBankRow(query, table) {
+  const [{ id: phrase }] = await query(
+    `insert into phrases (learner_id, lang, text, norm, meaning, source) values ($1, 'es-MX', '¿A cómo?', 'a cómo', 'how much?', 'gloss') returning id`,
+    [L.sam],
+  );
+  if (table === "phrases") return;
+  if (table === "phrase_examples") return void (await query(`insert into phrase_examples (phrase_id, learner_id, sentence) values ($1, $2, '¿A cómo el kilo?')`, [phrase, L.sam]));
+  if (table === "cloze_items")
+    return void (await query(`insert into cloze_items (phrase_id, learner_id, sentence, blank_start, blank_end, origin) values ($1, $2, '¿A cómo?', 0, 8, 'example')`, [phrase, L.sam]));
+  const [{ id: card }] = await query(`insert into cards (phrase_id, learner_id, skill) values ($1, $2, 'recognize') returning id`, [phrase, L.sam]);
+  if (table === "cards") return;
+  await query(`insert into reviews (card_id, learner_id, mode, rating, card_before) values ($1, $2, 'flashcard', 3, '{}')`, [card, L.sam]);
+}
 
-async function contents(query) {
+/** Every row of the tables that hold data, as text, for before/after. */
+export async function contents(query) {
+  const tables = (await query(`select tablename from pg_tables where schemaname = 'public' order by 1`)).map((r) => r.tablename);
   const out = {};
-  for (const t of SAME) out[t] = (await query(`select to_jsonb(x) as j from "${t}" x`)).map((r) => JSON.stringify(r.j)).sort();
+  for (const t of tables) out[t] = (await query(`select t::text as row from "${t}" t order by 1`)).map((r) => r.row);
   return out;
 }
 
-const fails = async (query, text, params, code) => {
-  await assert.rejects(query(text, params), (e) => {
-    assert.equal(e?.code ?? e?.cause?.code, code, String(e?.message));
+/** The public schema's shape: columns, constraints and indexes. */
+export async function catalog(query) {
+  const columns = await query(`
+    select table_name, column_name, data_type, is_nullable, column_default
+    from information_schema.columns where table_schema = 'public' order by 1, 2`);
+  const constraints = await query(`
+    select r.relname as table, c.conname, pg_get_constraintdef(c.oid) as def
+    from pg_constraint c join pg_class r on r.oid = c.conrelid join pg_namespace n on n.oid = r.relnamespace
+    where n.nspname = 'public' order by 1, 2`);
+  const indexes = await query(`select tablename, indexname, indexdef from pg_indexes where schemaname = 'public' order by 1, 2`);
+  return { columns, constraints, indexes };
+}
+
+const without = (rows, table) => Object.fromEntries(Object.entries(rows).filter(([t]) => t !== table));
+
+/** Empty bank: 0003 applies, the other rows are untouched, and the schema is
+ *  `fresh`'s (a database migrated from nothing). */
+export async function migrateEmptyAndCheck(query, fresh) {
+  const before = await contents(query);
+  await applyMigrations(query, migrationsThrough0003());
+  assert.equal((await migrationState(query, migrationsThrough0003())).status, "current");
+  // (The migrations table is in the drizzle schema, not public.)
+  const after = await contents(query);
+  assert.deepEqual(without(after, "phrase_dismissals"), before);
+  assert.deepEqual(after.phrase_dismissals, []);
+  assert.deepEqual(await catalog(query), await catalog(fresh));
+}
+
+/** A bank row present: 0003 fails with the guard's message, in its own
+ *  transaction, leaving the 0002 schema and every row as they were. */
+export async function refuseAndCheck(query) {
+  const schema = await catalog(query);
+  const rows = await contents(query);
+  await assert.rejects(applyMigrations(query, migrationsThrough0003()), (e) => {
+    assert.ok(String(e.message).includes(GUARD_0003_MESSAGE), `the guard's message, not: ${e.message}`);
     return true;
   });
-};
-
-/** Apply 0003 and check every bank row: under the learner's oldest
- *  profile, the two-variant duplicates merged as hand-edits.mjs says,
- *  nothing else changed, and the new keys hold. */
-export async function migrateAndCheck0003(query) {
-  const before = await contents(query);
-  const { applied } = await applyMigrations(query, migrationsThrough0003());
-  assert.equal(applied.length, 1, "only 0003 was missing");
-  assert.equal((await migrationState(query, migrationsThrough0003())).status, "current");
-  assert.deepEqual(await contents(query), before, "nothing outside the bank changed");
-
-  // Every bank row is under its learner's oldest profile (Sam's Spanish, not
-  // the newer German), and every child under its parent's.
-  const phrases = await query(`select * from phrases order by created_at, id`);
-  for (const p of phrases) assert.equal(p.language_profile_id, p.learner_id === L.sam ? LP.samEs : LP.ana, `phrase ${p.id}`);
-  for (const t of ["phrase_examples", "cards", "cloze_items"]) {
-    const bad = await query(`select x.id from "${t}" x join phrases p on p.id = x.phrase_id where x.language_profile_id is distinct from p.language_profile_id`);
-    assert.deepEqual(bad, [], `${t} under its phrase's profile`);
-  }
-  assert.deepEqual(await query(`select r.id from reviews r join cards c on c.id = r.card_id where r.language_profile_id is distinct from c.language_profile_id`), []);
-
-  // The duplicates are one row each, the older kept, knowing what both did.
-  assert.deepEqual(phrases.map((p) => p.id).sort(), [PH.keep, PH.hola, PH.taxi, PH.ana].sort());
-  const keep = phrases.find((p) => p.id === PH.keep);
-  assert.equal(keep.text, "¿A cómo?", "the kept row's own text");
-  assert.equal(keep.lang, "es-MX");
-  assert.equal(keep.seen_count, 3);
-  assert.equal(new Date(keep.first_seen_at).toISOString(), "2026-10-01T09:00:00.000Z", "the earliest first sighting");
-  assert.equal(new Date(keep.last_seen_at).toISOString(), "2026-10-09T09:00:00.000Z", "the latest sighting");
-  assert.equal(new Date(keep.last_practiced_at).toISOString(), "2026-10-08T09:00:00.000Z");
-  assert.equal(keep.starred, true, "starred if either was");
-  assert.equal(keep.meaning, "how much?");
-  assert.deepEqual([...keep.alternates].sort(), ["a como", "¿a cómo?"].sort(), "alternates united");
-  const taxi = phrases.find((p) => p.id === PH.taxi);
-  assert.equal(taxi.text, null, "still pending");
-  assert.equal(taxi.starred, true);
-
-  const examples = await query(`select phrase_id, conversation_id, turn_id from phrase_examples order by sentence`);
-  assert.equal(examples.length, 2);
-  assert.ok(examples.every((e) => e.phrase_id === PH.keep), "examples follow the kept phrase");
-  assert.equal(examples.filter((e) => e.conversation_id === C.sam && e.turn_id).length, 1, "provenance kept");
-  assert.deepEqual((await query(`select phrase_id from cloze_items`)).map((r) => r.phrase_id), [PH.keep]);
-
-  // Per skill one card: the kept phrase's own recognize card (the other
-  // phrase's, though it had more reps, is merged into it) and the other's
-  // produce card, moved over.
-  const cards = await query(`select id, phrase_id, skill from cards order by skill, id`);
-  assert.deepEqual(
-    cards.filter((c) => c.phrase_id === PH.keep).map((c) => [c.skill, c.id]),
-    [["produce", CARD.dupeProduce], ["recognize", CARD.keepRecognize]],
-  );
-  assert.equal(cards.length, 4);
-  // Reviews: the merged card's flashcard review moves to the survivor; its
-  // session review in a conversation the survivor already has one for is
-  // the one row dropped.
-  const reviews = await query(`select card_id, mode, rating from reviews order by card_id, mode`);
-  assert.deepEqual(
-    reviews.map((r) => [r.card_id, r.mode, r.rating]),
-    [
-      [CARD.keepRecognize, "flashcard", 3],
-      [CARD.keepRecognize, "session", 3],
-      [CARD.dupeProduce, "session", 3],
-    ],
-  );
-  assert.equal((await query(`select to_regclass('phrase_merge')::text as t`))[0].t, null, "the merge table is gone");
-
-  // The new keys: one row per target form per profile; another of Sam's
-  // languages may have the same one; a child can't sit under another profile
-  // than its parent, nor a phrase under another learner's profile.
-  await fails(query, `insert into phrases (learner_id, language_profile_id, lang, text, norm, source) values ($1, $2, 'es-AR', 'A cómo', 'a cómo', 'gloss')`, [L.sam, LP.samEs], "23505");
-  await query(`insert into phrases (learner_id, language_profile_id, lang, text, norm, source) values ($1, $2, 'de-DE', 'a cómo', 'a cómo', 'gloss')`, [L.sam, LP.samDe]);
-  await fails(query, `insert into phrases (learner_id, language_profile_id, lang, meaning, meaning_norm, source) values ($1, $2, 'es-MX', 'TAXI', 'taxi', 'scenario')`, [L.sam, LP.samEs], "23505");
-  await fails(query, `insert into cards (phrase_id, learner_id, language_profile_id, skill) values ($1, $2, $3, 'listen')`, [PH.keep, L.sam, LP.samDe], "23503");
-  await fails(query, `insert into phrases (learner_id, language_profile_id, lang, text, norm, source) values ($1, $2, 'fr-FR', 'x', 'x', 'manual')`, [L.sam, LP.ana], "23503");
-  await fails(query, `insert into reviews (card_id, learner_id, language_profile_id, mode, rating, card_before) values ($1, $2, $3, 'flashcard', 3, '{}')`, [CARD.hola, L.sam, LP.samDe], "23503");
+  assert.deepEqual(await catalog(query), schema);
+  assert.deepEqual(await contents(query), rows);
+  assert.deepEqual(await migrationState(query, migrationsBefore0003()).then((s) => s.status), "current");
 }
+
+/** The bank tables, each of which alone must stop 0003. */
+export const BANK_TABLES = ["phrases", "phrase_examples", "cards", "cloze_items", "reviews"];

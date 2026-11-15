@@ -6,7 +6,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { newCard, review } from "../fsrs.mjs";
 import {
-  LIMITS, MAX_CAPTURE_WORDS, TROUBLE_LAPSES, bankPage, exampleFor, glossCaptures, phraseMetrics, readPhraseInput, sameLanguage, scenarioEntries, wordCount,
+  LIMITS, MAX_CAPTURE_CHARS, MAX_CAPTURE_WORDS, TROUBLE_LAPSES, bankPage, charCount, clean, exampleFor, glossCaptures, phraseMetrics, readPhraseInput, sameLanguage,
+  scenarioEntries, tooLongToCapture, wordCount,
 } from "../phrases.mjs";
 
 const LINES = [
@@ -39,16 +40,48 @@ test("glossCaptures: one item per target form, sentences left out, sorted by key
   assert.ok(wordCount("¿Qué le doy, joven?", "es-MX") > MAX_CAPTURE_WORDS, "four words: a sentence");
 });
 
-test("glossCaptures counts words without spaces too (CJK)", () => {
-  const items = glossCaptures([{ term: "いくら", meaning: "how much" }, { term: "このりんごはいくらですか", meaning: "how much is this apple?" }], [], "ja-JP");
-  assert.deepEqual(items.map((i) => i.text), ["いくら"]);
+test("glossCaptures: a language without spaces is measured in characters, not segmenter words", () => {
+  const ja = glossCaptures(
+    [
+      { term: "いくら", meaning: "how much" },
+      { term: "ありがとうございます", meaning: "thank you" },
+      { term: "このりんごはいくらですか、教えてください", meaning: "please tell me how much this apple is" },
+    ],
+    [],
+    "ja-JP",
+  );
+  // ありがとうございます is one phrase, however a segmenter cuts it: kept.
+  assert.deepEqual(ja.map((i) => i.text).sort(), ["ありがとうございます", "いくら"].sort());
+  const zh = glossCaptures([{ term: "请再说一遍", meaning: "please say it again" }, { term: "你好", meaning: "hello" }], [], "zh-CN");
+  assert.equal(zh.length, 2, "short Mandarin phrases are phrases");
+  assert.equal(charCount("请再说一遍。"), 5, "punctuation isn't counted");
+  assert.equal(charCount("ขอบคุณครับ") <= MAX_CAPTURE_CHARS, true, "a Thai mark isn't a character of its own");
+  assert.equal(tooLongToCapture("x".repeat(MAX_CAPTURE_CHARS + 1), "zh-TW"), true);
+  assert.equal(tooLongToCapture("una dos tres cuatro", "es-MX"), true);
+  assert.equal(tooLongToCapture("una dos tres", "es-MX"), false);
 });
 
-test("exampleFor: the line's target words, or its text with no segments; null when no line has it", () => {
-  assert.equal(exampleFor("¡Hola!", [{ speaker: "dojo_master", text: "Hola, ¿cómo estás?" }]).sentence, "Hola, ¿cómo estás?");
-  assert.equal(exampleFor("hola", [{ speaker: "x", text: "Say hola.", segments: [{ lang: "native", text: "Say" }, { lang: "target", text: "hola" }] }]).sentence, "hola");
-  assert.equal(exampleFor("adiós", LINES), null);
-  assert.ok(exampleFor("x", [{ speaker: "x", text: "x ".repeat(400) }]).sentence.length <= LIMITS.sentence);
+test("exampleFor: the line's target words holding the term as whole words; not the term alone; null when no line has it", () => {
+  assert.equal(exampleFor("¡Hola!", [{ speaker: "dojo_master", text: "Hola, ¿cómo estás?" }], "es-MX").sentence, "Hola, ¿cómo estás?");
+  // A line that is only the term shows nothing of its use.
+  assert.equal(exampleFor("hola", [{ speaker: "x", text: "Say hola.", segments: [{ lang: "native", text: "Say" }, { lang: "target", text: "hola" }] }], "es-MX"), null);
+  assert.equal(exampleFor("¡Hola!", [{ speaker: "x", text: "Hola." }, { speaker: "y", text: "Hola, joven." }], "es-MX").sentence, "Hola, joven.");
+  assert.equal(exampleFor("adiós", LINES, "es-MX"), null);
+  // Whole words: "mar" isn't in "mercado", "a diez" is in "a diez.".
+  assert.equal(exampleFor("mar", [{ speaker: "x", text: "Vamos al mercado." }], "es-MX"), null);
+  assert.equal(exampleFor("a diez", LINES, "es-MX").speaker, "character");
+  assert.equal(exampleFor("está", LINES, "es-MX"), null, "están is another word");
+  // No spaces: found as text.
+  assert.equal(exampleFor("いくら", [{ speaker: "x", text: "このりんごはいくらですか。" }], "ja-JP").sentence, "このりんごはいくらですか。");
+  assert.ok(exampleFor("x", [{ speaker: "x", text: "x ".repeat(400) }], "es-MX").sentence.length <= LIMITS.sentence);
+});
+
+test("clean: C0 controls, DEL and bidi overrides go; a note keeps its lines", () => {
+  assert.equal(clean("a\u0007b\u202Ec\u2066d\u007Fe"), "abcde");
+  assert.deepEqual(readPhraseInput({ text: "\u202Emangos\u202C", meaning: "mango\u0001es", note: "one\r\ntwo\u0008" }, { create: true }).value, {
+    text: "mangos", meaning: "mangoes", note: "one\ntwo",
+  });
+  assert.deepEqual(glossCaptures([{ term: "ma\u200Fngo\u202E", meaning: "mango" }], [], "es-MX").map((i) => i.text), ["ma\u200Fngo"], "only the overrides, not every bidi mark");
 });
 
 test("sameLanguage: by ISO language where known, else by name; a blank side never disagrees", () => {
@@ -94,12 +127,16 @@ test("readPhraseInput: an add needs words; an edit needs something; strings chec
   assert.match(readPhraseInput({ text: null }).error, /blank/);
   assert.deepEqual(readPhraseInput({ meaning: "", note: null, starred: true }).value, { meaning: null, note: null, starred: true });
   assert.match(readPhraseInput({ suspended: "yes" }).error, /true or false/);
+  // A note is measured as stored: its lines kept, so runs of spaces that
+  // one-lining would fold still count.
+  assert.match(readPhraseInput({ note: "x\n".repeat(LIMITS.note) }).error, /longer than/);
+  assert.equal(readPhraseInput({ note: `${"x".repeat(LIMITS.note)}\u0001\u0001` }).value.note.length, LIMITS.note);
   assert.match(readPhraseInput([]).error, /JSON object/);
 });
 
 test("phraseMetrics: the weakest card's band, the earliest due, trouble from lapses", () => {
   const t0 = new Date("2026-11-01T12:00:00Z");
-  assert.deepEqual(phraseMetrics([], 0), { mastery: "New", due: null, lapses: 0, trouble: false, cardCount: 0 });
+  assert.deepEqual(phraseMetrics([], 0), { mastery: "New", due: null, newCards: 0, lapses: 0, trouble: false, cardCount: 0 });
   const fresh = newCard(t0);
   let strong = fresh;
   for (const d of [0, 3, 12, 40]) strong = review(strong, 3, new Date(t0.getTime() + d * 86_400_000)).card;
@@ -111,13 +148,16 @@ test("phraseMetrics: the weakest card's band, the earliest due, trouble from lap
   assert.equal(phraseMetrics([strong], TROUBLE_LAPSES - 1).trouble, false);
   assert.notEqual(phraseMetrics([strong]).mastery, "New");
   assert.equal(phraseMetrics([fresh]).mastery, "New", "a card never reviewed is New");
+  // ...and new, not due: its due time is when it was made.
+  assert.deepEqual([phraseMetrics([fresh]).due, phraseMetrics([fresh]).newCards], [null, 1]);
+  assert.equal(phraseMetrics([fresh, learning]).due, learning.due, "due from the reviewed card only");
 });
 
 test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   const now = new Date("2026-11-15T12:00:00Z");
   const p = (id, extra) => ({
     id, text: id, meaning: null, note: null, lang: "es-MX", source: "gloss", pending: false, starred: false, suspended: false, firstSeenAt: null, lastSeenAt: null,
-    seenCount: 0, lastPracticedAt: null, createdAt: "2026-11-01T00:00:00Z", mastery: "New", due: null, lapses: 0, trouble: false, cardCount: 0, exampleCount: 0, ...extra,
+    seenCount: 0, lastPracticedAt: null, createdAt: "2026-11-01T00:00:00Z", mastery: "New", due: null, newCards: 0, lapses: 0, trouble: false, cardCount: 0, exampleCount: 0, ...extra,
   });
   const items = [
     p("café", { meaning: "coffee", lastSeenAt: "2026-11-14T00:00:00Z", due: "2026-11-10T00:00:00Z", mastery: "Learning", cardCount: 1 }),
@@ -128,8 +168,13 @@ test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   ];
   const all = bankPage(items, {}, now);
   assert.equal(all.total, 5);
-  assert.deepEqual(all.counts, { all: 5, starred: 1, due: 2, trouble: 1, pending: 1, suspended: 1, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 1 } });
+  assert.deepEqual(all.counts, { all: 5, starred: 1, new: 0, due: 2, trouble: 1, pending: 1, suspended: 1, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 1 } });
   assert.deepEqual(all.phrases.map((x) => x.id), ["la vuelta", "café", "ojo", "taxi", "zzz"], "last seen first, else added; ties by words");
+  // A phrase whose only card was never reviewed is new, not due; a
+  // suspended one is neither.
+  const fresh = [p("mango", { newCards: 1, cardCount: 1 }), p("piña", { newCards: 1, cardCount: 1, suspended: true })];
+  const page = bankPage(fresh, { show: "new" }, now);
+  assert.deepEqual([page.phrases.map((x) => x.id), page.counts.new, page.counts.due], [["mango"], 1, 0]);
   assert.deepEqual(bankPage(items, { q: "CAFE" }, now).phrases.map((x) => x.id), ["café", "zzz"], "accent- and case-blind, in note too");
   assert.deepEqual(bankPage(items, { show: "due" }, now).phrases.map((x) => x.id).sort(), ["café", "ojo"], "suspended isn't due");
   assert.deepEqual(bankPage(items, { show: "pending" }, now).phrases.map((x) => x.id), ["taxi"]);

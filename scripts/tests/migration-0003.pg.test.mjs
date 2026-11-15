@@ -1,43 +1,48 @@
 // Migration 0003 (the phrase bank moves under language profiles) on a real
 // Postgres (the app runs Homebrew's PostgreSQL 17; PGlite, the rest of the
-// suite, is 18), with data in it: runs only when LINGO_TEST_PG_URL names a
-// server, skipped otherwise. It makes a throwaway database there, migrates
-// it to 0002, fills it with a bank keyed by learner and lang, applies 0003
-// and checks every row (migration-0003.mjs), then drops it. It never touches
-// the database the URL names beyond connecting to it.
+// suite, is 18): runs only when LINGO_TEST_PG_URL names a server, skipped
+// otherwise. Each test makes throwaway databases there (pg-scratch.mjs),
+// migrates to 0002 with data, and checks migration-0003.mjs's two cases:
+// an empty bank applies and matches a fresh build, a bank row is refused
+// with nothing changed. It never touches the database the URL names beyond
+// connecting to it.
 //   LINGO_TEST_PG_URL=postgres://localhost/some_scratch_db node --test scripts/tests/migration-0003.pg.test.mjs
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
-import pg from "pg";
 import { applyMigrations } from "../db/migrations.mjs";
-import { migrateAndCheck0003, migrationsBefore0003, seedBefore0003 } from "./migration-0003.mjs";
+import { migrateEmptyAndCheck, migrationsBefore0003, refuseAndCheck, seedBankRow, seedBefore0003 } from "./migration-0003.mjs";
+import { scratchDatabase } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 
-test("0003 on a populated 0002 database, on real Postgres", { skip }, async () => {
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
-  // One client: applyMigrations runs its transaction on one connection.
-  const client = new pg.Client({ connectionString: target.toString() });
-  await client.connect();
-  try {
-    const version = (await client.query("show server_version_num")).rows[0].server_version_num;
-    console.log(`migration 0003 on PostgreSQL ${version}`);
-    assert.ok(Number(version) >= 150000, "SET NULL (col) needs PostgreSQL 15+");
-    const query = async (text, params) => (await client.query(text, params)).rows;
+/** A throwaway database on the server, as one client's `query` (applyMigrations
+ *  runs its transaction on one connection). */
+async function scratch(t) {
+  const db = await scratchDatabase(url, "m0003");
+  t.after(db.drop);
+  const version = (await db.query("show server_version_num"))[0].server_version_num;
+  assert.ok(Number(version) >= 150000, "SET NULL (col) needs PostgreSQL 15+");
+  return db.query;
+}
+
+test("0003 on a 0002 database with data and an empty bank, on real Postgres: applies, schema as a fresh build", { skip }, async (t) => {
+  const query = await scratch(t);
+  console.log(`migration 0003 on PostgreSQL ${(await query("show server_version_num"))[0].server_version_num}`);
+  await applyMigrations(query, migrationsBefore0003());
+  await seedBefore0003(query);
+  const built = await scratch(t);
+  await applyMigrations(built);
+  await migrateEmptyAndCheck(query, built);
+});
+
+test("0003 refuses a 0002 database with bank rows, on real Postgres, changing nothing", { skip }, async (t) => {
+  for (const table of ["phrases", "reviews"]) {
+    const query = await scratch(t);
     await applyMigrations(query, migrationsBefore0003());
     await seedBefore0003(query);
-    await migrateAndCheck0003(query);
-  } finally {
-    await client.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    await seedBankRow(query, table);
+    await refuseAndCheck(query);
   }
 });

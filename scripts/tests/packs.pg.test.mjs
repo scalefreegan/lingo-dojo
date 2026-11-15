@@ -17,7 +17,6 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { applyMigrations } from "../db/migrations.mjs";
@@ -25,18 +24,15 @@ import * as schema from "../db/schema.ts";
 import { createLearner, createUser } from "../db/accounts.ts";
 import { deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, renamePack, restoreRevision, savePack, undeletePack } from "../db/packs.ts";
 import { ADULT } from "./http-session.mjs";
+import { createDatabase, dropDatabase, scratchName } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 
 /** A migrated throwaway database on the URL's server, with one learner and its language profile, for `fn`; dropped after. */
 async function withLearner(fn) {
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
+  const name = scratchName("packs");
+  const target = new URL(await createDatabase(url, name));
   const pool = new pg.Pool({ connectionString: target.toString(), max: 16 });
   try {
     await applyMigrations(async (text, params) => (await pool.query(text, params)).rows);
@@ -46,8 +42,8 @@ async function withLearner(fn) {
     await fn(pool, db, { id: learner.language.id, learnerId: learner.id });
   } finally {
     await pool.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    // After every pool and client on it has ended (pg-scratch.mjs).
+    await dropDatabase(url, name);
   }
 }
 

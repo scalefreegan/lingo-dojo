@@ -9,21 +9,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import pg from "pg";
 import { applyMigrations } from "../db/migrations.mjs";
 import { migrateAndCheck, migrationsBefore0002, seedBefore0002 } from "./migration-0002.mjs";
+import { createDatabase, dropDatabase, scratchName } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 
 test("0002 on a populated 0001 database, on real Postgres", { skip }, async () => {
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
+  const name = scratchName("m0002");
+  const target = new URL(await createDatabase(url, name));
   // One client: applyMigrations runs its transaction on one connection.
   const client = new pg.Client({ connectionString: target.toString() });
   await client.connect();
@@ -37,7 +33,7 @@ test("0002 on a populated 0001 database, on real Postgres", { skip }, async () =
     await migrateAndCheck(query);
   } finally {
     await client.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    // After every pool and client on it has ended (pg-scratch.mjs).
+    await dropDatabase(url, name);
   }
 });

@@ -53,6 +53,9 @@ after(async () => {
   await testDb.close();
 });
 beforeEach(() => fake.answer(REPLY));
+const OTHER = ["CHARACTER-F: <t>Le doy el kilo a veinte.</t>", "GLOSS: el kilo = the kilo", "STAGE: scene"].join("\n");
+/** The stand-in's next replies gloss "el kilo" instead. */
+const fakeOther = () => fake.answer(OTHER);
 
 const pack = (extra = {}) => ({ title: "", created: "", scenario: "market", quick_scenario: "", units: [], overrides: {}, notes: "", ...extra });
 
@@ -114,15 +117,17 @@ test("a turn's glosses are seen inside the turn's transaction: upserted, counted
   // The four-word gloss is a sentence's translation: not a phrase.
   assert.equal(got["¿Qué le doy, joven?"], undefined);
   const mercado = got["mercado"];
-  assert.deepEqual([mercado.source, mercado.meaning, mercado.seenCount, mercado.cardCount, mercado.exampleCount, mercado.mastery], ["gloss", "market", 1, 1, 1, "New"]);
+  // Its only target-language line is the word itself: no example.
+  assert.deepEqual([mercado.source, mercado.meaning, mercado.seenCount, mercado.cardCount, mercado.exampleCount, mercado.mastery], ["gloss", "market", 1, 1, 0, "New"]);
   assert.ok(mercado.lastSeenAt && mercado.firstSeenAt);
-  assert.ok(mercado.due, "the recognize card is due");
-  const detail = (await sam.call("GET", `/api/phrases/${mercado.id}`)).body.phrase;
-  assert.deepEqual(detail.examples.map((e) => [e.sentence, e.speaker, e.conversationId]), [["mercado.", "narrator", c.id]]);
-  const [ex] = await q("select turn_id from phrase_examples where phrase_id = $1", [mercado.id]);
-  assert.equal(ex.turn_id, reply.id, "the example points at the reply that glossed it");
+  assert.deepEqual([mercado.due, mercado.newCards], [null, 1], "the recognize card is new, waiting to be learned, not due");
   const vuelta = got["la vuelta"];
-  assert.equal((await sam.call("GET", `/api/phrases/${vuelta.id}`)).body.phrase.examples[0].sentence, "¿Qué le doy, joven? Quédese con la vuelta.");
+  const detail = (await sam.call("GET", `/api/phrases/${vuelta.id}`)).body.phrase;
+  assert.deepEqual(detail.examples.map((e) => [e.sentence, e.speaker, e.conversationId]), [["¿Qué le doy, joven? Quédese con la vuelta.", "character", c.id]]);
+  const [ex] = await q("select turn_id from phrase_examples where phrase_id = $1", [vuelta.id]);
+  assert.equal(ex.turn_id, reply.id, "the example points at the reply that glossed it");
+  const counts = (await bank(sam)).body.counts;
+  assert.deepEqual([counts.new, counts.due], [2, 0], "met in a session: new, nothing due yet");
 
   // The next turn glosses it again: seen twice, still one card, and the same
   // line isn't kept twice.
@@ -130,7 +135,8 @@ test("a turn's glosses are seen inside the turn's transaction: upserted, counted
   const r1 = await turn(sam, c.id, h1, "Unos mangos.");
   assert.equal(r1.status, 200, r1.text);
   got = byText((await bank(sam)).body.phrases);
-  assert.deepEqual([got["mercado"].seenCount, got["mercado"].cardCount, got["mercado"].exampleCount], [2, 1, 1]);
+  assert.deepEqual([got["mercado"].seenCount, got["mercado"].cardCount], [2, 1]);
+  assert.equal(got["la vuelta"].exampleCount, 1, "the same line isn't kept twice");
   assert.equal((await q("select count(*)::int as n from reviews"))[0].n, 0, "seeing is not a review");
   assert.equal((await q("select count(*)::int as n from phrases where last_practiced_at is not null"))[0].n, 0);
 
@@ -141,28 +147,64 @@ test("a turn's glosses are seen inside the turn's transaction: upserted, counted
   assert.equal(byText((await bank(sam)).body.phrases)["mercado"].seenCount, 3);
 });
 
-test("a gloss fills in a pending scenario phrase with its meaning; a pending one whose words are already known goes", async () => {
+test("words for a pending scenario phrase's meaning absorb it: its star and note carried, the pending row gone", async () => {
   const sam = await someone();
   const c = await start(sam, pack({ scenario: "errand" }));
-  let list = (await bank(sam, "?show=pending")).body.phrases;
+  const list = (await bank(sam, "?show=pending")).body.phrases;
   assert.deepEqual(list.map((p) => p.meaning).sort(), ["How much is it?", "Keep the change", "market"]);
   assert.ok(list.every((p) => p.text === null && p.cardCount === 0));
-  // "the change" was starred while pending; the market scene's vocab then
-  // pairs "How much is it?" with words, filling that one in.
+  // "the change" was starred while pending, "market" given a note; the
+  // market scene's vocab then pairs "How much is it?" with words.
   const change = list.find((p) => p.meaning === "Keep the change");
   await q("update phrases set meaning = 'the change', meaning_norm = 'the change', starred = true where id = $1", [change.id]);
+  await sam.call("PATCH", `/api/phrases/${list.find((p) => p.meaning === "market").id}`, { note: "the big one downtown" });
   await start(sam);
-  assert.equal(byText((await bank(sam)).body.phrases)["¿Cuánto cuesta?"].id, list.find((p) => p.meaning === "How much is it?").id, "filled in, same row");
-  // Words for "the change" already in the bank: the pending row goes, its star kept.
+  const cuanto = byText((await bank(sam)).body.phrases)["¿Cuánto cuesta?"];
+  assert.deepEqual([cuanto.source, cuanto.meaning], ["scenario", "How much is it?"]);
+  assert.equal(byText((await bank(sam, "?show=pending")).body.phrases)["(How much is it?)"], undefined, "absorbed");
+  // Words for "the change" already in the bank: the pending row goes into
+  // them, its star kept.
   await sam.call("POST", "/api/phrases", { text: "la vuelta", starred: false });
   const r = await turn(sam, c.id, [], "");
   assert.equal(r.status, 200, r.text);
   const got = byText((await bank(sam)).body.phrases);
-  assert.equal(got["mercado"].id, list.find((p) => p.meaning === "market").id, "the pending 'market' became mercado");
-  assert.deepEqual([got["mercado"].source, got["mercado"].seenCount, got["mercado"].meaning], ["scenario", 1, "market"]);
-  assert.equal(got["la vuelta"].starred, true, "the deleted pending row's star carried over");
+  assert.deepEqual([got["mercado"].source, got["mercado"].seenCount, got["mercado"].meaning, got["mercado"].note], ["gloss", 1, "market", "the big one downtown"]);
+  assert.equal(got["la vuelta"].starred, true, "the pending row's star carried over");
   assert.equal(got["(the change)"], undefined);
   assert.equal((await bank(sam, "?show=pending")).body.total, 0);
+});
+
+test("a stored reply the browser dropped takes its sightings with it", async () => {
+  const sam = await someone();
+  const c = await start(sam, pack({ scenario: "" }));
+  assert.equal((await turn(sam, c.id, [], "")).status, 200);
+  // A starred phrase the dropped reply also glossed stays; the rest of
+  // what it alone added goes.
+  await sam.call("POST", "/api/phrases", { text: "mercado" });
+  const [first] = await q("select id from turns where conversation_id = $1 and role = 'master'", [c.id]);
+  // The next turn's history leaves the stored reply out: it is deleted and
+  // the new one stored in its place.
+  fakeOther();
+  const r = await turn(sam, c.id, [], "Hola.");
+  assert.equal(r.status, 200, r.text);
+  assert.equal((await q("select count(*)::int as n from turns where id = $1", [first.id]))[0].n, 0, "the dropped reply is gone");
+  const got = byText((await bank(sam)).body.phrases);
+  assert.equal(got["la vuelta"], undefined, "seen only in the dropped reply, untouched since: gone");
+  assert.deepEqual([got["mercado"].seenCount, got["mercado"].lastSeenAt, got["mercado"].cardCount, got["mercado"].starred], [0, null, 0, true], "starred: kept, unseen");
+  assert.deepEqual([got["el kilo"].seenCount], [1], "the new reply's own gloss");
+  assert.equal((await q("select count(*)::int as n from phrase_examples where turn_id is null"))[0].n, 0, "no example left pointing nowhere");
+
+  // A phrase seen in a reply that stays is only counted down.
+  const c2 = await start(sam, pack({ scenario: "" }));
+  const r1 = await turn(sam, c2.id, [], "");
+  const h1 = after1([], "", r1);
+  await turn(sam, c2.id, h1, "Uno.");
+  assert.equal(byText((await bank(sam)).body.phrases)["el kilo"].seenCount, 3);
+  // Drop the last reply: the history ends at the learner's line before it.
+  const r3 = await turn(sam, c2.id, [...h1, { role: "learner", text: "Uno." }], "Otro.");
+  assert.equal(r3.status, 200, r3.text);
+  assert.equal((await q("select count(*)::int as n from turns where conversation_id = $1 and role = 'master'", [c2.id]))[0].n, 2);
+  assert.equal(byText((await bank(sam)).body.phrases)["el kilo"].seenCount, 3, "one reply dropped, one added");
 });
 
 test("a session in another language than the profile's (a pack override) leaves the bank alone", async () => {
@@ -214,6 +256,10 @@ test("add, star, look up, edit, suspend and delete through the routes", async ()
   assert.equal((await sam.call("GET", `/api/phrases/lookup?text=${encodeURIComponent("¡A cómo!")}`)).body.phrase.id, p.id);
   assert.equal((await sam.call("GET", "/api/phrases/lookup?text=nada")).body.phrase, null);
   assert.equal((await sam.call("GET", "/api/phrases/lookup")).body.phrase, null);
+  // A NUL (or another control) in a lookup is dropped, not a 500.
+  r = await sam.call("GET", `/api/phrases/lookup?text=${encodeURIComponent("¿A\u0000 cómo?")}`);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.phrase.id, p.id);
   // Unstar, edit, suspend.
   r = await sam.call("PATCH", `/api/phrases/${p.id}`, { starred: false, meaning: "how much (is it)?", note: "" });
   assert.equal(r.status, 200, r.text);
@@ -250,6 +296,27 @@ test("add, star, look up, edit, suspend and delete through the routes", async ()
   assert.equal((await sam.call("GET", `/api/phrases/${p.id}`)).status, 404);
   assert.equal((await sam.call("DELETE", `/api/phrases/${p.id}`)).status, 404);
   assert.equal((await sam.call("GET", "/api/phrases/not-a-uuid")).status, 404);
+});
+
+test("a scene phrase deleted from the bank stays deleted at the scene's next start; adding it by hand brings it back", async () => {
+  const sam = await someone();
+  await start(sam);
+  const cuanto = byText((await bank(sam)).body.phrases)["¿Cuánto cuesta?"];
+  assert.equal((await sam.call("DELETE", `/api/phrases/${cuanto.id}`)).status, 200);
+  await start(sam, pack({ scenario: "errand" }));
+  const [pending] = (await bank(sam, "?show=pending&q=market")).body.phrases;
+  assert.equal((await sam.call("DELETE", `/api/phrases/${pending.id}`)).status, 200);
+  await start(sam);
+  await start(sam, pack({ scenario: "errand" }));
+  const got = byText((await bank(sam)).body.phrases);
+  assert.equal(got["¿Cuánto cuesta?"], undefined, "vocab not re-added");
+  assert.equal(got["(market)"], undefined, "nor a pending meaning");
+  assert.equal(got["(How much is it?)"], undefined, "nor the meaning of the deleted vocab");
+  assert.ok(got["kilo | medio"], "the rest of the list still comes");
+  // Added by hand, it is the learner's again, and the scene keeps it.
+  assert.equal((await sam.call("POST", "/api/phrases", { text: "¿Cuánto cuesta?" })).status, 201);
+  await start(sam);
+  assert.equal(byText((await bank(sam)).body.phrases)["¿Cuánto cuesta?"].meaning, "How much is it?", "the scene fills its meaning in");
 });
 
 test("a pending phrase given words becomes complete; its meaning can't be cleared while it has none", async () => {

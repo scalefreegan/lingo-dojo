@@ -72,7 +72,7 @@ test("the migration builds every table, with pg_trgm", async (t) => {
   const tables = (await query(`select tablename from pg_tables where schemaname = 'public' order by 1`)).map((r) => r.tablename);
   assert.deepEqual(tables, [
     "agent_messages", "auth_sessions", "cards", "cloze_items", "conversations", "language_profiles", "learners",
-    "pack_folders", "pack_revisions", "packs", "phrase_examples", "phrases", "reviews",
+    "pack_folders", "pack_revisions", "packs", "phrase_dismissals", "phrase_examples", "phrases", "reviews",
     "turns", "user_settings", "users",
   ]);
   assert.equal((await query(`select extname from pg_extension where extname = 'pg_trgm'`)).length, 1);
@@ -198,6 +198,23 @@ test("deleting a conversation nulls only the provenance links, keeping the memor
   await mine.remove(phrases, eq(phrases.id, ph.id));
   assert.equal((await mine.list(cards)).length, 0);
   assert.equal((await mine.list(reviews)).length, 0);
+});
+
+test("an example's conversation and turn, and a review's conversation, are in the phrase's own language", async (t) => {
+  const { db, close } = await freshDb();
+  t.after(close);
+  const { learnerIds: [a], profiles: [es] } = await seed(db, "ana", "Ana");
+  const [deRow] = await forLearner(db, a).insert(languageProfiles, { targetLanguage: "German" });
+  const de = forLanguageProfile(db, { id: deRow.id, learnerId: a });
+  const mine = forLanguageProfile(db, es);
+  // The same learner's German conversation and turn.
+  const [conv] = await de.insert(conversations, { packSnapshot: {}, mode: "adult" });
+  const [turn] = await de.insert(turns, { conversationId: conv.id, idx: 0, role: "master", lines: [] });
+  const [ph] = await mine.insert(phrases, word("hola"));
+  const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "recognize" });
+  await rejectsWith(mine.insert(phraseExamples, { phraseId: ph.id, conversationId: conv.id, sentence: "Hola." }), FOREIGN_KEY);
+  await rejectsWith(mine.insert(phraseExamples, { phraseId: ph.id, turnId: turn.id, sentence: "Hola." }), FOREIGN_KEY);
+  await rejectsWith(mine.insert(reviews, { cardId: card.id, mode: "session", rating: 3, conversationId: conv.id, cardBefore: BEFORE }), FOREIGN_KEY);
 });
 
 test("deleting a learner nulls only an auth session's active learner", async (t) => {

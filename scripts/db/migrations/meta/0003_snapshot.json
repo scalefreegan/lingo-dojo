@@ -1,5 +1,5 @@
 {
-  "id": "94338caf-ac42-4e78-a1b5-5916b951cbd2",
+  "id": "abc467b4-ff7c-4af5-a664-0730d37e11fa",
   "prevId": "d8044bfe-8c88-43ad-a791-12099b22e9a9",
   "version": "7",
   "dialect": "postgresql",
@@ -1372,6 +1372,80 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.phrase_dismissals": {
+      "name": "phrase_dismissals",
+      "schema": "",
+      "columns": {
+        "learner_id": {
+          "name": "learner_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "language_profile_id": {
+          "name": "language_profile_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "phrase_dismissals_profile_fk": {
+          "name": "phrase_dismissals_profile_fk",
+          "tableFrom": "phrase_dismissals",
+          "tableTo": "language_profiles",
+          "columnsFrom": [
+            "language_profile_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "phrase_dismissals_pk": {
+          "name": "phrase_dismissals_pk",
+          "columns": [
+            "language_profile_id",
+            "kind",
+            "key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "phrase_dismissals_kind": {
+          "name": "phrase_dismissals_kind",
+          "value": "\"phrase_dismissals\".\"kind\" in ('text', 'meaning')"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.phrase_examples": {
       "name": "phrase_examples",
       "schema": "",
@@ -1507,6 +1581,36 @@
           "columnsTo": [
             "id",
             "learner_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "phrase_examples_conversation_profile_fk": {
+          "name": "phrase_examples_conversation_profile_fk",
+          "tableFrom": "phrase_examples",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "phrase_examples_turn_profile_fk": {
+          "name": "phrase_examples_turn_profile_fk",
+          "tableFrom": "phrase_examples",
+          "tableTo": "turns",
+          "columnsFrom": [
+            "turn_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
@@ -1972,6 +2076,21 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "reviews_conversation_profile_fk": {
+          "name": "reviews_conversation_profile_fk",
+          "tableFrom": "reviews",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2152,6 +2271,14 @@
           "columns": [
             "id",
             "learner_id"
+          ]
+        },
+        "turns_id_profile": {
+          "name": "turns_id_profile",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "language_profile_id"
           ]
         }
       },

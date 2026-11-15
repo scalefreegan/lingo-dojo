@@ -7,7 +7,7 @@ import {
 } from "../../scripts/conversations.mjs";
 import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/db/accounts.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
-import { addScenarioPhrases, recordGlosses } from "../../scripts/db/phrases.ts";
+import { addScenarioPhrases, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { glossCaptures, sameLanguage, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
@@ -260,7 +260,9 @@ function bankLocale(profile: Pick<LanguageProfile, "targetLanguage">, conv: Pick
  * fails costs the bank that turn, never the turn). Only the reply the
  * server just produced is captured: master turns reinserted from the
  * browser's history are its copy (from_client), and were captured, if at
- * all, when they were the reply.
+ * all, when they were the reply. A stored reply the write deletes (the
+ * browser dropped it) takes its sightings with it (unrecordGlosses), so a
+ * phrase isn't counted for a reply the transcript no longer has.
  */
 export async function saveTurn(
   profile: LanguageProfileRef & Pick<LanguageProfile, "targetLanguage">,
@@ -282,7 +284,20 @@ export async function saveTurn(
     // Not an error: a history that doesn't cover what is stored rewrites
     // nothing (DATA.md §Conversations), but a working browser never sends one.
     if (!covered) console.warn(`[lingo-dojo] conversation ${conversationId}: the turn's history doesn't cover the ${stored.length} stored turns; appended only`);
-    if (keep < stored.length) await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
+    const lang = bankLocale(profile, conv);
+    if (keep < stored.length) {
+      // Replies the server produced were captured (recordGlosses below, when
+      // they were new); undo that before they go, while their examples
+      // still name them.
+      if (lang != null) {
+        for (const gone of stored.slice(keep)) {
+          if (gone.role !== "master" || gone.fromClient) continue;
+          const norms = glossCaptures(gone.glosses, gone.lines, lang || null).map((c) => c.norm);
+          await unrecordGlosses(tx, profile, { turnId: gone.id, norms });
+        }
+      }
+      await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
+    }
     const written = await mine.insert(
       turns,
       insert.map((r) => ({
@@ -293,7 +308,6 @@ export async function saveTurn(
       })),
     );
     const reply = written.findLast((t) => t.role === "master" && !t.fromClient);
-    const lang = bankLocale(profile, conv);
     if (reply && lang != null && turn.master.role === "master") {
       const items = glossCaptures(turn.master.glosses, turn.master.lines, lang || null);
       await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });

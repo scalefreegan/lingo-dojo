@@ -17,7 +17,6 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -29,6 +28,7 @@ import { serveApi } from "./connect-stack.mjs";
 import { fakeClaude } from "./fake-claude.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, addUser, client } from "./http-session.mjs";
+import { createDatabase, dropDatabase, scratchName } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
@@ -41,12 +41,8 @@ test(`End and a turn at the same moment on real Postgres, ${TRIALS} times: store
   process.env.LINGO_ENV_FILE = path.join(dataDir, "no-such.env");
   const { apiPlugins } = await import("../../web/server/api.ts");
 
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
+  const name = scratchName("conv");
+  const target = new URL(await createDatabase(url, name));
   const pool = new pg.Pool({ connectionString: target.toString(), max: 16 });
   const fake = fakeClaude();
   fake.install();
@@ -90,7 +86,7 @@ test(`End and a turn at the same moment on real Postgres, ${TRIALS} times: store
     await server?.close();
     fake.restore();
     await pool.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    // After every pool and client on it has ended (pg-scratch.mjs).
+    await dropDatabase(url, name);
   }
 });

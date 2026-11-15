@@ -359,6 +359,8 @@ export const turns = pgTable(
     foreignKey({ name: "turns_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("cascade"),
     unique("turns_conversation_position").on(t.conversationId, t.idx),
     unique("turns_id_learner").on(t.id, t.learnerId),
+    // For phrase_examples_turn_profile_fk: an example's turn is in its language.
+    unique("turns_id_profile").on(t.id, t.languageProfileId),
   ],
 );
 
@@ -445,10 +447,38 @@ export const phraseExamples = pgTable(
   (t) => [
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "phrase_examples_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
-    // Provenance, the learner's own only; hand-edited to SET NULL (col).
+    // Provenance, the learner's own only, and in the phrase's language
+    // (the _profile_ keys, migration 0003); all hand-edited to SET NULL
+    // (col), so deleting a conversation keeps the example.
     foreignKey({ name: "phrase_examples_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
     foreignKey({ name: "phrase_examples_turn_fk", columns: [t.turnId, t.learnerId], foreignColumns: [turns.id, turns.learnerId] }).onDelete("set null"),
+    foreignKey({ name: "phrase_examples_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("set null"),
+    foreignKey({ name: "phrase_examples_turn_profile_fk", columns: [t.turnId, t.languageProfileId], foreignColumns: [turns.id, turns.languageProfileId] }).onDelete("set null"),
     index("phrase_examples_phrase_idx").on(t.phraseId),
+  ],
+);
+
+/**
+ * A scene-list phrase the learner deleted from the bank: the scene's next
+ * start doesn't add it back (docs/DATA.md §Phrase bank, "Dismissed"). Keyed
+ * like the phrase it stood for: `kind` 'text' with the target form's norm,
+ * or 'meaning' with a pending phrase's meaning_norm. Only the scene lists
+ * read it; a gloss in a session, an add or a star brings the phrase back
+ * (and an add or star clears the mark).
+ */
+export const phraseDismissals = pgTable(
+  "phrase_dismissals",
+  {
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    kind: text("kind").$type<"text" | "meaning">().notNull(),
+    key: text("key").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("phrase_dismissals_kind", sql`${t.kind} in ('text', 'meaning')`),
+    primaryKey({ name: "phrase_dismissals_pk", columns: [t.languageProfileId, t.kind, t.key] }),
+    foreignKey({ name: "phrase_dismissals_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
   ],
 );
 
@@ -527,8 +557,10 @@ export const reviews = pgTable(
     check("reviews_verdict", sql`${t.verdict} in ('exact', 'close', 'accepted', 'wrong', 'self')`),
     foreignKey({ columns: [t.cardId, t.learnerId], foreignColumns: [cards.id, cards.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "reviews_card_profile_fk", columns: [t.cardId, t.languageProfileId], foreignColumns: [cards.id, cards.languageProfileId] }).onDelete("cascade"),
-    // Hand-edited to ON DELETE SET NULL ("conversation_id").
+    // Hand-edited to ON DELETE SET NULL ("conversation_id"); the second
+    // (migration 0003) keeps the conversation in the card's language.
     foreignKey({ name: "reviews_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
+    foreignKey({ name: "reviews_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("set null"),
     // At most one session review per card per conversation (DATA.md).
     uniqueIndex("reviews_one_session_review").on(t.cardId, t.conversationId).where(sql`${t.mode} = 'session'`),
     index("reviews_card_at_idx").on(t.cardId, t.reviewedAt),

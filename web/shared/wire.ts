@@ -941,7 +941,7 @@ export interface TranscribeReply {
 export type MasteryBand = "New" | "Learning" | "Familiar" | "Mastered";
 export type PhraseSource = "gloss" | "extraction" | "manual" | "scenario";
 /** The bank view's filters (GET /api/phrases?show=). */
-export type PhraseShow = "all" | "starred" | "due" | "trouble" | "pending" | "suspended";
+export type PhraseShow = "all" | "starred" | "new" | "due" | "trouble" | "pending" | "suspended";
 export type PhraseSort = "recent" | "due" | "weakest" | "alpha" | "added";
 
 /** One phrase as the bank lists it, with its metrics (DATA.md §Metrics). */
@@ -964,8 +964,11 @@ export interface PhraseSummary {
   createdAt: string;
   /** The band of its weakest card; New with no cards. */
   mastery: MasteryBand;
-  /** Its earliest card's due time; null with no cards. */
+  /** The earliest due time of its cards that have been reviewed; null
+   *  when none has (a card never reviewed is new, not due). */
   due: string | null;
+  /** Its cards never reviewed yet: waiting to be learned. */
+  newCards: number;
   /** Lapses in the last 30 days, and whether that many is "trouble". */
   lapses: number;
   trouble: boolean;

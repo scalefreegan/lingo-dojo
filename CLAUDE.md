@@ -117,7 +117,9 @@ never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
 except the `*.pg.test.mjs` files when `LINGO_TEST_PG_URL` is set (each makes and
-drops a throwaway database on that server; point it at a scratch one).
+drops a throwaway database on that server; point it at a scratch one). A new
+one makes it with `scripts/tests/pg-scratch.mjs` (the process id in the
+name) and closes its pools before the drop, which is `WITH (FORCE)`.
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,
 `.pick()`); every route but the three public ones needs a session.

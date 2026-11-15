@@ -159,9 +159,9 @@ another owner's row:
 
 | Link | References |
 |---|---|
-| `reviews.conversation_id` | `conversations (id, learner_id)` |
-| `phrase_examples.conversation_id` | `conversations (id, learner_id)` |
-| `phrase_examples.turn_id` | `turns (id, learner_id)` |
+| `reviews.conversation_id` | `conversations (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
+| `phrase_examples.conversation_id` | `conversations (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
+| `phrase_examples.turn_id` | `turns (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
 | `auth_sessions.learner_id` | `learners (id, user_id)` |
 | `auth_sessions.language_profile_id` | `language_profiles (id, learner_id)` (migration 0002) |
 
@@ -556,9 +556,9 @@ which is fine at the size of one learner's bank.
   `(language profile, meaning_norm)`, so a pending "taxi" (English) never
   captures the later gloss of the target word "taxi". **Merge rule:** when a
   gloss or extraction pairs a target form with a pending row's meaning, the
-  pending row is filled in (text, norm, `meaning_norm` cleared) if no complete
-  phrase has that norm. Otherwise the pending row is deleted and the complete
-  one kept. Scenario `vocab:` entries (target term + gloss) enter complete.
+  pending row is folded into the complete phrase for that form (made if
+  there is none) and deleted. (The plan filled the pending row in instead;
+  as built it is folded, for one lock order: see "As built (phase 4)".) Scenario `vocab:` entries (target term + gloss) enter complete.
 - **Language.** A phrase belongs to a language profile (built in phase 4,
   migration 0003; before it, the plan keyed the bank by learner and `lang`).
   A profile is one target language, so changing its variant from Mexican to
@@ -593,20 +593,34 @@ tables were keyed by learner and `lang`; the language profiles of
   `language_profiles`, cascading, and each child to its parent's
   `(id, language_profile_id)`. The identity indexes move to
   `(language_profile_id, norm)` and `(language_profile_id, meaning_norm)`,
-  the due and review indexes to the profile. Existing rows: every phrase goes
-  to its learner's **oldest** language profile, archived or not (by
-  `created_at`, then id: the one 0002 made from the learner's one profile),
-  and its examples, cards, reviews and cloze items
-  follow it. Two rows that were distinct under `(learner, lang)` but are one
-  phrase now (the same words met in `es-MX` and `es-ES`) are merged: the
-  oldest is kept, seen counts summed, first seen the earliest, last seen and
-  last practiced the latest, starred if either was, meaning and note the
-  keeper's unless blank, alternates united; examples and cloze items move to
-  the keeper; per skill the keeper's card stays (else the one with the most
-  reps) and takes the others' reviews, dropping a second session review of
-  one conversation; the merged rows are then deleted. The SQL is hand-edited through `scripts/db/hand-edits.mjs` and was applied
-  to a populated 0002 database on PostgreSQL 17 (`migration-0003.pg.test.mjs`)
-  and on PGlite (`db-migration-0003.test.mjs`).
+  the due and review indexes to the profile. Provenance stays in the row's
+  language too: `phrase_examples (conversation_id, language_profile_id)` and
+  `(turn_id, language_profile_id)`, and `reviews (conversation_id,
+  language_profile_id)`, reference the conversation's or turn's
+  `(id, language_profile_id)` (a new unique key on `turns`), with `ON DELETE
+  SET NULL (col)` like the learner-level keys beside them, so deleting a
+  conversation keeps the example or review and clears only the link. It also
+  adds `phrase_dismissals` (below).
+  **It moves no bank row.** Nothing wrote the bank before this phase (the
+  real database had none), and no rule can say which of a learner's
+  languages an old phrase belongs to (`lang` is a variant; a learner may
+  have several profiles, or none). So the migration starts with a guard that
+  refuses to run, with a message saying so, while any of `phrases`,
+  `phrase_examples`, `cards`, `cloze_items` or `reviews` has a row; the
+  migration is one transaction, so a refusal leaves the 0002 schema and
+  every row as they were. The SQL is drizzle-kit's plus the hand edits in
+  `scripts/db/hand-edits.mjs` (the guard, the order, SET NULL (col)).
+  `db-migration-0003.test.mjs` (PGlite) and `migration-0003.pg.test.mjs`
+  (PostgreSQL 17) check both cases on a 0002 database with accounts,
+  learners, languages, conversations and turns: an empty bank migrates,
+  those rows unchanged and the schema identical to a fresh build; a row in
+  any bank table is refused with nothing changed.
+- **Dismissed.** Deleting a phrase records its words (`kind` text, its
+  norm) and its meaning (`kind` meaning) in `phrase_dismissals`
+  (`language_profile_id, kind, key`), and a scene's lists skip those at the
+  scene's next start: a deleted phrase stays deleted. A session that glosses
+  it again brings it back (that is meeting it again), and adding it by hand
+  clears the mark.
 - **Owner scoping** is `forLanguageProfile` (`scripts/db/owned.ts`); every bank
   query is in `scripts/db/phrases.ts`, the routes in `web/server/phrases.ts`,
   and the pure rules (capture lists, input checks, metrics, the list page) in
@@ -618,8 +632,14 @@ tables were keyed by learner and `lang`; the language profiles of
   /api/phrases/lookup?text=` (the ☆'s state), `GET`, `PATCH` (text,
   meaning, note, starred, suspended) and `DELETE /api/phrases/:id`. Another
   language's phrase, of the same learner or not, is a 404.
-- **Filters and sorts.** Show: all, starred, due, trouble, pending (no words
-  yet), suspended (due leaves out pending and suspended phrases). Band: one
+- **New and due.** A card never reviewed (FSRS state New, no reps) is
+  **new**, waiting to be learned, not due: `due` is the earliest due of the
+  cards that have been reviewed, and `newCards` counts the others. So a
+  phrase met in a session (its recognize card made, never reviewed) shows as
+  new, and the bank isn't all due at once.
+- **Filters and sorts.** Show: all, starred, new, due, trouble, pending (no
+  words yet), suspended (new and due leave out pending and suspended
+  phrases). Band: one
   mastery band. Sort: recently seen, due first, weakest first, A to Z,
   newest added. The page is filtered and sorted in memory after one read of
   the profile's rows, fine at one learner's bank size; a large bank would
@@ -627,12 +647,40 @@ tables were keyed by learner and `lang`; the language profiles of
 - **Trouble** is 2 or more lapses in 30 days, a lapse being an Again
   (rating 1) given to a card that was in review (`card_before.state` 2).
 - **Pending pairing.** A gloss pairs a pending phrase only by the meaning
-  the dojo master gave (normalised). A pending phrase is not created when a
-  complete phrase already has that meaning. Giving a pending phrase words in
-  the bank's Edit completes it (or is 409 if those words are already a
-  phrase).
+  the dojo master gave (normalised). The complete phrase for the words is
+  made or found first, then the pending row is folded into it (starred if
+  either was, its note if the complete one has none) and deleted: a change
+  from the merge rule above, which filled the pending row in, so that every
+  write takes its rows in one order (complete rows by norm, then pending
+  rows by meaning) and two conversations capturing at once wait for each
+  other instead of deadlocking or colliding on the words. A write that still
+  collides (an edit giving a pending phrase words while a capture adds
+  them) is retried once (unique violation or deadlock), then reported:
+  `phrases.pg.test.mjs` races captures, an add and crossing meanings on
+  PostgreSQL 17. A pending phrase is not created when a complete phrase
+  already has that meaning. Giving a pending phrase words in the bank's
+  Edit completes it (or is 409 if those words are already a phrase).
+- **Capture limits.** A gloss of more than 3 words is a sentence's
+  translation and isn't captured; in a language written without spaces
+  (Japanese, Chinese, Thai, Lao, Khmer, Burmese, Tibetan) the limit is 12
+  characters (letters and digits) instead, since a word segmenter splits
+  particles and endings off as words. The example is a line holding the
+  term as whole words (as text in those languages), never a line that is
+  only the term. Control characters (C0 but a note's line breaks, DEL, the
+  bidi overrides and isolates) are dropped from words, meanings, notes and
+  gloss terms, and lengths are those of what is stored.
+- **A dropped reply.** When a turn's write deletes a stored reply the
+  browser no longer shows, that reply's sightings are undone in the same
+  transaction: its examples go and each phrase it glossed is seen once
+  less. A phrase whose only sighting that was, and which the learner hasn't
+  touched (a gloss phrase not starred, suspended or noted, no card
+  reviewed), is deleted, as if the reply had never been; one the learner
+  touched stays, unseen, without the card the sighting made. A phrase still
+  seen elsewhere keeps its last-seen time (sightings aren't stored one by
+  one, so the one before can't be known).
 - **UI.** The Library tab's third view, **Phrase bank**: add (starred),
-  search, the show chips with counts, band and sort, a row per phrase with
+  search, the show chips with counts (a Show more page that arrives after
+  the filters changed is dropped), band and sort, a row per phrase with
   its band, ★, the pending, suspended and trouble badges, seen / last seen
   / last practiced / due, and, opened, its examples, Edit, Suspend and
   Delete. The transcript's definition card (Go tab and History) has ☆ Star
@@ -1469,18 +1517,25 @@ Access in System Settings, or keep the checkout elsewhere.
   oldest language and its per-learner idempotence; `draft.test.mjs` the
   browser-key adoption; `db.test.mjs` the scopes and keys; and the
   migration tests above every existing row. Phase 4: `phrases.test.mjs`
-  covers the pure rules (capture lists, CJK word counts, examples, the
-  language match, scenario entries, input checks, metrics, the list page);
+  covers the pure rules (capture lists, the limits with and without spaces,
+  whole-word examples, control characters, the language match, scenario
+  entries, input checks, metrics with new and due, the list page);
   `phrases.http.test.mjs` the scenario lists at a conversation's start, a
-  turn's capture (counts, example, card, no review), pending pairing, a
-  session in another language, a failing capture that keeps the turn,
-  add/star/lookup/edit/suspend/delete, two languages' separate banks and
-  the `stale_learner` 409, another learner and account by id, and the
-  metrics and filters; `db-migration-0003.test.mjs` (PGlite) and
+  turn's capture (counts, example, card, no review), pending absorption, a
+  dropped reply's sightings undone, a deleted scene phrase not coming back,
+  a session in another language, a failing capture that keeps the turn,
+  add/star/lookup (a NUL too)/edit/suspend/delete, two languages' separate
+  banks and the `stale_learner` 409, another learner and account by id, and
+  the metrics and filters; `db-migration-0003.test.mjs` (PGlite) and
   `migration-0003.pg.test.mjs` (with `LINGO_TEST_PG_URL`, PostgreSQL 17)
-  migrate a populated 0002 database (two learners, several languages, a
-  two-variant duplicate with cards and reviews, a pending pair) and check
-  every row; `db.test.mjs` the profile scope on the bank tables.
+  migrate a 0002 database with data and an empty bank, and refuse one with
+  a bank row; `phrases.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races
+  captures of one phrase with an add and crossing pending meanings (both
+  fail on the code before the lock order); `db.test.mjs` the profile scope
+  on the bank tables and the language-level provenance keys. The `.pg`
+  tests make their throwaway databases through `scripts/tests/pg-scratch.mjs`
+  or with the process id in the name, and close their pools before dropping
+  them.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).

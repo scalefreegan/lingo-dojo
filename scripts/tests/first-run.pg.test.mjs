@@ -16,32 +16,28 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { applyMigrations } from "../db/migrations.mjs";
 import * as schema from "../db/schema.ts";
 import { createFirstAdmin, createUser, updateVoiceSettings } from "../db/accounts.ts";
+import { createDatabase, dropDatabase, scratchName } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 
 /** A migrated throwaway database on the URL's server for `fn`, dropped after. */
 async function withThrowawayDb(fn) {
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
+  const name = scratchName("firstrun");
+  const target = new URL(await createDatabase(url, name));
   const pool = new pg.Pool({ connectionString: target.toString(), max: 16 });
   try {
     await applyMigrations(async (text, params) => (await pool.query(text, params)).rows);
     await fn(pool, drizzle(pool, { schema }));
   } finally {
     await pool.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    // After every pool and client on it has ended (pg-scratch.mjs).
+    await dropDatabase(url, name);
   }
 }
 

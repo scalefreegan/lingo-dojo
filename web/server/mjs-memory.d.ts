@@ -122,11 +122,16 @@ declare module "*/scripts/phrases.mjs" {
   export const TROUBLE_LAPSES: number;
   export const TROUBLE_DAYS: number;
   export const MAX_CAPTURE_WORDS: number;
+  export const MAX_CAPTURE_CHARS: number;
+  export function clean(s: unknown): string;
+  export function unspaced(locale: unknown): boolean;
+  export function charCount(text: unknown): number;
+  export function tooLongToCapture(text: unknown, locale?: string | null): boolean;
   export const SHOWS: import("../shared/wire.ts").PhraseShow[];
   export const SORTS: import("../shared/wire.ts").PhraseSort[];
   export function wordCount(text: unknown, locale?: string | null): number;
   export function sameLanguage(profileLanguage: unknown, session: { language?: unknown; variant?: unknown } | null | undefined): boolean;
-  export function exampleFor(term: unknown, lines: unknown[] | null | undefined): Example | null;
+  export function exampleFor(term: unknown, lines: unknown[] | null | undefined, locale?: string | null): Example | null;
   export function glossCaptures(
     glosses: { term?: unknown; meaning?: unknown }[] | null | undefined,
     lines: unknown[] | null | undefined,
@@ -140,8 +145,9 @@ declare module "*/scripts/phrases.mjs" {
     body: unknown,
     opts?: { create?: boolean },
   ): { value: import("../shared/wire.ts").PhraseInput & { text?: string }; error?: undefined } | { error: string; value?: undefined };
-  export function phraseMetrics(cards?: CardInput[], lapses?: number): { mastery: MasteryBand; due: string | null; lapses: number; trouble: boolean; cardCount: number };
+  export function phraseMetrics(cards?: CardInput[], lapses?: number): { mastery: MasteryBand; due: string | null; newCards: number; lapses: number; trouble: boolean; cardCount: number };
   export function isDueNow(p: PhraseSummary, now: Date | string | number): boolean;
+  export function isNew(p: PhraseSummary): boolean;
   export function bankPage(
     items: PhraseSummary[],
     query?: { q?: string; show?: string; band?: string; sort?: string; offset?: number; limit?: number },
