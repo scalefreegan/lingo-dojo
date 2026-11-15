@@ -669,10 +669,18 @@ docs/VOICE.md §Saved conversations is the user's side.
      before the dojo master runs. A turn is never answered and then left
      unsaved because End came in between (checked on a real Postgres by
      `conversations.pg.test.mjs`). The browser covers the turn the server
-     hasn't received yet: when ending (End, Restart, leaving Go) it waits for
-     the conversation to exist and for its turn on the way to answer, then
-     sends End. Only pagehide and unmounting send it at once (the turn dies
-     with the page).
+     hasn't received yet: when ending (End, Restart, leaving Go) it sends End
+     once the open conversation's turn on the way has its answer. Only
+     pagehide and unmounting send it at once (the turn dies with the page).
+     A turn may not have made its conversation yet when the session closes
+     (it is still drawing its cast, or creating it), so the check sits
+     where a conversation comes into being, not at each await: every close
+     bumps a counter each turn compares with the value it began with, and a
+     conversation whose creation answers after a close, or while Go is
+     hidden, is never adopted. It holds that one turn and is ended once the
+     turn has its answer, or at once if the session is gone (End, Restart,
+     the panel closed; `web/src/conversationLife.ts`). The next turn starts
+     a new conversation.
    - Leaving Go keeps the session on screen; a turn after coming back
      starts a new conversation (from that turn on). Reload ends the
      conversation and the session; it can't be resumed until the history is

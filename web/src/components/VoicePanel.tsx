@@ -17,6 +17,7 @@ import type {
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
+import { conversationFate, turnsSettled } from "../conversationLife";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -298,6 +299,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
   const sessionEpoch = useRef(0);
   const unsavedFrom = useRef<number | null>(null);
   const inFlight = useRef(new Map<string, Promise<unknown>>());
+  // How many times the conversation has been closed (closeConversation), and
+  // the ids an End was already sent for.
+  const closes = useRef(0);
+  const endsSent = useRef(new Set<string>());
   const [saving, setSaving] = useState<{ on: true } | { on: false; why: string } | null>(null);
   // End was pressed: the session is over on screen (the transcript stays to
   // read and copy), until Restart.
@@ -551,31 +556,43 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     setPhase("idle");
   }
 
-  /** End the saved conversation, if one is open or being made: fire and
-   *  forget. The End is sent once the conversation exists and its turn on
-   *  the way, if any, has its answer, so that turn is stored in it (the
-   *  server's End also waits for a turn it already holds, but can't know of
-   *  one still in the network). `now` (pagehide, unmount) sends it at once:
-   *  the page is going, and the turn with it. Only refs, so it is safe from
-   *  any closure. The next turn starts a new conversation. */
+  /** End `c`, once: a conversation can be closed by more than one path
+   *  (leaving Go, then the creation that was on its way answering). */
+  function endOnce(c: SavedConversation) {
+    if (endsSent.current.has(c.id)) return;
+    endsSent.current.add(c.id);
+    void endConversation(c.id, c.learnerId);
+  }
+
+  /** End `c` once its turn on the way, if any, has its answer, so that turn
+   *  is stored in it (the server's End also waits for a turn it already
+   *  holds, but can't know of one still in the network). */
+  function endAfterTurn(c: SavedConversation) {
+    void turnsSettled(inFlight.current, c.id).then(() => endOnce(c));
+  }
+
+  /** Close the session's saved conversation: fire and forget, only refs, so
+   *  it is safe from any closure. Bumps `closes`, which every turn checks
+   *  against the value it started with (conversationFor), so a conversation
+   *  a turn makes after this — its creation still on its way, or not even
+   *  asked for yet because the turn was loading its cast — is never adopted
+   *  and is ended after that turn (conversationLife.ts). The open one is
+   *  ended after its turn on the way; `now` (pagehide, unmount) ends it at
+   *  once, the turn going with the page. The next turn starts a new one. */
   function closeConversation(now = false) {
+    closes.current += 1;
     const c = convRef.current;
     const pending = creating.current;
     convRef.current = null;
     creating.current = null;
-    if (!c && !pending) return;
-    if (now && c) {
-      void endConversation(c.id, c.learnerId);
-      return;
+    if (c) {
+      if (now) endOnce(c);
+      else endAfterTurn(c);
+    } else if (pending && now) {
+      // The page is going: whatever lands is ended (its own fate check
+      // would wait for a turn that won't come).
+      void pending.then((made) => made && endOnce(made));
     }
-    void (async () => {
-      const made = c ?? (await pending);
-      if (!made) return;
-      // A turn that was waiting on the same creation is resumed before this
-      // (it awaited first) and registers its request synchronously.
-      if (!now) for (let t = inFlight.current.get(made.id); t; t = inFlight.current.get(made.id)) await t.catch(() => {});
-      void endConversation(made.id, made.learnerId);
-    })();
   }
 
   /** The conversation this turn saves into, made now when there is none.
@@ -584,25 +601,35 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
    *  before it too. null when it can't be made: the session goes on
    *  unsaved, and the header says so; the next turn tries again. Not
    *  cancelled by Stop: a conversation made for a turn that was then
-   *  stopped is the one the next turn uses. */
-  function conversationFor(turnPack: PackInput, here: number): Promise<SavedConversation | null> {
+   *  stopped is the one the next turn uses. `life` is `closes` as the turn
+   *  found it when it began: a close since then (or Go hidden now) means
+   *  the conversation is the turn's alone, ended after it, never the
+   *  session's (conversationFate). */
+  function conversationFor(turnPack: PackInput, here: number, life: number): Promise<SavedConversation | null> {
     if (convRef.current) return Promise.resolve(convRef.current);
     if (creating.current) return creating.current;
     const epoch = sessionEpoch.current;
     const learnerId = getPageLearner() ?? "";
     const start = Math.min(unsavedFrom.current ?? here, here);
-    const made = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
+    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
       ({ conversation }) => {
         const c = { id: conversation.id, start, learnerId };
-        // Restart or Close came first: this one belongs to no session.
-        if (epoch !== sessionEpoch.current) {
-          void endConversation(c.id, learnerId);
+        if (creating.current === made) creating.current = null;
+        const fate = conversationFate({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life });
+        if (fate === "drop") {
+          // Restart, End or Close came first: no turn will use it.
+          endOnce(c);
           return null;
         }
-        if (creating.current === made) {
-          creating.current = null;
-          convRef.current = c;
+        if (fate === "end-after-turn") {
+          // Go was left (or the session closed) while this turn was on its
+          // way: the turn is stored in it, then it ends. Registered after
+          // the turn's own await on `made`, so the turn's request is in
+          // inFlight by the time this looks.
+          void made.then(() => endAfterTurn(c));
+          return c;
         }
+        convRef.current = c;
         unsavedFrom.current = null;
         setSaving({ on: true });
         return c;
@@ -826,6 +853,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     setError(null);
     setNotice(null);
     const before = entriesRef.current;
+    // The conversation's close count as this turn begins: every await below
+    // (the cast, the create, the reply) may outlive a close (conversationFor).
+    const life = closes.current;
     const history = message ? [...before, { role: "learner" as const, text: message }] : before;
     setSession(history);
     const ctrl = freshCtrl();
@@ -872,7 +902,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
       const turnPack = turnBudget == null ? cur : { ...cur, overrides: { ...cur.overrides, minutes: turnBudget } };
       // The conversation this turn is saved in; it begins at this turn when
       // there was none (the first turn, or the first after one ended).
-      const conv = await conversationFor(turnPack, before.length);
+      const conv = await conversationFor(turnPack, before.length, life);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       // Sent synchronously from here (no await before voiceTurn), and kept
       // in inFlight until it answers, so closeConversation sees it.
@@ -902,7 +932,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
         const over = e instanceof ApiError && (e.code === "conversation_ended" || e.code === "no_conversation");
         if (!conv || !over) throw e;
         if (convRef.current?.id === conv.id) convRef.current = null;
-        sent = activeRef.current ? await conversationFor(turnPack, before.length) : null;
+        sent = activeRef.current ? await conversationFor(turnPack, before.length, life) : null;
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         if (!sent && unsavedFrom.current == null) {
           // conversationFor says so itself when it fails; this is the
