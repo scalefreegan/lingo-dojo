@@ -505,7 +505,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     // screen stays, and carrying on after coming back saves into a new
     // conversation from that turn on. A turn still on its way is stored in
     // this one first: closeConversation sends End once it has its answer.
+    // Nothing is being saved until that next turn, so the header stops
+    // saying so (an "isn't being saved" reason stays: still true).
     closeConversation();
+    setSaving((s) => (s?.on ? null : s));
     const p = phaseRef.current;
     if (p === "recording" || p === "opening") {
       stopAll();
@@ -917,7 +920,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
         setSaving({ on: false, why: "the server could not store the last turn" });
       } else if (sent && r.saved) {
         unsavedFrom.current = null;
-        setSaving({ on: true });
+        // Stored; but if its conversation was closed meanwhile (Go left
+        // while it was on its way), nothing is being saved now.
+        if (convRef.current?.id === sent.id) setSaving({ on: true });
       }
       const idx = history.length;
       const notes = r.castNotes ?? [];

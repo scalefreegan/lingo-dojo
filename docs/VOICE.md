@@ -230,7 +230,8 @@ the Library tab's **History** (docs/DATA.md §Conversations has the tables).
   leaving the Go tab and leaving the page (a reload, closing the tab; a
   `keepalive` request that outlives the page) end the conversation too.
   Leaving Go keeps the session on screen: carrying on when you come back
-  saves into a new conversation from that turn on. A turn still on its way
+  saves into a new conversation from that turn on (until then the header
+  no longer says "saving to History": nothing is). A turn still on its way
   when the conversation ends is stored in it first: the browser sends End
   once that turn has its answer (except when the page is going away), and
   on the server End waits for a turn it already holds and refuses, before
