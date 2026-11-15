@@ -464,6 +464,41 @@ export const phraseExamples = pgTable(
 );
 
 /**
+ * One sighting: a reply's capture saw this phrase (scripts/db/phrases.ts
+ * recordGlosses writes it in the capture's own savepoint, so a capture
+ * that failed left none). The bank's record of what each turn did:
+ * `phrases.seen_count` is always the number of a phrase's rows here and
+ * its first and last seen their earliest and latest `seen_at`, so undoing
+ * a dropped reply (unrecordGlosses) deletes that turn's rows and counts
+ * again, never re-deriving anything from the reply's text. Deleting a
+ * conversation keeps its sightings (turn and conversation set null): the
+ * phrases were still met.
+ */
+export const phraseSightings = pgTable(
+  "phrase_sightings",
+  {
+    id: id(),
+    phraseId: uuid("phrase_id").notNull(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    conversationId: uuid("conversation_id"),
+    turnId: uuid("turn_id"),
+    seenAt: tz("seen_at").notNull().defaultNow(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "phrase_sightings_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
+    // In the phrase's language; hand-edited to SET NULL (col), so deleting
+    // a conversation keeps the sighting.
+    foreignKey({ name: "phrase_sightings_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("set null"),
+    foreignKey({ name: "phrase_sightings_turn_profile_fk", columns: [t.turnId, t.languageProfileId], foreignColumns: [turns.id, turns.languageProfileId] }).onDelete("set null"),
+    // A capture sees each phrase once.
+    uniqueIndex("phrase_sightings_turn_phrase").on(t.turnId, t.phraseId),
+    index("phrase_sightings_phrase_idx").on(t.phraseId, t.seenAt),
+  ],
+);
+
+/**
  * A scene-list phrase the learner deleted from the bank: the scene's next
  * start doesn't add it back (docs/DATA.md §Phrase bank, "Dismissed"). Keyed
  * like the phrase it stood for: `kind` 'text' with the target form's norm,

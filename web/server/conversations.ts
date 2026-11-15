@@ -286,16 +286,11 @@ export async function saveTurn(
     if (!covered) console.warn(`[lingo-dojo] conversation ${conversationId}: the turn's history doesn't cover the ${stored.length} stored turns; appended only`);
     const lang = bankLocale(profile, conv);
     if (keep < stored.length) {
-      // Replies the server produced were captured (recordGlosses below, when
-      // they were new); undo that before they go, while their examples
-      // still name them.
-      if (lang != null) {
-        for (const gone of stored.slice(keep)) {
-          if (gone.role !== "master" || gone.fromClient) continue;
-          const norms = glossCaptures(gone.glosses, gone.lines, lang || null).map((c) => c.norm);
-          await unrecordGlosses(tx, profile, { turnId: gone.id, norms });
-        }
-      }
+      // Undo what these turns' captures did (recordGlosses below, when they
+      // were the reply) before they go, while their sightings and examples
+      // still name them: only what was recorded, so a turn never captured
+      // (a copy from the browser, a failed capture) changes nothing.
+      await unrecordGlosses(tx, profile, { turnIds: stored.slice(keep).map((t) => t.id) });
       await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
     }
     const written = await mine.insert(

@@ -169,7 +169,9 @@ test("words for a pending scenario phrase's meaning absorb it: its star and note
   const r = await turn(sam, c.id, [], "");
   assert.equal(r.status, 200, r.text);
   const got = byText((await bank(sam)).body.phrases);
-  assert.deepEqual([got["mercado"].source, got["mercado"].seenCount, got["mercado"].meaning, got["mercado"].note], ["gloss", 1, "market", "the big one downtown"]);
+  // Its provenance is the scene's: it was the scene's phrase before a gloss
+  // gave it words.
+  assert.deepEqual([got["mercado"].source, got["mercado"].seenCount, got["mercado"].meaning, got["mercado"].note], ["scenario", 1, "market", "the big one downtown"]);
   assert.equal(got["la vuelta"].starred, true, "the pending row's star carried over");
   assert.equal(got["(the change)"], undefined);
   assert.equal((await bank(sam, "?show=pending")).body.total, 0);
@@ -234,6 +236,92 @@ test("a dropped reply never deletes a phrase the learner edited, even only its m
   assert.equal((await turn(sam, c2.id, [], "")).status, 200);
   got = byText((await bank(sam)).body.phrases);
   assert.deepEqual([got["la vuelta"].meaning, got["la vuelta"].seenCount], ["the change (money back)", 1]);
+});
+
+test("undo acts only on what the dropped turn recorded: a reply whose capture failed changes nothing when dropped", async () => {
+  const sam = await someone();
+  // Turn A, in one conversation, records "mercado".
+  const a = await start(sam, pack({ scenario: "" }));
+  assert.equal((await turn(sam, a.id, [], "")).status, 200);
+  const seenA = byText((await bank(sam)).body.phrases)["mercado"];
+  assert.equal(seenA.seenCount, 1);
+  // Turn B, in another, glosses it too, but its capture fails (rolled back
+  // whole: no sighting, no count); the reply is stored all the same.
+  const b = await start(sam, pack({ scenario: "" }));
+  await q(`create function no_sightings() returns trigger language plpgsql as $$ begin raise exception 'bank down'; end $$`);
+  await q(`create trigger no_sightings before insert on phrase_sightings for each row execute function no_sightings()`);
+  const orig = console.error;
+  console.error = () => {};
+  try {
+    assert.equal((await turn(sam, b.id, [], "")).body.saved, true);
+  } finally {
+    console.error = orig;
+    await q(`drop trigger no_sightings on phrase_sightings`);
+    await q(`drop function no_sightings()`);
+  }
+  assert.equal(byText((await bank(sam)).body.phrases)["mercado"].seenCount, 1, "B's failed capture counted nothing");
+  // B's reply is dropped: A's sighting is untouched.
+  fakeOther();
+  const r = await turn(sam, b.id, [], "Hola.");
+  assert.equal(r.status, 200, r.text);
+  const got = byText((await bank(sam)).body.phrases);
+  assert.ok(got["mercado"] && got["la vuelta"], "still there: A still sees them");
+  assert.deepEqual([got["mercado"].seenCount, got["mercado"].lastSeenAt, got["mercado"].firstSeenAt], [1, seenA.lastSeenAt, seenA.firstSeenAt]);
+  assert.equal(got["el kilo"].seenCount, 1, "B's new reply recorded");
+});
+
+test("a scene's phrase given words by a gloss stays in the bank when that reply is dropped", async () => {
+  const sam = await someone();
+  // The errand scene adds pending "market"; the reply's "mercado = market"
+  // gives it words (absorbed: the complete row keeps the scene's provenance).
+  const c = await start(sam, pack({ scenario: "errand" }));
+  assert.equal((await turn(sam, c.id, [], "")).status, 200);
+  let got = byText((await bank(sam)).body.phrases);
+  assert.deepEqual([got["mercado"].source, got["mercado"].seenCount], ["scenario", 1]);
+  assert.equal(got["la vuelta"].source, "gloss");
+  fakeOther();
+  const r = await turn(sam, c.id, [], "Hola.");
+  assert.equal(r.status, 200, r.text);
+  got = byText((await bank(sam)).body.phrases);
+  // Kept, with the words it was given, unseen and with no card.
+  assert.deepEqual(
+    [got["mercado"].source, got["mercado"].meaning, got["mercado"].seenCount, got["mercado"].lastSeenAt, got["mercado"].cardCount],
+    ["scenario", "market", 0, null, 0],
+  );
+  assert.equal(got["la vuelta"], undefined, "a gloss-only phrase that reply made, untouched: gone");
+
+  // Words a reply glossed that a scene's list then names are the scene's
+  // too: dropping that reply keeps them.
+  fake.answer(["CHARACTER-F: <t>¿Cuánto cuesta?</t>", "GLOSS: ¿Cuánto cuesta? = How much is it?", "STAGE: scene"].join("\n"));
+  const ana = await someone();
+  const c2 = await start(ana, pack({ scenario: "" }));
+  assert.equal((await turn(ana, c2.id, [], "")).status, 200);
+  assert.equal(byText((await bank(ana)).body.phrases)["¿Cuánto cuesta?"].source, "gloss");
+  await start(ana); // the market scene lists it
+  assert.equal(byText((await bank(ana)).body.phrases)["¿Cuánto cuesta?"].source, "scenario");
+  fakeOther();
+  assert.equal((await turn(ana, c2.id, [], "Hola.")).status, 200);
+  assert.equal(byText((await bank(ana)).body.phrases)["¿Cuánto cuesta?"].seenCount, 0, "kept, unseen");
+});
+
+test("two sightings in one conversation, one dropped: counted once, last seen the other's", async () => {
+  const sam = await someone();
+  const c = await start(sam, pack({ scenario: "" }));
+  const r1 = await turn(sam, c.id, [], "");
+  const h1 = after1([], "", r1);
+  await turn(sam, c.id, h1, "Uno.");
+  const [reply1] = await q("select id from turns where conversation_id = $1 and role = 'master' order by idx limit 1", [c.id]);
+  const [first] = await q("select s.seen_at from phrase_sightings s join phrases p on p.id = s.phrase_id where p.text = 'mercado' and s.turn_id = $1", [reply1.id]);
+  let m = byText((await bank(sam)).body.phrases)["mercado"];
+  assert.equal(m.seenCount, 2);
+  assert.notEqual(m.lastSeenAt, first.seen_at.toISOString());
+  // Drop the second reply (the history ends at the learner's line before it).
+  fakeOther();
+  const r3 = await turn(sam, c.id, [...h1, { role: "learner", text: "Uno." }], "Otro.");
+  assert.equal(r3.status, 200, r3.text);
+  m = byText((await bank(sam)).body.phrases)["mercado"];
+  assert.deepEqual([m.seenCount, m.lastSeenAt, m.firstSeenAt], [1, first.seen_at.toISOString(), first.seen_at.toISOString()]);
+  assert.equal((await q("select count(*)::int as n from phrase_sightings where turn_id is null"))[0].n, 0);
 });
 
 test("absorbing a pending phrase keeps everything the learner set on either row", async () => {

@@ -85,6 +85,8 @@ const BANK_SET_NULL = {
   phrase_examples_conversation_profile_fk: "conversation_id",
   phrase_examples_turn_profile_fk: "turn_id",
   reviews_conversation_profile_fk: "conversation_id",
+  phrase_sightings_conversation_profile_fk: "conversation_id",
+  phrase_sightings_turn_profile_fk: "turn_id",
 };
 
 export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL, ...BANK_SET_NULL };

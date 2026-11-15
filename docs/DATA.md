@@ -510,6 +510,11 @@ phrases         id, learner_id, language_profile_id, lang (BCP-47 of the
                 trigram GIN indexes on text and meaning
 phrase_examples id, phrase_id, learner_id, language_profile_id,
                 conversation_id, turn_id, sentence, speaker, created_at
+phrase_sightings id, phrase_id, learner_id, language_profile_id,
+                conversation_id, turn_id (both SET NULL on delete),
+                seen_at; unique (turn_id, phrase_id): one row per reply
+                that saw the phrase; seen_count, first_seen_at and
+                last_seen_at are always its count, min and max
 cards           id, phrase_id, learner_id, language_profile_id,
                 skill (recognize|listen|produce),
                 fsrs state: due, stability, stability_fast, difficulty,
@@ -679,13 +684,30 @@ tables were keyed by learner and `lang`; the language profiles of
   only the term. Control characters (C0 but a note's line breaks, DEL, the
   bidi overrides and isolates) are dropped from words, meanings, notes and
   gloss terms, and lengths are those of what is stored.
-- **A dropped reply.** When a turn's write deletes a stored reply the
-  browser no longer shows, that reply's sightings are undone in the same
-  transaction: its examples go and each phrase it glossed is seen once
-  less. A phrase whose only sighting that was, and which the learner hasn't
-  touched (a gloss phrase with no `edited_at`, not starred, suspended or
-  noted, no card reviewed), is deleted, as if the reply had never been; one
-  the learner touched stays, unseen, without the card the sighting made.
+- **Sightings.** A capture writes one `phrase_sightings` row per phrase
+  it saw, in its own savepoint with everything else it writes (so a
+  capture that failed, or was retried, leaves exactly what succeeded).
+  `seen_count`, `first_seen_at` and `last_seen_at` are recounted from those
+  rows whenever they change, never incremented, so they always agree.
+- **A dropped reply.** When a turn's write deletes stored turns the browser
+  no longer shows, what those turns' captures recorded is undone in the
+  same transaction, by their sighting rows alone (never by re-reading the
+  reply's glosses): the rows and the turns' examples go, and each phrase
+  they named is recounted, its first and last seen from the sightings
+  left. A turn with no rows (a capture that failed, a copy from the
+  browser) changes nothing. A phrase left with no sighting at all is
+  deleted only if it existed for those replies alone: provenance gloss, no
+  `edited_at`, not starred, suspended or noted, no card reviewed. Any other
+  stays, unseen, without its unreviewed cards. Deleting a conversation in
+  History keeps its sightings (turn and conversation set null): the phrases
+  were still met. If the undo itself fails it is logged and the turns
+  still go; their sightings stay, counted, with no turn.
+- **Provenance only strengthens**: manual > scenario > gloss (> extraction).
+  A scene's list naming words a reply glossed, an add of them, or a
+  complete phrase absorbing a scene's pending one keeps the stronger
+  `source`, so a scene's phrase that a gloss gave words to stays in the
+  bank when that reply is dropped (with the words: the pending row isn't
+  brought back, the words are what the learner met).
 - **Learner edits.** Every change by hand (any `PATCH`, even one that
   changes only the meaning, and an add or ☆ Star of words already in the
   bank) sets `phrases.edited_at`. That is the one marker the automatic

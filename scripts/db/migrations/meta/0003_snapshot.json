@@ -1,5 +1,5 @@
 {
-  "id": "223570ba-7f7f-488a-a2db-bc497f0b5313",
+  "id": "7e6d62a3-bbc1-472b-b1c2-b48166bf09ee",
   "prevId": "d8044bfe-8c88-43ad-a791-12099b22e9a9",
   "version": "7",
   "dialect": "postgresql",
@@ -1603,6 +1603,167 @@
         "phrase_examples_turn_profile_fk": {
           "name": "phrase_examples_turn_profile_fk",
           "tableFrom": "phrase_examples",
+          "tableTo": "turns",
+          "columnsFrom": [
+            "turn_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.phrase_sightings": {
+      "name": "phrase_sightings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "phrase_id": {
+          "name": "phrase_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "learner_id": {
+          "name": "learner_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "language_profile_id": {
+          "name": "language_profile_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "seen_at": {
+          "name": "seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "phrase_sightings_turn_phrase": {
+          "name": "phrase_sightings_turn_phrase",
+          "columns": [
+            {
+              "expression": "turn_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "phrase_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "phrase_sightings_phrase_idx": {
+          "name": "phrase_sightings_phrase_idx",
+          "columns": [
+            {
+              "expression": "phrase_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "seen_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "phrase_sightings_phrase_id_learner_id_phrases_id_learner_id_fk": {
+          "name": "phrase_sightings_phrase_id_learner_id_phrases_id_learner_id_fk",
+          "tableFrom": "phrase_sightings",
+          "tableTo": "phrases",
+          "columnsFrom": [
+            "phrase_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "phrase_sightings_phrase_profile_fk": {
+          "name": "phrase_sightings_phrase_profile_fk",
+          "tableFrom": "phrase_sightings",
+          "tableTo": "phrases",
+          "columnsFrom": [
+            "phrase_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "phrase_sightings_conversation_profile_fk": {
+          "name": "phrase_sightings_conversation_profile_fk",
+          "tableFrom": "phrase_sightings",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id",
+            "language_profile_id"
+          ],
+          "columnsTo": [
+            "id",
+            "language_profile_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "phrase_sightings_turn_profile_fk": {
+          "name": "phrase_sightings_turn_profile_fk",
+          "tableFrom": "phrase_sightings",
           "tableTo": "turns",
           "columnsFrom": [
             "turn_id",

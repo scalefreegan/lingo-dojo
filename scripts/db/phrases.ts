@@ -19,8 +19,8 @@
 // met (es-MX), not part of the identity. The merge rule (absorbPending):
 // when words turn up with a pending row's meaning (a gloss, a scenario's
 // vocab, an add), the complete phrase for those words is made or found
-// first, then the pending row is folded into it (its star and note carried
-// over) and deleted.
+// first, then the pending row is folded into it (its star, suspension,
+// note, edit time and provenance carried over) and deleted.
 //
 // Locks. Bank writes lock only the bank's own rows (the phrase a write
 // changes, upserts' conflict rows) and no learner, profile or session row
@@ -36,9 +36,16 @@
 // words at the moment a capture adds them) is retried once (retrying) and
 // otherwise reported: EEXIST from a route, a logged miss from a capture.
 //
-// Seeing is not reviewing: a gloss bumps last_seen_at and seen_count, adds an
-// example and makes the recognize card if there is none, but writes no FSRS
-// review. Reviews come from practice and the post-session extraction (later
+// Seeing is not reviewing: a gloss records a sighting (phrase_sightings,
+// one row per phrase and reply; seen_count, first and last seen follow
+// from those rows), adds an example and makes the recognize card if there
+// is none, but writes no FSRS review.
+//
+// Provenance (`source`) only ever strengthens: manual > scenario > gloss
+// (> extraction). A gloss phrase is one that exists only because replies
+// glossed it; a scene's list or an add of the same words, or absorbing a
+// pending scene phrase, lifts it. Undoing a dropped reply deletes only a
+// gloss phrase. Reviews come from practice and the post-session extraction (later
 // phases); last_practiced_at is theirs to set.
 //
 // Erasable TypeScript only, like schema.ts: the tests import it as is.
@@ -50,7 +57,7 @@ import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, TROUBLE_DAYS, clean, phraseMetrics, type Capture, type Example } from "../../scripts/phrases.mjs";
 import type { PhraseDetail, PhraseInput, PhraseSummary } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { cards, phraseDismissals, phraseExamples, phrases, reviews } from "./schema.ts";
+import { cards, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
 
 type PhraseRow = typeof phrases.$inferSelect;
 type CardRow = typeof cards.$inferSelect;
@@ -90,6 +97,12 @@ const PENDING = sql`${phrases.text} is null`;
  *  phrase already there: its own, whoever set it; the incoming one only
  *  fills a blank (a phrase added by hand with no meaning, say). */
 const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
+/** Provenance, strongest first: what a phrase keeps when two sources meet
+ *  (an upsert of words already here, an absorbed pending row). */
+const STRENGTH = sql`array['manual', 'scenario', 'gloss', 'extraction']`;
+const stronger = (a: SQL | string, b: SQL | string) =>
+  sql`(${STRENGTH})[least(array_position(${STRENGTH}, ${a}::text), array_position(${STRENGTH}, ${b}::text))]`;
+
 /** The phrase's note with `other` (a row being folded into it) kept too:
  *  neither lost, the same one not twice. */
 const withNote = (other: string | null) =>
@@ -118,7 +131,8 @@ async function lockPhrase(tx: Db, profile: LanguageProfileRef, id: string): Prom
  * `found` (a complete row and the meaning its words came with), a pending
  * row with that meaning is folded into it and deleted. Nothing the learner
  * set on either is lost: starred or suspended if either was, both notes
- * (joined when they differ), the later edit time, and the pending row's
+ * (joined when they differ), the later edit time, the stronger provenance
+ * (a scene's or the learner's phrase stays one), and the pending row's
  * meaning when the complete one has none or the learner edited the pending
  * one and not the complete one (it matched by meaning, so it is the same
  * meaning, in the learner's words). In meaning order, after every complete
@@ -145,6 +159,9 @@ async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: s
           ? sql`case when ${phrases.editedAt} is null then ${pending.meaning}::text else coalesce(${phrases.meaning}, ${pending.meaning}::text) end`
           : sql`coalesce(${phrases.meaning}, ${pending.meaning}::text)`,
         editedAt: sql`greatest(${phrases.editedAt}, ${pending.editedAt}::timestamptz)`,
+        // A scene's pending phrase given words by a gloss stays a scene's
+        // phrase: undoing that gloss mustn't take it out of the bank.
+        source: stronger(sql`${phrases.source}`, pending.source),
       },
       eq(phrases.id, f.id),
     );
@@ -187,20 +204,12 @@ export async function recordGlosses(
       // pending ones they absorb: the lock order.
       const rows: PhraseRow[] = [];
       for (const item of opts.items) {
-        const now = new Date();
+        // seen_count and first/last seen are set from the sightings below.
         const [row] = await mine.upsert(
           phrases,
-          { lang: opts.lang, text: item.text, norm: item.norm, meaning: item.meaning, source: "gloss", firstSeenAt: now, lastSeenAt: now, seenCount: 1 },
-          {
-            ...IDENTITY,
-            set: {
-              seenCount: sql`${phrases.seenCount} + 1`,
-              lastSeenAt: sql`now()`,
-              firstSeenAt: sql`coalesce(${phrases.firstSeenAt}, now())`,
-              // The first meaning stays, and the learner's always does.
-              meaning: AUTO_MEANING,
-            },
-          },
+          { lang: opts.lang, text: item.text, norm: item.norm, meaning: item.meaning, source: "gloss" },
+          // The first meaning stays, and the learner's always does.
+          { ...IDENTITY, set: { meaning: AUTO_MEANING } },
         );
         rows.push(row);
       }
@@ -219,6 +228,14 @@ export async function recordGlosses(
         // cards per phrase"; listen and produce come with practice).
         await mine.insertOrIgnore(cards, { phraseId: row.id, skill: "recognize" });
       }
+      // What this turn did, row by row: undo (unrecordGlosses) reads only
+      // these. A phrase is sighted once a reply, however often it glosses it.
+      const ids = [...new Set(rows.map((r) => r.id))];
+      await mine.insertOrIgnore(
+        phraseSightings,
+        ids.map((phraseId) => ({ phraseId, conversationId: opts.conversationId, turnId: opts.turnId })),
+      );
+      await recount(sp, profile, ids);
       return opts.items.length;
     }));
   } catch (e) {
@@ -227,50 +244,69 @@ export async function recordGlosses(
   }
 }
 
+/** seen_count and first/last seen of `ids` from their sightings: the one
+ *  place those three are written, so they always agree with the rows. */
+async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const mine = forLanguageProfile(tx, profile);
+  const s = phraseSightings;
+  await mine.update(
+    phrases,
+    {
+      seenCount: sql`(select count(*)::int from ${s} where ${s.phraseId} = ${phrases.id})`,
+      firstSeenAt: sql`(select min(${s.seenAt}) from ${s} where ${s.phraseId} = ${phrases.id})`,
+      lastSeenAt: sql`(select max(${s.seenAt}) from ${s} where ${s.phraseId} = ${phrases.id})`,
+    },
+    inArray(phrases.id, ids),
+  );
+}
+
 /**
- * Undo what a stored reply's glosses added, when the turn write deletes that
- * reply (the browser dropped it: web/server/conversations.ts saveTurn), on
- * the turn's transaction, in a savepoint like recordGlosses. `norms` are
- * the phrases the reply's capture took (glossCaptures of its stored
- * glosses). Its examples go; each phrase is seen once less. A phrase whose
- * only sighting this was, and that the learner hasn't touched (a "gloss"
- * phrase never edited by hand, `edited_at` null, and no card reviewed;
- * starred, suspended or noted also count, belt and braces), goes
- * altogether, as if the reply had never been: it existed only because of
- * it. One the learner did touch stays, unseen (no first or last sighting)
- * and without the card that sighting made. The last sighting of a phrase
- * still seen elsewhere keeps its time: the bank doesn't record each
- * sighting's, so it can't say when the one before was.
+ * Undo what stored turns' captures did, when the turn write deletes them
+ * (the browser dropped them: web/server/conversations.ts saveTurn), on the
+ * turn's transaction, in a savepoint like recordGlosses. Exact by
+ * construction: it acts only on the sighting rows those turns wrote
+ * (phrase_sightings), never on what their text would gloss today, so a
+ * turn whose capture failed, or a copy from the browser, changes nothing.
+ * Those rows and the turns' examples go; each phrase they sighted is
+ * counted again from the sightings left (seen_count, first and last seen).
+ * A phrase left with no sighting at all goes too when it existed only
+ * because of them: provenance gloss (no scene list, add or absorbed scene
+ * phrase behind it), never edited by hand (`edited_at`), not starred,
+ * suspended or noted, and no card reviewed. Any other stays, unseen,
+ * without the unreviewed cards the sightings made.
  */
-export async function unrecordGlosses(tx: Db, profile: LanguageProfileRef, opts: { turnId: string; norms: string[] }): Promise<void> {
+export async function unrecordGlosses(tx: Db, profile: LanguageProfileRef, opts: { turnIds: string[] }): Promise<void> {
+  if (!opts.turnIds.length) return;
   try {
     await tx.transaction(async (sp) => {
       const mine = forLanguageProfile(sp, profile);
-      await mine.remove(phraseExamples, eq(phraseExamples.turnId, opts.turnId));
-      for (const norm of [...new Set(opts.norms)].sort()) {
-        const [row] = await sp
-          .select()
-          .from(phrases)
-          .where(mine.where(phrases, and(COMPLETE, eq(phrases.norm, norm)) as SQL))
-          .for("update");
-        if (!row || row.seenCount <= 0) continue;
-        const seen = row.seenCount - 1;
-        if (seen > 0) {
-          await mine.update(phrases, { seenCount: seen }, eq(phrases.id, row.id));
-          continue;
-        }
+      const gone = await mine.remove(phraseSightings, inArray(phraseSightings.turnId, opts.turnIds));
+      await mine.remove(phraseExamples, inArray(phraseExamples.turnId, opts.turnIds));
+      const ids = [...new Set(gone.map((g) => g.phraseId))];
+      if (!ids.length) return;
+      // Locked in norm order, the bank's lock order (all are complete:
+      // only complete phrases are sighted).
+      const rows = await sp
+        .select()
+        .from(phrases)
+        .where(mine.where(phrases, inArray(phrases.id, ids)))
+        .orderBy(asc(phrases.norm))
+        .for("update");
+      await recount(sp, profile, ids);
+      for (const row of rows) {
+        const left = await mine.get(phraseSightings, eq(phraseSightings.phraseId, row.id));
+        if (left) continue;
         const reviewed = await mine.get(cards, and(eq(cards.phraseId, row.id), sql`${cards.reps} > 0`) as SQL);
-        const touched = row.source !== "gloss" || row.editedAt != null || row.starred || row.suspended || row.note != null || !!reviewed;
-        if (!touched) {
-          await mine.remove(phrases, eq(phrases.id, row.id));
-          continue;
-        }
-        await mine.update(phrases, { seenCount: 0, firstSeenAt: null, lastSeenAt: null }, eq(phrases.id, row.id));
-        await mine.remove(cards, and(eq(cards.phraseId, row.id), eq(cards.reps, 0)) as SQL);
+        const onlyGlossed = row.source === "gloss" && row.editedAt == null && !row.starred && !row.suspended && row.note == null && !reviewed;
+        if (onlyGlossed) await mine.remove(phrases, eq(phrases.id, row.id));
+        else await mine.remove(cards, and(eq(cards.phraseId, row.id), eq(cards.reps, 0)) as SQL);
       }
     });
   } catch (e) {
-    console.error(`[lingo-dojo] phrase bank: the sightings of dropped reply ${opts.turnId} weren't undone:`, e);
+    // The turns still go; their sightings stay, now with no turn: counted,
+    // never undone, the bank still in step with its rows.
+    console.error(`[lingo-dojo] phrase bank: the sightings of dropped turns ${opts.turnIds.join(", ")} weren't undone:`, e);
   }
 }
 
@@ -298,7 +334,7 @@ export async function addScenarioPhrases(
         const [row] = await mine.upsert(
           phrases,
           { lang: opts.lang, text: item.text, norm: item.norm, meaning: item.meaning, source: "scenario" },
-          { ...IDENTITY, set: { meaning: AUTO_MEANING } },
+          { ...IDENTITY, set: { meaning: AUTO_MEANING, source: stronger(sql`${phrases.source}`, sql`excluded.source`) } },
         );
         found.push({ id: row.id, meaningNorm: item.meaningNorm });
       }
@@ -462,6 +498,7 @@ export async function addPhrase(
         set: {
           // Starring or adding words already here is the learner's act too.
           editedAt: sql`now()`,
+          source: stronger(sql`${phrases.source}`, sql`excluded.source`),
           starred: sql`${phrases.starred} or excluded.starred`,
           meaning: sql`coalesce(${phrases.meaning}, excluded.meaning)`,
           note: sql`coalesce(${phrases.note}, excluded.note)`,

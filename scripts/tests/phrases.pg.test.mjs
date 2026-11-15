@@ -46,10 +46,22 @@ async function withProfile(t, fn) {
 
 const item = (text, meaning) => ({ text, norm: normKey(text), meaning, meaningNorm: normKey(meaning), example: null });
 
-/** A turn's capture on its own transaction, as saveTurn runs it; null when
- *  it was lost. */
-const capture = (db, profile, items) =>
-  db.transaction((tx) => recordGlosses(tx, profile, { lang: "es-MX", conversationId: crypto.randomUUID(), turnId: crypto.randomUUID(), items }));
+/** A turn's capture on its own transaction, as saveTurn runs it, for a
+ *  reply stored in a conversation of its own (the sightings name both);
+ *  null when it was lost. */
+async function capture(db, profile, items) {
+  const conversationId = crypto.randomUUID();
+  const turnId = crypto.randomUUID();
+  await db.$client.query(
+    `insert into conversations (id, learner_id, language_profile_id, pack_snapshot, title, mode, target_language) values ($1, $2, $3, '{}', 'Race', 'adult', 'Spanish')`,
+    [conversationId, profile.learnerId, profile.id],
+  );
+  await db.$client.query(
+    `insert into turns (id, conversation_id, learner_id, language_profile_id, idx, role, text) values ($1, $2, $3, $4, 0, 'master', '')`,
+    [turnId, conversationId, profile.learnerId, profile.id],
+  );
+  return db.transaction((tx) => recordGlosses(tx, profile, { lang: "es-MX", conversationId, turnId, items }));
+}
 
 test("three captures and an add of the same words, with a pending scene phrase for their meaning, at once: all land, one phrase", { skip }, async (t) => {
   await withProfile(t, async (pool, db, profile) => {

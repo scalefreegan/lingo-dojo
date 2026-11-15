@@ -21,6 +21,16 @@ CREATE TABLE "phrase_dismissals" (
 	CONSTRAINT "phrase_dismissals_kind" CHECK ("phrase_dismissals"."kind" in ('text', 'meaning'))
 );
 --> statement-breakpoint
+CREATE TABLE "phrase_sightings" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"phrase_id" uuid NOT NULL,
+	"learner_id" uuid NOT NULL,
+	"language_profile_id" uuid NOT NULL,
+	"conversation_id" uuid,
+	"turn_id" uuid,
+	"seen_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 DROP INDEX "cards_learner_due_idx";
 --> statement-breakpoint
 DROP INDEX "phrases_identity";
@@ -49,6 +59,14 @@ ALTER TABLE "turns" ADD CONSTRAINT "turns_id_profile" UNIQUE("id","language_prof
 --> statement-breakpoint
 ALTER TABLE "phrase_dismissals" ADD CONSTRAINT "phrase_dismissals_profile_fk" FOREIGN KEY ("language_profile_id","learner_id") REFERENCES "public"."language_profiles"("id","learner_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
+ALTER TABLE "phrase_sightings" ADD CONSTRAINT "phrase_sightings_phrase_id_learner_id_phrases_id_learner_id_fk" FOREIGN KEY ("phrase_id","learner_id") REFERENCES "public"."phrases"("id","learner_id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "phrase_sightings" ADD CONSTRAINT "phrase_sightings_phrase_profile_fk" FOREIGN KEY ("phrase_id","language_profile_id") REFERENCES "public"."phrases"("id","language_profile_id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "phrase_sightings" ADD CONSTRAINT "phrase_sightings_conversation_profile_fk" FOREIGN KEY ("conversation_id","language_profile_id") REFERENCES "public"."conversations"("id","language_profile_id") ON DELETE SET NULL ("conversation_id") ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "phrase_sightings" ADD CONSTRAINT "phrase_sightings_turn_profile_fk" FOREIGN KEY ("turn_id","language_profile_id") REFERENCES "public"."turns"("id","language_profile_id") ON DELETE SET NULL ("turn_id") ON UPDATE no action;
+--> statement-breakpoint
 ALTER TABLE "cards" ADD CONSTRAINT "cards_phrase_profile_fk" FOREIGN KEY ("phrase_id","language_profile_id") REFERENCES "public"."phrases"("id","language_profile_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "cloze_items" ADD CONSTRAINT "cloze_items_phrase_profile_fk" FOREIGN KEY ("phrase_id","language_profile_id") REFERENCES "public"."phrases"("id","language_profile_id") ON DELETE cascade ON UPDATE no action;
@@ -64,6 +82,10 @@ ALTER TABLE "phrases" ADD CONSTRAINT "phrases_language_profile_fk" FOREIGN KEY (
 ALTER TABLE "reviews" ADD CONSTRAINT "reviews_card_profile_fk" FOREIGN KEY ("card_id","language_profile_id") REFERENCES "public"."cards"("id","language_profile_id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "reviews" ADD CONSTRAINT "reviews_conversation_profile_fk" FOREIGN KEY ("conversation_id","language_profile_id") REFERENCES "public"."conversations"("id","language_profile_id") ON DELETE SET NULL ("conversation_id") ON UPDATE no action;
+--> statement-breakpoint
+CREATE UNIQUE INDEX "phrase_sightings_turn_phrase" ON "phrase_sightings" USING btree ("turn_id","phrase_id");
+--> statement-breakpoint
+CREATE INDEX "phrase_sightings_phrase_idx" ON "phrase_sightings" USING btree ("phrase_id","seen_at");
 --> statement-breakpoint
 CREATE INDEX "cards_profile_due_idx" ON "cards" USING btree ("language_profile_id","due");
 --> statement-breakpoint

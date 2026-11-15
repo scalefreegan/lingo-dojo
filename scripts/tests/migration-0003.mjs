@@ -102,7 +102,7 @@ export async function catalog(query) {
   return { columns, constraints, indexes };
 }
 
-const without = (rows, table) => Object.fromEntries(Object.entries(rows).filter(([t]) => t !== table));
+const without = (rows, ...tables) => Object.fromEntries(Object.entries(rows).filter(([t]) => !tables.includes(t)));
 
 /** Empty bank: 0003 applies, the other rows are untouched, and the schema is
  *  `fresh`'s (a database migrated from nothing). */
@@ -112,8 +112,9 @@ export async function migrateEmptyAndCheck(query, fresh) {
   assert.equal((await migrationState(query, migrationsThrough0003())).status, "current");
   // (The migrations table is in the drizzle schema, not public.)
   const after = await contents(query);
-  assert.deepEqual(without(after, "phrase_dismissals"), before);
-  assert.deepEqual(after.phrase_dismissals, []);
+  // The tables 0003 makes are new and empty (so the guard needn't cover them).
+  assert.deepEqual(without(after, "phrase_dismissals", "phrase_sightings"), before);
+  assert.deepEqual([after.phrase_dismissals, after.phrase_sightings], [[], []]);
   assert.deepEqual(await catalog(query), await catalog(fresh));
 }
 
