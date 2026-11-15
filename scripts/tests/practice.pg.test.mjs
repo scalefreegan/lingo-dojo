@@ -19,6 +19,7 @@ import { createLearner, createUser } from "../db/accounts.ts";
 import { addPhrase, recordGlosses, updatePhrase } from "../db/phrases.ts";
 import { PracticeError, overrideReview, recordAnswer } from "../db/practice.ts";
 import { normKey } from "../match.mjs";
+import { phraseRevision } from "../practice.mjs";
 import { ADULT } from "./http-session.mjs";
 import { scratchDatabase } from "./pg-scratch.mjs";
 
@@ -46,12 +47,12 @@ async function withProfile(t, fn) {
 
 const good = { verdict: "exact", rating: 3, note: null };
 const write = (phrase, skill, version, extra = {}) => ({
-  phraseId: phrase.id, skill, version, graded: { text: phrase.text, meaning: phrase.meaning }, outcome: good, answer: phrase.meaning,
+  phraseId: phrase.id, skill, version, revision: phraseRevision(phrase), submitId: crypto.randomUUID(), outcome: good, answer: phrase.meaning,
   durationMs: null, utcOffsetMinutes: 0, keepAlternate: false, targetLocale: "es-MX", now: new Date(), ...extra,
 });
 const settle = (ps) => Promise.allSettled(ps);
 
-test("one answer submitted on six connections at once: one review, the card moved once, the rest answered with it", { skip }, async (t) => {
+test("one answer (one submit id) sent on six connections at once: one review, the card moved once, the rest answered with it", { skip }, async (t) => {
   await withProfile(t, async (pool, db, profile) => {
     for (let round = 0; round < ROUNDS; round++) {
       const { phrase } = await addPhrase(db, profile, "es-MX", { text: `palabra ${round}`, meaning: `word ${round}` });
@@ -59,7 +60,8 @@ test("one answer submitted on six connections at once: one review, the card move
       // its second review), as a double click or a retried fetch would.
       for (const version of ["0:", null]) {
         const v = version ?? (await pool.query("select reps, last_review from cards where phrase_id = $1 and skill = 'produce'", [phrase.id])).rows.map((c) => `${c.reps}:${c.last_review.toISOString()}`)[0];
-        const out = await settle(Array.from({ length: RACERS }, () => recordAnswer(db, profile, write(phrase, "produce", v, { now: new Date() }))));
+        const submitId = crypto.randomUUID();
+        const out = await settle(Array.from({ length: RACERS }, () => recordAnswer(db, profile, write(phrase, "produce", v, { now: new Date(), submitId }))));
         const failed = out.filter((o) => o.status === "rejected");
         assert.deepEqual(failed.map((f) => String(f.reason)), [], `round ${round}`);
         const replies = out.map((o) => o.value);
@@ -68,6 +70,23 @@ test("one answer submitted on six connections at once: one review, the card move
       }
       const [{ n, reps }] = (await pool.query("select count(r.*)::int as n, max(c.reps) as reps from cards c join reviews r on r.card_id = c.id where c.phrase_id = $1 and c.skill = 'produce'", [phrase.id])).rows;
       assert.deepEqual([n, reps], [2, 2]);
+    }
+  });
+});
+
+test("six different answers to one card at once: one written, five refused (409), none replayed as another's", { skip }, async (t) => {
+  await withProfile(t, async (pool, db, profile) => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const { phrase } = await addPhrase(db, profile, "es-MX", { text: `palabra ${round}`, meaning: `word ${round}` });
+      const out = await settle(Array.from({ length: RACERS }, (_, i) => recordAnswer(db, profile, write(phrase, "recognize", "0:", { answer: `answer ${i}` }))));
+      const ok = out.filter((o) => o.status === "fulfilled");
+      assert.equal(ok.length, 1, `round ${round}: ${out.map((o) => o.status + " " + (o.reason ?? "")).join("; ")}`);
+      assert.equal(ok[0].value.replayed, false);
+      for (const o of out.filter((x) => x.status === "rejected")) {
+        assert.ok(o.reason instanceof PracticeError && o.reason.code === "ECONFLICT", String(o.reason));
+      }
+      const [{ n }] = (await pool.query("select count(r.*)::int as n from reviews r join cards c on c.id = r.card_id where c.phrase_id = $1", [phrase.id])).rows;
+      assert.equal(n, 1);
     }
   });
 });

@@ -18,18 +18,26 @@
 // session lock (DATA.md §Language profiles lock order). The model check
 // runs before the transaction, never inside it.
 //
-// Idempotency without a client id column: the client answers against the
-// card's version (practice.mjs cardVersion: reps and last review). Under
-// the lock, a card still at that version takes the answer; one that moved
-// on is either the same submit again (the card's latest review was a
-// flashcard review whose card_before has that version: answered with that
-// review, nothing written) or another tab's answer (ECONFLICT: skip it).
+// Idempotency without a new column: the client answers against the card's
+// version (practice.mjs cardVersion: reps and last review) and the
+// phrase's revision (phraseRevision: its words, meaning and alternates as
+// shown), with a submit id it made for this answer. Under the lock, a card
+// still at that version, of a phrase still at that revision, takes the
+// answer. A card that moved on is either this same submit again (a review
+// of the card carries its submit id: answered with that review, nothing
+// written) or another answer (ECONFLICT: skip it).
+//
+// What a flashcard review keeps beyond the card's state goes into its
+// `card_before` jsonb, beside the FSRS fields (fromRow and cardVersion
+// read only those): `submit_id` (the submit that wrote it) and
+// `added_alternate` (the answer this review added to the phrase's
+// alternates, so an override can take it back whatever the verdict says).
 //
 // Erasable TypeScript only, like phrases.ts: the tests import it as is.
 
 import { and, desc, eq, inArray, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import { fromRow, masteryBand, review as fsrsReview, toRow, type CardState, type Rating } from "../../scripts/fsrs.mjs";
-import { cardVersion, withAlternate, withoutAlternate, type CandidatePhrase, type Outcome } from "../../scripts/practice.mjs";
+import { cardVersion, phraseRevision, withAlternate, withoutAlternate, type CandidatePhrase, type Outcome } from "../../scripts/practice.mjs";
 import type { PracticeAnswerReply, PracticeSkill, PracticeVerdict } from "../../web/shared/practice.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { cards, phrases, reviews } from "./schema.ts";
@@ -71,6 +79,7 @@ export async function practiceCandidates(db: Db, profile: LanguageProfileRef): P
     suspended: p.suspended,
     lastSeenAt: p.lastSeenAt,
     createdAt: p.createdAt,
+    alternates: p.alternates,
     cards: (byPhrase.get(p.id) ?? []).map((c) => ({ skill: c.skill, due: c.due, reps: c.reps, state: c.state, last_review: c.last_review })),
   }));
 }
@@ -141,6 +150,21 @@ async function lockPhraseAndCard(tx: Db, profile: LanguageProfileRef, phraseId: 
   return { phrase, card };
 }
 
+/** What a flashcard review stores in card_before besides the card. */
+interface ReviewExtras {
+  submit_id?: string;
+  added_alternate?: string;
+}
+const extrasOf = (row: ReviewRow): ReviewExtras => (row.cardBefore ?? {}) as ReviewExtras;
+
+/** The card's review written by submit `submitId`, or undefined. */
+async function reviewBySubmit(tx: Db, profile: LanguageProfileRef, cardId: string, submitId: string): Promise<ReviewRow | undefined> {
+  return forLanguageProfile(tx, profile).get(
+    reviews,
+    and(eq(reviews.cardId, cardId), eq(reviews.mode, "flashcard"), sql`${reviews.cardBefore}->>'submit_id' = ${submitId}`) as SQL,
+  );
+}
+
 /** The card's latest review, or undefined. */
 async function latestReview(tx: Db, profile: LanguageProfileRef, cardId: string): Promise<ReviewRow | undefined> {
   const [row] = await forLanguageProfile(tx, profile).list(reviews, eq(reviews.cardId, cardId), { orderBy: desc(reviews.id), limit: 1 });
@@ -152,9 +176,11 @@ export interface AnswerWrite {
   skill: PracticeSkill;
   /** The card version the client answered against. */
   version: string;
-  /** The words and meaning the answer was graded against: an edit of the
-   *  phrase meanwhile makes the grade stale (ECONFLICT). */
-  graded: { text: string; meaning: string };
+  /** The phrase revision the card was shown (and graded) at: an edit of
+   *  the phrase since makes the grade stale (ECONFLICT). */
+  revision: string;
+  /** The page's id for this answer: a repeat of it is a replay. */
+  submitId: string;
   /** The grade; null when the card was already past `version` before
    *  grading (a repeat): then only a replay can answer it. */
   outcome: Outcome | null;
@@ -181,10 +207,10 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
     const { phrase, card } = await lockPhraseAndCard(tx, profile, w.phraseId, w.skill);
     const before = fromRow(card);
     if (cardVersion(before) !== w.version) {
-      const last = await latestReview(tx, profile, card.id);
-      if (last && last.mode === "flashcard" && cardVersion(last.cardBefore as unknown as CardState) === w.version) {
-        return reply(last, card, phrase, { alternateAdded: false, replayed: true });
-      }
+      // Only this very submit is a replay: another answer at the same
+      // version (another tab) must not come back as if it were this one.
+      const same = await reviewBySubmit(tx, profile, card.id, w.submitId);
+      if (same) return reply(same, card, phrase, { alternateAdded: false, replayed: true });
       throw new PracticeError("ECONFLICT", "this card was practised somewhere else (another tab?) since it was shown; it has been skipped");
     }
     practisableOr409(phrase);
@@ -192,10 +218,10 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
     // happen (a review only moves a card on), and must never record a guess.
     if (!w.outcome) throw new PracticeError("ECONFLICT", "this card changed while you answered; it has been skipped");
     const outcome = w.outcome;
-    if (phrase.text !== w.graded.text || phrase.meaning !== w.graded.meaning) {
-      throw new PracticeError("ECONFLICT", "this phrase was edited while you answered; it has been skipped");
-    }
+    if (phraseRevision(phrase) !== w.revision) throw new PracticeError("ECONFLICT", EDITED);
     const next = fsrsReview(before, outcome.rating, w.now, { utcOffsetMinutes: w.utcOffsetMinutes }).card;
+    const alternates = w.keepAlternate && w.answer ? withAlternate(phrase.alternates, w.answer, { text: phrase.text ?? "", lang: w.targetLocale }) : phrase.alternates;
+    const alternateAdded = alternates.length !== phrase.alternates.length;
     const [updated] = await mine.update(cards, toRow(next), eq(cards.id, card.id));
     const [row] = await mine.insert(reviews, {
       cardId: card.id,
@@ -206,10 +232,8 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
       graderNote: outcome.note,
       durationMs: w.durationMs,
       reviewedAt: w.now,
-      cardBefore: before as unknown as Record<string, unknown>,
+      cardBefore: { ...before, submit_id: w.submitId, ...(alternateAdded ? { added_alternate: alternates[alternates.length - 1] } : {}) },
     });
-    const alternates = w.keepAlternate && w.answer ? withAlternate(phrase.alternates, w.answer, { text: phrase.text ?? "", lang: w.targetLocale }) : phrase.alternates;
-    const alternateAdded = alternates.length !== phrase.alternates.length;
     const [p] = await mine.update(
       phrases,
       {
@@ -221,6 +245,9 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
     return reply(row, updated, p, { alternateAdded, replayed: false });
   });
 }
+
+/** The 409 for a phrase edited since its card was shown. */
+export const EDITED = "this phrase was edited since the card was shown (another tab?); skip it, and it comes back as edited in a later session";
 
 /** A review id from a route: a positive integer (reviews.id is a bigserial). */
 export function reviewId(v: unknown): number | null {
@@ -235,8 +262,10 @@ export function reviewId(v: unknown): number | null {
  * answer and note and becomes that rating with verdict `self`. Only the
  * card's latest review can be changed (a later one was graded from the
  * state this one left: ECONFLICT). The same rating again changes nothing,
- * so a repeated override is harmless. An Again on an answer the grader had
- * accepted takes it back out of the phrase's alternates.
+ * so a repeated override is harmless. An Again takes back the alternate
+ * this review added (card_before.added_alternate), whatever its verdict
+ * says now (an earlier override made it `self`); a later Good doesn't put
+ * it back: the learner said once it was wrong.
  */
 export async function overrideReview(
   db: Db,
@@ -255,12 +284,13 @@ export async function overrideReview(
     if (!last || Number(last.id) !== id) throw new PracticeError("ECONFLICT", "this card has been reviewed again since; only its latest answer can be changed");
     if (last.rating === opts.rating) return reply(last, card, phrase, { alternateAdded: false, replayed: true });
     const before = fromRow(last.cardBefore as unknown as CardState);
-    const next = fsrsReview(before, opts.rating, last.reviewedAt, { utcOffsetMinutes: opts.utcOffsetMinutes }).card;
-    const [updated] = await mine.update(cards, toRow(next), eq(cards.id, card.id));
+    const restored = fsrsReview(before, opts.rating, last.reviewedAt, { utcOffsetMinutes: opts.utcOffsetMinutes }).card;
+    const [updated] = await mine.update(cards, toRow(restored), eq(cards.id, card.id));
     const [row] = await mine.update(reviews, { rating: opts.rating, verdict: "self" }, eq(reviews.id, id));
     let p = phrase;
-    if (opts.rating === 1 && last.verdict === "accepted" && last.answer && cardRow.skill === "produce") {
-      const alternates = withoutAlternate(phrase.alternates, last.answer, opts.targetLocale);
+    const added = extrasOf(last).added_alternate;
+    if (opts.rating === 1 && added) {
+      const alternates = withoutAlternate(phrase.alternates, added, opts.targetLocale);
       if (alternates.length !== phrase.alternates.length) [p] = await mine.update(phrases, { alternates }, eq(phrases.id, phrase.id));
     }
     return reply(row, updated, p, { alternateAdded: false, replayed: false });

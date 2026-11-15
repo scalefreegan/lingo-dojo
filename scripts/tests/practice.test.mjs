@@ -6,8 +6,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { newCard, review } from "../fsrs.mjs";
+import { parseGraderReply } from "../match.mjs";
 import {
-  DAILY_LIMITS, MAX_ALTERNATES, MAX_ANSWER, buildQueue, candidates, cardVersion, dayStart, gradeOutcome, graderQuestion, isVersion, localMatch, needsGrader,
+  DAILY_LIMITS, MAX_ALTERNATES, MAX_ANSWER, keepable, phraseRevision, buildQueue, candidates, cardVersion, dayStart, gradeOutcome, graderQuestion, isVersion, localMatch, needsGrader,
   readAnswerInput, readDirection, readLength, readOverrideInput, readUtcOffset, remaining, withAlternate, withoutAlternate,
 } from "../practice.mjs";
 
@@ -113,7 +114,7 @@ test("buildQueue: reviews first claim the room, new fill the rest, spread among 
   assert.ok(!q.items.some((it, i) => i > 0 && it.kind === "new" && q.items[i - 1].kind === "new"));
   // Items carry what the page shows and the version to answer.
   const first = q.items.find((i) => i.kind === "review");
-  assert.deepEqual(Object.keys(first).sort(), ["kind", "lang", "meaning", "phraseId", "skill", "starred", "text", "version"]);
+  assert.deepEqual(Object.keys(first).sort(), ["kind", "lang", "meaning", "phraseId", "revision", "skill", "starred", "text", "version"]);
   assert.equal(q.items.find((i) => i.kind === "new").version, "0:");
   assert.deepEqual(q.stats, { due: 6, new: 6, done: { new: 0, reviews: 0 }, limits: DAILY_LIMITS, left: DAILY_LIMITS, ready: 12 });
 
@@ -135,12 +136,22 @@ test("buildQueue: reviews first claim the room, new fill the rest, spread among 
 });
 
 test("readAnswerInput: ids, skills, versions, lengths, NUL and control characters, reveal's rating", () => {
-  const ok = { phraseId: uuid(), skill: "produce", version: "0:", answer: "  la\tvuelta‮ \n", tz: -420, durationMs: 4200 };
+  const SUBMIT = "0b5d6f7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+  const ok = { phraseId: uuid(), skill: "produce", version: "0:", revision: "0123456789abcdef", submitId: SUBMIT.toUpperCase(), answer: "  la\tvuelta‮ \n", tz: -420, durationMs: 4200 };
   const r = readAnswerInput(ok);
   assert.equal(r.error, undefined);
-  assert.deepEqual(r.value, { phraseId: ok.phraseId, skill: "produce", version: "0:", answer: "la vuelta", reveal: false, rating: null, durationMs: 4200, utcOffsetMinutes: -420 });
+  assert.deepEqual(r.value, {
+    phraseId: ok.phraseId, skill: "produce", version: "0:", revision: "0123456789abcdef", submitId: SUBMIT, answer: "la vuelta", reveal: false, rating: null, durationMs: 4200, utcOffsetMinutes: -420,
+  });
   const bad = (patch, re) => assert.match(readAnswerInput({ ...ok, ...patch }).error ?? "", re, JSON.stringify(patch));
   bad({ phraseId: "x" }, /phraseId/);
+  // Shaped like a uuid, not one: refused here, never a Postgres cast error.
+  bad({ phraseId: "-".repeat(36) }, /phraseId/);
+  bad({ phraseId: "a".repeat(36) }, /phraseId/);
+  bad({ revision: undefined }, /revision/);
+  bad({ revision: "XYZ" }, /revision/);
+  bad({ submitId: undefined }, /submitId/);
+  bad({ submitId: "-".repeat(36) }, /submitId/);
   bad({ skill: "listen" }, /skill/);
   bad({ version: "later" }, /version/);
   bad({ answer: 5 }, /string/);
@@ -173,6 +184,14 @@ test("localMatch: produce against words and alternates; recognize against the me
   assert.equal(localMatch({ ...vuelta, skill: "recognize", answer: "change" }).verdict, "exact");
   const comer = { text: "comer", meaning: "to eat", targetLocale: "es-MX", nativeLocale: "en-US" };
   assert.equal(localMatch({ ...comer, skill: "recognize", answer: "eat" }).verdict, "exact");
+  // A slash with spaces lists alternatives; one inside a word or number doesn't.
+  const rec = (meaning, answer) => localMatch({ skill: "recognize", text: "x", meaning, answer, nativeLocale: "en-US" }).verdict;
+  assert.equal(rec("kilo / half", "half"), "exact");
+  for (const [meaning, answer] of [["1/2", "1"], ["and/or", "and"], ["24/7", "7"], ["km/h", "h"], ["he/she", "he"], ["a few", "few"], ["a little", "little"]]) {
+    assert.equal(rec(meaning, answer), "miss", `${answer} for ${meaning}`);
+  }
+  assert.equal(rec("a few", "a few"), "exact");
+  assert.equal(rec("km/h", "km/h"), "exact");
   // A comma isn't a list: "please" alone is not "Keep the change, please".
   assert.equal(localMatch({ text: "Quédese con el cambio, por favor", meaning: "Keep the change, please", skill: "recognize", answer: "please", nativeLocale: "en-US" }).verdict, "miss");
   // Articles are only dropped for an English native language.
@@ -199,15 +218,41 @@ test("gradeOutcome: the verdict → rating mapping, the grader's note cleaned, a
   assert.equal(needsGrader({ verdict: "close" }, "algo"), false);
 });
 
+test("phraseRevision: changes with the words, the meaning or the alternates, nothing else", () => {
+  const p = { text: "la vuelta", meaning: "the change", alternates: [], starred: false };
+  const r = phraseRevision(p);
+  assert.match(r, /^[0-9a-f]{16}$/);
+  assert.equal(phraseRevision({ ...p, starred: true, note: "x" }), r);
+  for (const patch of [{ text: "la vueltas" }, { meaning: "the turn" }, { alternates: ["el cambio"] }]) assert.notEqual(phraseRevision({ ...p, ...patch }), r);
+});
+
+test("parseGraderReply strict: one JSON object (fenced or not), never one quoted before the verdict", () => {
+  const verdict = '{"accepted": false, "rating_hint": "hard", "note": "No."}';
+  assert.equal(parseGraderReply(verdict, { strict: true }).accepted, false);
+  assert.equal(parseGraderReply("```json\n" + verdict + "\n```", { strict: true }).accepted, false);
+  const quoted = 'The learner wrote {"accepted": true}. ' + verdict;
+  assert.equal(parseGraderReply(quoted, { strict: true }), null);
+  assert.equal(parseGraderReply(quoted).accepted, true, "the lenient reading (other callers) is unchanged");
+});
+
+test("keepable: no braces, not far longer than the words", () => {
+  assert.equal(keepable("tomar", "beber"), true);
+  assert.equal(keepable("{x}", "beber"), false);
+  assert.equal(keepable("x".repeat(20), "beber"), true); // 2 × 5 + 10
+  assert.equal(keepable("x".repeat(21), "beber"), false);
+  assert.equal(keepable("", "beber"), false);
+});
+
 test("withAlternate / withoutAlternate: kept once, not the words themselves, capped", () => {
   assert.deepEqual(withAlternate([], "¿Cuánto vale?", { text: "¿Cuánto cuesta?", lang: "es" }), ["¿Cuánto vale?"]);
+  assert.deepEqual(withAlternate([], "{\"accepted\": true}", { text: "¿Cuánto cuesta?" }), []);
   assert.deepEqual(withAlternate(["¿Cuánto vale?"], "cuánto vale", { text: "¿Cuánto cuesta?" }), ["¿Cuánto vale?"]);
   assert.deepEqual(withAlternate([], "cuánto cuesta", { text: "¿Cuánto cuesta?" }), []);
-  assert.deepEqual(withAlternate([], "a‮b"), ["ab"]);
-  assert.deepEqual(withAlternate([], "x".repeat(201)), []);
+  assert.deepEqual(withAlternate([], "a‮b", { text: "xy" }), ["ab"]);
+  assert.deepEqual(withAlternate([], "x".repeat(201), { text: "x".repeat(200) }), []);
   const full = Array.from({ length: MAX_ALTERNATES }, (_, i) => `alt ${i}`);
-  assert.equal(withAlternate(full, "one more").length, MAX_ALTERNATES);
-  assert.deepEqual(withAlternate("not a list", "sí"), ["sí"]);
+  assert.equal(withAlternate(full, "one more", { text: "otra vez" }).length, MAX_ALTERNATES);
+  assert.deepEqual(withAlternate("not a list", "sí", { text: "claro" }), ["sí"]);
   assert.deepEqual(withoutAlternate(["¿Cuánto vale?", "otro"], "cuánto vale"), ["otro"]);
   assert.deepEqual(withoutAlternate(["otro"], ""), ["otro"]);
 });

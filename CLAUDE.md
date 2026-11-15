@@ -21,7 +21,8 @@ Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
 `web/src/components/PracticeView.tsx`). A practice answer locks its phrase
-then its card, and is idempotent by the card's version, not a client id.
+then its card; it names the card's version, the phrase's revision and a
+submit id (a resend replays, anything else stale is a 409).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

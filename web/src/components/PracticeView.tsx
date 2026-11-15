@@ -279,13 +279,24 @@ function Session({
   useEffect(() => {
     shownAt.current = Date.now();
   }, []);
+  // This answer's id: a resend of it (a double click, a retry after a lost
+  // reply) is the same submit, and the server answers it with the review it
+  // already recorded instead of a second one.
+  const [submitId] = useState(() => crypto.randomUUID());
+  const inputRef = useRef<HTMLInputElement>(null);
+  // A Check that failed leaves the box enabled again: back into it.
+  useEffect(() => {
+    if (error && !result && !revealed) inputRef.current?.focus();
+  }, [error, result, revealed]);
 
   async function submit(body: { answer?: string; reveal?: boolean; rating?: PracticeRating }) {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const r = await answerCard({ phraseId: item.phraseId, skill: item.skill, version: item.version, durationMs: Date.now() - shownAt.current, ...body });
+      const r = await answerCard({
+        phraseId: item.phraseId, skill: item.skill, version: item.version, revision: item.revision, submitId, durationMs: Date.now() - shownAt.current, ...body,
+      });
       setResult(r);
     } catch (e) {
       setError(errText(e));
@@ -346,6 +357,7 @@ function Session({
             </label>
             <input
               id="practice-answer"
+              ref={inputRef}
               className={inputClass}
               value={answer}
               maxLength={300}
@@ -380,7 +392,7 @@ function Session({
               {item.meaning}
             </p>
             <p className={`${fine} text-fg-2`}>How well did you know it?</p>
-            <RatingRow current={null} busy={busy} onPick={(r) => void submit({ reveal: true, rating: r })} />
+            <RatingRow current={null} busy={busy} focusFirst onPick={(r) => void submit({ reveal: true, rating: r })} />
           </div>
         )}
 
@@ -397,6 +409,11 @@ function Session({
               </p>
               <p className="text-sm text-fg-2">{result.expected.meaning}</p>
             </div>
+            {result.replayed && (
+              <p className={`${fine} text-fg-3`} data-testid="practice-replayed">
+                This answer was already recorded (it was sent twice); nothing new was saved.
+              </p>
+            )}
             {result.alternateAdded && <p className={`${fine} text-fg-3`}>Saved as another way to say it: next time it counts as exact.</p>}
             <div className="flex flex-col gap-1.5">
               <p className={`${fine} text-fg-3`}>Graded {RATINGS[result.review.rating - 1].label}. Disagree? Pick your own grade:</p>
@@ -415,7 +432,9 @@ function Session({
           <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-err" role="alert">
             <p>{error}</p>
             <div>
-              <Button onClick={() => onNext(null)}>Skip this card</Button>
+              {/* Only before an answer is recorded: after one (a failed
+                  override), Next keeps it in the summary. */}
+              {!result && <Button onClick={() => onNext(null)}>Skip this card</Button>}
             </div>
           </div>
         )}
@@ -424,12 +443,13 @@ function Session({
   );
 }
 
-function RatingRow({ current, busy, onPick }: { current: PracticeRating | null; busy: boolean; onPick: (r: PracticeRating) => void }) {
+function RatingRow({ current, busy, onPick, focusFirst = false }: { current: PracticeRating | null; busy: boolean; onPick: (r: PracticeRating) => void; focusFirst?: boolean }) {
   return (
     <div role="group" aria-label="Grade" className="grid grid-cols-4 gap-1.5 sm:flex">
       {RATINGS.map((r) => (
         <Button
           key={r.value}
+          autoFocus={focusFirst && r.value === 1}
           title={r.hint}
           aria-pressed={current === r.value}
           variant={current === r.value ? "primary" : "secondary"}

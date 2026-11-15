@@ -1269,12 +1269,19 @@ cards are left alone by this queue.
   `alternates` in the target locale (accents and CJK spacing as in Grading
   above, typed, so an accent-only difference is close). Recognize is
   `matchAnswer` against the meaning and each part of a meaning listed with
-  `;`, `/` or `|` (not commas: "Keep the change, please" is one meaning),
-  in the native locale, and, for an English native language, once more
-  without a leading the / a / an / to on either side ("eat" for "to eat").
+  `;`, `|` or a slash **with spaces around it** ("kilo / half"), in the
+  native locale. A slash inside a word or number never splits ("1/2",
+  "24/7", "km/h", "and/or", "he/she" are one meaning each), nor does a
+  comma ("Keep the change, please"). For an English native language it
+  tries once more without a leading "the" or "to" on either side ("eat" for
+  "to eat"), never "a"/"an" ("few" is not "a few").
   A miss with something typed costs one tool-less Haiku `claude -p` call
-  (`graderPrompt`, the answer fenced and defanged, `parseGraderReply`; 45 s
-  timeout, empty cwd), made before the write's transaction; an unusable
+  (`graderPrompt`, the answer fenced and defanged; 45 s timeout, empty
+  cwd), made before the write's transaction. Its reply is read with
+  `parseGraderReply(text, { strict: true })`: it must be one JSON object (a
+  ```json fence allowed), so a reply quoting an answer typed as
+  `{"accepted": true}` before its verdict can't grade as that (the lenient
+  first-object reading stays the default for other callers). An unusable
   reply or a failed run is `wrong` with a note saying it couldn't be
   checked. An empty answer ("I don't know") is `wrong` with no call. The
   grader's note is cleaned (control characters), one line, 200 characters.
@@ -1282,10 +1289,21 @@ cards are left alone by this queue.
   `self` with the learner's rating.
 - **Alternates.** An answer the grader accepts on a **produce** card is
   added to `phrases.alternates` (deduplicated as `matchAnswer` compares, at
-  most 20, 200 characters), so it is exact next time. Recognize answers are
-  not kept: `alternates` holds target forms, and a meaning there would
-  grade as the words. Keeping accepted meanings would need a column (or a
-  change of the jsonb's shape): not done.
+  most 20), so it is exact next time, unless it holds `{` or `}` or is
+  longer than 2 × the words' length + 10 characters (`keepable`): a long or
+  template-like answer the grader let through never becomes a permanent
+  exact match. Recognize answers are not kept: `alternates` holds target
+  forms, and a meaning there would grade as the words (keeping accepted
+  meanings would need a column: not done). Editing a phrase's words or
+  meaning (to a different value) clears its alternates: every one was
+  accepted against the old question. `PATCH /api/phrases/:id {alternates}`
+  keeps only the named ones (removal only, nothing added by hand); the
+  bank's per-alternate remove button is bead `ld-gf9.4` (Phrase bank view).
+- **What a review keeps besides the card.** A flashcard review's
+  `card_before` jsonb carries, beside the FSRS fields (`fromRow`,
+  `cardVersion` and the trouble query read only those), `submit_id` (the
+  page's id for the answer that wrote it) and `added_alternate` (the answer
+  it added to the alternates, if any). No column was added.
 - **One write per answer.** In one transaction: the phrase row locked, then
   its card (made if missing) locked: phrase before card, the order a
   capture takes them in, and one phrase only, so no learner, profile or
@@ -1294,24 +1312,32 @@ cards are left alone by this queue.
   phrase's `last_practiced_at` and any alternate. `last_seen_at` is not
   touched: as built it is always the latest sighting (§As built (phase 4)),
   so the metrics table's "or a card shown in practice" no longer holds.
-- **Idempotency** without a client id column: the client answers against
-  the card's **version**, `reps:last_review` ("0:" for a card not made
-  yet), which every review changes. Under the lock, a card still at that
-  version takes the answer. One that moved on is either the same submit
-  again (its latest review is a flashcard review whose `card_before` has
-  that version: the reply is that review, `replayed: true`, nothing
-  written) or another tab's answer (409, the page offers Skip). A submit
-  already stale before grading never calls the grader. The phrase's words
-  and meaning are compared with what was graded: an edit meanwhile is a
-  409 too.
+- **Idempotency and staleness.** A queue item carries the card's
+  **version**, `reps:last_review` ("0:" for a card not made yet), which
+  every review changes, and the phrase's **revision**, a 16-hex hash of its
+  words, meaning and alternates (`phraseRevision`), which every edit that
+  changes the question changes (the version doesn't: an edit touches the
+  phrase, not the card). The page makes a **submit id** (a uuid) per card
+  shown and sends all three. A revision that no longer matches is a 409
+  before any grading (no model call), and again under the lock for an edit
+  during grading; the page offers Skip and the next session has the edited
+  card. A card still at the version takes the answer. One that moved on is
+  a replay only if a review of that card carries this submit id (a double
+  click, a retried fetch): the reply is that review with `replayed: true`,
+  nothing written, and the page says it was already recorded. Any other
+  answer at that version (another tab) is a 409, never another answer's
+  review passed off as its own. A submit already stale before grading never
+  calls the grader.
 - **Override.** Only a card's latest review can be changed (else 409). The
   card is restored from `card_before` and reviewed again with the new
   rating at the review's own time; the review row takes that rating and
   verdict `self` (answer and note kept). The same rating again is a no-op.
   Because the time is the original one, the version doesn't change, so a
-  repeat of the original submit still replays (now the overridden review)
-  and the next card answer isn't refused. An Again on a produce answer the
-  grader had accepted takes it back out of the alternates.
+  resend of the original submit still replays (now the overridden review)
+  and the next card answer isn't refused. An **Again** takes the review's
+  `added_alternate` back out of the alternates, whatever the verdict says
+  by then (accepted → Hard → Again removes it as surely as accepted →
+  Again); a later Good doesn't put it back.
 - **The bank.** Its metrics read cards and reviews live, so mastery, due,
   last practised and trouble (lapses: Again on a card whose `card_before`
   was in review) change with the next read of the Phrase bank.
@@ -1319,11 +1345,17 @@ cards are left alone by this queue.
   (the routes with a stand-in `claude`: the queue, each verdict, the
   grader's prompt and argv, alternates, Reveal, a repeat submit, overrides,
   trouble, the new limit and the day boundary, two languages, another
-  account, kids, a suspension or an edit while grading), and
-  `practice.pg.test.mjs` (with `LINGO_TEST_PG_URL`, PostgreSQL 17): six
-  connections submitting one answer, an answer against a capture making the
-  same card and an edit, an override against the next answer (all three
-  fail with the row locks removed).
+  account, kids, a suspension or an edit while grading, a stale revision
+  before grading, a different answer at the same version, accepted → Hard
+  → Again and accepted → Again, alternates dropped on an edit and removed
+  by hand, a grader reply quoting the answer's JSON, braced and long
+  answers not kept, uuid-shaped ids that aren't uuids), and
+  `practice.pg.test.mjs` (with `LINGO_TEST_PG_URL`, PostgreSQL 17): one
+  submit sent on six connections (one written, five replayed), six
+  different answers at once (one written, five 409, none replayed), an
+  answer against a capture making the same card and an edit, an override
+  against the next answer (the lock tests fail with the row locks
+  removed).
 
 ## Session length (added 2026-11-15; does not need the database)
 

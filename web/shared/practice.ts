@@ -30,9 +30,11 @@ export interface PracticeItem {
   /** The variant the phrase was first met in (BCP-47), "" when unknown. */
   lang: string;
   starred: boolean;
-  /** The card's version (reviews and last review time) to answer against:
-   *  a second submit of one answer is answered with the first's review. */
+  /** The card's version (reviews and last review time) to answer against. */
   version: string;
+  /** The phrase's revision as shown (its words, meaning and alternates): an
+   *  edit since makes the answer a 409 before any grading. */
+  revision: string;
 }
 
 /** What is waiting, and today's progress. The day turns over at 4 a.m. in
@@ -69,6 +71,11 @@ export interface PracticeAnswerRequest {
   phraseId: string;
   skill: PracticeSkill;
   version: string;
+  revision: string;
+  /** A uuid the page makes for this answer: a resend of it (double click,
+   *  retry) gets the first's review back; any other answer at the same
+   *  version is a 409. */
+  submitId: string;
   answer?: string;
   reveal?: boolean;
   rating?: PracticeRating;

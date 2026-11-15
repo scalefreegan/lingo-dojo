@@ -20,6 +20,7 @@ declare module "*/scripts/practice.mjs" {
     suspended?: boolean;
     lastSeenAt?: Date | string | null;
     createdAt?: Date | string | null;
+    alternates?: string[];
     cards: { skill: string; due: Date | string; reps: number; state: number; last_review?: Date | string | null }[];
   }
 
@@ -34,6 +35,10 @@ declare module "*/scripts/practice.mjs" {
   export const MAX_UTC_OFFSET: number;
   export function dayStart(now: Date | string | number, utcOffsetMinutes?: number, rolloverHour?: number): Date;
   export function readUtcOffset(v: unknown): number;
+  export function phraseRevision(phrase: { text: string | null; meaning: string | null; alternates?: unknown }): string;
+  export const ALTERNATE_RATIO: number;
+  export const ALTERNATE_SLACK: number;
+  export function keepable(answer: unknown, text?: string): boolean;
   export function cardVersion(card: { reps: number; last_review?: Date | string | null } | null | undefined): string;
   export function isVersion(v: unknown): v is string;
   export function practisable(p: { text: string | null; meaning: string | null; suspended?: boolean }): boolean;
@@ -48,6 +53,8 @@ declare module "*/scripts/practice.mjs" {
     phraseId: string;
     skill: PracticeSkill;
     version: string;
+    revision: string;
+    submitId: string;
     answer: string;
     reveal: boolean;
     rating: Rating | null;

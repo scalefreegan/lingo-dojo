@@ -1,11 +1,11 @@
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { PracticeError, overrideReview, practiceCandidates, practiceCard, practiceDone, recordAnswer, reviewId } from "../../scripts/db/practice.ts";
+import { EDITED, PracticeError, overrideReview, practiceCandidates, practiceCard, practiceDone, recordAnswer, reviewId } from "../../scripts/db/practice.ts";
 import { graderPrompt, parseGraderReply } from "../../scripts/match.mjs";
 import {
   buildQueue, dayStart, gradeOutcome, graderQuestion, localMatch, needsGrader, readAnswerInput, readDirection, readLength, readOverrideInput, readUtcOffset,
-  cardVersion,
+  cardVersion, phraseRevision,
 } from "../../scripts/practice.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
 import type { PracticeAnswerReply, PracticeQueueReply, PracticeStatsReply } from "../shared/practice.ts";
@@ -102,7 +102,10 @@ async function runGrader(
       timeoutSec: GRADER_TIMEOUT_SEC,
     });
     const run = await result;
-    const grader = parseGraderReply(run.text);
+    // Strict: the reply must be the one JSON object. The answer is in the
+    // prompt, so a reply that quotes an answer typed as {"accepted": true}
+    // before its own verdict must not be read as that.
+    const grader = parseGraderReply(run.text, { strict: true });
     if (!grader) console.error("[lingo-dojo] practice: the grader's reply wasn't usable; graded as wrong");
     return { grader, failed: !grader };
   } catch (e) {
@@ -124,6 +127,10 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // A card already past this version is a repeat (or another tab's): the
   // write answers it from the stored review without grading it again.
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
+  // The phrase edited since the card was shown: the question the learner
+  // answered isn't this one any more. Refused before any grading (the
+  // write checks again, under its lock, for an edit during grading).
+  if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
   // No grade for a stale card: the write replays the stored review or
   // refuses (409), and never records one.
   let outcome = stale ? null : a.reveal ? gradeOutcome({ reveal: true, rating: a.rating }) : null;
@@ -148,7 +155,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   }
   const out = await op(() =>
     recordAnswer(rawDb(), ctx.language, {
-      phraseId: a.phraseId, skill: a.skill, version: a.version, graded, outcome, answer: a.reveal ? null : a.answer || null,
+      phraseId: a.phraseId, skill: a.skill, version: a.version, revision: a.revision, submitId: a.submitId, outcome, answer: a.reveal ? null : a.answer || null,
       durationMs: a.durationMs, utcOffsetMinutes: a.utcOffsetMinutes, keepAlternate, targetLocale: targetLocale(ctx), now: new Date(),
     }),
   );

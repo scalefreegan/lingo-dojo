@@ -6,9 +6,10 @@
 // directly; scripts/db/practice.ts reads and writes the rows and
 // web/server/practice.ts runs the grader.
 
+import { createHash } from "node:crypto";
 import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
 import { matchAnswer, normalizeAnswer } from "./match.mjs";
-import { LIMITS, clean } from "./phrases.mjs";
+import { LIMITS, clean, isUuid } from "./phrases.mjs";
 
 /** The skills a flashcard exercises: recognize (see the words, give the
  *  meaning) and produce (see the meaning, give the words). `listen` is the
@@ -190,9 +191,27 @@ export function buildQueue(phrases, { now, done = { new: 0, reviews: 0 }, length
   };
 }
 
+/**
+ * The revision of a phrase as a card shows and grades it: a short hash of
+ * its words, meaning and alternates. The card version doesn't move when
+ * the phrase is edited (an edit touches the phrase row, not the card), so
+ * the queue sends this too and an answer must name it: an edit in another
+ * tab since the card was shown is a 409 before any grading, never a grade
+ * against a question the learner didn't see.
+ */
+export function phraseRevision(phrase) {
+  const alts = Array.isArray(phrase?.alternates) ? phrase.alternates : [];
+  return createHash("sha256")
+    .update(JSON.stringify([phrase?.text ?? null, phrase?.meaning ?? null, alts]))
+    .digest("hex")
+    .slice(0, 16);
+}
+const REVISION_RE = /^[0-9a-f]{16}$/;
+
 /** A queue entry as the wire carries it: both sides of the card (the page
  *  shows one and hides the other until it is answered; it is the learner's
- *  own bank, which the Library shows anyway), and the version to answer. */
+ *  own bank, which the Library shows anyway), the card version and the
+ *  phrase revision to answer against. */
 function queueItem({ phrase, skill, card, kind }) {
   return {
     phraseId: phrase.id,
@@ -203,6 +222,7 @@ function queueItem({ phrase, skill, card, kind }) {
     lang: phrase.lang ?? "",
     starred: !!phrase.starred,
     version: cardVersion(card),
+    revision: phraseRevision(phrase),
   };
 }
 
@@ -212,7 +232,11 @@ const CONTROLS_OR_BREAKS = /\s+/g;
 
 /**
  * An answer body, checked: `{ value }` or `{ error }` for a 400.
- *   { phraseId, skill, version, answer?, reveal?, rating?, durationMs?, tz? }
+ *   { phraseId, skill, version, revision, submitId, answer?, reveal?, rating?, durationMs?, tz? }
+ * `submitId` is a uuid the page makes once per card shown: a second POST
+ * with the same id is the same submit (a double click, a retried fetch)
+ * and gets the first's review back; another id at the same version is
+ * another answer, a 409.
  * `reveal: true` (Reveal on a recognize card, then the learner's own
  * grade) takes a `rating` 1-4 and no grading; otherwise the typed `answer`
  * is graded and `rating` is refused (an override comes after, by review
@@ -221,10 +245,12 @@ const CONTROLS_OR_BREAKS = /\s+/g;
  */
 export function readAnswerInput(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
-  const { phraseId, skill, version, answer, reveal, rating, durationMs, tz } = body;
-  if (typeof phraseId !== "string" || !/^[0-9a-f-]{36}$/i.test(phraseId)) return { error: "phraseId must be a phrase id" };
+  const { phraseId, skill, version, revision, submitId, answer, reveal, rating, durationMs, tz } = body;
+  if (!isUuid(phraseId)) return { error: "phraseId must be a phrase id" };
   if (!PRACTICE_SKILLS.includes(skill)) return { error: `skill must be one of ${PRACTICE_SKILLS.join(", ")}` };
   if (!isVersion(version)) return { error: "version must be the card version the queue gave" };
+  if (typeof revision !== "string" || !REVISION_RE.test(revision)) return { error: "revision must be the phrase revision the queue gave" };
+  if (!isUuid(submitId)) return { error: "submitId must be a uuid made for this answer" };
   if (reveal !== undefined && typeof reveal !== "boolean") return { error: "reveal must be true or false" };
   let text = "";
   if (answer !== undefined && answer !== null) {
@@ -241,7 +267,12 @@ export function readAnswerInput(body) {
     return { error: "rating goes with reveal; to change a graded answer, override its review" };
   }
   const d = Number.isInteger(durationMs) && durationMs >= 0 ? Math.min(durationMs, 3_600_000) : null;
-  return { value: { phraseId: phraseId.toLowerCase(), skill, version, answer: text, reveal: !!reveal, rating: r, durationMs: d, utcOffsetMinutes: readUtcOffset(tz) } };
+  return {
+    value: {
+      phraseId: phraseId.toLowerCase(), skill, version, revision, submitId: submitId.toLowerCase(), answer: text, reveal: !!reveal, rating: r, durationMs: d,
+      utcOffsetMinutes: readUtcOffset(tz),
+    },
+  };
 }
 
 /** An override body: `{ rating: 1-4, tz? }`. */
@@ -253,18 +284,21 @@ export function readOverrideInput(body) {
 
 /* ---------------------------------- grading ---------------------------------- */
 
-/** English meanings often come with a leading article or "to" ("the
+/** English meanings often come with a leading "the" or "to" ("the
  *  change", "to eat") that an answer leaves off, or the other way round:
- *  not worth a model call. Only for an English native language. */
-const EN_LEAD = /^(the|a|an|to)\s+/i;
+ *  not worth a model call. Only for an English native language. Not
+ *  "a"/"an": "a few" and "a little" mean something else without it. */
+const EN_LEAD = /^(the|to)\s+/i;
 const isEnglish = (locale) => /^en(?![a-z])/i.test(String(locale ?? ""));
 
-/** A meaning's own alternatives: "change; the turn" and "kilo / half" list
- *  several, any of which is right. Not commas: "Keep the change, please"
- *  is one meaning, and "please" alone is not it. */
+/** A meaning's own alternatives: "change; the turn", "kilo | half" and
+ *  "kilo / half" list several, any of which is right. A slash only with
+ *  spaces around it: "1/2", "24/7", "km/h", "and/or" and "he/she" are one
+ *  meaning each. Not commas: "Keep the change, please" is one meaning, and
+ *  "please" alone is not it. */
 const meaningParts = (meaning) =>
   String(meaning ?? "")
-    .split(/\s*[;|/]\s*/)
+    .split(/\s*[;|]\s*|\s+\/\s+/)
     .map((s) => s.trim())
     .filter(Boolean);
 
@@ -334,10 +368,27 @@ export const needsGrader = (match, answer) => match?.verdict === "miss" && Strin
 export function withAlternate(alternates, answer, { text = "", lang = "" } = {}) {
   const list = Array.isArray(alternates) ? alternates.filter((a) => typeof a === "string") : [];
   const a = clean(answer).replace(CONTROLS_OR_BREAKS, " ").trim();
-  if (!a || a.length > LIMITS.text || list.length >= MAX_ALTERNATES) return list;
+  if (!keepable(a, text) || list.length >= MAX_ALTERNATES) return list;
   const key = normalizeAnswer(a, lang);
   if (!key || key === normalizeAnswer(text, lang) || list.some((x) => normalizeAnswer(x, lang) === key)) return list;
   return [...list, a];
+}
+
+/** How much longer than the words an alternate may be: another way to say
+ *  a phrase is about its length, and a long answer the grader let through
+ *  (a sentence around it, an instruction) shouldn't become an exact match
+ *  for ever. */
+export const ALTERNATE_RATIO = 2;
+export const ALTERNATE_SLACK = 10;
+
+/** Whether an accepted answer may be kept as an alternate: something, no
+ *  braces (JSON or template text is never a phrase, and is what an answer
+ *  that tries to steer the grader looks like), within LIMITS.text and at
+ *  most ALTERNATE_RATIO × the words' length + ALTERNATE_SLACK characters. */
+export function keepable(answer, text = "") {
+  const a = String(answer ?? "");
+  if (!a || /[{}]/.test(a) || a.length > LIMITS.text) return false;
+  return a.length <= ALTERNATE_RATIO * String(text ?? "").length + ALTERNATE_SLACK;
 }
 
 /** `alternates` without `answer` (an Again override of an answer the grader

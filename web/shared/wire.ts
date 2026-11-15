@@ -1016,6 +1016,10 @@ export interface PhraseInput {
   text?: string;
   meaning?: string | null;
   note?: string | null;
+  /** PATCH only: the alternates to keep (any of the phrase's not named are
+   *  removed; none can be added by hand). New words or a new meaning drop
+   *  them all: they were accepted against the old question. */
+  alternates?: string[];
   starred?: boolean;
   suspended?: boolean;
 }
