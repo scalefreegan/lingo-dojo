@@ -10,6 +10,7 @@
     "export": "node scripts/export.mjs"
   },
   "dependencies": {
+    "ts-fsrs": "^6.0.0",
     "yaml": "^2.9.1"
   }
 }
