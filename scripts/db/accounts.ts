@@ -214,10 +214,36 @@ export async function getSettings(db: Db, userId: string): Promise<{ model: stri
   return row ? { model: row.model, voice: row.voice } : undefined;
 }
 
-export async function saveVoiceSettings(db: Db, userId: string, voice: Record<string, unknown>): Promise<void> {
-  await forUser(db, userId).upsert(userSettings, { voice }, { target: [], set: { voice } });
+/**
+ * Change a user's voice settings as one read-merge-write: `change` gets the
+ * stored value (null when never saved) and returns the new one. Two saves at
+ * once (the provider and then the listening provider, or the adult and kids
+ * session lengths) would otherwise both read the same row and the second
+ * write would undo the first. So it runs in one transaction that first makes
+ * sure the row exists (insert, nothing on conflict: the lock below needs a
+ * row to hold, even for a user who never saved), then locks it with SELECT
+ * … FOR UPDATE, so a concurrent save waits and then reads this one's result.
+ * Returns what was stored.
+ */
+export async function updateVoiceSettings(
+  db: Db,
+  userId: string,
+  change: (stored: Record<string, unknown> | null) => Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return db.transaction(async (tx) => {
+    const mine = forUser(tx, userId);
+    // The owner is set by hand here because the scope's upsert can't express
+    // "do nothing on conflict"; it is the same user id the scope uses.
+    const [made] = await tx.insert(userSettings).values({ userId }).onConflictDoNothing().returning();
+    const [row] = await tx.select().from(userSettings).where(mine.where(userSettings)).for("update");
+    const voice = change(made ? null : row.voice);
+    await tx.update(userSettings).set({ voice }).where(mine.where(userSettings));
+    return voice;
+  });
 }
 
+/** One column, no read: an upsert of just the model can't undo a concurrent
+ *  voice save (each sets only its own column). */
 export async function saveModel(db: Db, userId: string, model: string): Promise<void> {
   await forUser(db, userId).upsert(userSettings, { model }, { target: [], set: { model } });
 }

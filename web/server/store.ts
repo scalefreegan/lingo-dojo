@@ -1,7 +1,7 @@
 import { DEFAULT_MODEL, isAgentModel } from "../../scripts/claude.mjs";
 import { normalizeVoiceSettings } from "../../scripts/voice.mjs";
 import {
-  appendAgentMessage, clearAgentMessages, getSettings, listAgentMessages, saveModel, saveVoiceSettings,
+  appendAgentMessage, clearAgentMessages, getSettings, listAgentMessages, saveModel, updateVoiceSettings as updateStoredVoice,
 } from "../../scripts/db/accounts.ts";
 import type { ChatMessage, VoiceSettings } from "../shared/wire.ts";
 import { rawDb } from "./db.ts";
@@ -46,9 +46,15 @@ export async function readVoiceSettings(userId: string): Promise<VoiceSettings> 
   return normalizeVoiceSettings((await getSettings(rawDb(), userId))?.voice ?? null);
 }
 
-/** Normalize and store; returns what was stored. */
-export async function writeVoiceSettings(userId: string, s: VoiceSettings): Promise<VoiceSettings> {
-  const clean = normalizeVoiceSettings(s);
-  await saveVoiceSettings(rawDb(), userId, clean as unknown as Record<string, unknown>);
-  return clean;
+/** Change this user's voice settings: `change` gets the current settings
+ *  (complete, normalized) and returns the new ones, which are normalized and
+ *  stored. Atomic per user (accounts.ts updateVoiceSettings: one transaction
+ *  holding the row lock), so two saves at once both land instead of the
+ *  second undoing the first; the file this replaced was written
+ *  synchronously and couldn't interleave. Returns what was stored. */
+export async function updateVoiceSettings(userId: string, change: (cur: VoiceSettings) => VoiceSettings): Promise<VoiceSettings> {
+  const stored = await updateStoredVoice(rawDb(), userId, (raw) => {
+    return normalizeVoiceSettings(change(normalizeVoiceSettings(raw))) as unknown as Record<string, unknown>;
+  });
+  return stored as unknown as VoiceSettings;
 }

@@ -447,7 +447,11 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   the same as a missing one.
 - **Per-user settings:** voice settings and casting (`user_settings.voice`),
   the agent's model (`user_settings.model`) and its chat (`agent_messages`,
-  ordered by `seq`), all through `forUser`. The voice turn lock is per login
+  ordered by `seq`), all through `forUser`. A voice-settings save is a merge
+  into what is stored (`sessionMinutes` per mode too), done in one
+  transaction that makes the row if missing and holds it `FOR UPDATE`
+  (`updateVoiceSettings`), so two saves at once both land; the model is a
+  one-column upsert with no read. The voice turn lock is per login
   session until conversations key it, so a parent and a child on two devices
   under one account don't block each other (two tabs of one browser share a
   session, and its lock).
@@ -799,11 +803,12 @@ deletes cover undoing a single change.
   Secure rule, every access level, learner CRUD and picking, and a second
   user against the first's learners, settings and agent chat; the API and
   voice tests cover the stale-page 409 from a second tab and a second login
-  on the same browser. PGlite runs one transaction at a time, so the
-  first-run race itself is `first-run.pg.test.mjs`, which runs only with
-  `LINGO_TEST_PG_URL` set: it makes a throwaway database on that server,
-  races 12 first runs five times, and drops it (it fails with the lock
-  removed).
+  on the same browser, and overlapping voice-settings saves. PGlite runs one
+  transaction at a time, so the races themselves are in
+  `first-run.pg.test.mjs`, which runs only with `LINGO_TEST_PG_URL` set: it
+  makes a throwaway database on that server, races 12 first runs and 12
+  voice-settings saves five times each, and drops it (each fails with its
+  lock removed).
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).

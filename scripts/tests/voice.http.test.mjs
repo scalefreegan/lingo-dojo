@@ -16,6 +16,7 @@ import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
+import { updateVoiceSettings } from "../db/accounts.ts";
 
 const root = copyFixture();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
@@ -246,6 +247,46 @@ test("speak with the saved provider unconfigured says so; cross-origin is refuse
   assert.match(r.body.error, /ElevenLabs is not set up/);
   const x = await call("GET", "/api/voice/settings", undefined, { Origin: "https://evil.example" });
   assert.equal(x.status, 403);
+});
+
+test("overlapping settings saves for one account all land: none reads the row before another's write and undoes it", async () => {
+  // The route end to end: each save is a merge, and together they all land.
+  // (Whether these requests overlap inside the database depends on timing;
+  // the next test forces the interleaving.) A user with no settings row yet,
+  // so the first saves also race to make it.
+  await addUser(testDb.db, "noor", undefined, { learners: [ADULT] });
+  const noor = client(base);
+  await noor.login("noor");
+  // What the panel can send at once: the speaking provider, the listening
+  // provider, turn-taking, review, and each mode's session length.
+  const puts = [{ tts: "system" }, { stt: "azure" }, { turn: "pause" }, { review: true }, { sessionMinutes: { adult: 15 } }, { sessionMinutes: { kids: 5 } }];
+  for (let round = 0; round < 3; round++) {
+    await testDb.query("delete from user_settings using users where users.id = user_settings.user_id and users.username = 'noor'");
+    const replies = await Promise.all(puts.map((p) => noor.call("PUT", "/api/voice/settings", p)));
+    for (const r of replies) assert.equal(r.status, 200, r.text);
+    const { settings } = (await noor.call("GET", "/api/voice/settings")).body;
+    assert.equal(settings.tts, "system", `round ${round}`);
+    assert.equal(settings.stt, "azure", `round ${round}`);
+    assert.equal(settings.turn, "pause", `round ${round}`);
+    assert.equal(settings.review, true, `round ${round}`);
+    assert.deepEqual(settings.sessionMinutes, { adult: 15, kids: 5 }, `round ${round}`);
+  }
+});
+
+// The HTTP test above can pass even without the lock: each request does a
+// few queries before its read, which staggers them. This one starts every
+// read before any write, which is exactly the interleaving that loses an
+// update without the transaction (verified by putting the old read-then-
+// upsert back). On PGlite the fix holds because the transactions run one at
+// a time; first-run.pg.test.mjs checks the row lock on a real Postgres.
+test("updateVoiceSettings: eight overlapping read-merge-writes for one user, all kept, row made by the first", async () => {
+  const { user } = await addUser(testDb.db, "ines");
+  const changes = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => updateVoiceSettings(testDb.db, user.id, (stored) => ({ ...(stored ?? {}), [`k${i}`]: i }))),
+  );
+  assert.equal(changes.length, 8);
+  const [row] = await testDb.query("select voice from user_settings where user_id = $1", [user.id]);
+  assert.deepEqual(Object.keys(row.voice).sort(), ["k0", "k1", "k2", "k3", "k4", "k5", "k6", "k7"]);
 });
 
 test("voice settings are per user: a second account starts from the defaults and never sees or changes the first's", async () => {

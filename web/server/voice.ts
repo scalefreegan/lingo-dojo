@@ -18,7 +18,7 @@ import type {
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
-import { readVoiceSettings, writeVoiceSettings } from "./store.ts";
+import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -85,11 +85,14 @@ async function handleSettings(req: IncomingMessage, res: ServerResponse, ctx: Ct
   if (req.method === "PUT") {
     const body = await readJsonBody<VoiceSettingsRequest>(req);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a settings object");
-    const cur = await readVoiceSettings(ctx.user.id);
-    // sessionMinutes merges per mode: the Go tab only knows (and sends) its
-    // own mode's choice, and must not reset the other mode's.
-    const minutes = body.sessionMinutes && typeof body.sessionMinutes === "object" ? { ...cur.sessionMinutes, ...body.sessionMinutes } : cur.sessionMinutes;
-    const saved = await writeVoiceSettings(ctx.user.id, { ...cur, ...body, sessionMinutes: minutes } as VoiceSettings);
+    // A merge into what is stored, done under the user's row lock (store.ts
+    // updateVoiceSettings), so overlapping saves from the panel all land.
+    const saved = await updateVoiceSettings(ctx.user.id, (cur) => {
+      // sessionMinutes merges per mode: the Go tab only knows (and sends) its
+      // own mode's choice, and must not reset the other mode's.
+      const minutes = body.sessionMinutes && typeof body.sessionMinutes === "object" ? { ...cur.sessionMinutes, ...body.sessionMinutes } : cur.sessionMinutes;
+      return { ...cur, ...body, sessionMinutes: minutes } as VoiceSettings;
+    });
     return sendJson(res, 200, settingsReply(req, saved));
   }
   methodNotAllowed(res, "GET, PUT");
