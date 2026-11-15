@@ -260,10 +260,10 @@ const unreviewed = (c) => c.state === 0 || !c.reps;
 /**
  * One phrase's metrics (DATA.md §Metrics) from its cards (rows of `cards`,
  * any shape fromRow takes) and its lapses in the last TROUBLE_DAYS: the
- * mastery band of its weakest card (New with none), the earliest due of the
- * cards that have been reviewed (a card never reviewed is new, waiting to
- * be learned, not due: counting it would make every phrase met in a session
- * due at once), how many cards are new, and whether it is in trouble.
+ * mastery band of its weakest card (New when none has been reviewed), the
+ * earliest due of the cards that have been reviewed (a card never reviewed
+ * is new, waiting to be learned, not due: counting it would make every
+ * phrase met in a session due at once), and whether it is in trouble.
  */
 export function phraseMetrics(cards = [], lapses = 0) {
   const states = cards.map((c) => fromRow(c));
@@ -271,7 +271,6 @@ export function phraseMetrics(cards = [], lapses = 0) {
   return {
     mastery: phraseMastery(states),
     due: dues.length ? iso(Math.min(...dues)) : null,
-    newCards: states.filter(unreviewed).length,
     lapses,
     trouble: lapses >= TROUBLE_LAPSES,
     cardCount: cards.length,
@@ -290,9 +289,13 @@ const fold = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toL
 /** Whether a phrase is due for practice at `now`: a card of it that has
  *  been reviewed is due, and it is neither pending nor suspended. */
 export const isDueNow = (p, now) => !p.pending && !p.suspended && p.due != null && ms(p.due) <= ms(now);
-/** Whether a phrase has a card waiting to be learned (never reviewed), and
- *  is neither pending nor suspended. */
-export const isNew = (p) => !p.pending && !p.suspended && p.newCards > 0;
+/** Whether a phrase is new: never practised (mastery New: no card of it
+ *  reviewed, or no cards yet), and neither pending nor suspended. */
+export const isNew = (p) => !p.pending && !p.suspended && p.mastery === "New";
+/** Whether a phrase counts in the Mastery filter: not pending (no words to
+ *  know yet) and not suspended (left out of practice, like new and due), so
+ *  the "New" band and the "new" filter always give the same number. */
+const banded = (p) => !p.pending && !p.suspended;
 
 /** What each "show" filter keeps. */
 const SHOW = {
@@ -330,7 +333,7 @@ export function bankPage(items, { q = "", show = "all", band = "", sort = "recen
   const counts = { all: items.length, starred: 0, new: 0, due: 0, trouble: 0, pending: 0, suspended: 0, bands: Object.fromEntries(BANDS.map((b) => [b, 0])) };
   for (const p of items) {
     for (const k of SHOWS.slice(1)) if (SHOW[k](p, now)) counts[k]++;
-    if (!p.pending) counts.bands[p.mastery]++;
+    if (banded(p)) counts.bands[p.mastery]++;
   }
   const needle = fold(q).trim();
   const keep = SHOW[SHOWS.includes(show) ? show : "all"];
@@ -338,7 +341,7 @@ export function bankPage(items, { q = "", show = "all", band = "", sort = "recen
   const hits = items.filter(
     (p) =>
       keep(p, now) &&
-      (!wantBand || (!p.pending && p.mastery === wantBand)) &&
+      (!wantBand || (banded(p) && p.mastery === wantBand)) &&
       (!needle || [p.text, p.meaning, p.note].some((s) => fold(s).includes(needle))),
   );
   hits.sort(SORT[SORTS.includes(sort) ? sort : "recent"]);

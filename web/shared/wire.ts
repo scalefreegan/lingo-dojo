@@ -962,13 +962,12 @@ export interface PhraseSummary {
   seenCount: number;
   lastPracticedAt: string | null;
   createdAt: string;
-  /** The band of its weakest card; New with no cards. */
+  /** The band of its weakest card; New when none has been reviewed (no
+   *  cards, or none practised yet): the bank's "new". */
   mastery: MasteryBand;
   /** The earliest due time of its cards that have been reviewed; null
    *  when none has (a card never reviewed is new, not due). */
   due: string | null;
-  /** Its cards never reviewed yet: waiting to be learned. */
-  newCards: number;
   /** Lapses in the last 30 days, and whether that many is "trouble". */
   lapses: number;
   trouble: boolean;

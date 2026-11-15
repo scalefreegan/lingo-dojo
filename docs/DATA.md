@@ -570,6 +570,8 @@ which is fine at the size of one learner's bank.
   phrase gets `recognize` when first seen, and `listen`/`produce` the first time a
   mode or session exercises them. The phrase's shown **mastery** is the weakest of
   its cards that exist, so a phrase you understand but can't say is not "mastered".
+  It is **New** only while none of its cards has been reviewed; once one has, a
+  card not yet reviewed counts as Learning.
 
 ### Metrics the bank shows
 
@@ -578,7 +580,7 @@ which is fine at the size of one learner's bank.
 | Last seen | `last_seen_at`: glossed or used in a session, or a card shown in practice |
 | Times seen | `seen_count` |
 | Last practiced | `last_practiced_at`: any review, practice or session |
-| Mastery | band from the weakest card: **New** (no reviews), **Learning** (stability < 3 days), **Familiar** (< 21 days), **Mastered** (≥ 21 days, Anki's "mature" line) |
+| Mastery | band from the weakest card: **New** (no card reviewed: never practised), **Learning** (stability < 3 days), **Familiar** (< 21 days), **Mastered** (≥ 21 days, Anki's "mature" line) |
 | Due | earliest `cards.due` |
 | Trouble | lapses in the last 30 days |
 
@@ -632,15 +634,19 @@ tables were keyed by learner and `lang`; the language profiles of
   /api/phrases/lookup?text=` (the ☆'s state), `GET`, `PATCH` (text,
   meaning, note, starred, suspended) and `DELETE /api/phrases/:id`. Another
   language's phrase, of the same learner or not, is a 404.
-- **New and due.** A card never reviewed (FSRS state New, no reps) is
-  **new**, waiting to be learned, not due: `due` is the earliest due of the
-  cards that have been reviewed, and `newCards` counts the others. So a
-  phrase met in a session (its recognize card made, never reviewed) shows as
-  new, and the bank isn't all due at once.
+- **New and due.** A phrase is **new** when it has never been practised: no
+  card of it reviewed, whether its recognize card is waiting (met in a
+  session) or it has no card yet (from a scene's list, or added by hand).
+  That is the same thing as mastery band New, so the "new" filter, its count,
+  the Mastery list's New and the row's "new, ready to learn" always give the
+  same number. A card never reviewed (FSRS state New, no reps) is not due:
+  `due` is the earliest due of the cards that have been reviewed, so the
+  bank isn't all due at once. Due stays a reviewed card whose time has come.
 - **Filters and sorts.** Show: all, starred, new, due, trouble, pending (no
   words yet), suspended (new and due leave out pending and suspended
   phrases). Band: one
-  mastery band. Sort: recently seen, due first, weakest first, A to Z,
+  mastery band, also leaving out pending and suspended phrases (so New
+  matches the new filter; a suspended phrase is found under Suspended). Sort: recently seen, due first, weakest first, A to Z,
   newest added. The page is filtered and sorted in memory after one read of
   the profile's rows, fine at one learner's bank size; a large bank would
   move it into SQL.

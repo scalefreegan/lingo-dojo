@@ -196,8 +196,12 @@ export function masteryBand(card) {
 }
 
 /** A phrase is only as known as its weakest card that exists, so understanding
- *  a phrase you cannot say is not "Mastered". No cards at all is New. */
+ *  a phrase you cannot say is not "Mastered". New means never practised: no
+ *  card of it reviewed (or no cards at all). Once one card has been, a card
+ *  not yet reviewed counts as Learning, not New, so the band and the bank's
+ *  "new" filter are one notion. */
 export function phraseMastery(cards) {
-  if (!cards || cards.length === 0) return "New";
-  return cards.map(masteryBand).reduce((a, b) => (BANDS.indexOf(b) < BANDS.indexOf(a) ? b : a));
+  const bands = (cards ?? []).map(masteryBand);
+  if (bands.every((b) => b === "New")) return "New";
+  return bands.map((b) => (b === "New" ? "Learning" : b)).reduce((a, b) => (BANDS.indexOf(b) < BANDS.indexOf(a) ? b : a));
 }

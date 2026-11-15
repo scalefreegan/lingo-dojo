@@ -55,11 +55,12 @@ function ago(iso: string | null): string {
 }
 
 /** "due now", "due within a day", "due in 4 days"; "new, ready to learn"
- *  for a phrase whose cards are all unreviewed; "" with no cards, or
- *  pending or suspended. */
+ *  for a phrase never practised (mastery New, the "new" filter); "" for a
+ *  pending or suspended one. */
 function dueLabel(p: PhraseSummary): string {
   if (p.pending || p.suspended) return "";
-  if (!p.due) return p.newCards > 0 ? "new, ready to learn" : "";
+  if (p.mastery === "New") return "new, ready to learn";
+  if (!p.due) return "";
   const ms = new Date(p.due).getTime() - Date.now();
   if (ms <= 0) return "due now";
   const days = Math.ceil(ms / DAY);

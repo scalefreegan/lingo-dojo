@@ -120,14 +120,15 @@ test("a turn's glosses are seen inside the turn's transaction: upserted, counted
   // Its only target-language line is the word itself: no example.
   assert.deepEqual([mercado.source, mercado.meaning, mercado.seenCount, mercado.cardCount, mercado.exampleCount, mercado.mastery], ["gloss", "market", 1, 1, 0, "New"]);
   assert.ok(mercado.lastSeenAt && mercado.firstSeenAt);
-  assert.deepEqual([mercado.due, mercado.newCards], [null, 1], "the recognize card is new, waiting to be learned, not due");
+  assert.equal(mercado.due, null, "the recognize card is new, waiting to be learned, not due");
   const vuelta = got["la vuelta"];
   const detail = (await sam.call("GET", `/api/phrases/${vuelta.id}`)).body.phrase;
   assert.deepEqual(detail.examples.map((e) => [e.sentence, e.speaker, e.conversationId]), [["¿Qué le doy, joven? Quédese con la vuelta.", "character", c.id]]);
   const [ex] = await q("select turn_id from phrase_examples where phrase_id = $1", [vuelta.id]);
   assert.equal(ex.turn_id, reply.id, "the example points at the reply that glossed it");
   const counts = (await bank(sam)).body.counts;
-  assert.deepEqual([counts.new, counts.due], [2, 0], "met in a session: new, nothing due yet");
+  // The two glossed and the scene's two from its list: all never practised.
+  assert.deepEqual([counts.new, counts.due, counts.bands.New], [4, 0, 4], "met in a session: new, nothing due yet");
 
   // The next turn glosses it again: seen twice, still one card, and the same
   // line isn't kept twice.

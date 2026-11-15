@@ -136,7 +136,7 @@ test("readPhraseInput: an add needs words; an edit needs something; strings chec
 
 test("phraseMetrics: the weakest card's band, the earliest due, trouble from lapses", () => {
   const t0 = new Date("2026-11-01T12:00:00Z");
-  assert.deepEqual(phraseMetrics([], 0), { mastery: "New", due: null, newCards: 0, lapses: 0, trouble: false, cardCount: 0 });
+  assert.deepEqual(phraseMetrics([], 0), { mastery: "New", due: null, lapses: 0, trouble: false, cardCount: 0 });
   const fresh = newCard(t0);
   let strong = fresh;
   for (const d of [0, 3, 12, 40]) strong = review(strong, 3, new Date(t0.getTime() + d * 86_400_000)).card;
@@ -149,7 +149,8 @@ test("phraseMetrics: the weakest card's band, the earliest due, trouble from lap
   assert.notEqual(phraseMetrics([strong]).mastery, "New");
   assert.equal(phraseMetrics([fresh]).mastery, "New", "a card never reviewed is New");
   // ...and new, not due: its due time is when it was made.
-  assert.deepEqual([phraseMetrics([fresh]).due, phraseMetrics([fresh]).newCards], [null, 1]);
+  assert.equal(phraseMetrics([fresh]).due, null);
+  assert.equal(phraseMetrics([fresh, learning]).mastery, "Learning", "practised once is no longer New");
   assert.equal(phraseMetrics([fresh, learning]).due, learning.due, "due from the reviewed card only");
 });
 
@@ -157,7 +158,7 @@ test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   const now = new Date("2026-11-15T12:00:00Z");
   const p = (id, extra) => ({
     id, text: id, meaning: null, note: null, lang: "es-MX", source: "gloss", pending: false, starred: false, suspended: false, firstSeenAt: null, lastSeenAt: null,
-    seenCount: 0, lastPracticedAt: null, createdAt: "2026-11-01T00:00:00Z", mastery: "New", due: null, newCards: 0, lapses: 0, trouble: false, cardCount: 0, exampleCount: 0, ...extra,
+    seenCount: 0, lastPracticedAt: null, createdAt: "2026-11-01T00:00:00Z", mastery: "New", due: null, lapses: 0, trouble: false, cardCount: 0, exampleCount: 0, ...extra,
   });
   const items = [
     p("café", { meaning: "coffee", lastSeenAt: "2026-11-14T00:00:00Z", due: "2026-11-10T00:00:00Z", mastery: "Learning", cardCount: 1 }),
@@ -168,13 +169,21 @@ test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   ];
   const all = bankPage(items, {}, now);
   assert.equal(all.total, 5);
-  assert.deepEqual(all.counts, { all: 5, starred: 1, new: 0, due: 2, trouble: 1, pending: 1, suspended: 1, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 1 } });
+  assert.deepEqual(all.counts, { all: 5, starred: 1, new: 0, due: 2, trouble: 1, pending: 1, suspended: 1, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 0 } }, "the bands leave out pending and suspended, like new and due");
   assert.deepEqual(all.phrases.map((x) => x.id), ["la vuelta", "café", "ojo", "taxi", "zzz"], "last seen first, else added; ties by words");
-  // A phrase whose only card was never reviewed is new, not due; a
-  // suspended one is neither.
-  const fresh = [p("mango", { newCards: 1, cardCount: 1 }), p("piña", { newCards: 1, cardCount: 1, suspended: true })];
+  // Never practised is new, not due, whether its card is unreviewed or it
+  // has none yet (a scene's list); a suspended or pending one is neither.
+  // The "new" filter, its count and the New band agree.
+  const fresh = [
+    p("mango", { cardCount: 1 }),
+    p("papaya", { source: "scenario" }),
+    p("piña", { cardCount: 1, suspended: true }),
+    p("pera", { text: null, meaning: "pear", pending: true }),
+    p("uva", { mastery: "Learning", cardCount: 1, due: "2026-11-20T00:00:00Z" }),
+  ];
   const page = bankPage(fresh, { show: "new" }, now);
-  assert.deepEqual([page.phrases.map((x) => x.id), page.counts.new, page.counts.due], [["mango"], 1, 0]);
+  assert.deepEqual([page.phrases.map((x) => x.id).sort(), page.counts.new, page.counts.due, page.counts.bands.New], [["mango", "papaya"], 2, 0, 2]);
+  assert.deepEqual(bankPage(fresh, { band: "New" }, now).phrases.map((x) => x.id).sort(), ["mango", "papaya"]);
   assert.deepEqual(bankPage(items, { q: "CAFE" }, now).phrases.map((x) => x.id), ["café", "zzz"], "accent- and case-blind, in note too");
   assert.deepEqual(bankPage(items, { show: "due" }, now).phrases.map((x) => x.id).sort(), ["café", "ojo"], "suspended isn't due");
   assert.deepEqual(bankPage(items, { show: "pending" }, now).phrases.map((x) => x.id), ["taxi"]);

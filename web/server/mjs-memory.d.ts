@@ -145,7 +145,7 @@ declare module "*/scripts/phrases.mjs" {
     body: unknown,
     opts?: { create?: boolean },
   ): { value: import("../shared/wire.ts").PhraseInput & { text?: string }; error?: undefined } | { error: string; value?: undefined };
-  export function phraseMetrics(cards?: CardInput[], lapses?: number): { mastery: MasteryBand; due: string | null; newCards: number; lapses: number; trouble: boolean; cardCount: number };
+  export function phraseMetrics(cards?: CardInput[], lapses?: number): { mastery: MasteryBand; due: string | null; lapses: number; trouble: boolean; cardCount: number };
   export function isDueNow(p: PhraseSummary, now: Date | string | number): boolean;
   export function isNew(p: PhraseSummary): boolean;
   export function bankPage(
