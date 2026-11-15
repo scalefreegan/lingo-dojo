@@ -3,8 +3,9 @@
 Status: **phase 0 (foundation), phase 1 (logins and learners), phase 2
 (packs in the database, and their import), phase 3 (conversations),
 language profiles (bead `ld-gf9.2`: one learner, several languages) and
-phase 4 (the phrase bank, bead `ld-5p2`) built**, and phase 7's flashcards
-(bead `ld-7p1`); the rest of phases 5–11 is plan, not built (2026-11-15). Epic `ld-gf9`,
+phase 4 (the phrase bank, bead `ld-5p2`), phase 5 (post-session
+extraction, bead `ld-aeu`) and phase 7's flashcards (bead `ld-7p1`)
+built**; the rest of phases 6–11 is plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -472,7 +473,10 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
 conversations   id, learner_id, language_profile_id, pack_snapshot jsonb, scenario_id, title,
                 mode, native_language, target_language, target_variant,
                 model, planned_minutes, started_at, ended_at, turn_count,
-                summary, extraction jsonb, extracted_at
+                summary, extraction jsonb, extracted_at,
+                extraction_status (none|running|done|failed|skipped),
+                extraction_claim, extraction_started_at,
+                extraction_attempts, extraction_error
 turns           id, conversation_id, learner_id, language_profile_id, idx, role (learner|master),
                 text, lines jsonb, glosses jsonb, choices jsonb, stage,
                 cast_notes jsonb, from_client boolean, duration_ms, cost_usd,
@@ -512,7 +516,9 @@ phrase_examples id, phrase_id, learner_id, language_profile_id,
                 conversation_id, turn_id, sentence, speaker, created_at
 phrase_sightings id, phrase_id, learner_id, language_profile_id,
                 conversation_id, turn_id (both SET NULL on delete),
-                seen_at; unique (turn_id, phrase_id): one row per reply
+                seen_at, source (gloss|extraction; migration 0004);
+                unique (conversation_id, phrase_id) where source =
+                'extraction'; unique (turn_id, phrase_id): one row per reply
                 that saw the phrase; seen_count, first_seen_at and
                 last_seen_at are always its count, min and max
 cards           id, phrase_id, learner_id, language_profile_id,
@@ -668,7 +674,15 @@ tables were keyed by learner and `lang`; the language profiles of
   from the merge rule above, which filled the pending row in, so that every
   write takes its rows in one order (complete rows by norm, then pending
   rows by meaning) and two conversations capturing at once wait for each
-  other instead of deadlocking or colliding on the words. A write that still
+  other instead of deadlocking or colliding on the words. One pass per
+  transaction: two ordered passes one after the other are not in order
+  together, so a write with two jobs takes the complete rows of both in
+  one norm-ordered pass first (`lockInNormOrder`): the turn write that
+  drops a reply and captures the next (`lockTurnWrite`: the dropped
+  replies' sighted phrases by id, the new capture's upserted) and a recap
+  re-run (the last run's phrases by id, beside the new reply's). A row
+  found by id is placed at the norm it had when read, so a rename at that
+  moment can still misplace it. A write that still
   collides (an edit giving a pending phrase words while a capture adds
   them) is retried once (unique violation or deadlock), then reported:
   `phrases.pg.test.mjs` races captures, an add and crossing meanings on
@@ -1086,6 +1100,155 @@ Out-of-schedule reviews are fine: FSRS takes the real elapsed time into
 account. A phrase gets at most one session review per card per conversation
 (a partial unique index on `reviews (card_id, conversation_id)` where
 `mode = 'session'` enforces it).
+
+#### As built (phase 5)
+
+Bead `ld-aeu`, migration `0004_session_recap`. Code: `web/server/extraction.ts`
+(the run, the model call, the routes), `scripts/db/extraction.ts` (the
+claim and the one write; the bank's only writes outside
+`scripts/db/phrases.ts`, reusing its upsert identity, pending merge,
+recount and retry), `scripts/extraction.mjs` (pure: prompt, parser,
+transcript, the plan of what a reply may do, examples), and in the
+browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
+
+- **When.** `onConversationEnded` (End, Restart, leaving Go, Close, unload,
+  the idle end) starts the run in the background (`setImmediate`, never
+  awaited by the request). The run reads the stored turns; a conversation
+  in which the learner said nothing is `skipped` with no model call. The
+  call is `claude -p` with no tools, one turn, an empty temp cwd, the
+  user's agent model (`getModel`), 180 s; the transcript is the stored
+  turns as "Learner: …" / "Dojo master: …" lines (at most 60 000
+  characters, the oldest turns dropped and said so), plus the phrases due
+  when the session started (a reviewed card due by then, at most 20). A
+  failed call or a reply `parseExtraction` rejects is tried once more;
+  after the second the conversation is `failed` with the reason in
+  `extraction_error`: fixed wording only ("the model call didn't work",
+  "the reply wasn't a recap", "the recap couldn't be saved", "no reply",
+  "its learner or language is gone", or the CLI's own sign-in, limit or
+  overload hint), never a CLI's output or a database error (which hold
+  SQL, the recap's JSON and ids); those go to the server log with their
+  cause. A stored reason that is none of these reads as "the recap
+  couldn't be made". Model text is made well-formed before it is stored
+  (lone surrogates, zero-width space, word joiner and BOM removed, as well
+  as the control characters), so a reply can't fail the jsonb write.
+  `extractJsonObject` reads at most 200 000 characters and tries at most
+  64 opening braces, so a reply of unbalanced braces can't stall the
+  server.
+- **Migration 0004** adds to `conversations` `extraction_status` (not
+  null, default `none`; check in none|running|done|failed|skipped),
+  `extraction_claim` (uuid; a check makes it set exactly while running),
+  `extraction_started_at`, `extraction_attempts` (default 0; counted only
+  by the run holding the claim) and
+  `extraction_error`; and to `phrase_sightings` `source` (not null,
+  default `gloss`; check gloss|extraction) with a partial unique index
+  `(conversation_id, phrase_id) where source = 'extraction'`. Plain
+  additive SQL, no hand edits: existing conversations read `none` (an
+  ended one offers "Make a recap" in History), existing sightings
+  `gloss` (they all are). `db-migration-0004.test.mjs` (PGlite) and
+  `migration-0004.pg.test.mjs` (PostgreSQL 17) migrate a 0003 database
+  with open and ended conversations, turns, phrases, an example, a
+  sighting, a card and a review: every old row unchanged, the defaults
+  filled, the schema a fresh build's, the checks enforced.
+- **The claim.** One conditional UPDATE sets `running` and a fresh token
+  where the row is ended and its status is one the caller may take over:
+  `none` for the end hook; none, failed, done or skipped for a Retry. So
+  two Ends, End racing the idle end, or a Retry while it runs make one
+  run; the loser matches nothing (a Retry then answers 202 with the
+  pending recap). A `running` row whose token no run of this server
+  holds (in-memory `live` set; one server process, as for the turn lock)
+  died with an earlier server: the recap reads `failed` ("interrupted")
+  and can be claimed again. Claims of one conversation are serialised in
+  the server so `live` is never stale while one is decided. The final
+  write locks the conversation row and goes ahead only while it still
+  holds its token.
+- **The write**, one transaction (retried once on a unique violation or
+  deadlock), in the bank's lock order: the conversation, then one
+  norm-ordered pass over every complete phrase it touches (the kept
+  phrases upserted, the ones events name, and the last run's phrases by
+  id, so one renamed since is still locked, restored and recounted), then
+  pending rows, then cards. Only when the session
+  was in the profile's language (`bankLocale`, as the turn capture);
+  otherwise the recap is stored and the bank left alone (`inBank`
+  false).
+  - Model output is untrusted. The parser strips control characters
+    (`phrases.mjs clean`) and caps every field; ids are never read:
+    phrases are matched by `normKey` within the conversation's profile.
+    A kept phrase longer than 6 words (20 characters in a language
+    without spaces) is a sentence and isn't kept (`MAX_KEEP_WORDS`).
+    One the learner deleted isn't brought back: a phrase not already in
+    the bank is skipped when its text (`phrase_dismissals` kind `text`)
+    or its meaning (kind `meaning`, as a deleted scene phrase leaves) was
+    dismissed.
+    The model's `example` isn't stored: a kept phrase's example is a
+    line of the dojo master's own replies (not `from_client`, not the
+    learner's) that holds it, as for a gloss.
+  - `keep` upserts complete phrases with `source = 'extraction'`: the
+    weakest provenance, so an existing phrase keeps its own; a meaning is
+    only filled when blank, so a learner's edit is never overwritten. A
+    pending scene phrase with the kept meaning is folded in (the merge
+    rule).
+  - `events` name a phrase the bank has, or one `keep` makes; others
+    are dropped. One per (phrase, skill), the lowest rating winning. The
+    card is made if missing, reviewed with `ratingForSessionEvent`'s
+    rating at the conversation's `ended_at` (server time zone for FSRS's
+    day boundary), and a `reviews` row written (`mode` session, `answer`
+    the `said`, `grader_note` the note, `card_before`). A suspended
+    phrase gets no review, nor does a card whose `last_review` is after
+    `ended_at` (practised, or reviewed by a later session's recap, before
+    this recap was made or retried): reviews only go forward. Mode
+    `session` keeps these out of Practice's daily limits, and Practice's
+    override only regrades `flashcard` rows, so the two never restore a
+    card over each other; the undo below reads only the FSRS fields of
+    `card_before`, never Practice's extra keys.
+  - Seen: a phrase the recap names that none of the session's replies
+    glossed gets one `extraction` sighting at `ended_at`; counts and
+    times are recounted from sightings, `last_practiced_at` from the
+    phrase's reviews.
+  - **Idempotent re-run.** First the last run is undone: its
+    `extraction` sightings deleted; each of its session reviews, if no
+    later review of that card exists, deleted with the card restored
+    from `card_before` (a listen/produce card that goes back to never
+    reviewed and isn't reviewed again is deleted). A card reviewed
+    since (practice) keeps the old session review and isn't reviewed
+    again. A phrase the re-run leaves with no sighting is settled by the
+    one rule a dropped reply's undo uses too (`settleUnseen`), whichever
+    of the two comes last: deleted, with its unreviewed cards, when only
+    automatic paths held it (`source` gloss or extraction, nothing the
+    learner set, no reviewed card); otherwise kept, unseen, without its
+    unreviewed cards. The same reply twice leaves cards, reviews, phrases,
+    sightings and examples identical (tested).
+- **Stored**: `summary`, `extraction` (`{v: 1, summary, keep[{text,
+  meaning, why, phraseId}], events[{phrase, kind, said, note, phraseId,
+  reviewed}], corrections, dropped, inBank}`), `extracted_at`, status
+  `done`.
+- **Routes** (with the conversation routes' `learner: true` scope):
+  `GET /api/conversations/:id/recap` → `{recap}` (status open, none,
+  pending, done, failed or skipped; the kept phrases with their star and
+  mastery now), `POST` → 202 `{recap}` (make it again; 409 while the
+  conversation is open). Another language's or learner's is a 404.
+  `ConversationSummary.recapStatus` gives History its "no recap" badge.
+- **UI.** `SessionRecap.tsx` under the transcript: on the Go tab after
+  End (it waits quietly through `open`/`none` for 30 s while End and the
+  claim land, then says what is up and offers Make a recap or Check
+  again, still asking) and in History. It asks every 2 s while the
+  recap is on its way, for up to 10 min (then "Still being written" and
+  Check again); a failed request shows its error and is asked again
+  every 5 s; a tab shown again asks at once. Summary;
+  phrases kept with their band, ☆ Star and "In the bank" (switches to
+  Library → Phrase bank searching for it, `bankLink.ts`); what went
+  well; what to work on (corrections and corrected/confused events);
+  "Retry recap" when failed, "Make a recap" for one never made.
+  Its target-language text (kept phrases, events, corrections) takes the
+  transcript's readings (`RubyText`, the transcript's Readings switch:
+  no switch of its own).
+- **Kids** (DATA.md is silent beyond "session capture" for kids): the
+  same pass and bank writes for a kids learner; the prompt adds a line
+  asking for a child's summary in simple words, and the card's wording
+  is simpler ("What you did today", "New words", "Try saying it like
+  this"; no mastery bands, no event list).
+- **Not built here:** the review block and `LOOKUP` (phase 6) and
+  Practice (phase 7). The due phrases passed to the prompt are those due
+  at the session's start, since no review block chose any yet.
 
 ## Recall in sessions
 
@@ -1712,7 +1875,33 @@ Access in System Settings, or keep the checkout elsewhere.
   a bank row; `phrases.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races
   captures of one phrase with an add and crossing pending meanings (both
   fail on the code before the lock order); `db.test.mjs` the profile scope
-  on the bank tables and the language-level provenance keys. The `.pg`
+  on the bank tables and the language-level provenance keys. Phase 5:
+  `extraction.test.mjs` the pure half (the prompt with kids, control
+  characters, the transcript and its cap, the plan, examples);
+  `extraction.http.test.mjs` (a stand-in `claude` that answers recap
+  calls from their own file, `fake-claude.mjs`) End making the recap and
+  what it writes, two Ends and a Retry making one run, the retry and
+  "failed" then Retry recap, an idempotent re-run and a different one
+  replacing the last, a card practised since, untrusted output (control
+  characters, sentences, ids, a learner's meaning, a suspension), the
+  pending merge and a dismissed phrase (by text, and a deleted scene
+  phrase by meaning), skipped,
+  learner-safe failure text (a database failure shows no SQL or JSON) and
+  a lone surrogate stored fine, another language's
+  session, kids, open/404/405, a run that died with the server (whose late attempt counts nothing), and
+  Practice on a recapped card (session reviews outside the daily limits,
+  an override and a re-run leaving each other alone, a recap retried after
+  a practice review skipping that card); `extraction-undo.test.mjs` the
+  one unseen-phrase rule in both orders (dropped reply then re-run, and
+  back); `extraction.pg.test.mjs` also holds, each round, the turn write
+  that drops a reply and captures the next beside a recap (it deadlocked
+  and lost the capture before the single lock pass) and a re-run beside a
+  rename of a phrase its last run sighted (left the count stale before
+  the by-id lock);
+  `db-migration-0004.test.mjs` and `migration-0004.pg.test.mjs` the
+  migration; `extraction.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races 8
+  claims of one recap (one wins) and a recap's write against two gloss
+  captures of the same phrases (all land, one row each). The `.pg`
   tests make their throwaway databases through `scripts/tests/pg-scratch.mjs`
   or with the process id in the name, and close their pools before dropping
   them.
@@ -1742,7 +1931,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 3 | Conversations: persist turns, End, the History view. **Built** | 1 |
 | 3.5 | Language profiles (`ld-gf9.2`): several languages per learner, each with its own packs and History. **Built** | 2, 3 |
 | 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
-| 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |
+| 5 | Session extraction (`ld-aeu`): claude pass, FSRS from sessions, the recap card. **Built** | 4 |
 | 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |
 | 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), cloze, listening, speak-it, audio cache | 4 |
 | 8 | Content agent bank MCP with the read-only role and RLS | 4 |

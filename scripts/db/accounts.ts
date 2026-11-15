@@ -360,6 +360,23 @@ export async function languageProfileRefsOfUser(db: Db, userId: string): Promise
     .where(forUser(db, userId).where(learners));
 }
 
+/** Whose a language profile is, archived or not: its learner's account,
+ *  native language and mode, and its own target language. For work that
+ *  starts from a stored row rather than a request (the post-session
+ *  extraction of a conversation that ended idle, perhaps in an archived
+ *  language); undefined when the profile isn't that learner's. */
+export async function languageProfileOwner(
+  db: Db,
+  ref: { id: string; learnerId: string },
+): Promise<{ userId: string; nativeLanguage: string; mode: Learner["mode"]; targetLanguage: string } | undefined> {
+  const [row] = await db
+    .select({ userId: learners.userId, nativeLanguage: learners.nativeLanguage, mode: learners.mode, targetLanguage: languageProfiles.targetLanguage })
+    .from(languageProfiles)
+    .innerJoin(learners, eq(learners.id, languageProfiles.learnerId))
+    .where(forLearner(db, ref.learnerId).where(languageProfiles, eq(languageProfiles.id, ref.id)));
+  return row;
+}
+
 /** Two target languages are the same language when they match ignoring
  *  case and surrounding space ("german" is "German"). */
 export const sameLanguage = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();

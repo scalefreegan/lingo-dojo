@@ -32,9 +32,16 @@
 // sort, absorbPending sorts). Two captures in one language at once (two
 // tabs, two conversations) then wait for each other instead of
 // deadlocking, and never try to give a pending row words another
-// transaction is inserting. What is left (an edit giving a pending phrase
-// words at the moment a capture adds them) is retried once (retrying) and
-// otherwise reported: EEXIST from a route, a logged miss from a capture.
+// transaction is inserting. One pass per transaction: a write that has two
+// jobs (the turn write that drops a reply and captures the new one; a
+// recap re-run that undoes the last run and writes the new) takes every
+// complete row of both in one norm-ordered pass first (lockInNormOrder),
+// since two ordered passes one after the other are not in order together.
+// Rows found by id (what a dropped reply or the last run sighted) are
+// locked at the norm they had when read: a rename at that moment can still
+// misplace one, and that, like an edit giving a pending phrase words at
+// the moment a capture adds them, is retried once (retrying) and otherwise
+// reported: EEXIST from a route, a logged miss from a capture.
 //
 // Seeing is not reviewing: a gloss records a sighting (phrase_sightings,
 // one row per phrase and reply; seen_count, first and last seen follow
@@ -44,9 +51,10 @@
 // Provenance (`source`) only ever strengthens: manual > scenario > gloss
 // (> extraction). A gloss phrase is one that exists only because replies
 // glossed it; a scene's list or an add of the same words, or absorbing a
-// pending scene phrase, lifts it. Undoing a dropped reply deletes only a
-// gloss phrase. Reviews come from practice and the post-session extraction (later
-// phases); last_practiced_at is theirs to set.
+// pending scene phrase, lifts it. Undoing a dropped reply or re-running a
+// recap deletes only a phrase automatic paths alone hold (settleUnseen). Reviews come from practice (a later phase) and the
+// post-session extraction (scripts/db/extraction.ts, which reuses the
+// exported helpers here); last_practiced_at is theirs to set.
 //
 // Erasable TypeScript only, like schema.ts: the tests import it as is.
 
@@ -81,7 +89,7 @@ const isUniqueViolation = (e: unknown) => sqlState(e) === "23505";
 /** `run` (a whole transaction or savepoint), once more if two writers of
  *  one bank collided: a unique violation (both inserting one phrase's
  *  words) or a deadlock. The second run sees the first one's winner. */
-async function retrying<T>(run: () => Promise<T>): Promise<T> {
+export async function retrying<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (e) {
@@ -90,16 +98,16 @@ async function retrying<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-const COMPLETE = sql`${phrases.text} is not null`;
+export const COMPLETE = sql`${phrases.text} is not null`;
 const PENDING = sql`${phrases.text} is null`;
 /** The meaning an automatic write (a gloss, a scene's list) leaves on a
  *  phrase already there: its own, whoever set it; the incoming one only
  *  fills a blank (a phrase added by hand with no meaning, say). */
-const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
+export const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
 /** Provenance, strongest first: what a phrase keeps when two sources meet
  *  (an upsert of words already here, an absorbed pending row). */
 const STRENGTH = sql`array['manual', 'scenario', 'gloss', 'extraction']`;
-const stronger = (a: SQL | string, b: SQL | string) =>
+export const stronger = (a: SQL | string, b: SQL | string) =>
   sql`(${STRENGTH})[least(array_position(${STRENGTH}, ${a}::text), array_position(${STRENGTH}, ${b}::text))]`;
 
 /** The phrase's note with `other` (a row being folded into it) kept too:
@@ -109,7 +117,7 @@ const withNote = (other: string | null) =>
     ? sql`${phrases.note}`
     : sql`case when ${phrases.note} is null then ${other}::text when ${phrases.note} = ${other}::text then ${phrases.note} else ${phrases.note} || ${"\n\n" + other}::text end`;
 /** The partial unique indexes the upserts target (the scope adds the profile). */
-const IDENTITY = { target: [phrases.norm], targetWhere: COMPLETE };
+export const IDENTITY = { target: [phrases.norm], targetWhere: COMPLETE };
 const PENDING_IDENTITY = { target: [phrases.meaningNorm], targetWhere: PENDING };
 
 /** A phrase id from a request, or ENOENT (a malformed id is no phrase of
@@ -125,6 +133,105 @@ async function lockPhrase(tx: Db, profile: LanguageProfileRef, id: string): Prom
   return row;
 }
 
+/** One step of a lock pass: the norm that places it, and how to take the
+ *  row (an upsert that inserts or locks it, or a SELECT ... FOR UPDATE). */
+export interface LockStep {
+  norm: string;
+  take: () => Promise<PhraseRow | undefined>;
+}
+
+/** Take every step's row in norm order (ties in the order given), one at a
+ *  time: the bank's lock order for a write with more than one job. Returns
+ *  the rows in the order of `steps`. */
+export async function lockInNormOrder(steps: LockStep[]): Promise<(PhraseRow | undefined)[]> {
+  const order = steps.map((s, i) => ({ s, i })).sort((a, b) => (a.s.norm < b.s.norm ? -1 : a.s.norm > b.s.norm ? 1 : a.i - b.i));
+  const out: (PhraseRow | undefined)[] = new Array(steps.length);
+  for (const { s, i } of order) out[i] = await s.take();
+  return out;
+}
+
+/** The phrase by id, locked: a step for lockInNormOrder. */
+export const lockById = (tx: Db, profile: LanguageProfileRef, id: string) => lockPhrase(tx, profile, id);
+
+/**
+ * The shared rule for phrases that just lost sightings (a dropped reply's
+ * undo, a recap re-run): each of `ids`, locked by the caller, left with no
+ * sighting at all goes when only automatic paths ever held it (provenance
+ * gloss or extraction: no scene list, add or absorbed scene phrase behind
+ * it; never edited by hand, `edited_at`; not starred, suspended or noted;
+ * no card reviewed), its unreviewed cards with it. Any other stays, unseen,
+ * without the unreviewed cards the sightings made.
+ */
+export async function settleUnseen(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
+  const mine = forLanguageProfile(tx, profile);
+  for (const id of ids) {
+    const row = await mine.get(phrases, eq(phrases.id, id));
+    if (!row) continue;
+    if (await mine.get(phraseSightings, eq(phraseSightings.phraseId, id))) continue;
+    const reviewed = await mine.get(cards, and(eq(cards.phraseId, id), sql`${cards.reps} > 0`) as SQL);
+    const automatic = (row.source === "gloss" || row.source === "extraction") && row.editedAt == null && !row.starred && !row.suspended && row.note == null;
+    if (automatic && !reviewed) await mine.remove(phrases, eq(phrases.id, id));
+    else await mine.remove(cards, and(eq(cards.phraseId, id), eq(cards.reps, 0)) as SQL);
+  }
+}
+
+/**
+ * The turn write's lock pass, when it both drops replies and captures the
+ * new one (web/server/conversations.ts saveTurn): the phrases the dropped
+ * replies sighted (by id) and the new capture's (upserted as
+ * recordGlosses does) in one norm-ordered pass, before unrecordGlosses and
+ * recordGlosses take them again. Each of those passes is ordered, but one
+ * after the other they are not, and a recap or capture taking the same
+ * rows in order between them closed a deadlock cycle in which the turn's
+ * capture was lost. In a savepoint, retried once; a failure is logged and
+ * the two passes run as before. Returns the ids this pass inserted, which
+ * the caller hands to settleUnseen if the capture then fails.
+ */
+export async function lockTurnWrite(
+  tx: Db,
+  profile: LanguageProfileRef,
+  opts: { turnIds: string[]; lang: string; items: Capture[] },
+): Promise<string[]> {
+  if (!opts.turnIds.length || !opts.items.length) return [];
+  try {
+    return await retrying(() =>
+      tx.transaction(async (sp) => {
+        const mine = forLanguageProfile(sp, profile);
+        const sighted = await sp
+          .selectDistinct({ id: phrases.id, norm: phrases.norm })
+          .from(phraseSightings)
+          .innerJoin(phrases, eq(phrases.id, phraseSightings.phraseId))
+          .where(mine.where(phraseSightings, inArray(phraseSightings.turnId, opts.turnIds)));
+        if (!sighted.length) return [];
+        const had = new Set((await mine.list(phrases, and(COMPLETE, inArray(phrases.norm, opts.items.map((i) => i.norm))) as SQL)).map((r) => r.id));
+        const rows = await lockInNormOrder([
+          ...opts.items.map((item) => ({
+            norm: item.norm,
+            take: async () =>
+              (await mine.upsert(phrases, { lang: opts.lang, text: item.text, norm: item.norm, meaning: item.meaning, source: "gloss" }, { ...IDENTITY, set: { meaning: AUTO_MEANING } }))[0],
+          })),
+          ...sighted.map((s) => ({ norm: s.norm ?? "", take: () => lockPhrase(sp, profile, s.id) })),
+        ]);
+        return rows.slice(0, opts.items.length).flatMap((r) => (r && !had.has(r.id) ? [r.id] : []));
+      }),
+    );
+  } catch (e) {
+    console.error(`[lingo-dojo] phrase bank: the lock pass of a turn write that drops ${opts.turnIds.join(", ")} failed; capturing without it:`, e);
+    return [];
+  }
+}
+
+/** After a failed capture: the phrases lockTurnWrite inserted for it go
+ *  again (settleUnseen), in a savepoint, logged if that fails too. */
+export async function forgetUnused(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  try {
+    await tx.transaction((sp) => settleUnseen(sp, profile, ids));
+  } catch (e) {
+    console.error(`[lingo-dojo] phrase bank: phrases ${ids.join(", ")} made for a failed capture weren't cleared:`, e);
+  }
+}
+
 /**
  * The merge rule, after the complete phrases are made or found: for each of
  * `found` (a complete row and the meaning its words came with), a pending
@@ -137,7 +244,7 @@ async function lockPhrase(tx: Db, profile: LanguageProfileRef, id: string): Prom
  * meaning, in the learner's words). In meaning order, after every complete
  * row the write takes (the lock order above).
  */
-async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: string; meaningNorm: string | null }[]): Promise<void> {
+export async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: string; meaningNorm: string | null }[]): Promise<void> {
   const mine = forLanguageProfile(tx, profile);
   const todo = found.filter((f): f is { id: string; meaningNorm: string } => !!f.meaningNorm).sort((x, y) => (x.meaningNorm < y.meaningNorm ? -1 : x.meaningNorm > y.meaningNorm ? 1 : 0));
   for (const f of todo) {
@@ -245,7 +352,7 @@ export async function recordGlosses(
 
 /** seen_count and first/last seen of `ids` from their sightings: the one
  *  place those three are written, so they always agree with the rows. */
-async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
+export async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
   if (!ids.length) return;
   const mine = forLanguageProfile(tx, profile);
   const s = phraseSightings;
@@ -268,12 +375,9 @@ async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Prom
  * (phrase_sightings), never on what their text would gloss today, so a
  * turn whose capture failed, or a copy from the browser, changes nothing.
  * Those rows and the turns' examples go; each phrase they sighted is
- * counted again from the sightings left (seen_count, first and last seen).
- * A phrase left with no sighting at all goes too when it existed only
- * because of them: provenance gloss (no scene list, add or absorbed scene
- * phrase behind it), never edited by hand (`edited_at`), not starred,
- * suspended or noted, and no card reviewed. Any other stays, unseen,
- * without the unreviewed cards the sightings made.
+ * counted again from the sightings left (seen_count, first and last seen),
+ * and one left with no sighting at all is settled by the rule a recap
+ * re-run uses too (settleUnseen).
  */
 export async function unrecordGlosses(tx: Db, profile: LanguageProfileRef, opts: { turnIds: string[] }): Promise<void> {
   if (!opts.turnIds.length) return;
@@ -293,14 +397,7 @@ export async function unrecordGlosses(tx: Db, profile: LanguageProfileRef, opts:
         .orderBy(asc(phrases.norm))
         .for("update");
       await recount(sp, profile, ids);
-      for (const row of rows) {
-        const left = await mine.get(phraseSightings, eq(phraseSightings.phraseId, row.id));
-        if (left) continue;
-        const reviewed = await mine.get(cards, and(eq(cards.phraseId, row.id), sql`${cards.reps} > 0`) as SQL);
-        const onlyGlossed = row.source === "gloss" && row.editedAt == null && !row.starred && !row.suspended && row.note == null && !reviewed;
-        if (onlyGlossed) await mine.remove(phrases, eq(phrases.id, row.id));
-        else await mine.remove(cards, and(eq(cards.phraseId, row.id), eq(cards.reps, 0)) as SQL);
-      }
+      await settleUnseen(sp, profile, rows.map((r) => r.id));
     });
   } catch (e) {
     // The turns still go; their sightings stay, now with no turn: counted,

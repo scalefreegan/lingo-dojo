@@ -17,6 +17,11 @@ History; `web/server/conversations.ts`); the phrase bank (phase 4: one
 per language profile, filled by each turn's glosses, the scene's lists and
 ☆ Star, shown in the Library's Phrase bank; `scripts/db/phrases.ts`,
 `web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`); and the
+post-session recap (phase 5: after End one tool-less `claude -p` reads the
+transcript; its summary, kept phrases, corrections and FSRS session reviews
+are stored once per conversation by a claim on `conversations.extraction_status`,
+re-runs replace; `web/server/extraction.ts`, `scripts/db/extraction.ts`,
+pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.tsx`); and the
 Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page

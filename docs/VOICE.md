@@ -322,9 +322,15 @@ the Library tab's **History** (docs/DATA.md §Conversations has the tables).
   from the database is a later step.
 - **History** lists past sessions, newest first, 20 at a time, with the
   date, length (start to end, or to the last turn while open), turns and
-  summary (empty until the post-session recap exists). Opening one shows the
-  transcript read-only, glosses tappable as in the session, without audio.
+  the recap's summary. Opening one shows the transcript read-only, glosses
+  tappable as in the session, without audio, with its session recap below.
   Delete removes it and its turns for good, after a confirm.
+- **Session recap.** After End, a card under the transcript waits quietly
+  while one model call reads the session (in the background; End never
+  waits for it), then shows a summary, the phrases kept (☆ Star, a link to
+  the bank), what went well and what to work on. How you did on each phrase
+  becomes a review in the bank's schedule. If it fails twice the card
+  offers Retry recap. docs/DATA.md §Post-session extraction has the rest.
 
 ## Settings
 

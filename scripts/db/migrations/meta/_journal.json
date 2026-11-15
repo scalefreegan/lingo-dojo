@@ -29,6 +29,13 @@
       "when": 1794775307890,
       "tag": "0003_phrase_bank_per_language",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794776407953,
+      "tag": "0004_session_recap",
+      "breakpoints": true
     }
   ]
 }

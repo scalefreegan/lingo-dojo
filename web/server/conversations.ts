@@ -7,8 +7,8 @@ import {
 } from "../../scripts/conversations.mjs";
 import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/db/accounts.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
-import { addScenarioPhrases, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
-import { glossCaptures, sameLanguage, scenarioEntries } from "../../scripts/phrases.mjs";
+import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
+import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
@@ -17,6 +17,7 @@ import type {
 } from "../shared/wire.ts";
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
+import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 
@@ -28,6 +29,8 @@ import { readVoiceSettings } from "./store.ts";
 //   GET    /api/conversations             ?offset=&limit= → {conversations, nextOffset}, newest first
 //   GET    /api/conversations/:id         ?from=&limit= → {conversation, turns, nextFrom, plan, locale}
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
+//   GET    /api/conversations/:id/recap   → {recap}  (extraction.ts)
+//   POST   /api/conversations/:id/recap   → 202 {recap}: make it again (Retry recap)
 //   DELETE /api/conversations/:id         → {deleted: true}; the turns go with it
 //
 // All of them act for the active learner and its active language (wrap's
@@ -74,13 +77,15 @@ export function observeConversationEnds(fn: ((c: Conversation) => void) | null):
  * unload, or the two-hour idle end) — that write only matches a row whose
  * ended_at is still null, so a second End or a racing idle end finds nothing
  * and never gets here. A conversation deleted while open is never ended, so
- * never gets here either. The post-session extraction (DATA.md §Post-session extraction,
- * phase 5) attaches here; it does nothing yet. It must not throw into the
- * request that ended the conversation, and anything slow belongs in the
- * background (the End request is often a page-unload beacon).
+ * never gets here either. The post-session extraction (DATA.md §Post-session
+ * extraction, extraction.ts) starts here, in the background: it must not
+ * throw into the request that ended the conversation or hold it up (the
+ * End request is often a page-unload beacon). Its own claim makes it run
+ * once even if this were ever called twice.
  */
 export function onConversationEnded(conversation: Conversation): void {
   endObserver?.(conversation);
+  extractAfterEnd(conversation);
 }
 
 function ended(rows: Conversation[]): void {
@@ -215,6 +220,7 @@ function summary(c: Conversation, last: Date | string | null): ConversationSumma
     lastTurnAt: iso(last),
     turnCount: c.turnCount,
     summary: c.summary,
+    recapStatus: recapStatus(c),
   };
 }
 
@@ -237,14 +243,10 @@ export async function openConversation(userId: string, profile: LanguageProfileR
   return conv;
 }
 
-/** The session's target locale (es-MX), as the conversation saved it, when
- *  it practises `profile`'s language; null when a pack moved it to another
- *  (nothing goes into this profile's bank then). "" for a language with no
- *  known locale. */
-function bankLocale(profile: Pick<LanguageProfile, "targetLanguage">, conv: Pick<Conversation, "targetLanguage" | "targetVariant">): string | null {
-  if (!sameLanguage(profile.targetLanguage, { language: conv.targetLanguage, variant: conv.targetVariant })) return null;
-  return localeFor(conv.targetLanguage, conv.targetVariant) ?? "";
-}
+/** The session's target locale when it practises `profile`'s language,
+ *  else null (scripts/phrases.mjs bankLocale). */
+const bankLocale = (profile: Pick<LanguageProfile, "targetLanguage">, conv: Pick<Conversation, "targetLanguage" | "targetVariant">) =>
+  sessionBankLocale(profile.targetLanguage, conv);
 
 /**
  * Store a turn that just succeeded, in one transaction: the stored turns are
@@ -285,12 +287,21 @@ export async function saveTurn(
     // nothing (DATA.md §Conversations), but a working browser never sends one.
     if (!covered) console.warn(`[lingo-dojo] conversation ${conversationId}: the turn's history doesn't cover the ${stored.length} stored turns; appended only`);
     const lang = bankLocale(profile, conv);
+    // The reply this write will capture, known before anything is written
+    // (the last master row it inserts that the server wrote).
+    const replyRow = insert.findLast((t) => t.role === "master" && !t.fromClient);
+    const items = replyRow && lang != null && turn.master.role === "master" ? glossCaptures(turn.master.glosses, turn.master.lines, lang || null) : [];
+    const dropped = stored.slice(keep).map((t) => t.id);
+    // Dropping replies and capturing the new one: both jobs' phrases locked
+    // in one norm-ordered pass first (the bank's lock order; two ordered
+    // passes one after the other deadlock with a recap or capture between).
+    const made = await lockTurnWrite(tx, profile, { turnIds: dropped, lang: lang ?? "", items });
     if (keep < stored.length) {
       // Undo what these turns' captures did (recordGlosses below, when they
       // were the reply) before they go, while their sightings and examples
       // still name them: only what was recorded, so a turn never captured
       // (a copy from the browser, a failed capture) changes nothing.
-      await unrecordGlosses(tx, profile, { turnIds: stored.slice(keep).map((t) => t.id) });
+      await unrecordGlosses(tx, profile, { turnIds: dropped });
       await mine.remove(turns, and(eq(turns.conversationId, conversationId), gte(turns.idx, keep)) as SQL);
     }
     const written = await mine.insert(
@@ -304,8 +315,8 @@ export async function saveTurn(
     );
     const reply = written.findLast((t) => t.role === "master" && !t.fromClient);
     if (reply && lang != null && turn.master.role === "master") {
-      const items = glossCaptures(turn.master.glosses, turn.master.lines, lang || null);
-      await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
+      const n = await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
+      if (n == null) await forgetUnused(tx, profile, made);
     }
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.
@@ -449,13 +460,17 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
     return methodNotAllowed(res, "GET, POST");
   }
   const [id, action, ...rest] = parts;
-  if (rest.length || (action !== undefined && action !== "end")) return sendJson(res, 404, { error: "no such route" });
+  if (rest.length || (action !== undefined && action !== "end" && action !== "recap")) return sendJson(res, 404, { error: "no such route" });
   // A malformed id is no conversation of anyone's (and never reaches
   // Postgres, which would answer it with an error).
   if (!CONVERSATION_ID_RE.test(id)) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   if (action === "end") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     return end(res, ctx, id.toLowerCase());
+  }
+  if (action === "recap") {
+    await endIdle(ctx.user.id);
+    return handleRecap(req, res, ctx, id.toLowerCase());
   }
   if (req.method === "GET") return get(req, res, ctx, id.toLowerCase());
   if (req.method === "DELETE") return remove(res, ctx, id.toLowerCase());

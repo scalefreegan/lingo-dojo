@@ -18,7 +18,7 @@ import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
   ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LanguageHeader, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
-  PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
+  PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
@@ -490,6 +490,16 @@ export function getConversation(id: string, from = 0, signal?: AbortSignal): Pro
 
 export function deleteConversation(id: string): Promise<{ deleted: true }> {
   return req<{ deleted: true }>(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** GET /api/conversations/:id/recap: its post-session recap, or where it is. */
+export function getRecap(id: string, signal?: AbortSignal): Promise<RecapReply> {
+  return req<RecapReply>(`/api/conversations/${encodeURIComponent(id)}/recap`, { signal });
+}
+
+/** POST /api/conversations/:id/recap: make it again (Retry recap). */
+export function retryRecap(id: string): Promise<RecapReply> {
+  return req<RecapReply>(`/api/conversations/${encodeURIComponent(id)}/recap`, { method: "POST" });
 }
 
 /**

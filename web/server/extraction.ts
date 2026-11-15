@@ -1,0 +1,252 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import { asc, eq } from "drizzle-orm";
+import { failureHint, startClaude } from "../../scripts/claude.mjs";
+import { extractionPrompt, learnerSpoke, parseExtraction, sessionTranscript } from "../../scripts/extraction.mjs";
+import { bankLocale } from "../../scripts/phrases.mjs";
+import { languageProfileOwner } from "../../scripts/db/accounts.ts";
+import {
+  applyExtraction, claimExtraction, countAttempt, duePhrasesAt, finishExtraction, recapPhrases, type ExtractionStatus, type StoredRecap,
+} from "../../scripts/db/extraction.ts";
+import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
+import type { RecapReply, RecapStatus, SessionRecap } from "../shared/wire.ts";
+import type { LearnerCtx } from "./auth.ts";
+import { profileRows, rawDb, schema } from "./db.ts";
+import { HttpError, methodNotAllowed, sendJson } from "./sse.ts";
+import { getModel } from "./store.ts";
+
+// The post-session extraction (docs/DATA.md §Post-session extraction): when
+// a conversation ends, one tool-less `claude -p` reads its transcript and
+// returns a recap (summary, phrases to keep, how the learner did on each
+// phrase, corrections); scripts/db/extraction.ts stores it and turns it into
+// phrase-bank rows and FSRS session reviews.
+//
+//   GET  /api/conversations/:id/recap   → {recap}
+//   POST /api/conversations/:id/recap   → 202 {recap}: make it (again): Retry recap
+//
+// Never in the way of End: the hook (conversations.ts onConversationEnded)
+// only starts the run, which claims the conversation, calls the model and
+// writes, all after End has answered. The model is tried twice; a second
+// failure leaves the conversation 'failed', which the recap card offers to
+// retry by hand. Nothing waits on a run but the tests (settleExtractions).
+
+const { conversations, turns } = schema;
+type Conversation = typeof conversations.$inferSelect;
+
+/** One model call's limit. A recap is one JSON reply; two of these and the
+ *  run gives up. */
+const CALL_TIMEOUT_SEC = 180;
+const TRIES = 2;
+
+/** The claim tokens of the runs going on in this server, so a 'running'
+ *  row whose run died with an earlier server can be told from a live one
+ *  (one server process: DATA.md §Conversations, point 4). */
+const live = new Set<string>();
+/** The runs themselves, for the tests to wait on. */
+const running = new Set<Promise<void>>();
+/** The claim being made for a conversation, by id (start). */
+const claiming = new Map<string, Promise<void>>();
+
+/** Resolves when every run started so far has finished (the tests). */
+export async function settleExtractions(): Promise<void> {
+  while (running.size) await Promise.allSettled([...running]);
+}
+
+const refOf = (c: Pick<Conversation, "languageProfileId" | "learnerId">): LanguageProfileRef => ({ id: c.languageProfileId, learnerId: c.learnerId });
+
+function track(p: Promise<void>): void {
+  const done = p.catch((e) => console.error("[lingo-dojo] recap:", e)).finally(() => running.delete(done));
+  running.add(done);
+}
+
+/** Claim the recap and, if this caller got it, run it in the background.
+ *  `from`: the statuses the claim may take over. Resolves to whether it
+ *  was claimed, once the claim is settled (not the run). */
+async function start(profile: LanguageProfileRef, conversationId: string, from: ExtractionStatus[]): Promise<boolean> {
+  // One claim at a time per conversation in this server: a claim may take
+  // over a 'running' row whose token isn't live, so two claims at once
+  // must not each see the other's token as dead. The database decides
+  // between the claims; this only keeps `live` true while they do.
+  const before = claiming.get(conversationId) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => (release = resolve));
+  const queued = before.then(() => mine);
+  claiming.set(conversationId, queued);
+  await before;
+  const claim = randomUUID();
+  live.add(claim);
+  try {
+    const claimed = await claimExtraction(rawDb(), profile, conversationId, { from, live: [...live], claim });
+    if (!claimed) {
+      live.delete(claim);
+      return false;
+    }
+    track(run(profile, claimed.conversation, claim).finally(() => live.delete(claim)));
+    return true;
+  } catch (e) {
+    live.delete(claim);
+    throw e;
+  } finally {
+    release();
+    if (claiming.get(conversationId) === queued) claiming.delete(conversationId);
+  }
+}
+
+/**
+ * The end hook's half: a conversation just ended, so its recap is made, if
+ * nobody has started one (a second End, a racing idle end or an earlier
+ * Retry already did: the claim says so). Returns at once; the run happens
+ * after the request that ended it.
+ */
+export function extractAfterEnd(conversation: Conversation): void {
+  track(
+    new Promise<void>((resolve) => setImmediate(resolve)).then(async () => {
+      await start(refOf(conversation), conversation.id, ["none"]);
+    }),
+  );
+}
+
+/**
+ * Why a recap failed, as the learner reads it (`extraction_error`, the
+ * card's text): fixed wording only. What went wrong in detail (a CLI's
+ * stderr, a database error with its SQL and the recap's JSON) goes to the
+ * server log, never to the row or the page.
+ */
+const REASON = {
+  gone: "its learner or language is gone",
+  call: "the model call didn't work",
+  reply: "the reply wasn't a recap",
+  none: "no reply",
+  save: "the recap couldn't be saved",
+} as const;
+/** The CLI hints (scripts/claude.mjs failureHint) are fixed text too, and
+ *  worth showing: a sign-in to renew, a limit to wait out. */
+const HINTS = [/^Claude Code sign-in has expired/, /^Claude usage limit reached/, /^Claude API is overloaded/];
+/** A stored reason, if it is one of ours (rows written before this rule may hold raw text). */
+const shownReason = (s: string | null) => (s && (Object.values(REASON).includes(s as never) || HINTS.some((h) => h.test(s))) ? s : null);
+/** The error and its cause (drizzle wraps the driver's), for the log. */
+const detail = (e: unknown) => {
+  const err = e as Error & { cause?: unknown };
+  const cause = err?.cause as (Error & { code?: string }) | undefined;
+  return `${String(err?.message || e)}${cause ? ` (cause: ${cause.code ? `${cause.code} ` : ""}${String(cause.message || cause)})` : ""}`;
+};
+
+/** One run, holding `claim`: the transcript, the model (twice at most),
+ *  then the write; or 'skipped' / 'failed'. */
+async function run(profile: LanguageProfileRef, conv: Conversation, claim: string): Promise<void> {
+  const db = rawDb();
+  const fail = (why: string, logged = why) => {
+    console.error(`[lingo-dojo] recap of conversation ${conv.id} failed: ${logged}`);
+    return finishExtraction(db, profile, conv.id, claim, "failed", why);
+  };
+  try {
+    const rows = await profileRows(profile).list(turns, eq(turns.conversationId, conv.id), { orderBy: asc(turns.idx) });
+    if (!learnerSpoke(rows)) return void (await finishExtraction(db, profile, conv.id, claim, "skipped"));
+    const owner = await languageProfileOwner(db, profile);
+    if (!owner) return void (await fail(REASON.gone));
+    const locale = bankLocale(owner.targetLanguage, conv);
+    const { system, user } = extractionPrompt({
+      transcript: sessionTranscript(rows),
+      nativeLanguage: conv.nativeLanguage || owner.nativeLanguage || "English",
+      targetVariant: conv.targetVariant || conv.targetLanguage || owner.targetLanguage || "the target language",
+      duePhrases: locale == null ? [] : await duePhrasesAt(db, profile, new Date(conv.startedAt)),
+      kids: conv.mode === "kids",
+    });
+    const model = await getModel(owner.userId);
+    let why = "";
+    let logged = "";
+    for (let attempt = 1; attempt <= TRIES; attempt++) {
+      await countAttempt(db, profile, conv.id, claim);
+      let text: string;
+      try {
+        // No tools and an empty temp cwd, like a voice turn: the transcript
+        // is the learner's words, and the model needs nothing else.
+        const { result } = startClaude({ prompt: user, systemPrompt: system, model, cwd: os.tmpdir(), tools: "none", maxTurns: 1, timeoutSec: CALL_TIMEOUT_SEC });
+        text = (await result).text;
+      } catch (e) {
+        const msg = String((e as Error)?.message || e);
+        why = failureHint(msg) || REASON.call;
+        logged = msg;
+        console.warn(`[lingo-dojo] recap of conversation ${conv.id}, attempt ${attempt}: ${msg}`);
+        continue;
+      }
+      const parsed = parseExtraction(text);
+      if (!parsed.ok) {
+        why = REASON.reply;
+        logged = `${REASON.reply} (${parsed.error})`;
+        continue;
+      }
+      if (parsed.dropped) console.warn(`[lingo-dojo] recap of conversation ${conv.id}: ${parsed.dropped} malformed item(s) dropped`);
+      // null: the claim was taken over (this run was presumed dead); the
+      // run that has it now writes.
+      await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows });
+      return;
+    }
+    await fail(why || REASON.none, logged || why || REASON.none);
+  } catch (e) {
+    await fail(REASON.save, `${REASON.save}: ${detail(e)}`).catch((e2) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: the failure couldn't be stored: ${detail(e2)}`));
+  }
+}
+
+/* --------------------------------- reading --------------------------------- */
+
+function statusOf(c: Conversation): RecapStatus {
+  if (!c.endedAt) return "open";
+  if (c.extractionStatus === "running") return c.extractionClaim && live.has(c.extractionClaim) ? "pending" : "failed";
+  return c.extractionStatus;
+}
+
+/** The status History lists (ConversationSummary.recapStatus). */
+export const recapStatus = statusOf;
+
+async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<SessionRecap> {
+  const status = statusOf(c);
+  const stored = status === "done" ? (c.extraction as unknown as StoredRecap | null) : null;
+  const ids = (stored?.keep ?? []).map((k) => k.phraseId).filter((id): id is string => !!id);
+  const now = await recapPhrases(rawDb(), profile, ids);
+  return {
+    conversationId: c.id,
+    status,
+    kids: c.mode === "kids",
+    summary: status === "done" ? c.summary : null,
+    kept: (stored?.keep ?? []).map((k) => {
+      const p = k.phraseId ? now.get(k.phraseId) : undefined;
+      return { text: k.text, meaning: k.meaning, why: k.why, phraseId: p ? k.phraseId : null, starred: !!p?.starred, mastery: p?.mastery ?? null };
+    }),
+    events: stored?.events ?? [],
+    corrections: stored?.corrections ?? [],
+    inBank: !!stored?.inBank,
+    error:
+      status !== "failed"
+        ? null
+        : c.extractionStatus === "running"
+          ? "the recap was interrupted (the server restarted)"
+          : (shownReason(c.extractionError) ?? "the recap couldn't be made"),
+    extractedAt: c.extractedAt ? new Date(c.extractedAt).toISOString() : null,
+  };
+}
+
+async function find(ctx: LearnerCtx, id: string): Promise<Conversation> {
+  const c = await profileRows(ctx.language).get(conversations, eq(conversations.id, id));
+  if (!c) throw new HttpError(404, "no such conversation", "no_conversation");
+  return c;
+}
+
+/** /api/conversations/:id/recap (mounted by conversations.ts, which has
+ *  checked the id and the learner). */
+export async function handleRecap(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
+  if (req.method === "GET") {
+    const c = await find(ctx, id);
+    return sendJson(res, 200, { recap: await recapOf(ctx.language, c) } satisfies RecapReply);
+  }
+  if (req.method !== "POST") return methodNotAllowed(res, "GET, POST");
+  const c = await find(ctx, id);
+  if (!c.endedAt) throw new HttpError(409, "the session is still going: its recap is made when it ends");
+  // Anything but a run going on now: a failed one, one never made, one
+  // skipped or made already (made again, replacing the last).
+  await start(ctx.language, id, ["none", "failed", "done", "skipped"]);
+  // Claimed by this request or by a run already going: either way it is
+  // being made (or has just been, by a quick one).
+  sendJson(res, 202, { recap: await recapOf(ctx.language, await find(ctx, id)) } satisfies RecapReply);
+}

@@ -105,7 +105,7 @@ export async function catalog(query) {
 const without = (rows, ...tables) => Object.fromEntries(Object.entries(rows).filter(([t]) => !tables.includes(t)));
 
 /** Empty bank: 0003 applies, the other rows are untouched, and the schema is
- *  `fresh`'s (a database migrated from nothing). */
+ *  `fresh`'s (a database migrated from nothing through 0003). */
 export async function migrateEmptyAndCheck(query, fresh) {
   const before = await contents(query);
   await applyMigrations(query, migrationsThrough0003());

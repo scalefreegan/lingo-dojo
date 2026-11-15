@@ -6,7 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { newCard, review } from "../fsrs.mjs";
 import {
-  LIMITS, MAX_CAPTURE_CHARS, MAX_CAPTURE_WORDS, TROUBLE_LAPSES, bankPage, charCount, clean, exampleFor, glossCaptures, phraseMetrics, readPhraseInput, sameLanguage,
+  LIMITS, MAX_CAPTURE_CHARS, MAX_CAPTURE_WORDS, TROUBLE_LAPSES, bankLocale, bankPage, charCount, clean, exampleFor, glossCaptures, phraseMetrics, readPhraseInput, sameLanguage,
   scenarioEntries, tooLongToCapture, wordCount,
 } from "../phrases.mjs";
 
@@ -92,6 +92,12 @@ test("sameLanguage: by ISO language where known, else by name; a blank side neve
   assert.equal(sameLanguage("Klingon", { language: "Elvish" }), false);
   assert.equal(sameLanguage("", { language: "German" }), true);
   assert.equal(sameLanguage("German", { language: "" }), true);
+});
+
+test("bankLocale: the session's locale when it is the profile's language, null when a pack moved it, empty for an unknown one", () => {
+  assert.equal(bankLocale("Spanish", { targetLanguage: "Spanish", targetVariant: "Mexican Spanish" }), "es-MX");
+  assert.equal(bankLocale("Spanish", { targetLanguage: "German", targetVariant: "" }), null);
+  assert.equal(bankLocale("Klingon", { targetLanguage: "Klingon", targetVariant: "" }), "");
 });
 
 test("scenarioEntries: vocab complete (only in the scenario's own language), phrases pending, both deduped and sorted", () => {

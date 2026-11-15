@@ -311,12 +311,32 @@ export const conversations = pgTable(
     startedAt: tz("started_at").notNull().defaultNow(),
     endedAt: tz("ended_at"),
     turnCount: integer("turn_count").notNull().default(0),
+    // The post-session recap (DATA.md §Post-session extraction): the
+    // summary, the parsed and resolved model reply, and when it was made.
     summary: text("summary"),
     extraction: jsonb("extraction").$type<Record<string, unknown>>(),
     extractedAt: tz("extracted_at"),
+    /** Where the recap is (migration 0004): 'none' (never run: open, or
+     *  ended before this existed), 'running' (a run holds the claim),
+     *  'done', 'failed' (both tries failed: "Retry recap"), 'skipped'
+     *  (nothing the learner said to recap). */
+    extractionStatus: text("extraction_status").$type<"none" | "running" | "done" | "failed" | "skipped">().notNull().default("none"),
+    /** The running run's token, set by the claim (one UPDATE, so two Ends,
+     *  two tabs or a Retry racing the end claim it once) and checked by the
+     *  run's final write; null unless running. */
+    extractionClaim: uuid("extraction_claim"),
+    /** When the current or last run claimed it, to spot a run a restart
+     *  killed. */
+    extractionStartedAt: tz("extraction_started_at"),
+    /** Model calls made for this conversation's recap, all runs. */
+    extractionAttempts: integer("extraction_attempts").notNull().default(0),
+    /** Why the last run failed, for the log and the recap card. */
+    extractionError: text("extraction_error"),
   },
   (t) => [
     check("conversations_mode", sql`${t.mode} in ('adult', 'kids')`),
+    check("conversations_extraction_status", sql`${t.extractionStatus} in ('none', 'running', 'done', 'failed', 'skipped')`),
+    check("conversations_extraction_claim", sql`(${t.extractionStatus} = 'running') = (${t.extractionClaim} is not null)`),
     foreignKey({ name: "conversations_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
     unique("conversations_id_learner").on(t.id, t.learnerId),
     unique("conversations_id_profile").on(t.id, t.languageProfileId),
@@ -484,8 +504,14 @@ export const phraseSightings = pgTable(
     conversationId: uuid("conversation_id"),
     turnId: uuid("turn_id"),
     seenAt: tz("seen_at").notNull().defaultNow(),
+    /** What saw it (migration 0004): 'gloss', a reply's capture (turn_id
+     *  set); 'extraction', the post-session recap naming a phrase the
+     *  session's glosses didn't (turn_id null, one per conversation and
+     *  phrase), which a re-run of the recap replaces. */
+    source: text("source").$type<"gloss" | "extraction">().notNull().default("gloss"),
   },
   (t) => [
+    check("phrase_sightings_source", sql`${t.source} in ('gloss', 'extraction')`),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "phrase_sightings_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
     // In the phrase's language; hand-edited to SET NULL (col), so deleting
@@ -494,6 +520,8 @@ export const phraseSightings = pgTable(
     foreignKey({ name: "phrase_sightings_turn_profile_fk", columns: [t.turnId, t.languageProfileId], foreignColumns: [turns.id, turns.languageProfileId] }).onDelete("set null"),
     // A capture sees each phrase once.
     uniqueIndex("phrase_sightings_turn_phrase").on(t.turnId, t.phraseId),
+    // The recap sees a phrase once per conversation.
+    uniqueIndex("phrase_sightings_extraction_once").on(t.conversationId, t.phraseId).where(sql`${t.source} = 'extraction'`),
     index("phrase_sightings_phrase_idx").on(t.phraseId, t.seenAt),
   ],
 );
