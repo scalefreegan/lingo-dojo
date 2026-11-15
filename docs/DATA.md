@@ -1323,12 +1323,74 @@ kids (content/kids/packs/): skipped, robin has no kids learner (add one in the a
 The first run (`createFirstAdmin`) runs the same `importPacks` for each
 learner it makes, into that learner's one language, in its transaction.
 
-## Backups (proposed)
+## Backups
 
 Personal data leaves git, so it needs its own safety net. `npm run db:backup`
-does a `pg_dump -Fc` to `backups/` (gitignored), keeping the last 14. An
-optional launchd plist (in `macos/`) runs it daily. `pack_revisions` and soft
-deletes cover undoing a single change.
+(`scripts/db/backup-cli.mjs`; the logic, including the dump, rename and prune
+run, is in `scripts/db/backup.mjs`) runs `pg_dump -Fc` on the database
+`DATABASE_URL` names (resolved like the other db scripts, so a worktree
+without one refuses) into `backups/` (gitignored). Files are
+`<database>-<UTC stamp>.dump`, mode 0600 (they hold password hashes and
+conversations). A `backups/` the script creates is 0700; a directory you point
+`LINGO_BACKUPS_DIR` at is left as it is.
+
+- **Safe writes:** the dump goes to a private `.<name>.<pid>.partial` file,
+  created exclusively, and is linked to its final name only when `pg_dump`
+  exits 0, so a failed dump never looks like a good one, and two runs in the
+  same second cannot overwrite each other (the second fails). Partials of that
+  database older than a day (crashed runs) are deleted at startup.
+- **Retention:** the newest 14 are kept; pruning touches only that database's
+  own `<db>-<stamp>.dump` files and never the file just written. A backup with
+  a future timestamp (the clock was ahead) produces a warning.
+- **The password** never appears in `pg_dump`'s arguments: it is taken out of
+  the URL (userinfo or `?password=`) and passed as `PGPASSWORD`, with `-w`.
+  The URL printed to the log is redacted the same way.
+- **Which `pg_dump`:** found on `PATH`, then in the Homebrew PostgreSQL
+  directories (`postgresql@17/bin` and a few others; a launchd job has a
+  minimal `PATH`). Of those it uses the one whose major version equals the
+  server's, else the lowest newer one, never an older one. It prints the tool
+  and version it chose. A missing or failing `pg_dump` exits non-zero with a
+  message.
+- **Tests** (`backup.test.mjs`, `backup-run.test.mjs`) use a temp directory
+  and fake `pg_dump` scripts, never the real `backups/`.
+
+`pack_revisions` and soft deletes cover undoing a single change; the dump
+covers losing the database.
+
+There is deliberately no restore script: a restore that picks its own target
+is how a real database gets overwritten. Restore by hand, into a database you
+name:
+
+```sh
+createdb lingo_dojo_restored
+pg_restore --no-owner --exit-on-error -d lingo_dojo_restored backups/<file>.dump
+# check it, then point DATABASE_URL at it (or rename databases) when you mean to
+```
+
+### Daily job (optional, not installed by default)
+
+`macos/com.lingodojo.db-backup.plist.template` runs the backup at 03:30 daily
+with the logs in `~/Library/Logs/LingoDojoBackup.log`. `npm run
+db:backup:plist -- <path>` fills in the placeholders (node, this checkout,
+your home; XML-escaped) and writes the result to the path you give. It writes
+nothing else and does not call `launchctl`; loading the job is your step:
+
+```sh
+npm run db:backup:plist -- ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+launchctl kickstart "gui/$(id -u)/com.lingodojo.db-backup"   # run once now
+```
+
+Uninstall:
+
+```sh
+launchctl bootout "gui/$(id -u)/com.lingodojo.db-backup"
+rm ~/Library/LaunchAgents/com.lingodojo.db-backup.plist
+```
+
+If the repo is under a TCC-protected folder (Documents, Desktop), launchd's
+`node` may be denied access to it; the log will say so. Grant it Full Disk
+Access in System Settings, or keep the checkout elsewhere.
 
 ## Testing
 

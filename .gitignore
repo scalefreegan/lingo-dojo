@@ -1,6 +1,7 @@
 # Runtime state and rendered exports
 data/
 exports/
+backups/
 
 node_modules/
 web/dist/
