@@ -123,6 +123,27 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   ahead; tapping a part sends `[jump] <id>`, and the dojo master goes
   straight there, skipping what's in between (the frame's "every warm-up
   first" rule gives way to the learner asking). It collapses to a rail of dots (remembered per browser).
+  The parts live in `scripts/plan.mjs` (no imports), so the assembler's Time
+  budget splits the same parts; `scripts/voice.mjs` re-exports `sessionPlan`.
+- **Session length.** The Go tab asks **How long do you have?** before the
+  session: 5 · 10 · 15 · 20 · 30 min · No limit (kids: 3 · 5 · 10 · No
+  limit). The choice is the pack's `overrides.minutes`, so the prompt shown,
+  copied and exported has a **Time budget** section (docs/CONTENT.md). A pack
+  without `minutes` starts the picker at the last choice, kept per mode as
+  `sessionMinutes` in `data/voice.json` (a PUT merges it per mode); what the
+  picker shows is what the pack carries. The clock starts with the first
+  turn, and every `/api/voice/turn` sends `elapsedMs`, the time since then.
+  With a budget the server adds one **clock line** after the learner's words
+  (`clockLine`): minutes used, minutes left, the current part (the last
+  `STAGE`), and "behind the plan" when the split has moved on. From 80% used
+  it says to start closing the scene; from 100% to finish within this turn
+  and the next with the short debrief, and to go along if the learner wants
+  to keep going. The app never ends the session. The timeline shows the time
+  left (rounded up; "Time's up, N min over" after) and **+5 min**, which adds
+  five minutes to this session only: the turn's pack carries the extended
+  minutes, so the Time budget and the clock agree, but the saved pack and
+  the picker keep their length. Restart resets the clock and the extra
+  minutes. No limit is the old behaviour exactly: no Time budget, no clock line.
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
   their exact upper-case label (`OPTIONS:` is an older name for
   `CHOICES:`), with or without a speaker tag (any case) or a timing mark in
@@ -150,7 +171,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
 
 Saved in `data/voice.json` (gitignored): voice provider, speech-to-text
 provider, ElevenLabs model (Eleven v4 by default; Flash v2.5 is fastest and
-cheapest), Claude model for the dojo master, turn-taking, and a voice per
+cheapest), Claude model for the dojo master, turn-taking, the last session
+length per mode (`sessionMinutes`, set from the Go tab's picker), and a voice per
 **slot per locale**. A slot is a speaker and a gender (Narrator · woman,
 Character · man, …). Each slot is **🎲 Random** (the default) or a voice you
 chose. Voices are kept per locale, so a Mandarin voice choice survives a switch to a

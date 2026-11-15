@@ -75,6 +75,17 @@ test("PUT settings: merges, normalizes, and lands in data/voice.json", async () 
   assert.equal((await call("PUT", "/api/voice/settings", [1])).status, 400);
 });
 
+test("PUT settings: the last session length merges per mode; the choices come with the reply", async () => {
+  const first = await call("PUT", "/api/voice/settings", { sessionMinutes: { kids: 5 } });
+  assert.deepEqual(first.body.minuteChoices, { adult: [5, 10, 15, 20, 30], kids: [3, 5, 10] });
+  const r = await call("PUT", "/api/voice/settings", { sessionMinutes: { adult: 15 } });
+  assert.deepEqual(r.body.settings.sessionMinutes, { adult: 15, kids: 5 }, "the other mode's choice is kept");
+  const cleared = await call("PUT", "/api/voice/settings", { sessionMinutes: { adult: null } });
+  assert.deepEqual(cleared.body.settings.sessionMinutes, { adult: null, kids: 5 }, "null is No limit");
+  const junk = await call("PUT", "/api/voice/settings", { sessionMinutes: { kids: 30 } });
+  assert.deepEqual(junk.body.settings.sessionMinutes, { adult: null, kids: null }, "not a kids length");
+});
+
 test("unconfigured providers answer 400 with where the key goes", async () => {
   const v = await call("GET", "/api/voice/voices?provider=elevenlabs&locale=es-MX");
   assert.equal(v.status, 400);

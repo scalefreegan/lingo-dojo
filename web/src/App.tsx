@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, listPacks, movePack, renamePack, savePack, saveProfile,
+  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
 } from "./api";
 import type { AssembleResult, Committed, ContentReply, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, emptyOverrides, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -159,7 +159,39 @@ export default function App() {
     }
   }
 
-  const pack = useMemo(() => (draft ? draftToPack(draft) : null), [draft]);
+  // The Go tab's "How long do you have?": the draft's own choice, else the
+  // last one, which lives in the voice settings (data/voice.json) per mode.
+  // Until (or unless) they load, the picker offers no lengths and the pack
+  // goes without one, which is No limit: today's behavior.
+  const [lastMinutes, setLastMinutes] = useState<Record<Mode, number | null> | null>(null);
+  const [minuteChoices, setMinuteChoices] = useState<Record<Mode, number[]> | null>(null);
+  useEffect(() => {
+    let live = true;
+    getVoiceSettings().then(
+      (r) => {
+        if (!live) return;
+        setLastMinutes(r.settings.sessionMinutes);
+        setMinuteChoices(r.minuteChoices);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const minutes = draft ? effectiveMinutes(draft, lastMinutes?.[mode] ?? null) : null;
+
+  /** A picked length goes into the draft (and so the pack) and becomes the
+   *  remembered one for the next pack that has none. */
+  function chooseMinutes(m: number | null) {
+    setDraft((d) => (d ? { ...d, minutes: m } : d));
+    setLastMinutes((s) => ({ adult: null, kids: null, ...s, [mode]: m }));
+    saveVoiceSettings({ sessionMinutes: { [mode]: m } }).catch(() => {
+      /* only the default for next time is lost; this session has its length */
+    });
+  }
+
+  const pack = useMemo(() => (draft ? draftToPack(draft, minutes) : null), [draft, minutes]);
   const assembling = !!pack && (settled?.pack !== pack || settled.version !== contentVersion);
 
   // Live preview. Each change aborts the request before it, so a slow reply
@@ -387,6 +419,9 @@ export default function App() {
                 sceneTitle={scenarioTitle}
                 learnerLine={learnerLine}
                 notes={draft.notes}
+                minutes={minutes}
+                minuteChoices={minuteChoices?.[mode] ?? []}
+                onMinutes={chooseMinutes}
                 onNotes={(notes) => setDraft({ ...draft, notes })}
                 exportId={draft.sourceId ? splitPackId(draft.sourceId).stem : packId(draft.title || scenarioTitle || "session")}
                 result={result}

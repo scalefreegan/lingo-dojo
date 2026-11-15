@@ -12,6 +12,7 @@
 // piece is missing, so an export is never silently incomplete.
 
 import { PLACEHOLDERS, normalizePack } from "./content.mjs";
+import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
 
 /** Profile keys rendered in the Learner block, in this order, with labels.
  *  Any other key in the effective profile follows in its own order. */
@@ -49,9 +50,11 @@ const MISSING_SCENARIO_LINE = "_(No scenario selected. Pick a scenario or write 
 /**
  * @param {{schema, frame, profile, units, scenarios}} content  loadContent()'s result
  * @param {object} rawPack  a pack (file or UI body); normalized here
+ * @param {"adult"|"kids"} [mode]  which tree `content` is: the Time budget
+ *   splits the session into that mode's parts, as the voice timeline does
  * @returns {{ markdown: string, warnings: string[], stats: { words: number, tokens: number, chars: number } }}
  */
-export function assemble(content, rawPack) {
+export function assemble(content, rawPack, mode = "adult") {
   const pack = normalizePack(rawPack);
   const warnings = [];
   const warn = (msg) => {
@@ -89,6 +92,15 @@ export function assemble(content, rawPack) {
   const rawLocation = pack.overrides.location;
   const location = typeof rawLocation === "string" ? rawLocation.trim() : "";
   delete profile.location;
+
+  // The time budget is about this session, not the learner: like the
+  // location it stays out of the Learner block and is read from the pack
+  // only (the Go tab's picker is the one place it is set).
+  const budget = readMinutes(pack.overrides.minutes);
+  if (budget.invalid) {
+    warn(`Pack override "minutes" must be a number of minutes above 0 and at most ${MAX_MINUTES}, not ${JSON.stringify(pack.overrides.minutes)}; ignored (no time budget).`);
+  }
+  delete profile.minutes;
 
   const values = {};
   for (const key of PLACEHOLDERS) {
@@ -159,6 +171,8 @@ export function assemble(content, rawPack) {
   sections.push(renderLearner(profile));
   sections.push(renderScenario(scenario, fill, scenario.uses_location ? settingLine(location, values.target_variant) : ""));
   sections.push(...slotSections);
+  // After the slots, so it can name the warm-ups and debrief described above.
+  if (budget.minutes != null) sections.push(renderTimeBudget(budgetSplit(sessionPlan(content, pack, mode), budget.minutes), budget.minutes, mode));
   const notes = pack.notes.trim();
   if (notes) sections.push(`## Notes from the learner\n\n${notes}`);
 
@@ -286,4 +300,47 @@ function renderScenario(s, fill, setting) {
   const body = fill(s.body ?? "", where).trimEnd();
   if (body) parts.push(body);
   return parts.join("\n\n");
+}
+
+/** How a part is labelled in the Time budget's split ("" = its title alone). */
+const PART_LABELS = { warmup: "Warm-up", games: "Game", debrief: "Debrief", ending: "Ending" };
+
+/** "½ minute", "1 minute", "2½ minutes". */
+function minutesWord(m) {
+  return `${formatMinutes(m)} minute${m > 0 && m <= 1 ? "" : "s"}`;
+}
+
+/** The Time budget section: the total, a rough split across the session's
+ *  parts (the voice timeline's parts, beats folded into the scene) and how
+ *  to shrink to fit. Built from numbers alone, so it is deterministic, and
+ *  it travels with an export: pasted into another voice tool, the model
+ *  there can only count exchanges, so the section says how. */
+function renderTimeBudget(rows, minutes, mode) {
+  const has = (g) => rows.some((r) => r.group === g);
+  const kids = mode === "kids";
+  const closing = kids ? "the goodbye" : "the short debrief";
+  const split = rows.map((r) => {
+    const kind = r.kind === "scene" ? (kids ? "Story" : "Scene") : PART_LABELS[r.kind];
+    const label = kind ? `${kind}: ${r.title}` : r.title;
+    const time = r.minutes > 0 ? `about ${minutesWord(r.minutes)}` : "skip it unless there is time to spare";
+    let more = "";
+    if (r.kind === "scene" && r.beats) more = r.play < r.beats ? `, about ${r.play} of its ${r.beats} beats` : `, all ${r.beats} beats`;
+    if (r.kind === "scene" && r.games?.length) more += ` (with ${r.games.join(", ")} during it)`;
+    return `- ${label}: ${time}${more}`;
+  });
+  const scene = rows.find((r) => r.kind === "scene");
+  const shrink = [];
+  if (scene?.beats > 1) shrink.push("- Play fewer beats: the ones that matter most, in order, and skip the rest. A 5-minute session plays one or two.");
+  if (has("before")) shrink.push(kids ? "- Keep the opening game short: a few words, or skip it when time is short." : "- Keep the warm-up short: a few items per drill, or skip a drill when time is short.");
+  if (has("after")) shrink.push(kids ? "- Keep the goodbye to a word of praise and one word to remember." : "- Keep the debrief to one or two points.");
+  shrink.push("- Keep your own turns short, so the learner does most of the talking.");
+  return [
+    "## Time budget",
+    `The learner has **${minutesWord(minutes)}** for this whole session. Pace it to finish on time with ${closing} included: the session ends on its closing part, not cut off in the middle of the scene.`,
+    "**Rough split**",
+    split.join("\n"),
+    "**To fit the time**",
+    shrink.join("\n"),
+    `**Keeping time:** when a turn comes with a clock line (minutes used, minutes left, the current part), follow it: it is the real time. Without one, estimate from the number of exchanges, about two a minute. From about four fifths of the time, start closing the scene; once the time is up, end the scene and give ${closing} within a turn or two. If the learner then wants to keep going, go along with it.`,
+  ].join("\n\n");
 }

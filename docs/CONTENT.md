@@ -215,9 +215,20 @@ units:                           # unit ids; order within a slot follows the pac
 overrides:                       # optional, any profile key (native_language too)
   level: B1
   location: Lyon                 # only read by a scenario that uses {{location}}
+  minutes: 10                    # optional time budget; absent = no limit
 notes: |
   Today I'd like extra practice with prices and numbers.
 ```
+
+`minutes` is the session's length, set by the Go tab's "How long do you
+have?" picker (5 · 10 · 15 · 20 · 30 · No limit; kids 3 · 5 · 10 · No limit).
+It must be a number above 0 and at most 240; anything else (a string, 0, a
+typo like 1000) is ignored with a warning, as if it were absent. Like
+`location`, it describes the session, not the learner: it is read from the
+pack only (a `minutes` key in `profile.yaml` does nothing) and never appears
+in the Learner block. Absent means no limit, and the export is exactly what
+it would be without the feature. With it, the assembler adds a Time budget
+section (see the algorithm below).
 
 The filename is `<created date YYYY-MM-DD>-<slug of title>.yaml`. Packs may be
 grouped one level deep in subfolders of `content/packs/` (`content/packs/oaxaca/`).
@@ -270,6 +281,19 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
    - One `## <slot title>` per slot that has units, each unit rendered as
      `### <unit title>` + body (placeholders substituted). Slots with no units are
      omitted unless required.
+   - `## Time budget` — only when `overrides.minutes` is a valid number. The
+     total; a rough split across the session's parts, the same parts the
+     voice timeline shows (`sessionPlan` in `scripts/plan.mjs`: introduction
+     10%, warm-ups 20%, scene 55%, debrief 15%, a missing group's share going
+     to the scene; beats are folded into the scene with "about N of its M
+     beats", at about two minutes a beat; kids games played during the story
+     count as story time), in half minutes that add up to the total, a part
+     left at 0 marked "skip it unless there is time to spare"; how to shrink
+     (fewer beats, a 5-minute session plays one or two; shorter or skipped
+     warm-up drills; a debrief of one or two points; short turns); and how
+     to keep time: follow the in-app clock line when there is one, else
+     about two exchanges a minute. `assemble(content, pack, mode)` takes the
+     mode for this (adult when omitted); kids wording says story and goodbye.
    - `## Notes from the learner` — `pack.notes`, omitted if empty
 5. `stats`: word count and approximate token count (words × 1.3).
 

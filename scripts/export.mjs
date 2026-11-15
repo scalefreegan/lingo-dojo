@@ -65,7 +65,7 @@ function main(argv) {
   const errors = content.problems.filter((p) => p.level === "error");
   if (errors.length) console.error(`note: ${errors.length} content file(s) failed to load; run the app to see them`);
 
-  const { markdown, warnings, stats } = assemble(content, pack);
+  const { markdown, warnings, stats } = assemble(content, pack, mode);
   for (const w of warnings) console.error(`warning: ${w}`);
   const out = writeExport(pack.id, markdown, exportsDirFor(mode));
   console.log(out);

@@ -12,6 +12,7 @@ import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
+import { validMinutes } from "../draft";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -42,6 +43,8 @@ const JUMP = "[jump]";
 const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
 /** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
 const DIRECT = "[direct]";
+/** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
+const EXTEND_MINUTES = 5;
 /** Whether the timeline beside the transcript is open (per browser). */
 const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
@@ -226,6 +229,16 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
+  // The time budget: the pack's minutes (the Go tab's picker, live) plus
+  // what +5 min added to this session, which never touches the pack. The
+  // clock starts with the first turn; each turn sends the time since then,
+  // and the server turns it into the dojo master's clock line. Restart
+  // starts both over.
+  const [extraMinutes, setExtraMinutes] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const baseMinutes = validMinutes(pack.overrides.minutes);
+  const budget = baseMinutes == null ? null : baseMinutes + extraMinutes;
+  const startedAtRef = useRef<number | null>(null);
 
   // Mutable session plumbing the async flows read without stale closures.
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
@@ -743,7 +756,15 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
           heldBy.current.set(whoKey(n), { voice: v, fallback: next.fallbacks?.[n.slot], asked: n.age });
         }
       }
-      const r = await voiceTurn({ mode, pack, history: before, message, narratorGender: castRef.current?.narratorGender }, ctrl.signal);
+      // The session's budget goes to the server as the pack's minutes, so the
+      // prompt's Time budget and the clock line both see the +5 min.
+      if (startedAtRef.current == null) {
+        startedAtRef.current = Date.now();
+        setStartedAt(startedAtRef.current);
+      }
+      const turnPack = budget == null ? pack : { ...pack, overrides: { ...pack.overrides, minutes: budget } };
+      const elapsedMs = Date.now() - startedAtRef.current;
+      const r = await voiceTurn({ mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs }, ctrl.signal);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       const idx = history.length;
       const notes = r.castNotes ?? [];
@@ -1217,6 +1238,9 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     setSession([]);
     setPicked(null);
     setPlan([]);
+    startedAtRef.current = null;
+    setStartedAt(null);
+    setExtraMinutes(0);
     setComposer("");
     setHeldRequest(null);
     setError(null);
@@ -1269,7 +1293,16 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
       // below the session), it still clears the top bars rather than being
       // pushed up under them; its list scrolls on its own.
       <aside className={`shrink-0 lg:sticky lg:top-(--below-bars) lg:flex lg:max-h-[calc(100dvh-var(--below-bars)-var(--below-session))] lg:flex-col ${timelineOpen ? "lg:w-60" : "lg:w-8"}`}>
-        <SessionTimeline plan={plan} stage={stage} open={timelineOpen} onToggle={toggleTimeline} onJump={jump} disabled={!canAct} />
+        <SessionTimeline
+          plan={plan}
+          stage={stage}
+          open={timelineOpen}
+          onToggle={toggleTimeline}
+          onJump={jump}
+          disabled={!canAct}
+          clock={budget != null && startedAt != null ? { minutes: budget, startedAt } : null}
+          onExtend={() => setExtraMinutes((x) => x + EXTEND_MINUTES)}
+        />
       </aside>
     )}
     <Card className="tatami flex min-w-0 flex-1 flex-col gap-4 border-line-strong/60" data-testid="voice-panel">

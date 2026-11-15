@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { draftToPack, foreignLanguage, packToDraft } from "../../web/src/draft.ts";
+import { draftToPack, effectiveMinutes, foreignLanguage, packToDraft, validMinutes } from "../../web/src/draft.ts";
 
 const languages = [
   { name: "Spanish", variants: [], code: "es" },
@@ -43,4 +43,28 @@ test("location round-trips through a pack as overrides.location, trimmed; blank 
   assert.deepEqual(draft.extraOverrides, { extra: 1 }, "location is not an extra override");
   assert.deepEqual(draftToPack({ ...draft, location: "  Osaka " }).overrides, { extra: 1, level: "B1", location: "Osaka" });
   assert.equal("location" in draftToPack({ ...draft, location: "  " }).overrides, false);
+});
+
+test("minutes round-trip through a pack as overrides.minutes; the picker's value is what the pack carries", () => {
+  const pack = { id: "p", title: "P", created: "", scenario: "s", quick_scenario: "", units: [], overrides: { location: "Lyon", minutes: 10 }, notes: "" };
+  const draft = packToDraft(pack);
+  assert.equal(draft.minutes, 10);
+  assert.deepEqual(draft.extraOverrides, {}, "minutes is not an extra override");
+  assert.deepEqual(draftToPack(draft).overrides, { location: "Lyon", minutes: 10 });
+  // The pack's own length wins over the remembered one; without one, the
+  // remembered one is what the picker shows and the pack carries.
+  assert.equal(effectiveMinutes(draft, 5), 10);
+  const none = { ...draft, minutes: null };
+  assert.equal(effectiveMinutes(none, 5), 5);
+  assert.equal(draftToPack(none, effectiveMinutes(none, 5)).overrides.minutes, 5);
+  assert.equal("minutes" in draftToPack(none, effectiveMinutes(none, null)).overrides, false, "No limit: no minutes");
+});
+
+test("a minutes value the picker can't hold stays an extra override, so the assembler can warn about it", () => {
+  const pack = { id: "p", title: "P", created: "", scenario: "s", quick_scenario: "", units: [], overrides: { minutes: "ten" }, notes: "" };
+  const draft = packToDraft(pack);
+  assert.equal(draft.minutes, null);
+  assert.deepEqual(draftToPack(draft).overrides, { minutes: "ten" });
+  assert.deepEqual(draftToPack(draft, 15).overrides, { minutes: 15 }, "a chosen length replaces it");
+  assert.deepEqual([validMinutes(10), validMinutes(0), validMinutes(241), validMinutes("10"), validMinutes(7.5)], [10, null, null, null, 7.5]);
 });

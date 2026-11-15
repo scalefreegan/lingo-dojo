@@ -235,7 +235,7 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse):
   const mode = modeOf(req);
   const body = await readJsonBody<Partial<AssembleRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack}");
-  sendJson(res, 200, assemble(loadContent(modeRoot(mode)), body.pack) satisfies AssembleResult);
+  sendJson(res, 200, assemble(loadContent(modeRoot(mode)), body.pack, mode) satisfies AssembleResult);
 }
 
 export async function handleExport(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -244,7 +244,7 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse): P
   const body = await readJsonBody<Partial<ExportRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack, id}");
   const id = checkId(body.id);
-  const { markdown, stats, warnings } = assemble(loadContent(modeRoot(mode)), body.pack);
+  const { markdown, stats, warnings } = assemble(loadContent(modeRoot(mode)), body.pack, mode);
   const path = writeExport(id, markdown, exportsDirFor(mode));
   sendJson(res, 200, { path, stats, warnings } satisfies ExportResult);
 }
