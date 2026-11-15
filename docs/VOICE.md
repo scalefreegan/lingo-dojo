@@ -146,7 +146,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   five minutes to this session only: the turn's pack carries the extended
   minutes, so the Time budget and the clock agree, but the saved pack and
   the picker keep their length. Before the session the picker sets the
-  total; **picked mid-session**, a length means that many minutes from now:
+  total; **picked mid-session** (every pick, the length already shown again
+  included), a length means that many minutes from now:
   the pacing clock starts again at the pick, the budget is exactly the length
   picked (any +5 min is dropped; +5 min then extends from there), and
   `elapsedMs` counts from the pick. Picking 3 at minute 12 reads "3 min left

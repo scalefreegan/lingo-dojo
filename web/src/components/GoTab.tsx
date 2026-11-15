@@ -67,6 +67,10 @@ export default function GoTab({
   onPracticeOpened?: () => void;
 }) {
   const [copyStatus, copy] = useCopyStatus();
+  // Counts picks in "How long do you have?", the same length again included:
+  // a running session restarts its pacing clock on every pick, which a
+  // change of value alone can't signal.
+  const [minutesPick, setMinutesPick] = useState(0);
   const [showPrompt, setShowPrompt] = useState(false);
   const [exported, setExported] = useState<ExportResult | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -113,7 +117,14 @@ export default function GoTab({
           {result && ` · ${result.stats.words.toLocaleString()} words · ~${result.stats.tokens.toLocaleString()} tokens`}
           {pending && " · updating"}
         </p>
-        <MinutesPicker value={minutes} choices={minuteChoices} onChange={onMinutes} />
+        <MinutesPicker
+          value={minutes}
+          choices={minuteChoices}
+          onChange={(m) => {
+            setMinutesPick((n) => n + 1);
+            onMinutes(m);
+          }}
+        />
       </Card>
 
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">Could not assemble: {error}</p>}
@@ -129,7 +140,7 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} />
 
       <div className={narrow}>
 

@@ -58,10 +58,13 @@ export default function VoicePanel({
   openRequest = false,
   onOpened,
   active = true,
+  minutesPick = 0,
 }: {
   mode: Mode;
   pack: PackInput;
   langs: VoiceLanguages;
+  /** Bumped by every pick in the Go tab's "How long do you have?". */
+  minutesPick?: number;
   /** False while the Go tab is hidden: nothing plays or listens then. */
   active?: boolean;
   /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
@@ -89,10 +92,10 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} onClose={() => setOpen(false)} />;
 }
 
-function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -244,10 +247,13 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   // first turn instead would make "3 minutes" picked at minute 12 read as
   // 12 of 15 used, already closing time. Adjusted while rendering, React's
   // pattern for state that follows a prop; the ref follows in the effect
-  // below.
-  const [lastBase, setLastBase] = useState(baseMinutes);
-  if (baseMinutes !== lastBase) {
-    setLastBase(baseMinutes);
+  // below. Keyed on the pick itself (`minutesPick`), not only on the value:
+  // re-picking the length already shown (after it ran out, say) restarts
+  // the clock too. A length that changes without a pick (another pack
+  // loaded mid-session) is treated the same.
+  const [lastPick, setLastPick] = useState({ pick: minutesPick, base: baseMinutes });
+  if (minutesPick !== lastPick.pick || baseMinutes !== lastPick.base) {
+    setLastPick({ pick: minutesPick, base: baseMinutes });
     if (startedAt != null) {
       setStartedAt(Date.now());
       setExtraMinutes(0);
