@@ -283,7 +283,10 @@ and last_review. It has no `elapsed_days` (that is now − last_review). Its
 default FSRS-7 scheduler adds `stabilityFast` and schedules fractional days,
 so `stability_fast` is a nullable column and `scheduled_days` is a double.
 FSRS-7's `scheduleStatus` (new|learning|review) is derived from `state`, not
-stored. `reviews.id` is a `bigserial`: the table is append-only and the
+stored. In Drizzle, the FSRS columns keep ts-fsrs's snake_case
+names as their JS keys, so `scripts/fsrs.mjs` `toRow()` spreads straight into
+an insert or update, and a selected row goes straight into `fromRow()`. A test
+round-trips a card through two reviews. `reviews.id` is a `bigserial`: the table is append-only and the
 busiest one.
 
 The trigram GIN indexes serve the **LOOKUP** direction: a short query found

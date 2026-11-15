@@ -365,6 +365,12 @@ export const phraseExamples = pgTable(
  * which its FSRS-7 default scheduler adds. `elapsed_days` is gone: ts-fsrs 6
  * dropped it from the card (it is now - last_review). `scheduled_days` is a
  * double because FSRS-7 schedules fractional days.
+ *
+ * The FSRS fields keep ts-fsrs's snake_case names as their JS keys too (the
+ * one place this schema isn't camelCase): scripts/fsrs.mjs `toRow` output
+ * spreads straight into an insert or update, and a selected row goes straight
+ * into `fromRow`. Drizzle drops unknown keys silently, so camelCase keys here
+ * would lose `learning_steps` on write and make `fromRow` throw on read.
  */
 export const cards = pgTable(
   "cards",
@@ -375,15 +381,15 @@ export const cards = pgTable(
     skill: text("skill").$type<"recognize" | "listen" | "produce">().notNull(),
     due: tz("due").notNull().defaultNow(),
     stability: doublePrecision("stability").notNull().default(0),
-    stabilityFast: doublePrecision("stability_fast"),
+    stability_fast: doublePrecision("stability_fast"),
     difficulty: doublePrecision("difficulty").notNull().default(0),
-    scheduledDays: doublePrecision("scheduled_days").notNull().default(0),
-    learningSteps: integer("learning_steps").notNull().default(0),
+    scheduled_days: doublePrecision("scheduled_days").notNull().default(0),
+    learning_steps: integer("learning_steps").notNull().default(0),
     reps: integer("reps").notNull().default(0),
     lapses: integer("lapses").notNull().default(0),
     /** ts-fsrs State: 0 New, 1 Learning, 2 Review, 3 Relearning. */
     state: smallint("state").notNull().default(0),
-    lastReview: tz("last_review"),
+    last_review: tz("last_review"),
   },
   (t) => [
     check("cards_skill", sql`${t.skill} in ('recognize', 'listen', 'produce')`),

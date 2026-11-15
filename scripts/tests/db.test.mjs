@@ -14,6 +14,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { freshDb } from "./testdb.mjs";
 import { DEFAULT_DATABASE_URL, databaseName, databaseUrl, isLinkedWorktree, redact } from "../db/config.mjs";
 import { forLearner, forUser } from "../db/owned.ts";
+import { fromRow, newCard, review, toRow } from "../fsrs.mjs";
 import {
   agentMessages, authSessions, cards, conversations, learners, packRevisions, packs, phraseExamples, phrases,
   reviews, turns, users,
@@ -294,15 +295,43 @@ test("a card holds every field of a ts-fsrs Card", async (t) => {
   const mine = forLearner(db, a);
   const [ph] = await mine.insert(phrases, word("hola"));
   const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "recognize" });
-  // ts-fsrs 6 `Card` (snake_case there, camelCase in Drizzle).
-  for (const k of ["due", "stability", "difficulty", "scheduledDays", "learningSteps", "reps", "lapses", "state", "lastReview"]) {
+  // ts-fsrs 6 `Card`, with its own snake_case names (fsrs.mjs toRow/fromRow).
+  for (const k of ["due", "stability", "difficulty", "scheduled_days", "learning_steps", "reps", "lapses", "state", "last_review"]) {
     assert.ok(k in card, `cards.${k}`);
   }
-  assert.ok("stabilityFast" in card, "FSRS-7's extra stability");
+  assert.ok("stability_fast" in card, "FSRS-7's extra stability");
   assert.equal(card.state, 0);
   assert.ok(card.due instanceof Date);
-  const [moved] = await mine.update(cards, { scheduledDays: 4.78, stabilityFast: 3.14, state: 2, reps: 1, lastReview: new Date() }, eq(cards.id, card.id));
-  assert.equal(moved.scheduledDays, 4.78, "fractional days survive");
+  const [moved] = await mine.update(cards, { scheduled_days: 4.78, stability_fast: 3.14, state: 2, reps: 1, last_review: new Date() }, eq(cards.id, card.id));
+  assert.equal(moved.scheduled_days, 4.78, "fractional days survive");
+});
+
+test("fsrs.mjs card state round-trips through the cards table", async (t) => {
+  const { db, close } = await freshDb();
+  t.after(close);
+  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
+  const mine = forLearner(db, a);
+  const [ph] = await mine.insert(phrases, word("hola"));
+  const t0 = new Date("2026-11-15T15:00:00Z");
+  const fresh = newCard(t0);
+  const [row] = await mine.insert(cards, { phraseId: ph.id, skill: "produce", ...toRow(fresh) });
+  assert.deepEqual(fromRow(row), fresh, "a new card reads back as written");
+
+  // Review twice (Good, then Again a day later), writing each result back.
+  let card = fromRow(row);
+  for (const [rating, at] of [[3, t0], [1, new Date("2026-11-16T15:00:00Z")]]) {
+    const before = card;
+    const next = review(card, rating, at).card;
+    await mine.insert(reviews, { cardId: row.id, mode: "flashcard", rating, cardBefore: before });
+    const [saved] = await mine.update(cards, toRow(next), eq(cards.id, row.id));
+    card = fromRow(saved);
+    assert.deepEqual(card, next, `rating ${rating}: the reviewed card reads back unchanged`);
+  }
+  assert.equal(card.reps, 2);
+  assert.equal(typeof card.learning_steps, "number");
+  // The stored pre-review state is the card as fsrs.mjs had it.
+  const [first] = await mine.list(reviews, undefined, { orderBy: reviews.id, limit: 1 });
+  assert.deepEqual(first.cardBefore, fresh);
 });
 
 /* ----------------------------- owned-row helper --------------------------- */
