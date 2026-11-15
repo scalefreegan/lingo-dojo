@@ -408,61 +408,90 @@ function PhraseDetailView({
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ text: "", meaning: "", note: "" });
 
-  // An alternate the learner tapped × on: hidden at once, removed when the
-  // Undo window closes (or another is removed, or the panel closes).
-  const [removingAlt, setRemovingAlt] = useState<string | null>(null);
-  const pendingAlt = useRef<{ alt: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // Removing an alternate (×), in three steps, each shown as it is:
+  //  - undoable: hidden at once, "Removed … Undo" for ALT_UNDO_MS. Only this
+  //    one, in `pendingAlt` (a ref, so the timer, a second × and Undo all
+  //    see the same one on the same tick);
+  //  - sending: the moment the window closes (the timer, a second ×, the
+  //    panel closing) it leaves `pendingAlt` and Undo goes with it, so Undo
+  //    is never offered for a removal that can no longer be stopped:
+  //    "Removing …" until the reply;
+  //  - done: kept hidden until the phrase is read again without it; on an
+  //    error the chip comes back with the message.
+  // Each removal carries the phrase id it was made on and is sent once.
+  const [undoable, setUndoable] = useState<string | null>(null);
+  const [sending, setSending] = useState<string[]>([]);
+  const [gone, setGone] = useState<string[]>([]);
+  const pendingAlt = useRef<{ alt: string; phraseId: string; timer: ReturnType<typeof setTimeout> } | null>(null);
 
-  async function commitAlt() {
+  /** Close the Undo window on the pending removal, if any, and send it. */
+  function commitAlt() {
     const p = pendingAlt.current;
     if (!p) return;
     clearTimeout(p.timer);
     pendingAlt.current = null;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await updatePhrase(id, { removeAlternates: [p.alt] });
-      setDetail(r.phrase);
-      onChanged();
-    } catch (e) {
-      setError(errText(e));
-    } finally {
-      setBusy(false);
-      setRemovingAlt((cur) => (cur === p.alt ? null : cur));
-    }
+    setUndoable((cur) => (cur === p.alt ? null : cur));
+    setSending((s) => [...s, p.alt]);
+    updatePhrase(p.phraseId, { removeAlternates: [p.alt] }).then(
+      () => {
+        setGone((g) => [...g, p.alt]);
+        setSending((s) => s.filter((a) => a !== p.alt));
+        // The list re-reads, and so this phrase (no setDetail from the
+        // reply: two removals' replies can arrive in either order).
+        onChanged();
+      },
+      (e: unknown) => {
+        setSending((s) => s.filter((a) => a !== p.alt));
+        setError(`Couldn't remove “${p.alt}”: ${errText(e)}`);
+      },
+    );
   }
 
   function removeAlt(alt: string) {
-    void commitAlt();
-    pendingAlt.current = { alt, timer: setTimeout(() => void commitAlt(), ALT_UNDO_MS) };
-    setRemovingAlt(alt);
+    commitAlt(); // one already waiting is sent now, not lost
+    setError(null);
+    pendingAlt.current = { alt, phraseId: id, timer: setTimeout(commitAlt, ALT_UNDO_MS) };
+    setUndoable(alt);
   }
 
-  function undoRemoveAlt() {
-    if (pendingAlt.current) clearTimeout(pendingAlt.current.timer);
+  function undoRemoveAlt(alt: string) {
+    // Only the removal still waiting, and only if it is this one: had the
+    // timer fired first on this tick, it is already being sent and stays so.
+    const p = pendingAlt.current;
+    if (!p || p.alt !== alt) return;
+    clearTimeout(p.timer);
     pendingAlt.current = null;
-    setRemovingAlt(null);
+    setUndoable(null);
   }
 
-  // Closing the panel inside the Undo window still removes it, as shown.
-  // Nothing is left to report to then: if it fails, the alternate stays,
-  // which only means it is still accepted.
+  // Closing the panel (or moving to another phrase) inside the Undo window
+  // still removes it, as shown, from the phrase it was made on. Nothing is
+  // left to report to then: if it fails, the alternate stays, which only
+  // means it is still accepted.
   useEffect(
     () => () => {
       const p = pendingAlt.current;
       if (!p) return;
       clearTimeout(p.timer);
       pendingAlt.current = null;
-      updatePhrase(id, { removeAlternates: [p.alt] }).catch(() => {});
+      updatePhrase(p.phraseId, { removeAlternates: [p.alt] }).catch(() => {});
     },
     [id],
   );
+
+  const hiddenAlts = [...(undoable ? [undoable] : []), ...sending, ...gone];
 
   // Re-read whenever the list row changes (an edit, a star).
   useEffect(() => {
     const ctrl = new AbortController();
     getPhrase(id, ctrl.signal).then(
-      (r) => setDetail(r.phrase),
+      (r) => {
+        setDetail(r.phrase);
+        // A removed one stays hidden only while the phrase still has it
+        // (a read from before the removal landed); once it is read without
+        // it, forget it, so one the grader saves again later shows.
+        setGone((g) => (g.every((a) => r.phrase.alternates.includes(a)) ? g : g.filter((a) => r.phrase.alternates.includes(a))));
+      },
       (e) => {
         if (!ctrl.signal.aborted) setError(errText(e));
       },
@@ -551,18 +580,19 @@ function PhraseDetailView({
                 <dd>{detail.lapses} in the last 30 days</dd>
               </>
             )}
-            {(detail.alternates.length > 0 || removingAlt) && (
+            {(detail.alternates.length > 0 || undoable || sending.length > 0) && (
               <>
                 <dt>Also accepted</dt>
                 <dd className="flex flex-col gap-1">
                   {/* Other wordings the practice grader accepted and saved.
                       Removal only: × hides one, and only after a few
                       seconds without Undo is it removed (by name, so one
-                      the grader saved meanwhile stays). A right one comes
-                      back the next time the grader accepts it. */}
+                      the grader saved meanwhile stays; see commitAlt). A
+                      right one comes back the next time the grader
+                      accepts it. */}
                   <ul className="flex flex-wrap gap-1.5" aria-label="Also accepted">
                     {detail.alternates
-                      .filter((a) => a !== removingAlt)
+                      .filter((a) => !hiddenAlts.includes(a))
                       .map((alt) => (
                         <li key={alt} className="inline-flex items-center gap-0.5 rounded-full bg-raised py-0.5 pr-0.5 pl-2.5">
                           <RubyText text={alt} locale={locale} />
@@ -571,7 +601,6 @@ function PhraseDetailView({
                             className="inline-grid min-w-10 place-items-center rounded-full text-base text-fg-3 hover:bg-line hover:text-fg disabled:opacity-50 sm:min-h-7 sm:min-w-7"
                             aria-label={`Remove “${alt}” from also accepted`}
                             title="Remove"
-                            disabled={busy}
                             onClick={() => removeAlt(alt)}
                           >
                             ×
@@ -579,16 +608,23 @@ function PhraseDetailView({
                         </li>
                       ))}
                   </ul>
-                  {removingAlt && (
-                    <p role="status" className="flex flex-wrap items-center gap-2">
-                      <span>
-                        Removed “<RubyText text={removingAlt} locale={locale} />”.
-                      </span>
-                      <Button variant="ghost" className={small} onClick={undoRemoveAlt}>
-                        Undo
-                      </Button>
-                    </p>
-                  )}
+                  <div role="status" className="flex flex-col gap-0.5">
+                    {sending.map((alt) => (
+                      <p key={alt}>
+                        Removing “<RubyText text={alt} locale={locale} />”…
+                      </p>
+                    ))}
+                    {undoable && (
+                      <p className="flex flex-wrap items-center gap-2">
+                        <span>
+                          Removed “<RubyText text={undoable} locale={locale} />”.
+                        </span>
+                        <Button variant="ghost" className={small} onClick={() => undoRemoveAlt(undoable)}>
+                          Undo
+                        </Button>
+                      </p>
+                    )}
+                  </div>
                 </dd>
               </>
             )}
