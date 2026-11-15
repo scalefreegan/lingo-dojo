@@ -229,32 +229,33 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
-  // The time budget, in minutes since the first turn: the pack's minutes
-  // (the Go tab's picker, live) plus what +5 min added to this session,
-  // which never touches the pack. The clock starts with the first turn;
-  // each turn sends the time since then, and the server turns it into the
-  // dojo master's clock line. Restart starts it all over.
+  // The time budget: the pack's minutes (the Go tab's picker, live) plus
+  // what +5 min added to this session, which never touches the pack.
+  // `startedAt` is the pacing clock's origin: the first turn, or the moment
+  // a length was picked mid-session. Each turn sends the time since then,
+  // and the server turns it into the dojo master's clock line. Restart
+  // starts it all over.
   const [extraMinutes, setExtraMinutes] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const baseMinutes = validMinutes(pack.overrides.minutes);
-  // A length picked mid-session means that many more minutes from now, not
-  // since the first turn: picking 10 at minute 12 (from No limit, say) is
-  // 10 minutes left, not "2 min over". `offsetMinutes` is the whole minutes
-  // already used when it was picked (rounded down, so at least the picked
-  // length is left), and the picking also drops any +5 min. Adjusted while
-  // rendering, React's pattern for state that follows a prop.
-  const [offsetMinutes, setOffsetMinutes] = useState(0);
+  // A length picked mid-session means that many minutes from now: the clock
+  // starts again at the pick, the budget is exactly the length picked (any
+  // +5 min dropped; +5 min then extends from there). Counting from the
+  // first turn instead would make "3 minutes" picked at minute 12 read as
+  // 12 of 15 used, already closing time. Adjusted while rendering, React's
+  // pattern for state that follows a prop; the ref follows in the effect
+  // below.
   const [lastBase, setLastBase] = useState(baseMinutes);
   if (baseMinutes !== lastBase) {
     setLastBase(baseMinutes);
     if (startedAt != null) {
-      setOffsetMinutes(Math.floor((Date.now() - startedAt) / 60_000));
+      setStartedAt(Date.now());
       setExtraMinutes(0);
     }
   }
   // Capped where the server stops believing a budget (it would otherwise
   // drop the clock altogether).
-  const budget = baseMinutes == null ? null : Math.min(MAX_MINUTES, offsetMinutes + baseMinutes + extraMinutes);
+  const budget = baseMinutes == null ? null : Math.min(MAX_MINUTES, baseMinutes + extraMinutes);
   const startedAtRef = useRef<number | null>(null);
   // Turns chain through callbacks made in earlier renders (hands-free:
   // reply → listen → auto-stop → next turn; the "Play the reply" notice), so
@@ -265,6 +266,8 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
   useEffect(() => {
     budgetRef.current = budget;
     packRef.current = pack;
+    // A mid-session pick moves the clock's origin in state; the turn reads the ref.
+    startedAtRef.current = startedAt;
   });
 
   // Mutable session plumbing the async flows read without stale closures.
@@ -1270,7 +1273,6 @@ function VoiceSession({ mode, pack, langs, active, onClose }: { mode: Mode; pack
     startedAtRef.current = null;
     setStartedAt(null);
     setExtraMinutes(0);
-    setOffsetMinutes(0);
     setComposer("");
     setHeldRequest(null);
     setError(null);

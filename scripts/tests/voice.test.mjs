@@ -1239,6 +1239,19 @@ test("clockLine: kids get the story and the goodbye, as in their Time budget sec
   assert.match(clockLine({ minutes: 5, elapsedMs: min(5), plan: kidsPlan, stage: "beat:1" }), /give the closing part \(ending:bye\), one or two points/);
 });
 
+test("clockLine: a length picked mid-session, already in the scene, starts on pace (the clock restarts at the pick)", () => {
+  // The browser restarts the clock at a mid-session pick and sends the
+  // picked length as the budget: 3 minutes picked in the scene is 0 of 3
+  // used, not closing time. The split puts earlier parts first; being past
+  // them is ahead of the plan, which the line never calls behind.
+  assert.equal(
+    clockLine({ minutes: 3, elapsedMs: 0, plan: clockPlan, stage: "beat:1" }),
+    "CLOCK (from the app, not the learner): 0 of 3 minutes used, 3 left; current part: beat:1 (Arriving). On pace.",
+  );
+  assert.match(clockLine({ minutes: 3, elapsedMs: min(1.5), plan: clockPlan, stage: "beat:2" }), /: 1 of 3 minutes used, 2 left; [^\n]*On pace\.$/);
+  assert.match(clockLine({ minutes: 3, elapsedMs: min(2.5), plan: clockPlan, stage: "beat:2" }), /Start closing the scene now/);
+});
+
 test("clockLine: a fractional budget is read rounded, like the Time budget heading", () => {
   assert.match(clockLine({ minutes: 7.5, elapsedMs: min(1), plan: clockPlan, stage: "intro" }), /: 1 of 8 minutes used, 7 left;/);
 });

@@ -146,13 +146,18 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   five minutes to this session only: the turn's pack carries the extended
   minutes, so the Time budget and the clock agree, but the saved pack and
   the picker keep their length. Before the session the picker sets the
-  total; **picked mid-session**, a length means that many more minutes from
-  now (the whole minutes already used are added to it, and any +5 min is
-  dropped), so picking 10 at minute 12 leaves 10 minutes, not "2 min over".
+  total; **picked mid-session**, a length means that many minutes from now:
+  the pacing clock starts again at the pick, the budget is exactly the length
+  picked (any +5 min is dropped; +5 min then extends from there), and
+  `elapsedMs` counts from the pick. Picking 3 at minute 12 reads "3 min left
+  of 3" and the clock line says 0 of 3 used, not 12 of 15. The turn's Time
+  budget section still splits the whole session's parts; a session already
+  past the early ones is ahead of that split, which the clock line calls on
+  pace, never behind.
   Each turn reads the budget and the pack at request time (refs, not the
   closure of the render that started it), so a +5 min or a new length counts
-  from the next turn even in a hands-free chain. Restart resets the clock,
-  the extra minutes and the offset. No limit is the old behaviour exactly: no
+  from the next turn even in a hands-free chain. Restart resets the clock
+  and the extra minutes. No limit is the old behaviour exactly: no
   Time budget, no clock line.
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
   their exact upper-case label (`OPTIONS:` is an older name for
