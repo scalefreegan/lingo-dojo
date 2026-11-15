@@ -8,6 +8,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
@@ -72,7 +73,7 @@ test("first run: /me says so; the first account is an admin seeded from the prof
   );
   try {
     const me = await anon().call("GET", "/api/auth/me");
-    assert.deepEqual(me.body, { firstRun: true, user: null, learners: [], learner: null });
+    assert.deepEqual(me.body, { firstRun: true, firstRunHere: true, user: null, learners: [], learner: null });
 
     const c = anon();
     const r = await c.call("POST", "/api/auth/first-run", { username: " Robin ", password: PASSWORD });
@@ -122,6 +123,48 @@ test("first run: /me says so; the first account is an admin seeded from the prof
   } finally {
     for (const f of ["voice.json", "settings.json", "chat.jsonl"]) fs.rmSync(path.join(dataDir, f), { force: true });
   }
+});
+
+/** A raw request, so the test can set Host (fetch won't). */
+function raw(method, urlPath, headers, body) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(base);
+    const req = http.request({ host: u.hostname, port: u.port, method, path: urlPath, headers: { "Content-Type": "application/json", ...headers } }, (res) => {
+      let text = "";
+      res.on("data", (d) => (text += d));
+      res.on("end", () => resolve({ status: res.statusCode, body: text ? JSON.parse(text) : null }));
+    });
+    req.on("error", reject);
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+}
+
+// The test client reaches the server from 127.0.0.1 with Host 127.0.0.1:port,
+// so the first-run tests above are direct local requests. `tailscale serve`
+// also connects from loopback; what gives it away is the tailnet Host and the
+// X-Forwarded-* headers, so a fresh install served on a tailnet can't have its
+// admin account claimed from another device.
+test("first run: a request that came through the proxy is refused with a 403 and /me says to do it on the Mac", async () => {
+  const { db } = await freshRoutes();
+  const body = { username: "mallory", password: PASSWORD };
+  const viaProxy = { Host: "dojo.example-tailnet.ts.net", Origin: "https://dojo.example-tailnet.ts.net", "X-Forwarded-Proto": "https", "X-Forwarded-For": "100.64.0.7", "X-Forwarded-Host": "dojo.example-tailnet.ts.net" };
+  const refused = await raw("POST", "/api/auth/first-run", viaProxy, body);
+  assert.equal(refused.status, 403);
+  assert.match(refused.body.error, /on the Mac/);
+  // Each tell alone is enough, with a localhost Host.
+  for (const h of ["X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"]) {
+    assert.equal((await raw("POST", "/api/auth/first-run", { Host: "localhost:38400", [h]: "x" }, body)).status, 403, h);
+  }
+  assert.equal((await raw("POST", "/api/auth/first-run", { Host: "dojo.example-tailnet.ts.net" }, body)).status, 403);
+  assert.equal((await db.select().from(users)).length, 0);
+
+  const me = await raw("GET", "/api/auth/me", viaProxy);
+  assert.deepEqual(me.body, { firstRun: true, firstRunHere: false, user: null, learners: [], learner: null });
+
+  // The same body from a direct local request still works.
+  const ok = await raw("POST", "/api/auth/first-run", { Host: "localhost:38400" }, body);
+  assert.equal(ok.status, 200);
+  assert.equal((await db.select().from(users)).length, 1);
 });
 
 // On PGlite this can't fail: PGlite runs one transaction at a time, so the
