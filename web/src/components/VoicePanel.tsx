@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
-  ApiError, addLibraryVoice, createConversation, endConversation, getCast, getPageLearner, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
+  ApiError, addLibraryVoice, createConversation, endConversation, getCast, getPageLearner, onBeforeSwitch, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
   transcribe, voiceTurn, type PageLearner, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
@@ -476,6 +476,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
   // It ends the saved conversation too (Close; a learner or mode switch,
   // which remounts the tab), as does the page going away (a reload, the tab
   // shut, another site): pagehide, with a keepalive request that outlives it.
+  // A learner or language switch ends it before the switch (onBeforeSwitch),
+  // while this page's headers still name the conversation's learner and
+  // language: after it the server would refuse the End as stale.
   useEffect(() => {
     const cache = urls.current;
     const gen = genRef;
@@ -483,10 +486,12 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     const epoch = sessionEpoch;
     // The page is going: End now, with nothing to wait for (a turn on its
     // way dies with the page).
-    const onPageHide = () => closeConversation(true);
+    const onPageHide = () => void closeConversation(true);
     window.addEventListener("pagehide", onPageHide);
+    const offSwitch = onBeforeSwitch(() => closeConversation(true));
     return () => {
       window.removeEventListener("pagehide", onPageHide);
+      offSwitch();
       epoch.current += 1;
       // Unmounting aborts the turn on its way (below): nothing to wait for.
       closeConversation(true);
@@ -558,10 +563,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
 
   /** End `c`, once: a conversation can be closed by more than one path
    *  (leaving Go, then the creation that was on its way answering). */
-  function endOnce(c: SavedConversation) {
-    if (endsSent.current.has(c.id)) return;
+  function endOnce(c: SavedConversation): Promise<void> {
+    if (endsSent.current.has(c.id)) return Promise.resolve();
     endsSent.current.add(c.id);
-    void endConversation(c.id, c.page);
+    return endConversation(c.id, c.page);
   }
 
   /** End `c` once its turn on the way, if any, has its answer, so that turn
@@ -577,22 +582,25 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
    *  a turn makes after this — its creation still on its way, or not even
    *  asked for yet because the turn was loading its cast — is never adopted
    *  and is ended after that turn (conversationLife.ts). The open one is
-   *  ended after its turn on the way; `now` (pagehide, unmount) ends it at
-   *  once, the turn going with the page. The next turn starts a new one. */
-  function closeConversation(now = false) {
+   *  ended after its turn on the way; `now` (pagehide, unmount, a learner
+   *  or language switch) ends it at once, the turn going with the page.
+   *  Resolves when that End has been answered (the switch waits for it).
+   *  The next turn starts a new one. */
+  function closeConversation(now = false): Promise<void> {
     closes.current += 1;
     const c = convRef.current;
     const pending = creating.current;
     convRef.current = null;
     creating.current = null;
     if (c) {
-      if (now) endOnce(c);
-      else endAfterTurn(c);
+      if (now) return endOnce(c);
+      endAfterTurn(c);
     } else if (pending && now) {
       // The page is going: whatever lands is ended (its own fate check
       // would wait for a turn that won't come).
-      void pending.then((made) => made && endOnce(made));
+      return pending.then((made) => (made ? endOnce(made) : undefined));
     }
+    return Promise.resolve();
   }
 
   /** The conversation this turn saves into, made now when there is none.

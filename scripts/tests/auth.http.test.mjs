@@ -651,3 +651,77 @@ test("cross-tenant: a second user never sees or changes the first user's learner
   await b.c.call("POST", "/api/auth/logout");
   assert.equal((await a.c.call("GET", "/api/learners")).status, 200);
 });
+
+test("a language profile's target language is its identity: PUT /api/profile and PATCH can't change it, and a learner can't add a language it already has", async () => {
+  const { db } = await freshRoutes();
+  const { c } = await as(db, "robin", { learners: [ADULT] });
+  await c.pick("Sam");
+  const sam = (await c.call("GET", "/api/auth/me")).body.learner;
+  const spanish = sam.languages[0];
+  const url = `/api/learners/${sam.id}/languages`;
+  const rows = async () => ({ learner: (await db.select().from(learners).where(eq(learners.id, sam.id)))[0], languages: await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, sam.id)) });
+  const before = await rows();
+
+  // "Save as my defaults" naming another language: refused, nothing written (not even the name in the same body).
+  const moved = await c.call("PUT", "/api/profile", { learner_name: "Samuel", target_language: "German", level: "B1" });
+  assert.equal(moved.status, 400, moved.text);
+  assert.match(moved.body.error, /this profile is Spanish/);
+  assert.deepEqual(await rows(), before, "the Spanish profile is not renamed, and the learner's half rolled back");
+  // Naming its own language (any case) is fine: the stored spelling stays.
+  const same = await c.call("PUT", "/api/profile", { target_language: "spanish", level: "B1" });
+  assert.equal(same.status, 200, same.text);
+  assert.deepEqual([same.body.profile.target_language, same.body.profile.level], ["Spanish", "B1"]);
+
+  // The language route: variant, level, goals and notes change; the target language doesn't.
+  const patched = await c.call("PATCH", `${url}/${spanish.id}`, { target_language: "French" });
+  assert.equal(patched.status, 400);
+  assert.match(patched.body.error, /this profile is Spanish/);
+  const ok = await c.call("PATCH", `${url}/${spanish.id}`, { target_language: "Spanish", target_variant: "Castilian Spanish", goals: "Read the news." });
+  assert.equal(ok.status, 200, ok.text);
+  assert.deepEqual([ok.body.language.target_language, ok.body.language.target_variant, ok.body.language.goals], ["Spanish", "Castilian Spanish", "Read the news."]);
+
+  // One live profile per target language, whatever the case or variant.
+  for (const body of [{ target_language: "Spanish" }, { target_language: " spanish ", target_variant: "Mexican Spanish" }]) {
+    const again = await c.call("POST", url, body);
+    assert.equal(again.status, 409, JSON.stringify(body));
+    assert.match(again.body.error, /Sam already practises Spanish/);
+  }
+  assert.equal((await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, sam.id))).length, 1);
+  // An archived one doesn't count: German, archived, can be added again (a fresh profile).
+  const german = (await c.call("POST", url, { target_language: "German" })).body.language;
+  assert.equal((await c.call("POST", `${url}/${german.id}/archive`)).status, 200);
+  assert.equal((await c.call("POST", url, { target_language: "German" })).status, 200);
+
+  // A profile with no target language yet (a library with no languages.yaml) may be given one, but not one the learner has.
+  const blank = (await c.call("POST", url, {})).body.language;
+  assert.equal(blank.target_language, "");
+  assert.equal((await c.call("PATCH", `${url}/${blank.id}`, { target_language: "German" })).status, 409);
+  const named = await c.call("PATCH", `${url}/${blank.id}`, { target_language: "Korean" });
+  assert.equal(named.status, 200);
+  assert.equal(named.body.language.target_language, "Korean");
+  assert.equal((await c.call("PATCH", `${url}/${blank.id}`, { target_language: "Greek" })).status, 400, "and from then on it is fixed");
+});
+
+test("PUT /api/profile is all or nothing: a language archived between the session read and the write rolls the learner's half back too (409)", async () => {
+  const testDb = await freshRoutes();
+  const { db } = testDb;
+  const { c } = await as(db, "robin", { learners: [ADULT] });
+  await c.pick("Sam");
+  // Archive the active language from inside the transaction, right after the
+  // learner row is written: the window a concurrent archive would hit.
+  await testDb.query(`create function test_archive_language() returns trigger language plpgsql as $$
+    begin update language_profiles set archived_at = now() where learner_id = new.id; return new; end $$`);
+  await testDb.query("create trigger test_archive_language after update on learners for each row execute function test_archive_language()");
+  try {
+    const r = await c.call("PUT", "/api/profile", { learner_name: "Samira", level: "C1" });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.body.code, "stale_learner");
+    const [row] = await db.select().from(learners).where(eq(learners.name, "Sam"));
+    assert.ok(row, "the name change rolled back");
+    const [language] = await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, row.id));
+    assert.deepEqual([language.level, language.archivedAt], ["A2", null], "and so did the trigger's archive: nothing of the write is left");
+  } finally {
+    await testDb.query("drop trigger test_archive_language on learners");
+    await testDb.query("drop function test_archive_language()");
+  }
+});

@@ -5,20 +5,20 @@
 // Which account: the one named (refused when it is disabled: its packs
 // would land where nobody can log in to see them), else the first admin
 // (oldest, not disabled). Which learner: that account's first live learner of each mode
-// (listLearners' order). Which language: that learner's most recently used
-// live language profile, else its oldest (accounts.ts defaultLanguageProfile).
+// (listLearners' order). Which language: that learner's oldest live
+// language profile (accounts.ts oldestLanguageProfile), which doesn't move
+// when the learner practises another language.
 // Nothing is created: with no such account or learner, that part is
 // skipped and the report says why. The import itself is packs.ts
 // importPacks, which skips any pack that language already has at that id
-// (deleted ones included) or imported before (wherever it lives now), so a
-// re-run adds only what is new. Another language of the same learner is
-// another library: a pack imported into German is imported again if the
-// import later lands on Chinese.
+// (deleted ones included) or that was imported before into any of the
+// learner's languages (wherever it lives now), so a re-run adds only what
+// is new.
 //
 // Erasable TypeScript only: the CLI and the tests import it as is.
 
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { defaultLanguageProfile, findUserByUsername, listLearners, type User } from "./accounts.ts";
+import { findUserByUsername, listLearners, oldestLanguageProfile, type User } from "./accounts.ts";
 import type { Db } from "./owned.ts";
 import { importPacks, type ImportResult, type PackFiles } from "./packs.ts";
 import { users } from "./schema.ts";
@@ -72,7 +72,7 @@ export async function importFilePacks(db: Db, opts: { username?: string; files: 
       modes.push({ mode, learner: null, skipped: `${user.username} has no ${mode} learner (add one in the app, then re-run)`, unreadable });
       continue;
     }
-    const language = await defaultLanguageProfile(db, learner.id);
+    const language = await oldestLanguageProfile(db, learner.id);
     if (!language) {
       // The keep-one rule never leaves a live learner without one; said
       // rather than thrown, like a missing learner.

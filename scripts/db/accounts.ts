@@ -302,8 +302,8 @@ export async function getLanguageProfile(db: Db, learnerId: string, id: unknown)
   return forLearner(db, learnerId).get(languageProfiles, and(eq(languageProfiles.id, id), isNull(languageProfiles.archivedAt))!);
 }
 
-/** Where picking the learner lands (and where `db:import` puts packs): its
- *  most recently used live language, else its oldest. Undefined only for a
+/** Where picking the learner lands: its most recently used live language,
+ *  else its oldest. Undefined only for a
  *  learner with no live language, which the keep-one rule never leaves. */
 export async function defaultLanguageProfile(db: Db, learnerId: string): Promise<LanguageProfile | undefined> {
   const [row] = await forLearner(db, learnerId).list(languageProfiles, isNull(languageProfiles.archivedAt), {
@@ -313,16 +313,105 @@ export async function defaultLanguageProfile(db: Db, learnerId: string): Promise
   return row;
 }
 
-export async function createLanguageProfile(db: Db, learnerId: string, values: NewLanguageProfile): Promise<LanguageProfile> {
-  const [row] = await forLearner(db, learnerId).insert(languageProfiles, values);
+/** The learner's oldest live language: where seed packs go (`db:import`,
+ *  the first run). For a learner from before 0002 it is the profile the
+ *  migration made from its columns, and it doesn't move when the learner
+ *  practises another language, so a re-run of the import finds the packs
+ *  where it put them. */
+export async function oldestLanguageProfile(db: Db, learnerId: string): Promise<LanguageProfile | undefined> {
+  const [row] = await listLanguageProfiles(db, learnerId);
   return row;
 }
 
+/** Every language profile of every learner of a user, archived ones too, as
+ *  scope refs (the idle end of conversations walks them all). */
+export async function languageProfileRefsOfUser(db: Db, userId: string): Promise<{ id: string; learnerId: string }[]> {
+  return db
+    .select({ id: languageProfiles.id, learnerId: languageProfiles.learnerId })
+    .from(languageProfiles)
+    .innerJoin(learners, eq(learners.id, languageProfiles.learnerId))
+    .where(forUser(db, userId).where(learners));
+}
+
+/** Two target languages are the same language when they match ignoring
+ *  case and surrounding space ("german" is "German"). */
+export const sameLanguage = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Refused by createLanguageProfile: the learner already practises that
+ *  language (one live profile per target language; its variant is a detail
+ *  inside it). `existing` is that profile. */
+export class LanguageTakenError extends Error {
+  readonly existing: LanguageProfile;
+  constructor(existing: LanguageProfile) {
+    super(`already practising ${existing.targetLanguage}`);
+    this.name = "LanguageTakenError";
+    this.existing = existing;
+  }
+}
+
+/**
+ * Add a language to a learner. One live profile per target language: a
+ * second one for a language the learner already practises is refused with
+ * LanguageTakenError (a variant, say Mexican or Castilian Spanish, is a
+ * setting of the one profile, not another profile). The learner's row is
+ * locked first, so two adds of one language at once can't both pass the
+ * check. A blank target language is allowed (a library with no
+ * languages.yaml) and never clashes.
+ */
+export async function createLanguageProfile(db: Db, learnerId: string, values: NewLanguageProfile): Promise<LanguageProfile> {
+  return db.transaction(async (tx) => {
+    await tx.select({ id: learners.id }).from(learners).where(eq(learners.id, learnerId)).for("update");
+    const target = values.targetLanguage ?? "";
+    if (target.trim()) {
+      const clash = (await listLanguageProfiles(tx, learnerId)).find((p) => sameLanguage(p.targetLanguage, target));
+      if (clash) throw new LanguageTakenError(clash);
+    }
+    const [row] = await forLearner(tx, learnerId).insert(languageProfiles, values);
+    return row;
+  });
+}
+
+/** Refused by updateLanguageProfile: a patch that would change a profile's
+ *  target language. That is the profile's identity (its packs and History
+ *  are in that language), so another language is another profile. */
+export class LanguageIdentityError extends Error {
+  readonly current: string;
+  constructor(current: string) {
+    super(`this profile is ${current}; another language is another profile`);
+    this.name = "LanguageIdentityError";
+    this.current = current;
+  }
+}
+
+/**
+ * Change one of the learner's live languages: variant, level, goals, notes.
+ * The target language can't change (LanguageIdentityError): a patch naming
+ * the same language is a no-op for that key (the stored spelling stays).
+ * The one exception is a profile with no target language yet (made with
+ * none, as a library with no languages.yaml allows): it may be given one,
+ * unless the learner already practises it (LanguageTakenError). The row is
+ * locked for the check, so a concurrent change waits.
+ */
 export async function updateLanguageProfile(db: Db, learnerId: string, id: string, patch: LanguageProfilePatch): Promise<LanguageProfile | undefined> {
   if (!isUuid(id)) return undefined;
-  if (!Object.keys(patch).length) return getLanguageProfile(db, learnerId, id);
-  const [row] = await forLearner(db, learnerId).update(languageProfiles, patch, and(eq(languageProfiles.id, id), isNull(languageProfiles.archivedAt))!);
-  return row;
+  return db.transaction(async (tx) => {
+    const mine = forLearner(tx, learnerId);
+    const live = and(eq(languageProfiles.id, id), isNull(languageProfiles.archivedAt))!;
+    const [current] = await tx.select().from(languageProfiles).where(mine.where(languageProfiles, live)).for("update");
+    if (!current) return undefined;
+    const next = { ...patch };
+    if (next.targetLanguage !== undefined) {
+      if (sameLanguage(next.targetLanguage, current.targetLanguage)) delete next.targetLanguage;
+      else if (current.targetLanguage.trim()) throw new LanguageIdentityError(current.targetLanguage);
+      else {
+        const clash = (await listLanguageProfiles(tx, learnerId)).find((p) => p.id !== id && sameLanguage(p.targetLanguage, next.targetLanguage!));
+        if (clash) throw new LanguageTakenError(clash);
+      }
+    }
+    if (!Object.keys(next).length) return current;
+    const [row] = await mine.update(languageProfiles, next, live);
+    return row;
+  });
 }
 
 /**

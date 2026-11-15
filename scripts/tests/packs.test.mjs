@@ -238,27 +238,35 @@ test("the first run seeds each learner with its mode's packs, in the same transa
   assert.deepEqual(await db2.select().from(packs), []);
 });
 
-test("import: a learner with two languages gets the packs in its last-used one; a re-run adds nothing there, and the other language stays empty until it is the last used", async (t) => {
+test("import: a learner with two languages gets the packs in its oldest one, whichever it used last; a re-run after it took up another language adds nothing anywhere", async (t) => {
   const db = await setup(t);
   const robin = await createUser(db, { username: "robin", passwordHash: "x", isAdmin: true });
   const sam = await createLearner(db, robin.id, ADULT);
   const spanish = ref(sam);
   const german = await createLanguageProfile(db, sam.id, { targetLanguage: "German", level: "B1" });
+  // German is the one used last: the import still goes to Spanish, the oldest.
   await db.update(languageProfiles).set({ lastUsedAt: new Date() }).where(eq(languageProfiles.id, german.id));
 
   const first = await importFilePacks(db, { files: library() });
-  assert.deepEqual(first.modes[0].language, { id: german.id, targetLanguage: "German", level: "B1" });
-  assert.match(formatImportReport(first, TREES)[1], /→ Sam \(German · B1\): 2 imported/);
-  assert.deepEqual((await listPacks(db, german)).packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
-  assert.deepEqual(await listPacks(db, spanish), { packs: [], folders: [] }, "the other language gets nothing");
-  const again = await importFilePacks(db, { files: library() });
-  assert.deepEqual(again.modes[0].result.imported, [], "idempotent per language");
+  assert.deepEqual(first.modes[0].language, { id: spanish.id, targetLanguage: "Spanish", level: "A2" });
+  assert.match(formatImportReport(first, TREES)[1], /→ Sam \(Spanish · A2\): 2 imported/);
+  assert.deepEqual((await listPacks(db, spanish)).packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.deepEqual(await listPacks(db, german), { packs: [], folders: [] }, "the other language gets nothing");
+  const rowsAfterFirst = (await db.select().from(packs)).length;
 
-  // Practising Spanish later makes it the default: a re-run fills it once.
-  await db.update(languageProfiles).set({ lastUsedAt: new Date(Date.now() + 1000) }).where(eq(languageProfiles.id, spanish.id));
+  // Another language added and picked since: a re-run adds nothing, there or anywhere.
+  const chinese = await createLanguageProfile(db, sam.id, { targetLanguage: "Mandarin Chinese", level: "A1" });
+  await db.update(languageProfiles).set({ lastUsedAt: new Date(Date.now() + 1000) }).where(eq(languageProfiles.id, chinese.id));
+  const again = await importFilePacks(db, { files: library() });
+  assert.deepEqual(again.modes[0].result.imported, []);
+  assert.equal((await db.select().from(packs)).length, rowsAfterFirst, "no new pack row");
+
+  // Even when the packs went to a language that is not the oldest any more
+  // (Spanish archived): imported once per learner, never again.
+  await db.update(languageProfiles).set({ archivedAt: new Date() }).where(eq(languageProfiles.id, spanish.id));
   const third = await importFilePacks(db, { files: library() });
-  assert.equal(third.modes[0].language.id, spanish.id);
-  assert.deepEqual(third.modes[0].result.imported, ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
-  assert.equal((await importFilePacks(db, { files: library() })).modes[0].result.imported.length, 0);
-  assert.equal((await listPacks(db, german)).packs.length, 2, "German's are its own");
+  assert.equal(third.modes[0].language.id, german.id, "the oldest live one now");
+  assert.deepEqual(third.modes[0].result.imported, []);
+  assert.deepEqual(third.modes[0].result.present, ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.equal((await db.select().from(packs)).length, rowsAfterFirst);
 });

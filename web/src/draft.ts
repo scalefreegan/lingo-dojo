@@ -372,7 +372,7 @@ export function languageKey(base: string, languageId: string): string {
 }
 
 /** Where these lived when they were per learner (before language
- *  profiles): adopted by the learner's first language opened (adoptLearnerKeys). */
+ *  profiles): adopted by the learner's oldest language (adoptLearnerKeys). */
 function learnerKey(base: string, learnerId: string): string {
   return `${base}.learner.${learnerId}`;
 }
@@ -385,10 +385,11 @@ const DRAFT_KEY = "lingo-dojo.draft.v1";
 const MODE_KEYS = ["lingo-dojo.draft.v1", "lingo-dojo.tab.v1", "lingo-dojo.scene-filter.v1", "lingo-dojo.scene-folders.v1"];
 
 /** Move a learner's keys from before language profiles to `languageId`,
- *  the first of its languages this browser opens: a learner had one
- *  language then, which the migration made its first profile, so the draft
- *  was that language's. Moved, not copied, so a second language starts from
- *  the defaults. A language that already has its own key keeps it. */
+ *  its oldest language (the caller passes it): a learner had one language
+ *  then, which migration 0002 made its first profile, so the draft was that
+ *  language's, whichever language this browser happens to open first.
+ *  Moved, not copied, so a second language starts from the defaults. A
+ *  language that already has its own key keeps it. */
 export function adoptLearnerKeys(learnerId: string, languageId: string): void {
   try {
     for (const base of MODE_KEYS) {

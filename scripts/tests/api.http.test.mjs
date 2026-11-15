@@ -107,13 +107,13 @@ test("PUT /api/profile merges the picker keys into the active learner, keeps the
   const fileBefore = fs.readFileSync(file, "utf8");
   const rowBefore = await samLanguage();
   try {
-    const r = await call("PUT", "/api/profile", { target_language: "Japanese", target_variant: "Kansai dialect", level: "B1" });
+    const r = await call("PUT", "/api/profile", { target_language: "Spanish", target_variant: "Castilian Spanish", level: "B1" });
     assert.equal(r.status, 200);
-    assert.equal(r.body.profile.target_language, "Japanese");
+    assert.equal(r.body.profile.target_variant, "Castilian Spanish");
     assert.equal(r.body.profile.learner_name, "Sam", "keys the body doesn't name are kept");
     assert.equal(r.body.profile.goals, "Order food and chat with vendors.");
     const row = await samLanguage();
-    assert.deepEqual([row.targetLanguage, row.targetVariant, row.level], ["Japanese", "Kansai dialect", "B1"]);
+    assert.deepEqual([row.targetLanguage, row.targetVariant, row.level], ["Spanish", "Castilian Spanish", "B1"]);
     assert.equal(fs.readFileSync(file, "utf8"), fileBefore, "the file is a seed now, never written by the app");
     assert.equal((await call("GET", "/api/content")).body.profile.level, "B1", "the next content read sees it");
 

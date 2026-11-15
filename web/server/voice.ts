@@ -322,7 +322,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // A saved conversation must be this learner's and still open (else a 404
     // or 409 whose code sends the Go tab to start a new one), checked before
     // anything runs. Its part of the history starts at conversationStart.
-    const conversation = conversationId ? await openConversation(ctx.language, conversationId) : null;
+    const conversation = conversationId ? await openConversation(ctx.user.id, ctx.language, conversationId) : null;
     // The active learner and language are the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
     const { markdown, warnings } = assemble(content, body.pack, mode);

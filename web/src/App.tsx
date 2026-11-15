@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
+  updateLanguage,
 } from "./api";
 import type { AssembleResult, AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
@@ -45,6 +46,8 @@ export default function App({
   learners,
   onSwitchLearner,
   onSwitchLanguage,
+  switchError,
+  onDismissSwitchError,
   onManageLearners,
   onLogout,
   onLearnerSaved,
@@ -57,6 +60,9 @@ export default function App({
   learners: LearnerInfo[];
   onSwitchLearner: (id: string) => void;
   onSwitchLanguage: (id: string) => void;
+  /** Why the last learner or language switch failed, shown under the bar. */
+  switchError: string | null;
+  onDismissSwitchError: () => void;
   onManageLearners: () => void;
   onLogout: () => void;
   /** The learner or its languages changed (Save as my defaults, a language
@@ -347,6 +353,20 @@ export default function App({
     return null;
   }
 
+  /** The active language's goals and notes, straight to its profile; then
+   *  the library reloads (the Learner block reads them) and the gate
+   *  re-reads the language. Resolves to an error sentence, or null. */
+  async function saveLanguageNotes(values: { goals: string; notes: string }): Promise<string | null> {
+    try {
+      await updateLanguage(learner.id, language.id, values);
+    } catch (e) {
+      return e instanceof ApiError ? e.message : String(e);
+    }
+    await reloadContent();
+    await onLearnerSaved();
+    return null;
+  }
+
   /** Load jumps to Scene: that's where the loaded pack's scenario shows up. */
   function load(p: Pack) {
     setDraft(packToDraft(p));
@@ -406,7 +426,16 @@ export default function App({
         draft={draft}
         onChange={setDraft}
         onSaveDefaults={saveDefaults}
+        onSaveLanguageNotes={saveLanguageNotes}
       />
+      {switchError && (
+        <p className="flex items-start justify-between gap-3 bg-err-soft px-4 py-2 text-sm text-err" role="alert" data-testid="switch-error">
+          <span>Couldn't switch: {switchError}</span>
+          <button type="button" className="shrink-0 underline" onClick={onDismissSwitchError}>
+            Dismiss
+          </button>
+        </p>
+      )}
       {ready && draft && pack && (
         <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={shownResult} pending={assembling} onTab={setTab}
           onPractice={() => {

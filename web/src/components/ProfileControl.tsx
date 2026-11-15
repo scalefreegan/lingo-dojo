@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ApiError, createLanguage } from "../api";
 import type { ContentReply, LanguageInfo, LearnerInfo, Mode, ProfileRequest } from "../types";
 import {
   OVERRIDE_FIELDS, choosePickerValue, emptyOverrides, formatSessionLine, profileDefault, profileValue, sessionValues, type Draft, type OverrideKey,
@@ -22,8 +23,13 @@ const MODE_LABELS: Record<Mode, string> = { adult: "Adult", kids: "Kids" };
  * pack carries only what differs from the active learner's profile.
  * Switching learner switches mode too: a learner is adult or kids. "Save as
  * my defaults" writes the name and native language to the learner and the
- * target, variant and level to the active language (the switcher beside
- * this pill picks which). */
+ * variant and level to the active language (the switcher beside this pill
+ * picks which). The target language is the language profile's identity
+ * (its packs and History are in it), so picking another one here is this
+ * pack's override only; to make it the default the popover offers to
+ * switch to the learner's profile in that language, or to add one, and
+ * never rewrites the current profile. Goals and notes of the active
+ * language are edited at the bottom. */
 export default function ProfileControl({
   content,
   draft,
@@ -32,9 +38,11 @@ export default function ProfileControl({
   language,
   learners,
   onSwitchLearner,
+  onSwitchLanguage,
   onManageLearners,
   onChange,
   onSaveDefaults,
+  onSaveLanguageNotes,
 }: {
   content: ContentReply;
   draft: Draft;
@@ -44,11 +52,14 @@ export default function ProfileControl({
   language: LanguageInfo;
   learners: LearnerInfo[];
   onSwitchLearner: (id: string) => void;
+  onSwitchLanguage: (id: string) => void;
   onManageLearners: () => void;
   onChange: (d: Draft) => void;
   /** Writes the shown values to the active learner and language; resolves to an error
    *  sentence, or null when the profile (and the draft) now reflect them. */
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
+  /** Writes the active language's goals and notes; resolves to an error sentence, or null. */
+  onSaveLanguageNotes: (values: { goals: string; notes: string }) => Promise<string | null>;
 }) {
   const { profile, languages, levels } = content;
   const session = sessionValues(draft, profile);
@@ -64,6 +75,14 @@ export default function ProfileControl({
   const pillRef = useRef<HTMLButtonElement>(null);
   const dirty = OVERRIDE_FIELDS.some(({ key }) => session[key] !== profileValue(profile, key));
   const hasOverrides = OVERRIDE_FIELDS.some(({ key }) => draft.overrides[key] !== "");
+  // This pack is in another language than the profile's: its defaults can't
+  // be saved here (that would relabel this profile, packs and History and
+  // all); the learner's profile in that language is where they belong.
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+  const profileTarget = language.target_language;
+  const otherTarget = !!profileTarget.trim() && !!session.target_language.trim() && !same(session.target_language, profileTarget);
+  const otherProfile = otherTarget ? learner.languages.find((l) => same(l.target_language, session.target_language)) : undefined;
+  const [adding, setAdding] = useState(false);
 
   const close = () => {
     setOpen(false);
@@ -86,9 +105,36 @@ export default function ProfileControl({
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
+  /** Leave this pack's language override behind in this profile's draft
+   *  (it was only ever a try-out here), then switch to `id`. */
+  function switchTo(id: string) {
+    onChange({ ...draft, overrides: { ...draft.overrides, target_language: "", target_variant: "", level: "" } });
+    close();
+    onSwitchLanguage(id);
+  }
+
+  /** Add the pack's language as a new profile of the learner, at the shown
+   *  variant and level, and switch to it. */
+  async function addTarget() {
+    setAdding(true);
+    setSaveMessage(null);
+    try {
+      const { language: made } = await createLanguage(learner.id, {
+        target_language: session.target_language, target_variant: session.target_variant, level: session.level,
+      });
+      switchTo(made.id);
+    } catch (e) {
+      setSaveMessage({ tone: "err", text: e instanceof ApiError ? e.message : String(e) });
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function saveDefaults() {
     setSaving(true);
     setSaveMessage(null);
+    // The target language only ever names this profile's own (otherTarget
+    // disables the button), so the server's identity rule is never hit.
     const error = await onSaveDefaults(session);
     setSaving(false);
     setSaveMessage(error ? { tone: "err", text: error } : { tone: "ok", text: `Saved to ${session.learner_name || learner.name}'s ${session.target_language || "language"} profile` });
@@ -201,11 +247,35 @@ export default function ProfileControl({
                 ))
               )}
             </div>
-            <p className="text-sm text-fg-3 sm:text-xs">
-              Changes apply to this pack. Save to make them {learner.name}'s defaults{language.target_language ? ` for ${language.target_language}` : ""}.
-            </p>
+            {otherTarget ? (
+              <div className="flex flex-col gap-2 rounded-md bg-raised p-2.5 text-sm text-fg-2 sm:text-xs" data-testid="other-language">
+                <p>
+                  This pack practises {session.target_language}; {learner.name}'s current language is {profileTarget}. Each language keeps its own level, packs and History, so{" "}
+                  {otherProfile ? `switch to ${learner.name}'s ${otherProfile.target_language} to practise it by default.` : `add ${session.target_language} as a language to practise it by default.`}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {otherProfile ? (
+                    <Button onClick={() => switchTo(otherProfile.id)} data-testid="switch-to-language">
+                      Switch to {otherProfile.target_language}
+                    </Button>
+                  ) : (
+                    <Button onClick={() => void addTarget()} disabled={adding} data-testid="add-target-language">
+                      {adding ? "Adding…" : `Add ${session.target_language}`}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm text-fg-3 sm:text-xs">
+                Changes apply to this pack. Save to make them {learner.name}'s defaults{profileTarget ? ` for ${profileTarget}` : ""}.
+              </p>
+            )}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <Button onClick={() => void saveDefaults()} disabled={!dirty || saving} title={`Write these values to ${learner.name}'s profile and this language`}>
+              <Button
+                onClick={() => void saveDefaults()}
+                disabled={!dirty || saving || otherTarget}
+                title={otherTarget ? `This pack is in another language than ${profileTarget}` : `Write these values to ${learner.name}'s profile and this language`}
+              >
                 {saving ? "Saving…" : "Save as my defaults"}
               </Button>
               <button
@@ -225,10 +295,54 @@ export default function ProfileControl({
                 {saveMessage.text}
               </p>
             )}
+            <LanguageNotes key={language.id} language={language} onSave={onSaveLanguageNotes} />
           </div>
         </>
       )}
     </div>
+  );
+}
+
+/** The active language's goals and notes: prose the dojo master reads in
+ *  the Learner block, per language (German goals aren't Chinese ones).
+ *  Saved on their own, straight to the profile: unlike the pickers they
+ *  have no per-pack override. Collapsed until opened. */
+function LanguageNotes({ language, onSave }: { language: LanguageInfo; onSave: (values: { goals: string; notes: string }) => Promise<string | null> }) {
+  const [goals, setGoals] = useState(language.goals);
+  const [notes, setNotes] = useState(language.notes);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const dirty = goals !== language.goals || notes !== language.notes;
+  const what = language.target_language || "this language";
+
+  async function save() {
+    setSaving(true);
+    setMessage(null);
+    const error = await onSave({ goals, notes });
+    setSaving(false);
+    setMessage(error ? { tone: "err", text: error } : { tone: "ok", text: `Saved ${what}'s goals and notes` });
+  }
+
+  return (
+    <details className="border-t border-line pt-2" data-testid="language-notes">
+      <summary className="cursor-pointer text-sm text-fg-2 select-none sm:text-xs">Goals and notes for {what}</summary>
+      <div className="mt-2 flex flex-col gap-2.5">
+        <label className="flex flex-col gap-1 text-sm text-fg-2 sm:text-xs">
+          Goals
+          <textarea className={inputClass} rows={2} maxLength={2000} value={goals} placeholder="What you want to be able to do" onChange={(e) => setGoals(e.target.value)} data-testid="language-goals" />
+        </label>
+        <label className="flex flex-col gap-1 text-sm text-fg-2 sm:text-xs">
+          Notes for the dojo master
+          <textarea className={inputClass} rows={2} maxLength={2000} value={notes} placeholder="How you like to be corrected, what to avoid" onChange={(e) => setNotes(e.target.value)} data-testid="language-notes-text" />
+        </label>
+        <div className="flex items-center gap-3">
+          <Button onClick={() => void save()} disabled={!dirty || saving} data-testid="save-language-notes">
+            {saving ? "Saving…" : "Save goals and notes"}
+          </Button>
+          {message && <span className={`text-sm sm:text-xs ${message.tone === "ok" ? "text-accent" : "text-err"}`}>{message.text}</span>}
+        </div>
+      </div>
+    </details>
   );
 }
 

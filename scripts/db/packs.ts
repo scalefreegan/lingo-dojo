@@ -531,7 +531,16 @@ export async function importPacks(db: Db, profile: LanguageProfileRef, files: Pa
         continue;
       }
       const atId = await mine.get(packs, and(eq(packs.folder, at.folder), eq(packs.slug, at.slug))!);
-      const importedBefore = await mine.get(packRevisions, and(eq(packRevisions.action, "import"), sql`${packRevisions.snapshot}->>'id' = ${p.id}`)!);
+      // Imported before into any of this learner's languages, not only this
+      // one: the seed packs are the learner's once, so a re-run after the
+      // learner took up another language adds nothing there. The one query
+      // here not through a profile scope (forLearner refuses
+      // pack_revisions), so it names the learner itself.
+      const [importedBefore] = await tx
+        .select({ id: packRevisions.id })
+        .from(packRevisions)
+        .where(and(eq(packRevisions.learnerId, profile.learnerId), eq(packRevisions.action, "import"), sql`${packRevisions.snapshot}->>'id' = ${p.id}`))
+        .limit(1);
       if (atId || importedBefore) {
         result.present.push(p.id);
         continue;

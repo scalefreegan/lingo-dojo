@@ -147,8 +147,16 @@ export const authSessions = pgTable(
      *  picker. */
     learnerId: uuid("learner_id"),
     /** The active language, one of the active learner's (composite key), so
-     *  two devices of one learner can practise two languages. Deleting it
-     *  nulls only this column. */
+     *  two devices of one learner can practise two languages. Archiving a
+     *  language moves its sessions to another (archiveLanguageProfile);
+     *  deleting the language row nulls only this column. Hard-deleting the
+     *  learner is the exception: its key's SET NULL ("learner_id") runs
+     *  first, and with learner_id null the composite key (MATCH SIMPLE) no
+     *  longer matches, so this column is left naming a deleted profile.
+     *  Harmless (no row is read through it without a learner, and the next
+     *  pick sets both columns) and no app path hard-deletes a learner
+     *  (they are archived); fixing it would need a migration to SET NULL
+     *  both columns from the learner key. */
     languageProfileId: uuid("language_profile_id"),
     createdAt: createdAt(),
     expiresAt: tz("expires_at").notNull(),

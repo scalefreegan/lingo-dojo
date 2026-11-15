@@ -147,7 +147,7 @@ export default function LanguageSwitcher({
               </div>
             )}
             {message && <p className="text-sm text-err sm:text-xs">{message}</p>}
-            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs and History. Change this one's level or variant under the profile pill.</p>
+            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs and History. Change this one's level, variant, goals and notes under the profile pill.</p>
           </div>
         </>
       )}
@@ -155,8 +155,10 @@ export default function LanguageSwitcher({
   );
 }
 
-/** Target language, variant and level selects, for a new learner's first
- *  language and for a language added later. */
+/** Target language, variant and level, for a new learner's first language
+ *  and for a language added later: picked from languages.yaml, or typed when
+ *  the library has none (the loader's documented fallback: the profile
+ *  popover shows free-text fields then too), so the forms still submit. */
 export function LanguageFields({
   languages,
   levels,
@@ -170,6 +172,21 @@ export function LanguageFields({
 }) {
   const variants = languages.find((l) => l.name === value.target_language)?.variants ?? [];
   const label = "flex flex-col gap-1 text-sm text-fg-2 sm:text-xs";
+  if (languages.length === 0) {
+    return (
+      <>
+        <label className={label}>
+          Target language
+          <input className={inputClass} maxLength={80} value={value.target_language} placeholder="e.g. German" onChange={(e) => onChange({ ...value, target_language: e.target.value })} data-testid="language-target" />
+        </label>
+        <label className={label}>
+          Variant
+          <input className={inputClass} maxLength={80} value={value.target_variant} placeholder="optional" onChange={(e) => onChange({ ...value, target_variant: e.target.value })} />
+        </label>
+        <LevelField levels={levels} value={value} onChange={onChange} />
+      </>
+    );
+  }
   return (
     <>
       <label className={label}>
@@ -197,17 +214,28 @@ export function LanguageFields({
           </select>
         </label>
       )}
-      {levels.length > 0 && (
-        <label className={label}>
-          Level
-          <select className={inputClass} value={value.level} onChange={(e) => onChange({ ...value, level: e.target.value })} data-testid="language-level">
-            {levels.map((l) => (
-              <option key={l}>{l}</option>
-            ))}
-          </select>
-        </label>
-      )}
+      <LevelField levels={levels} value={value} onChange={onChange} />
     </>
+  );
+}
+
+type LanguageValue = { target_language: string; target_variant: string; level: string };
+
+/** The mode's levels as a select, or a text field for a mode with none. */
+function LevelField({ levels, value, onChange }: { levels: string[]; value: LanguageValue; onChange: (v: LanguageValue) => void }) {
+  return (
+    <label className="flex flex-col gap-1 text-sm text-fg-2 sm:text-xs">
+      Level
+      {levels.length > 0 ? (
+        <select className={inputClass} value={value.level} onChange={(e) => onChange({ ...value, level: e.target.value })} data-testid="language-level">
+          {levels.map((l) => (
+            <option key={l}>{l}</option>
+          ))}
+        </select>
+      ) : (
+        <input className={inputClass} maxLength={80} value={value.level} onChange={(e) => onChange({ ...value, level: e.target.value })} data-testid="language-level" />
+      )}
+    </label>
   );
 }
 
@@ -222,8 +250,9 @@ function AddLanguage({
   learnerId: string;
   languages: Language[];
   levels: string[];
-  /** The learner's languages already: offered last, not hidden (a second
-   *  profile in one language, say Cantonese and Mandarin as variants, is allowed). */
+  /** The learner's languages already: not offered (one profile per target
+   *  language; a variant is a setting inside it). Typed in, the server
+   *  refuses one with a 409 that says so. */
   taken: string[];
   onCancel: () => void;
   onAdded: (l: LanguageInfo) => void;
@@ -231,7 +260,7 @@ function AddLanguage({
   const [value, setValue] = useState({ target_language: "", target_variant: "", level: levels[0] ?? "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const offered = [...languages.filter((l) => !taken.includes(l.name)), ...languages.filter((l) => taken.includes(l.name))];
+  const offered = languages.filter((l) => !taken.some((t) => t.trim().toLowerCase() === l.name.toLowerCase()));
 
   async function submit(e: FormEvent) {
     e.preventDefault();

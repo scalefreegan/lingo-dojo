@@ -6,7 +6,7 @@ import {
 } from "../../scripts/auth.mjs";
 import { MODES, isMode, LEVELS_BY_MODE } from "../../scripts/content.mjs";
 import {
-  archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession, defaultLanguageProfile,
+  LanguageIdentityError, LanguageTakenError, archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession, defaultLanguageProfile,
   deleteSession, findSession, findUserByUsername, getLanguageProfile, getLearner, hasUsers, languagesByLearner, listLanguageProfiles,
   listLearners, setSessionLearner, slideSession, updateLanguageProfile, updateLearner, type LanguageProfile, type LanguageProfilePatch,
   type Learner, type LearnerPatch, type NewLearnerWithLanguage,
@@ -33,8 +33,8 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   PATCH  /api/learners/:id      user    {name, native_language} → {learner}
 //   POST   /api/learners/:id/archive user → {learner}; sessions that had it go back to the picker
 //   GET    /api/learners/:id/languages                     user → {languages} (?archived=1: archived ones too)
-//   POST   /api/learners/:id/languages                     user {target_language, …} → {language}
-//   PATCH  /api/learners/:id/languages/:languageId         user language keys → {language}
+//   POST   /api/learners/:id/languages                     user {target_language, …} → {language}; 409 for a language it already has
+//   PATCH  /api/learners/:id/languages/:languageId         user variant, level, goals, notes → {language}; the target language is fixed (400)
 //   POST   /api/learners/:id/languages/:languageId/archive user → {language}; 409 for the learner's last one
 //
 // Routes that act for the learner (profile, packs, folders, assemble,
@@ -357,7 +357,7 @@ export async function handleAuth(req: IncomingMessage, res: ServerResponse, ctx:
     // account's) id is the same 404 as a missing one.
     const learner = activeLearner(ctx);
     const language = (await getLanguageProfile(rawDb(), learner.id, id)) ?? null;
-    if (!language) throw new HttpError(404, "no such language");
+    if (!language) throw new HttpError(404, "that language is gone (archived in another tab?)");
     await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner.id, language.id);
     return sendJson(res, 200, await meReply({ ...ctx, learner, language }));
   }
@@ -392,6 +392,20 @@ function textField(key: string, value: unknown, max: number): string {
   if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
   if (value.length > max) throw new HttpError(400, `${key} is too long (at most ${max} characters)`);
   return value.trim();
+}
+
+/** The two refusals of a language write as the HTTP errors the client
+ *  shows: another profile for a language the learner already practises is
+ *  a 409, and changing a profile's target language (its identity: its packs
+ *  and History are in it) a 400. Anything else is rethrown. */
+export function languageWriteError(e: unknown, learnerName: string): never {
+  if (e instanceof LanguageTakenError) {
+    throw new HttpError(409, `${learnerName} already practises ${e.existing.targetLanguage}: switch to it in the language menu instead of adding it again`);
+  }
+  if (e instanceof LanguageIdentityError) {
+    throw new HttpError(400, `this profile is ${e.current}, and its packs and History are in ${e.current}; to practise another language, switch to it or add it in the language menu`);
+  }
+  throw e;
 }
 
 /** A language body → column values, or a 400 naming what is wrong. */
@@ -504,7 +518,9 @@ async function handleLanguages(req: IncomingMessage, res: ServerResponse, ctx: C
     }
     if (req.method === "POST") {
       const patch = languagePatch(await readJsonBody<unknown>(req));
-      const language = await createLanguageProfile(db, learner.id, { ...patch, level: patch.level || LEVELS_BY_MODE[learner.mode][0] || "" });
+      const language = await createLanguageProfile(db, learner.id, { ...patch, level: patch.level || LEVELS_BY_MODE[learner.mode][0] || "" }).catch((e) =>
+        languageWriteError(e, learner.name),
+      );
       return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
     }
     return methodNotAllowed(res, "GET, POST");
@@ -525,7 +541,9 @@ async function handleLanguages(req: IncomingMessage, res: ServerResponse, ctx: C
     return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
   }
   if (req.method === "PATCH") {
-    const language = await updateLanguageProfile(db, learner.id, languageId, languagePatch(await readJsonBody<unknown>(req)));
+    const language = await updateLanguageProfile(db, learner.id, languageId, languagePatch(await readJsonBody<unknown>(req))).catch((e) =>
+      languageWriteError(e, learner.name),
+    );
     if (!language) throw new HttpError(404, "no such language");
     return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
   }

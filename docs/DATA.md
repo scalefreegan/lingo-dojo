@@ -250,6 +250,25 @@ each a **language profile** with its own target language and variant,
 level, goals and notes, and its own packs, folders, pack history and
 conversations. The phrase bank stays the learner's (keyed by `lang`).
 
+- **One per language.** A profile's target language is its identity: its
+  packs and History are in that language. So a learner has at most one live
+  profile per target language (compared ignoring case and space; a second
+  `POST …/languages` for it is a 409 that says to switch to it), and a
+  profile's target language never changes: `PUT /api/profile` and `PATCH
+  …/languages/:languageId` take the same language (a no-op) but refuse
+  another with a 400. The variant (Mexican or Castilian Spanish) is a
+  setting inside the one profile, like the level. The one exception is a
+  profile with no target language yet (a library with no `languages.yaml`),
+  which may be given one the learner doesn't already have. The check runs
+  under a lock on the learner's row (`createLanguageProfile`) or the
+  profile's (`updateLanguageProfile`) rather than a unique index, so it
+  needed no migration; an archived profile doesn't count, so a language
+  archived and added again is a fresh profile. In the Profile popover,
+  picking another target language is this pack's override, as before; to
+  make it the default the popover offers **Switch to German** (when the
+  learner has a German profile) or **Add German**, never a rewrite of the
+  current profile. Goals and notes of the active language are edited at the
+  bottom of the popover (`PATCH …/languages/:languageId`).
 - **Keep one.** A learner always has at least one live language: a new
   learner is created with its first (`POST /api/learners` takes the
   language keys too), and archiving the last one is a 409. Archiving keeps
@@ -266,7 +285,13 @@ conversations. The phrase bank stays the learner's (keyed by `lang`).
   session from before 0002, or its language archived elsewhere) is healed on
   the next request to the learner's default language (`sessionFor` in
   `web/server/auth.ts`), and archiving a language moves every session on it
-  to the learner's default.
+  to the learner's default. One gap, left as is: hard-deleting a learner
+  (no app path does; learners are archived) nulls `learner_id` first, and
+  with it null the composite key (MATCH SIMPLE) no longer applies, so
+  `language_profile_id` is left naming the deleted profile. Nothing reads
+  it without a learner and the next pick sets both; closing it would take
+  a migration making the learner key `SET NULL (learner_id,
+  language_profile_id)`.
 - **Ownership.** Packs, pack folders, pack revisions, conversations and
   turns carry `language_profile_id` (not null) beside `learner_id`, with
   composite keys: `(language_profile_id, learner_id)` → `language_profiles
@@ -288,11 +313,20 @@ conversations. The phrase bank stays the learner's (keyed by `lang`).
   (`MeReply.language`). `PATCH /api/learners/:id` takes only `name` and
   `native_language`; a language key there is a 400 naming the language
   route. `PUT /api/profile` ("Save as my defaults") writes the learner's keys
-  to the learner and the rest to the active language, in one transaction.
+  to the learner and the rest to the active language, in one transaction:
+  a language archived meanwhile throws inside it (409 `stale_learner`), so
+  the learner's half rolls back too.
 - **The UI.** The top bar's language pill ("German · B1") switches between
   the learner's languages, adds one ("Add and switch") and archives the
   active one. The learner picker lists each learner's languages, and its Add
-  form asks for the first. A switch remounts the app like a learner switch.
+  form asks for the first (a free-text field when the library has no
+  `languages.yaml`). A switch remounts the app like a learner switch. Before
+  any switch (and before logging out) the page ends its open voice session's
+  conversation and waits for the answer, at most 1.5 s (`onBeforeSwitch` /
+  `settleBeforeSwitch` in `web/src/api.ts`), while its headers still name
+  that conversation's learner and language. A switch the server refuses
+  (one another tab just archived) is said under the top bar, and the lists
+  are re-read.
 
 **Migration `0002_language_profiles`** is drizzle-kit's output plus hand
 edits (`EDITS["0002_language_profiles"]` in `scripts/db/hand-edits.mjs`):
@@ -652,8 +686,9 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   Chinese keep their own unsaved picks, and the next learner or account on
   the same browser never sees the last one's unsaved name, level, language
   or quick-scenario text. The per-learner keys of before language profiles
-  (`<key>.learner.<id>`) move to the first of that learner's languages this
-  browser opens (`adoptLearnerKeys` in `web/src/draft.ts`); the per-mode
+  (`<key>.learner.<id>`) move to that learner's oldest language, the profile
+  migration 0002 made from the learner's columns, whichever language this
+  browser opens first (`adoptLearnerKeys` in `web/src/draft.ts`); the per-mode
   keys they had before logins are dropped on the first page load, not
   adopted: there is no telling whose they were. The voice timeline's open/closed state stays per browser.
 
@@ -789,7 +824,9 @@ docs/VOICE.md §Saved conversations is the user's side.
      conversation and the session; it can't be resumed until the history is
      read back from the database.
    - The idle end is lazy: every conversation route and the voice turn first
-     end the active language profile's open conversations whose last turn (or start, with
+     end the account's open conversations, in every language of every
+     learner (so one left open in another language still ends and its hook
+     still runs), whose last turn (or start, with
      none) is two hours old or more, with `ended_at` set to that last
      activity rather than now, so History's length isn't two idle hours
      longer. A conversation with a turn running is skipped (its last turn is
@@ -800,8 +837,10 @@ docs/VOICE.md §Saved conversations is the user's side.
      set `ended_at` (whichever way it ended). Deleting a conversation that
      is still open does not call it; it never ends, it is gone (tested). It
      does nothing yet.
-   - An End sent after the page switched learner or language is a `stale_learner` and
-     is ignored; that conversation ends by the idle rule.
+   - The page sends End before it switches learner or language (see
+     Language profiles). An End that still arrives after the switch is a
+     `stale_learner` and is ignored; that conversation ends by the idle rule,
+     on the account's next conversation request in any language.
 4. **One turn at a time per conversation.** Today a single global flag refuses
    a second voice turn while any turn is running. With more than one person
    practicing, that flag becomes a lock keyed by conversation id, so two
@@ -1161,8 +1200,10 @@ npm run db:import -- --user <name>   # into that account's learners
   add <name> --admin`) and no learner. The account is `--user`, else the
   oldest admin that isn't disabled. The learner is that account's first
   non-archived learner of each mode (the picker's order); a mode with none is
-  skipped, and the output says so. The packs go to that learner's default
-  language (the last used, as a pick would land on), named in the output.
+  skipped, and the output says so. The packs go to that learner's oldest
+  live language (for a learner from before 0002, the profile the migration
+  made), named in the output; which language the learner used last doesn't
+  matter.
 - `content/packs/**` goes to the adult learner and `content/kids/packs/**` to
   the kids learner, keeping folder, slug, title and created; every folder
   under `packs/` (an empty one with its `.keep` too) becomes a folder row.
@@ -1172,13 +1213,13 @@ npm run db:import -- --user <name>   # into that account's learners
   one the database refuses for any other reason is rolled back alone, logged,
   and listed (`failed`), and the rest import. That keeps a bad seed file from
   failing the first run, which imports in the admin's transaction.
-- Re-runs: a pack is skipped when the language profile has any row at that folder and
-  slug, a soft-deleted one included, or an `import` revision whose snapshot
-  has that id, so a pack renamed, moved or deleted in the app since is not
-  imported again. A folder deleted in the app does come back (folders have no
-  deleted state; it comes back empty). One transaction per language profile.
-  Idempotence is per language: a learner whose default language changed
-  since gets the packs again, in that language.
+- Re-runs: a pack is skipped when the language profile has any row at that
+  folder and slug, a soft-deleted one included, or when any of the
+  learner's languages has an `import` revision whose snapshot has that id,
+  so a pack renamed, moved or deleted in the app since, or imported into a
+  language that is no longer the oldest, is not imported again. A folder
+  deleted in the app does come back (folders have no deleted state; it
+  comes back empty). One transaction per language profile.
 - `--user` naming a disabled account is an error (enable it first, or name
   another): its packs would land where nobody can log in to see them.
 - It reads `DATABASE_URL` like the other CLIs, and the pack files from
@@ -1267,8 +1308,12 @@ deletes cover undoing a single change.
   `packs.http.test.mjs` and `conversations.http.test.mjs` one learner's two
   languages against each other on every pack, folder, revision, conversation
   and voice-turn route, and the `stale_learner` 409 for a tab on the other
-  language; `packs.test.mjs` the import into the default language and its
-  per-language idempotence; `db.test.mjs` the scopes and keys; and the
+  language, and the idle end across languages and learners; the
+  identity rule (no rename through either route, no second profile for a
+  language) and the all-or-nothing profile save (a trigger archives the
+  language inside the transaction); `packs.test.mjs` the import into the
+  oldest language and its per-learner idempotence; `draft.test.mjs` the
+  browser-key adoption; `db.test.mjs` the scopes and keys; and the
   migration tests above every existing row.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright

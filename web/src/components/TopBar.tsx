@@ -37,6 +37,7 @@ export default function TopBar({
   draft,
   onChange,
   onSaveDefaults,
+  onSaveLanguageNotes,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
@@ -59,6 +60,7 @@ export default function TopBar({
   draft: Draft | null;
   onChange: (d: Draft) => void;
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
+  onSaveLanguageNotes: (values: { goals: string; notes: string }) => Promise<string | null>;
 }) {
   return (
     // On a phone everything is a little tighter, so the Kids tag still
@@ -87,7 +89,8 @@ export default function TopBar({
           <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} />
         )}
         {content && draft && (
-          <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} />
+          <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}
+            onSwitchLanguage={onSwitchLanguage} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} onSaveLanguageNotes={onSaveLanguageNotes} />
         )}
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />

@@ -76,6 +76,32 @@ export function getPageLearner(): PageLearner | null {
   return pageLearner;
 }
 
+/** Work to finish while the page still shows its learner and language, run
+ *  by the auth gate before it switches learner or language: the open voice
+ *  session's End, which the server refuses (stale_learner) once the session
+ *  has moved on. Each returns a promise the switch waits for, up to
+ *  BEFORE_SWITCH_MS, so a slow network delays a switch by at most that. */
+const beforeSwitch = new Set<() => Promise<void>>();
+const BEFORE_SWITCH_MS = 1500;
+
+/** Register `fn` to run before a switch; returns the unregister. */
+export function onBeforeSwitch(fn: () => Promise<void>): () => void {
+  beforeSwitch.add(fn);
+  return () => {
+    beforeSwitch.delete(fn);
+  };
+}
+
+/** Run every registered before-switch step and wait for them, at most
+ *  BEFORE_SWITCH_MS; a step that fails doesn't stop the switch. */
+export async function settleBeforeSwitch(): Promise<void> {
+  const steps = [...beforeSwitch].map((fn) => fn().catch(() => undefined));
+  if (!steps.length) return;
+  let timer: number | undefined;
+  await Promise.race([Promise.all(steps), new Promise<void>((resolve) => (timer = window.setTimeout(resolve, BEFORE_SWITCH_MS)))]);
+  window.clearTimeout(timer);
+}
+
 /** The two headers naming a page's learner and language. */
 function pageHeaders(page: PageLearner): Record<string, string> {
   return { [LEARNER_HEADER]: page.learnerId, [LANGUAGE_HEADER]: page.languageId };

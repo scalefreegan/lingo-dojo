@@ -65,7 +65,9 @@ History; `web/server/conversations.ts`).
   only seed the first admin, once, as do `content/profile.yaml` and
   `content/kids/profile.yaml` for their learners and `content/**/packs/` for
   their packs; the running app never reads or writes them after that.
-  `npm run db:import` copies pack files added later (idempotent). Saved packs
+  `npm run db:import` copies pack files added later into each learner's oldest
+  language (idempotent per learner: a pack imported into any of its languages
+  is never imported again). Saved packs
   are per language profile (a learner's language) in the database: no pack route writes YAML or commits;
   undo is `pack_revisions` (`/api/pack-revisions`). `loadContent` no longer
   reads pack files; `loadPackFiles` does (import, first run, export CLI).
@@ -101,7 +103,7 @@ npm --prefix web run lint      # oxlint
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
 npm run user -- add <name> [--admin]   # a login (also passwd | list | disable | enable); password prompted, or on stdin
-npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners; safe to re-run
+npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners' oldest language; safe to re-run
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
 never write to the real `content/` or `exports/` from a test. Database tests use

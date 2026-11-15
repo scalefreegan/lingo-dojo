@@ -12,7 +12,7 @@ import {
   PackError, createFolder, deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, parsePackId, renamePack,
   restoreRevision, savePack, undeletePack,
 } from "../../scripts/db/packs.ts";
-import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
+import { STALE_LEARNER, languageWriteError, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
@@ -134,7 +134,10 @@ export function handleContent(req: IncomingMessage, res: ServerResponse, ctx: Ct
 /** The keys PUT /api/profile may write: what the pickers and the Name field
  *  show, profile key → the learner's column (the person) or the active
  *  language's (the rest). Goals and notes are prose, edited through PATCH
- *  /api/learners/:id/languages/:languageId, so this route can't clobber them. */
+ *  /api/learners/:id/languages/:languageId, so this route can't clobber them.
+ *  `target_language` may only name the active language itself (a no-op):
+ *  it is the profile's identity, so another one is a 400 from
+ *  updateLanguageProfile, never a rename of this profile and its packs. */
 const PICKER_COLUMNS: Record<PickerKey, { learner: keyof LearnerPatch } | { language: keyof LanguageProfilePatch }> = {
   learner_name: { learner: "name" },
   native_language: { learner: "nativeLanguage" },
@@ -164,15 +167,17 @@ export async function handleProfile(req: IncomingMessage, res: ServerResponse, c
   }
   if (Object.keys(learnerSet).length + Object.keys(languageSet).length === 0) throw new HttpError(400, "nothing to save: the body names no profile key");
   if (learnerSet.name === "") throw new HttpError(400, "a learner needs a name");
-  // One transaction: both rows change, or neither does.
+  // One transaction: both rows change, or neither does. The learner or its
+  // language archived since the session was read throws inside it, so the
+  // learner's half rolls back too, and the page re-reads who's practising.
+  const stale = () => new HttpError(409, "choose who's practicing first", STALE_LEARNER);
   const rows = await rawDb().transaction(async (tx) => {
     const learner = await updateLearner(tx, ctx.user.id, ctx.learner.id, learnerSet);
-    const language = learner && (await updateLanguageProfile(tx, learner.id, ctx.language.id, languageSet));
-    return learner && language ? { learner, language } : null;
+    if (!learner) throw stale();
+    const language = await updateLanguageProfile(tx, learner.id, ctx.language.id, languageSet).catch((e) => languageWriteError(e, learner.name));
+    if (!language) throw stale();
+    return { learner, language };
   });
-  // Archived since the session was read: re-read who's practising, not a
-  // silent no-op.
-  if (!rows) throw new HttpError(409, "choose who's practicing first", STALE_LEARNER);
   // The reply is the rows as stored, not an echo of the request.
   sendJson(res, 200, { profile: learnerProfile(rows.learner, rows.language) } satisfies ProfileReply);
 }

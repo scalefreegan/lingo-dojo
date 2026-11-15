@@ -645,3 +645,32 @@ test("a tab showing the learner's other language gets 409 stale_learner on every
   // The page that switched works.
   assert.equal((await other.call("GET", "/api/conversations")).status, 200);
 });
+
+test("the idle end covers every language and learner of the account: a German session left open ends (hook and all) on a request in Chinese, or as another learner", async () => {
+  await addUser(testDb.db, "ira", undefined, { learners: [{ ...ADULT, name: "Ines" }, { ...ADULT, name: "Ivo" }] });
+  const ines = client(base);
+  await ines.login("ira");
+  await ines.pick("Ines");
+  const spanish = await start(ines, { title: "Left open" });
+  await turn(ines, spanish.id, [], "");
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [spanish.id]);
+  await q("update turns set created_at = now() - interval '150 minutes' where conversation_id = $1", [spanish.id]);
+  // The page switched language with the session open (its End lost).
+  await ines.addLanguage({ target_language: "Mandarin Chinese", level: "A1" });
+  assert.deepEqual((await ines.call("GET", "/api/conversations")).body.conversations, [], "Chinese has its own History");
+  assert.deepEqual(ends, [spanish.id], "ended by a request in another language, hook called once");
+  const [row] = await q("select ended_at, (select max(created_at) from turns where conversation_id = $1) as last from conversations where id = $1", [spanish.id]);
+  assert.equal(new Date(row.ended_at).getTime(), new Date(row.last).getTime(), "at its last turn");
+
+  // Another learner of the account: the same.
+  const other = await start(ines, { title: "Chinese, left open" });
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [other.id]);
+  await ines.pick("Ivo");
+  await ines.call("GET", "/api/conversations");
+  assert.deepEqual(ends, [spanish.id, other.id]);
+  // Another account's requests never end this account's (or reveal them).
+  const mine = await start(ines);
+  await q("update conversations set started_at = now() - interval '3 hours' where id = $1", [mine.id]);
+  await sam.call("GET", "/api/conversations");
+  assert.ok(!ends.includes(mine.id), "robin's request doesn't touch ira's conversations");
+});
