@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Mochi } from "./Mascots";
-import type { AuthUser, ContentReply, LearnerInfo, Mode, ProfileRequest } from "../types";
+import type { AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, ProfileRequest } from "../types";
 import type { Draft } from "../draft";
 import { Button } from "./ui";
+import LanguageSwitcher from "./LanguageSwitcher";
 import ProfileControl from "./ProfileControl";
 import type { Tab } from "./shared";
 
@@ -13,7 +14,8 @@ import type { Tab } from "./shared";
  * the tabs for attention. Below `md` Library moves into that "…" menu — the
  * bar can't hold four tabs and the menu on a phone, nor beside the Profile
  * pill on a small tablet — and the three flow tabs scroll in their own strip
- * rather than widening the page. */
+ * rather than widening the page. The language switcher sits beside the
+ * Profile pill: which of the learner's languages this session practises. */
 export default function TopBar({
   tab,
   onTab,
@@ -24,8 +26,11 @@ export default function TopBar({
   mode,
   user,
   learner,
+  language,
   learners,
   onSwitchLearner,
+  onSwitchLanguage,
+  onLanguagesChanged,
   onManageLearners,
   onLogout,
   content,
@@ -42,8 +47,11 @@ export default function TopBar({
   mode: Mode;
   user: AuthUser;
   learner: LearnerInfo;
+  language: LanguageInfo;
   learners: LearnerInfo[];
   onSwitchLearner: (id: string) => void;
+  onSwitchLanguage: (id: string) => void;
+  onLanguagesChanged: () => Promise<void> | void;
   onManageLearners: () => void;
   onLogout: () => void;
   /** Null until the first load; the Profile pill appears with them. */
@@ -75,8 +83,11 @@ export default function TopBar({
         <TabButton label="Go" active={tab === "go"} onClick={() => onTab("go")} />
       </nav>
       <div className="ml-auto flex h-full shrink-0 items-center gap-1">
+        {content && (
+          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} />
+        )}
         {content && draft && (
-          <ProfileControl content={content} draft={draft} mode={mode} learner={learner} learners={learners} onSwitchLearner={onSwitchLearner} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} />
+          <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} />
         )}
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />

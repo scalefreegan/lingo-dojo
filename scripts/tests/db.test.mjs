@@ -13,10 +13,10 @@ import path from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { freshDb } from "./testdb.mjs";
 import { DEFAULT_DATABASE_URL, databaseName, databaseUrl, isLinkedWorktree, redact } from "../db/config.mjs";
-import { forLearner, forUser } from "../db/owned.ts";
+import { forLanguageProfile, forLearner, forUser } from "../db/owned.ts";
 import { fromRow, newCard, review, toRow } from "../fsrs.mjs";
 import {
-  agentMessages, authSessions, cards, conversations, learners, packRevisions, packs, phraseExamples, phrases,
+  agentMessages, authSessions, cards, conversations, languageProfiles, learners, packFolders, packRevisions, packs, phraseExamples, phrases,
   reviews, turns, users,
 } from "../db/schema.ts";
 
@@ -35,14 +35,21 @@ const CHECK = "23514";
 /** A card's FSRS state as a review stores it (reviews.card_before). */
 const BEFORE = { due: "2026-11-15T00:00:00Z", stability: 0, difficulty: 0, scheduled_days: 0, learning_steps: 0, reps: 0, lapses: 0, state: 0 };
 
-/** A user with one learner per name; returns their ids. */
+/** A user with one learner per name, each with one language profile;
+ *  returns their ids and the profiles ({ id, learnerId }, what
+ *  forLanguageProfile takes). */
 async function seed(db, username, ...names) {
   const [user] = await db.insert(users).values({ username, passwordHash: "scrypt$test" }).returning();
   const rows = await forUser(db, user.id).insert(
     learners,
-    names.map((name) => ({ name, mode: "adult", targetVariant: "Mexican Spanish" })),
+    names.map((name) => ({ name, mode: "adult" })),
   );
-  return { userId: user.id, learnerIds: rows.map((r) => r.id) };
+  const profiles = [];
+  for (const r of rows) {
+    const [p] = await forLearner(db, r.id).insert(languageProfiles, { targetLanguage: "Spanish", targetVariant: "Mexican Spanish" });
+    profiles.push({ id: p.id, learnerId: r.id });
+  }
+  return { userId: user.id, learnerIds: rows.map((r) => r.id), profiles };
 }
 
 /** A complete phrase (target form known). */
@@ -64,7 +71,7 @@ test("the migration builds every table, with pg_trgm", async (t) => {
   t.after(close);
   const tables = (await query(`select tablename from pg_tables where schemaname = 'public' order by 1`)).map((r) => r.tablename);
   assert.deepEqual(tables, [
-    "agent_messages", "auth_sessions", "cards", "cloze_items", "conversations", "learners",
+    "agent_messages", "auth_sessions", "cards", "cloze_items", "conversations", "language_profiles", "learners",
     "pack_folders", "pack_revisions", "packs", "phrase_examples", "phrases", "reviews",
     "turns", "user_settings", "users",
   ]);
@@ -131,19 +138,22 @@ test("pending phrases have their own namespace (meaning_norm)", async (t) => {
 test("deleting a learner cascades to everything they own", async (t) => {
   const { db, query, close } = await freshDb();
   t.after(close);
-  const { userId, learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  for (const id of [a, b]) {
+  const { userId, learnerIds: [a, b], profiles } = await seed(db, "ana", "Ana", "Ben");
+  for (const [i, id] of [a, b].entries()) {
     const mine = forLearner(db, id);
-    const [conv] = await mine.insert(conversations, { packSnapshot: {}, mode: "adult" });
-    const [turn] = await mine.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "hola" });
+    const lang = forLanguageProfile(db, profiles[i]);
+    const [conv] = await lang.insert(conversations, { packSnapshot: {}, mode: "adult" });
+    const [turn] = await lang.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "hola" });
     const [ph] = await mine.insert(phrases, word("hola"));
     await mine.insert(phraseExamples, { phraseId: ph.id, conversationId: conv.id, turnId: turn.id, sentence: "hola" });
     const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "recognize" });
     await mine.insert(reviews, { cardId: card.id, mode: "session", rating: 3, conversationId: conv.id, cardBefore: BEFORE });
-    await mine.insert(packs, { slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" });
+    const [pack] = await lang.insert(packs, { slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" });
+    await lang.insert(packRevisions, { packId: pack.id, snapshot: {}, action: "create" });
+    await lang.insert(packFolders, { name: "trips" });
   }
   await forUser(db, userId).remove(learners, eq(learners.id, a));
-  for (const table of ["conversations", "turns", "phrases", "phrase_examples", "cards", "reviews", "packs"]) {
+  for (const table of ["language_profiles", "conversations", "turns", "phrases", "phrase_examples", "cards", "reviews", "packs", "pack_revisions", "pack_folders"]) {
     const rows = await query(`select learner_id from ${table}`);
     assert.deepEqual(rows.map((r) => r.learner_id), [b], `${table}: only the other learner's row is left`);
   }
@@ -155,17 +165,18 @@ test("deleting a learner cascades to everything they own", async (t) => {
 test("deleting a conversation nulls only the provenance links, keeping the memory", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
+  const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
   const mine = forLearner(db, a);
-  const [conv] = await mine.insert(conversations, { packSnapshot: { title: "Market" }, mode: "adult" });
-  const [turn] = await mine.insert(turns, { conversationId: conv.id, idx: 0, role: "master", lines: [] });
+  const lang = forLanguageProfile(db, pa);
+  const [conv] = await lang.insert(conversations, { packSnapshot: { title: "Market" }, mode: "adult" });
+  const [turn] = await lang.insert(turns, { conversationId: conv.id, idx: 0, role: "master", lines: [] });
   const [ph] = await mine.insert(phrases, word("la vuelta", { source: "extraction" }));
   const [ex] = await mine.insert(phraseExamples, { phraseId: ph.id, conversationId: conv.id, turnId: turn.id, sentence: "Aquí tiene la vuelta." });
   const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "produce" });
   const [rev] = await mine.insert(reviews, { cardId: card.id, mode: "session", rating: 1, conversationId: conv.id, cardBefore: BEFORE });
 
-  await mine.remove(conversations, eq(conversations.id, conv.id));
-  assert.equal((await mine.list(turns)).length, 0, "turns go with their conversation");
+  await lang.remove(conversations, eq(conversations.id, conv.id));
+  assert.equal((await lang.list(turns)).length, 0, "turns go with their conversation");
   const example = await mine.get(phraseExamples, eq(phraseExamples.id, ex.id));
   assert.equal(example.conversationId, null);
   assert.equal(example.turnId, null);
@@ -200,12 +211,15 @@ test("no reference can reach another owner's row", async (t) => {
   const ben = await seed(db, "ben", "Ben");
   const [a] = ana.learnerIds;
   const [b] = ben.learnerIds;
-  const [conv] = await forLearner(db, a).insert(conversations, { packSnapshot: {}, mode: "adult" });
-  const [turn] = await forLearner(db, a).insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "private" });
+  const [conv] = await forLanguageProfile(db, ana.profiles[0]).insert(conversations, { packSnapshot: {}, mode: "adult" });
+  const [turn] = await forLanguageProfile(db, ana.profiles[0]).insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "private" });
   const [ph] = await forLearner(db, a).insert(phrases, word("hola"));
   const benScope = forLearner(db, b);
   // Ben's scope stamps Ben's id; the composite keys refuse Ana's parents…
-  await rejectsWith(benScope.insert(turns, { conversationId: conv.id, idx: 1, role: "learner", text: "x" }), FOREIGN_KEY);
+  await rejectsWith(forLanguageProfile(db, ben.profiles[0]).insert(turns, { conversationId: conv.id, idx: 1, role: "learner", text: "x" }), FOREIGN_KEY);
+  // …and a scope that names Ana's profile with Ben as its learner can't
+  // write anything: the profile isn't Ben's.
+  await rejectsWith(forLanguageProfile(db, { id: ana.profiles[0].id, learnerId: b }).insert(conversations, { packSnapshot: {}, mode: "adult" }), FOREIGN_KEY);
   await rejectsWith(benScope.insert(cards, { phraseId: ph.id, skill: "listen" }), FOREIGN_KEY);
   // …and the nullable provenance links too: no reading Ana's turn text
   // through Ben's example.
@@ -214,18 +228,61 @@ test("no reference can reach another owner's row", async (t) => {
   await rejectsWith(benScope.insert(phraseExamples, { phraseId: bph.id, conversationId: conv.id, sentence: "x" }), FOREIGN_KEY);
   const [bcard] = await benScope.insert(cards, { phraseId: bph.id, skill: "produce" });
   await rejectsWith(benScope.insert(reviews, { cardId: bcard.id, mode: "session", rating: 3, conversationId: conv.id, cardBefore: BEFORE }), FOREIGN_KEY);
-  // An auth session's active learner must be one of its own user's.
+  // An auth session's active learner must be one of its own user's, and
+  // its active language one of that learner's.
   await rejectsWith(
     forUser(db, ben.userId).insert(authSessions, { id: "hash-2", learnerId: a, expiresAt: new Date(Date.now() + 86_400_000) }),
     FOREIGN_KEY,
   );
+  await rejectsWith(
+    forUser(db, ben.userId).insert(authSessions, { id: "hash-3", learnerId: b, languageProfileId: ana.profiles[0].id, expiresAt: new Date(Date.now() + 86_400_000) }),
+    FOREIGN_KEY,
+  );
+});
+
+test("one learner's two languages: no row can sit under the other, and each has its own pack ids", async (t) => {
+  const { db, close } = await freshDb();
+  t.after(close);
+  const { userId, learnerIds: [a], profiles: [es] } = await seed(db, "ana", "Ana");
+  const [zh] = await forLearner(db, a).insert(languageProfiles, { targetLanguage: "Mandarin Chinese", level: "A1" });
+  const de = { id: zh.id, learnerId: a };
+  const spanish = forLanguageProfile(db, es);
+  const chinese = forLanguageProfile(db, de);
+  const [conv] = await spanish.insert(conversations, { packSnapshot: {}, mode: "adult" });
+  const [pack] = await spanish.insert(packs, { folder: "trips", slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" });
+  // The other language's scope neither sees nor reaches them…
+  assert.deepEqual(await chinese.list(conversations), []);
+  assert.deepEqual(await chinese.list(packs), []);
+  assert.equal(await chinese.get(packs, eq(packs.id, pack.id)), undefined);
+  assert.deepEqual(await chinese.update(packs, { title: "Mine now" }, eq(packs.id, pack.id)), []);
+  assert.deepEqual(await chinese.remove(conversations, eq(conversations.id, conv.id)), []);
+  // …and the composite keys refuse a child under the other language's parent.
+  await rejectsWith(chinese.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "x" }), FOREIGN_KEY);
+  await rejectsWith(chinese.insert(packRevisions, { packId: pack.id, snapshot: {}, action: "update" }), FOREIGN_KEY);
+  // A pack id is per language: Chinese may have its own trips/market.
+  await chinese.insert(packs, { folder: "trips", slug: "market", title: "市场", created: "2026-11-15T09:00:00+08:00" });
+  await rejectsWith(spanish.insert(packs, { folder: "trips", slug: "market", title: "Again", created: "x" }), UNIQUE);
+  // Folders too: (profile, name).
+  await spanish.insert(packFolders, { name: "trips" });
+  await chinese.insert(packFolders, { name: "trips" });
+  await rejectsWith(chinese.insert(packFolders, { name: "trips" }), UNIQUE);
+  // A session's language must be its learner's.
+  await forUser(db, userId).insert(authSessions, { id: "hash-z", learnerId: a, languageProfileId: zh.id, expiresAt: new Date(Date.now() + 86_400_000) });
+  // Deleting a language profile nulls only the session's language.
+  await forLearner(db, a).remove(languageProfiles, eq(languageProfiles.id, zh.id));
+  const session = await forUser(db, userId).get(authSessions, eq(authSessions.id, "hash-z"));
+  assert.equal(session.languageProfileId, null);
+  assert.equal(session.learnerId, a, "the learner stays picked");
+  assert.equal((await chinese.list(packs)).length, 0, "its packs went with it");
+  assert.equal((await spanish.list(packs)).length, 1, "the other language's stayed");
 });
 
 test("the other named constraints hold", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
+  const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
   const mine = forLearner(db, a);
+  const lang = forLanguageProfile(db, pa);
   // Usernames are stored lowercased.
   await rejectsWith(db.insert(users).values({ username: "Ana2", passwordHash: "x" }), CHECK);
   await rejectsWith(db.insert(users).values({ username: "ana", passwordHash: "x" }), UNIQUE);
@@ -235,15 +292,15 @@ test("the other named constraints hold", async (t) => {
   await rejectsWith(mine.insert(cards, { phraseId: ph.id, skill: "produce" }), UNIQUE);
   await rejectsWith(mine.insert(cards, { phraseId: ph.id, skill: "write" }), CHECK);
   // Turn positions are unique within a conversation.
-  const [conv] = await mine.insert(conversations, { packSnapshot: {}, mode: "kids" });
-  await mine.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "a" });
-  await rejectsWith(mine.insert(turns, { conversationId: conv.id, idx: 0, role: "master" }), UNIQUE);
+  const [conv] = await lang.insert(conversations, { packSnapshot: {}, mode: "kids" });
+  await lang.insert(turns, { conversationId: conv.id, idx: 0, role: "learner", text: "a" });
+  await rejectsWith(lang.insert(turns, { conversationId: conv.id, idx: 0, role: "master" }), UNIQUE);
   // A live pack's (folder, slug) is unique; a soft-deleted one frees it.
   const pack = { folder: "trips", slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" };
-  const [first] = await mine.insert(packs, pack);
-  await rejectsWith(mine.insert(packs, pack), UNIQUE);
-  await mine.update(packs, { deletedAt: new Date() }, eq(packs.id, first.id));
-  await mine.insert(packs, pack);
+  const [first] = await lang.insert(packs, pack);
+  await rejectsWith(lang.insert(packs, pack), UNIQUE);
+  await lang.update(packs, { deletedAt: new Date() }, eq(packs.id, first.id));
+  await lang.insert(packs, pack);
   // Ratings are FSRS's 1-4, and a review keeps the card it changed.
   const [card] = await mine.list(cards);
   await rejectsWith(mine.insert(reviews, { cardId: card.id, mode: "flashcard", rating: 5, cardBefore: BEFORE }), CHECK);
@@ -253,11 +310,12 @@ test("the other named constraints hold", async (t) => {
 test("at most one session review per card per conversation", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a] } = await seed(db, "ana", "Ana");
+  const { learnerIds: [a], profiles: [pa] } = await seed(db, "ana", "Ana");
   const mine = forLearner(db, a);
   const [ph] = await mine.insert(phrases, word("hola"));
   const [card] = await mine.insert(cards, { phraseId: ph.id, skill: "produce" });
-  const [conv] = await mine.insert(conversations, { packSnapshot: {}, mode: "adult" });
+  const lang = forLanguageProfile(db, pa);
+  const [conv] = await lang.insert(conversations, { packSnapshot: {}, mode: "adult" });
   const review = { cardId: card.id, mode: "session", rating: 3, conversationId: conv.id, cardBefore: BEFORE };
   await mine.insert(reviews, review);
   await rejectsWith(mine.insert(reviews, { ...review, rating: 1 }), UNIQUE);
@@ -265,26 +323,26 @@ test("at most one session review per card per conversation", async (t) => {
   await mine.insert(reviews, { ...review, mode: "flashcard" });
   await mine.insert(reviews, { ...review, mode: "flashcard" });
   // Nor is the same card in another conversation.
-  const [conv2] = await mine.insert(conversations, { packSnapshot: {}, mode: "adult" });
+  const [conv2] = await lang.insert(conversations, { packSnapshot: {}, mode: "adult" });
   await mine.insert(reviews, { ...review, conversationId: conv2.id });
 });
 
 test("agent messages and pack revisions keep insertion order within one transaction", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { userId, learnerIds: [a] } = await seed(db, "ana", "Ana");
-  const [pack] = await forLearner(db, a).insert(packs, { slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" });
+  const { userId, profiles: [pa] } = await seed(db, "ana", "Ana");
+  const [pack] = await forLanguageProfile(db, pa).insert(packs, { slug: "market", title: "Market", created: "2026-11-15T09:00:00-06:00" });
   await db.transaction(async (tx) => {
     await forUser(tx, userId).insert(agentMessages, [{ role: "user", text: "first" }, { role: "assistant", text: "second" }]);
     await forUser(tx, userId).insert(agentMessages, { role: "commit", text: "third" });
     for (const action of ["create", "update", "rename"]) {
-      await forLearner(tx, a).insert(packRevisions, { packId: pack.id, snapshot: {}, action });
+      await forLanguageProfile(tx, pa).insert(packRevisions, { packId: pack.id, snapshot: {}, action });
     }
   });
   const msgs = await forUser(db, userId).list(agentMessages, undefined, { orderBy: agentMessages.seq });
   assert.equal(new Set(msgs.map((m) => m.ts.getTime())).size, 1, "now() ties within the transaction");
   assert.deepEqual(msgs.map((m) => m.text), ["first", "second", "third"]);
-  const revs = await forLearner(db, a).list(packRevisions, eq(packRevisions.packId, pack.id), { orderBy: packRevisions.seq });
+  const revs = await forLanguageProfile(db, pa).list(packRevisions, eq(packRevisions.packId, pack.id), { orderBy: packRevisions.seq });
   assert.deepEqual(revs.map((r) => r.action), ["create", "update", "rename"]);
 });
 
@@ -418,6 +476,16 @@ test("owned-row rules hold at runtime for untyped callers", async (t) => {
   // No owner, no scope.
   assert.throws(() => forLearner(db, ""), /need a learnerId/);
   assert.throws(() => forLearner(db, undefined), /need a learnerId/);
+  assert.throws(() => forLanguageProfile(db, { id: "", learnerId: a }), /need a languageProfileId/);
+  assert.throws(() => forLanguageProfile(db, { id: a, learnerId: "" }), /need a learnerId/);
+  assert.throws(() => forLanguageProfile(db, undefined), /need a/);
+  // A language's rows only through a language scope: a learner scope would
+  // reach every one of the learner's languages at once.
+  for (const table of [packs, packFolders, packRevisions, conversations, turns]) {
+    await assert.rejects(ana.list(table), /belong to a language profile: use forLanguageProfile, not forLearner/);
+  }
+  // …and a language scope reaches only tables that belong to a language.
+  await assert.rejects(forLanguageProfile(db, { id: a, learnerId: a }).list(phrases), /no languageProfileId column/);
   // Removing everything is its own verb, and still only the owner's rows.
   assert.equal((await ana.removeAllOwned(phrases)).length, 2);
   assert.equal((await forLearner(db, b).list(phrases)).length, 1);
@@ -426,19 +494,21 @@ test("owned-row rules hold at runtime for untyped callers", async (t) => {
 test("insertOrIgnore: stamps the owner, skips a conflict (the owner is always in the target), returns only what it inserted", async (t) => {
   const { db, close } = await freshDb();
   t.after(close);
-  const { learnerIds: [a, b] } = await seed(db, "ana", "Ana", "Ben");
-  const ana = forLearner(db, a);
+  const { learnerIds: [a, b], profiles: [pa, pb] } = await seed(db, "ana", "Ana", "Ben");
+  const ana = forLanguageProfile(db, pa);
   const pack = { folder: "", slug: "2026-10-19-x", title: "X", created: "2026-10-19T00:00:00Z" };
   const live = { target: [packs.folder, packs.slug], targetWhere: sql`${packs.deletedAt} is null` };
   const [made] = await ana.insertOrIgnore(packs, pack, live);
   assert.equal(made.learnerId, a);
+  assert.equal(made.languageProfileId, pa.id, "both owners stamped");
   assert.deepEqual(await ana.insertOrIgnore(packs, { ...pack, title: "Again" }, live), [], "a conflict inserts nothing");
   assert.equal((await ana.list(packs)).length, 1);
   // Ben's identical row is not a conflict with Ana's.
-  assert.equal((await forLearner(db, b).insertOrIgnore(packs, pack, live)).length, 1);
+  assert.equal((await forLanguageProfile(db, pb).insertOrIgnore(packs, pack, live)).length, 1);
   // No target: any unique conflict skips.
   assert.deepEqual(await ana.insertOrIgnore(packs, pack), []);
   await assert.rejects(ana.insertOrIgnore(packs, { ...pack, learnerId: b }), /sets learnerId itself/);
+  await assert.rejects(ana.insertOrIgnore(packs, { ...pack, languageProfileId: pb.id }), /sets languageProfileId itself/);
 });
 
 test("where() keeps the owner filter in hand-written queries", async (t) => {

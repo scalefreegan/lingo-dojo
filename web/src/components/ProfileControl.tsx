@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ContentReply, LearnerInfo, Mode, ProfileRequest } from "../types";
+import type { ContentReply, LanguageInfo, LearnerInfo, Mode, ProfileRequest } from "../types";
 import {
   OVERRIDE_FIELDS, choosePickerValue, emptyOverrides, formatSessionLine, profileDefault, profileValue, sessionValues, type Draft, type OverrideKey,
 } from "../draft";
@@ -20,12 +20,16 @@ const MODE_LABELS: Record<Mode, string> = { adult: "Adult", kids: "Kids" };
  * the four pickers. Same rules as the old Scene-tab Learner card — picking
  * the profile's own value clears the override (see draft.ts), so a saved
  * pack carries only what differs from the active learner's profile.
- * Switching learner switches mode too: a learner is adult or kids. */
+ * Switching learner switches mode too: a learner is adult or kids. "Save as
+ * my defaults" writes the name and native language to the learner and the
+ * target, variant and level to the active language (the switcher beside
+ * this pill picks which). */
 export default function ProfileControl({
   content,
   draft,
   mode,
   learner,
+  language,
   learners,
   onSwitchLearner,
   onManageLearners,
@@ -36,11 +40,13 @@ export default function ProfileControl({
   draft: Draft;
   mode: Mode;
   learner: LearnerInfo;
+  /** The active language profile, whose defaults the pickers save to. */
+  language: LanguageInfo;
   learners: LearnerInfo[];
   onSwitchLearner: (id: string) => void;
   onManageLearners: () => void;
   onChange: (d: Draft) => void;
-  /** Writes the shown values to the active learner; resolves to an error
+  /** Writes the shown values to the active learner and language; resolves to an error
    *  sentence, or null when the profile (and the draft) now reflect them. */
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
 }) {
@@ -85,7 +91,7 @@ export default function ProfileControl({
     setSaveMessage(null);
     const error = await onSaveDefaults(session);
     setSaving(false);
-    setSaveMessage(error ? { tone: "err", text: error } : { tone: "ok", text: `Saved to ${session.learner_name || learner.name}'s profile` });
+    setSaveMessage(error ? { tone: "err", text: error } : { tone: "ok", text: `Saved to ${session.learner_name || learner.name}'s ${session.target_language || "language"} profile` });
   }
 
   const names = languages.map((l) => l.name);
@@ -195,9 +201,11 @@ export default function ProfileControl({
                 ))
               )}
             </div>
-            <p className="text-sm text-fg-3 sm:text-xs">Changes apply to this pack. Save to make them {learner.name}'s defaults.</p>
+            <p className="text-sm text-fg-3 sm:text-xs">
+              Changes apply to this pack. Save to make them {learner.name}'s defaults{language.target_language ? ` for ${language.target_language}` : ""}.
+            </p>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <Button onClick={() => void saveDefaults()} disabled={!dirty || saving} title={`Write these values to ${learner.name}'s profile`}>
+              <Button onClick={() => void saveDefaults()} disabled={!dirty || saving} title={`Write these values to ${learner.name}'s profile and this language`}>
                 {saving ? "Saving…" : "Save as my defaults"}
               </Button>
               <button

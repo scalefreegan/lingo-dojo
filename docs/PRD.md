@@ -13,14 +13,14 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 | Decision | Choice |
 |---|---|
-| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. Built so far: the foundation, logins + learners (users, sessions, learners, per-user settings and agent chat), saved packs (per learner, with revisions and soft deletes instead of git commits; the pack files are seeds) and saved conversations (every voice session's turns, listed in the Library's History) |
+| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. Built so far: the foundation, logins + learners (users, sessions, learners, per-user settings and agent chat), saved packs (per learner, with revisions and soft deletes instead of git commits; the pack files are seeds), saved conversations (every voice session's turns, listed in the Library's History) and language profiles (a learner practises several languages, each with its own level, packs and History) |
 | Embedded agent | Headless `claude -p` subprocess (sibling pattern) with Read on the repo and **Write/Edit scoped to `content/`**; every agent change is auto-committed so it can be reverted |
 | Export | One self-contained markdown prompt; Copy button and a file written to `exports/` |
 | Stack | Match Atlas (`../travel-guide`): React 19 + Vite + TS strict, Vite middleware API, Tailwind 4, oxlint, `node --test`; Dock app from `macos/`; **port 38400** |
 | Unit model | **Slots with cardinality** declared in `content/schema.yaml`; units declare their slot; assembly walks slots in schema order |
-| Learner profile | Global `content/profile.yaml` with per-pack overrides. Since 2026-11-15 the profile is the active learner (a database row, edited from the Profile popover); the file seeds the first admin's learner and serves the offline export CLI |
+| Learner profile | Global `content/profile.yaml` with per-pack overrides. Since 2026-11-15 the profile is the active learner and its active language profile (database rows, edited from the Profile popover; the top bar's language pill switches and adds languages); the file seeds the first admin's learner and serves the offline export CLI |
 | Modes | Two libraries with the same file format: `content/` (adult) and `content/kids/` (kids: its own schema, frame, profile, units, scenarios, packs). A learner is adult or kids, and switching learner switches mode; the tree-scoped API routes use the active learner's mode (a disagreeing `?mode=` is a 400); kids exports go to `exports/kids/` |
-| Packs | Saved per learner in the database (since 2026-11-15; id `<folder>/<date>-<slug>`, undo by revisions and Recently deleted); `content/packs/<date>-<slug>.yaml` files are seed packs and the export CLI's input; seed library in Spanish (Oaxaca scenarios) |
+| Packs | Saved per learner and language in the database (since 2026-11-15; id `<folder>/<date>-<slug>`, undo by revisions and Recently deleted); `content/packs/<date>-<slug>.yaml` files are seed packs and the export CLI's input; seed library in Spanish (Oaxaca scenarios) |
 | Voice target | ChatGPT voice mode and Claude voice in practice (2026-10-19); export stays tool-agnostic markdown with a length readout. The frame fixes the voice: every speaker is a native speaker of the target variant, in both languages |
 | In-app voice (2026-11-09) | Push-to-talk loop on the Go tab: speech to text (ElevenLabs Scribe or Azure) → one tool-less `claude -p` turn → text to speech per speaker (ElevenLabs, Azure, or free macOS voices). The learner ends each turn (tap, or a pause length they set). Keys in gitignored `.env.local`. See docs/VOICE.md |
 
@@ -79,7 +79,7 @@ scripts/
   export.mjs           CLI: node scripts/export.mjs content/packs/x.yaml
   auth.mjs             passwords, session cookie, login throttle (pure)
   user.mjs             CLI: npm run user -- add | passwd | list | disable | enable
-  import.mjs           CLI: npm run db:import, pack files → a learner's packs (idempotent)
+  import.mjs           CLI: npm run db:import, pack files → a learner's default language's packs (idempotent)
   db/                  Postgres schema, migrations, accounts, packs (docs/DATA.md)
   tests/*.test.mjs     node --test
 web/                   Vite app; API is Vite serve-middleware in web/server/*.ts

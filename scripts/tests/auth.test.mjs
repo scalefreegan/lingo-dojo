@@ -162,7 +162,7 @@ test("clientAddress: the proxy's hop behind loopback, else the socket; throttleK
 
 /* --------------------------------- learners ------------------------------- */
 
-test("learnerFromProfile / profileFromLearner: profile.yaml keys ↔ learner columns, blanks left out", () => {
+test("learnerFromProfile / profileFromLearner: profile.yaml keys ↔ learner and language columns, blanks left out", () => {
   const row = learnerFromProfile(
     { learner_name: " Sam ", native_language: "English", target_language: "Spanish", level: "A2", goals: "Order food.\n", extra: "ignored", notes: 7 },
     "adult",
@@ -173,8 +173,12 @@ test("learnerFromProfile / profileFromLearner: profile.yaml keys ↔ learner col
   });
   assert.equal(learnerFromProfile({}, "kids", "Kid").name, "Kid", "no learner_name: the fallback");
   assert.equal(learnerFromProfile(null, "kids", "Kid").name, "Kid");
-  assert.deepEqual(profileFromLearner({ ...row, id: "x" }), {
-    learner_name: "Sam", native_language: "English", target_language: "Spanish", level: "A2", goals: "Order food.", notes: "7",
+  // The learner gives the person's keys, its language the rest; neither shadows the other.
+  const learner = { id: "x", mode: "adult", name: "Sam", nativeLanguage: "English", targetLanguage: "stale", level: "stale" };
+  const language = { id: "y", learnerId: "x", targetLanguage: "German", targetVariant: "", level: "B1", goals: "Order food.", notes: "7", name: "stale" };
+  assert.deepEqual(profileFromLearner(learner, language), {
+    learner_name: "Sam", native_language: "English", target_language: "German", level: "B1", goals: "Order food.", notes: "7",
   });
-  assert.deepEqual(profileFromLearner(null), {});
+  assert.deepEqual(profileFromLearner(learner, null), { learner_name: "Sam", native_language: "English" }, "no language: the person's keys only");
+  assert.deepEqual(profileFromLearner(null, null), {});
 });

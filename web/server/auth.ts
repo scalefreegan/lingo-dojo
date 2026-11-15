@@ -6,12 +6,15 @@ import {
 } from "../../scripts/auth.mjs";
 import { MODES, isMode, LEVELS_BY_MODE } from "../../scripts/content.mjs";
 import {
-  archiveLearner, createFirstAdmin, createLearner, createSession, deleteSession, findSession, findUserByUsername, getLearner, hasUsers,
-  listLearners, setSessionLearner, slideSession, updateLearner, type Learner, type LearnerPatch, type NewLearner,
+  archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession, defaultLanguageProfile,
+  deleteSession, findSession, findUserByUsername, getLanguageProfile, getLearner, hasUsers, languagesByLearner, listLanguageProfiles,
+  listLearners, setSessionLearner, slideSession, updateLanguageProfile, updateLearner, type LanguageProfile, type LanguageProfilePatch,
+  type Learner, type LearnerPatch, type NewLearnerWithLanguage,
 } from "../../scripts/db/accounts.ts";
+import type { Db } from "../../scripts/db/owned.ts";
 import type {
-  AuthUser, ErrorCode, LearnerHeader, LearnerInfo, LearnerReply, LearnerRequest, LearnersReply, LoginRequest, MeReply, Mode,
-  PickLearnerRequest, Profile,
+  AuthUser, ErrorCode, LanguageHeader, LanguageInfo, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, LearnerInfo, LearnerReply,
+  LearnersReply, LoginRequest, MeReply, Mode, PickLanguageRequest, PickLearnerRequest, Profile,
 } from "../shared/wire.ts";
 import { rawDb } from "./db.ts";
 import { readFirstRunSeed } from "./seed.ts";
@@ -23,30 +26,41 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET    /api/auth/me           public  MeReply (firstRun when there are no accounts; firstRunHere when this request may create it)
 //   POST   /api/auth/first-run    public  {username, password} → the first admin, seeded; 403 unless a direct local request; 409 once anyone exists
 //   POST   /api/auth/logout       user    deletes the session row, clears the cookie
-//   PUT    /api/auth/learner      user    {learnerId} → the session's active learner → MeReply
-//   GET    /api/learners          user    {learners} (this user's, not archived)
-//   POST   /api/learners          user    {name, mode, …} → {learner}
-//   PATCH  /api/learners/:id      user    profile keys → {learner}
+//   PUT    /api/auth/learner      user    {learnerId} → the session's active learner, on its last-used language → MeReply
+//   PUT    /api/auth/language     user    {languageId} → the session's active language (one of the active learner's) → MeReply
+//   GET    /api/learners          user    {learners} (this user's, not archived, each with its languages)
+//   POST   /api/learners          user    {name, mode, native_language, target_language, …} → {learner}, with that first language
+//   PATCH  /api/learners/:id      user    {name, native_language} → {learner}
 //   POST   /api/learners/:id/archive user → {learner}; sessions that had it go back to the picker
+//   GET    /api/learners/:id/languages                     user → {languages} (?archived=1: archived ones too)
+//   POST   /api/learners/:id/languages                     user {target_language, …} → {language}
+//   PATCH  /api/learners/:id/languages/:languageId         user language keys → {language}
+//   POST   /api/learners/:id/languages/:languageId/archive user → {language}; 409 for the learner's last one
 //
 // Routes that act for the learner (profile, packs, folders, assemble,
-// export, voice turn and cast) are mounted with wrap's `learner: true`: the
-// request must name the learner its page shows (X-Learner-Id) and that must
-// be the session's active learner, else 409 `stale_learner` (pageLearner).
+// export, voice turn and cast, conversations) are mounted with wrap's
+// `learner: true`: the request must name the learner and the language its
+// page shows (X-Learner-Id, X-Language-Profile-Id), and those must be the
+// session's active ones, else 409 `stale_learner` (pageLearner).
 //
 // The session: a random token in the `ld_session` cookie, its SHA-256 the
 // auth_sessions row id. wrap() (api.ts) resolves it on every request into the
-// handler's context: the user and the active learner, re-read each time, so
-// an archived learner or a disabled user takes effect on the next request.
-// Every learner id from a request is looked up through the user's own scope
-// (accounts.ts getLearner), so another account's id is a 404, the same as
-// one that doesn't exist.
+// handler's context: the user, the active learner and its active language,
+// re-read each time, so an archived learner or language or a disabled user
+// takes effect on the next request. Every learner id from a request is
+// looked up through the user's own scope (accounts.ts getLearner), and every
+// language id through that learner's (getLanguageProfile), so another
+// account's or another learner's id is a 404, the same as one that doesn't
+// exist.
 
 /** What every handler receives. `user` is null only on public routes. */
 export interface PublicCtx {
   user: AuthUser | null;
   /** The session's active learner (one of `user`'s, not archived), or null. */
   learner: Learner | null;
+  /** The session's active language (one of `learner`'s, not archived); null
+   *  exactly when `learner` is. */
+  language: LanguageProfile | null;
   /** The auth_sessions id (token hash), null without a session. */
   sessionId: string | null;
 }
@@ -58,12 +72,14 @@ export interface Ctx extends PublicCtx {
 }
 
 /** The context of a learner-scoped route (wrap's `learner: true`): the
- *  learner is the session's active one and the one the page shows. */
+ *  learner and its language are the session's active ones and the ones the
+ *  page shows. */
 export interface LearnerCtx extends Ctx {
   learner: Learner;
+  language: LanguageProfile;
 }
 
-const NO_SESSION: PublicCtx = { user: null, learner: null, sessionId: null };
+const NO_SESSION: PublicCtx = { user: null, learner: null, language: null, sessionId: null };
 
 const secure = (req: IncomingMessage) => isSecureRequest(req.headers);
 
@@ -97,14 +113,33 @@ export async function sessionFor(req: IncomingMessage, res: ServerResponse): Pro
     setCookie(res, sessionCookie(token, { secure: secure(req) }));
   }
   const learner = session.learnerId ? ((await getLearner(db, user.id, session.learnerId)) ?? null) : null;
-  return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin }, learner, sessionId: id };
+  const language = learner ? await sessionLanguage(db, user.id, id, learner, session.languageProfileId) : null;
+  return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin }, learner, language, sessionId: id };
+}
+
+/**
+ * The session's language for its learner: the one it names when that is
+ * still one of the learner's live languages; otherwise (archived from
+ * elsewhere, or a session from before languages) the learner's default,
+ * written back to the session so every request after agrees. A page still
+ * showing the old one is then a stale_learner, as after a learner switch.
+ * A learner with no live language (the keep-one rule never leaves one, but
+ * a hand-edited database could) gets a blank one rather than a dead end.
+ */
+async function sessionLanguage(db: Db, userId: string, sessionId: string, learner: Learner, wanted: string | null): Promise<LanguageProfile> {
+  const named = wanted ? await getLanguageProfile(db, learner.id, wanted) : undefined;
+  if (named) return named;
+  const language = (await defaultLanguageProfile(db, learner.id)) ?? (await createLanguageProfile(db, learner.id, {}));
+  await setSessionLearner(db, userId, sessionId, learner.id, language.id);
+  return language;
 }
 
 /* ------------------------------- the learner ------------------------------ */
 
 export const STALE_LEARNER: ErrorCode = "stale_learner";
-/** LearnerHeader, as node lower-cases it. */
+/** LearnerHeader and LanguageHeader, as node lower-cases them. */
 const LEARNER_HEADER = "x-learner-id" satisfies Lowercase<LearnerHeader>;
+const LANGUAGE_HEADER = "x-language-profile-id" satisfies Lowercase<LanguageHeader>;
 
 /** The active learner, or a 409 that sends the UI to the picker. */
 export function activeLearner(ctx: PublicCtx): Learner {
@@ -119,14 +154,21 @@ export function activeLearner(ctx: PublicCtx): Learner {
  * alone can't tell a stale tab from a current one: tab 1 shows Sam, tab 2
  * picks Ana (same mode, or another account logs in), and tab 1's "Save as
  * my defaults" would write Sam's values into Ana's row, or its voice turn
- * run with Ana's profile. A missing header counts as a mismatch, so a
- * client that forgets it fails loudly rather than writing blind. The 409
- * carries `stale_learner`, and the client re-reads /api/auth/me on it.
+ * run with Ana's profile. The same holds one level down: tab 1 shows Sam's
+ * German, tab 2 switches Sam to Chinese, and tab 1's save would put a German
+ * pack into the Chinese library. So the page also names its language
+ * (X-Language-Profile-Id), which must be the session's active one. A missing
+ * header counts as a mismatch, so a client that forgets it fails loudly
+ * rather than writing blind. The 409 carries `stale_learner` either way, and
+ * the client re-reads /api/auth/me on it.
  */
 export function pageLearner(req: IncomingMessage, ctx: PublicCtx): Learner {
   const learner = activeLearner(ctx);
   if (req.headers[LEARNER_HEADER] !== learner.id) {
     throw new HttpError(409, "this page is out of date: who's practicing changed in another tab or login", STALE_LEARNER);
+  }
+  if (!ctx.language || req.headers[LANGUAGE_HEADER] !== ctx.language.id) {
+    throw new HttpError(409, "this page is out of date: the language changed in another tab or login", STALE_LEARNER);
   }
   return learner;
 }
@@ -148,16 +190,25 @@ export function learnerMode(req: IncomingMessage, ctx: PublicCtx, sent?: unknown
   return learner.mode;
 }
 
-/** The learner as the assembler's profile (content.profile's old place). */
-export function learnerProfile(learner: Learner | null): Profile {
-  return profileFromLearner(learner);
+/** The learner and its active language as the assembler's profile
+ *  (content.profile's old place). */
+export function learnerProfile(learner: Learner | null, language: LanguageProfile | null): Profile {
+  return profileFromLearner(learner, language);
 }
 
-export function learnerInfo(l: Learner): LearnerInfo {
+export function languageInfo(p: LanguageProfile): LanguageInfo {
   return {
-    id: l.id, name: l.name, mode: l.mode, native_language: l.nativeLanguage, target_language: l.targetLanguage,
-    target_variant: l.targetVariant, level: l.level, goals: l.goals, notes: l.notes,
+    id: p.id, learner_id: p.learnerId, target_language: p.targetLanguage, target_variant: p.targetVariant, level: p.level, goals: p.goals, notes: p.notes,
   };
+}
+
+export function learnerInfo(l: Learner, languages: LanguageProfile[]): LearnerInfo {
+  return { id: l.id, name: l.name, mode: l.mode, native_language: l.nativeLanguage, languages: languages.map(languageInfo) };
+}
+
+/** learnerInfo with the learner's live languages read. */
+async function learnerInfoOf(l: Learner): Promise<LearnerInfo> {
+  return learnerInfo(l, await listLanguageProfiles(rawDb(), l.id));
 }
 
 const isLocal = (req: IncomingMessage) => isDirectLocalRequest(req.headers, req.socket.remoteAddress);
@@ -167,10 +218,18 @@ async function meReply(ctx: PublicCtx, req?: IncomingMessage): Promise<MeReply> 
     const firstRun = !(await hasUsers(rawDb()));
     // firstRunHere lets the page show "do this on the Mac" instead of a form
     // the server would refuse (handleFirstRun).
-    return { firstRun, ...(firstRun ? { firstRunHere: !!req && isLocal(req) } : {}), user: null, learner: null, learners: [] };
+    return { firstRun, ...(firstRun ? { firstRunHere: !!req && isLocal(req) } : {}), user: null, learner: null, language: null, learners: [] };
   }
   const learners = await listLearners(rawDb(), ctx.user.id);
-  return { firstRun: false, user: ctx.user, learner: ctx.learner ? learnerInfo(ctx.learner) : null, learners: learners.map(learnerInfo) };
+  const languages = await languagesByLearner(rawDb(), ctx.user.id);
+  const info = (l: Learner) => learnerInfo(l, languages.get(l.id) ?? []);
+  return {
+    firstRun: false,
+    user: ctx.user,
+    learner: ctx.learner ? info(ctx.learner) : null,
+    language: ctx.learner && ctx.language ? languageInfo(ctx.language) : null,
+    learners: learners.map(info),
+  };
 }
 
 /* ---------------------------------- login --------------------------------- */
@@ -198,7 +257,7 @@ async function startSession(req: IncomingMessage, res: ServerResponse, user: Aut
   const id = tokenHash(token);
   await createSession(rawDb(), user.id, id, new Date(Date.now() + SESSION_MS));
   setCookie(res, sessionCookie(token, { secure: secure(req) }));
-  return { user, learner: null, sessionId: id };
+  return { user, learner: null, language: null, sessionId: id };
 }
 
 /** A login or first-run body is a username and a password (MAX_PASSWORD
@@ -279,13 +338,28 @@ export async function handleAuth(req: IncomingMessage, res: ServerResponse, ctx:
     const body = await readJsonBody<Partial<PickLearnerRequest>>(req);
     const id = body && typeof body === "object" ? body.learnerId : undefined;
     let learner: Learner | null = null;
+    let language: LanguageProfile | null = null;
     if (id !== null) {
       // Someone else's learner reads the same as no learner at all.
       learner = (await getLearner(rawDb(), ctx.user.id, id)) ?? null;
       if (!learner) throw new HttpError(404, "no such learner");
+      // It lands on the language it was last practised in (on any device).
+      language = (await defaultLanguageProfile(rawDb(), learner.id)) ?? (await createLanguageProfile(rawDb(), learner.id, {}));
     }
-    await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner?.id ?? null);
-    return sendJson(res, 200, await meReply({ ...ctx, learner }));
+    await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner?.id ?? null, language?.id ?? null);
+    return sendJson(res, 200, await meReply({ ...ctx, learner, language }));
+  }
+  if (seg === "language") {
+    if (req.method !== "PUT") return methodNotAllowed(res, "PUT");
+    const body = await readJsonBody<Partial<PickLanguageRequest>>(req);
+    const id = body && typeof body === "object" ? body.languageId : undefined;
+    // One of the active learner's languages: another learner's (or another
+    // account's) id is the same 404 as a missing one.
+    const learner = activeLearner(ctx);
+    const language = (await getLanguageProfile(rawDb(), learner.id, id)) ?? null;
+    if (!language) throw new HttpError(404, "no such language");
+    await setSessionLearner(rawDb(), ctx.user.id, ctx.sessionId, learner.id, language.id);
+    return sendJson(res, 200, await meReply({ ...ctx, learner, language }));
   }
   sendJson(res, 404, { error: "no such route" });
 }
@@ -294,9 +368,13 @@ export async function handleAuth(req: IncomingMessage, res: ServerResponse, ctx:
 
 const MAX_SHORT = 80;
 const MAX_LONG = 2000;
-const TEXT_KEYS: Record<Exclude<keyof LearnerRequest, "mode">, { col: keyof LearnerPatch; max: number }> = {
+/** The learner's own fields (the person). */
+const LEARNER_KEYS: Record<"name" | "native_language", { col: keyof LearnerPatch; max: number }> = {
   name: { col: "name", max: MAX_SHORT },
   native_language: { col: "nativeLanguage", max: MAX_SHORT },
+};
+/** A language profile's fields. */
+const LANGUAGE_KEYS: Record<keyof LanguageRequest, { col: keyof LanguageProfilePatch; max: number }> = {
   target_language: { col: "targetLanguage", max: MAX_SHORT },
   target_variant: { col: "targetVariant", max: MAX_SHORT },
   level: { col: "level", max: MAX_SHORT },
@@ -304,29 +382,61 @@ const TEXT_KEYS: Record<Exclude<keyof LearnerRequest, "mode">, { col: keyof Lear
   notes: { col: "notes", max: MAX_LONG },
 };
 
-/** A learner body → column values, or a 400 naming what is wrong. */
-export function learnerPatch(body: unknown, allowMode: boolean): { patch: LearnerPatch; mode?: Mode } {
-  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be an object of learner fields");
+function bodyObject(body: unknown, what: string): Record<string, unknown> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, `body must be an object of ${what} fields`);
+  return body as Record<string, unknown>;
+}
+
+/** One text field → its trimmed value, or a 400. */
+function textField(key: string, value: unknown, max: number): string {
+  if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
+  if (value.length > max) throw new HttpError(400, `${key} is too long (at most ${max} characters)`);
+  return value.trim();
+}
+
+/** A language body → column values, or a 400 naming what is wrong. */
+export function languagePatch(body: unknown): LanguageProfilePatch {
+  const patch: LanguageProfilePatch = {};
+  for (const [key, value] of Object.entries(bodyObject(body, "language"))) {
+    if (key === "id" || key === "learner_id") continue; // echoed ids are harmless; the path names the language
+    // Own keys only: "constructor" or "__proto__" would otherwise find
+    // Object.prototype's and reach the query as a column.
+    const spec = Object.hasOwn(LANGUAGE_KEYS, key) ? LANGUAGE_KEYS[key as keyof LanguageRequest] : undefined;
+    if (!spec) throw new HttpError(400, `unknown language field "${key}"`);
+    patch[spec.col] = textField(key, value, spec.max);
+  }
+  return patch;
+}
+
+/**
+ * A learner body → column values, or a 400 naming what is wrong. A new
+ * learner (`creating`) takes its mode and its first language's fields too;
+ * an edit takes only the learner's own (name, native language): its
+ * languages change through their own route, and its mode never does.
+ */
+export function learnerPatch(body: unknown, creating: boolean): { patch: LearnerPatch; language: LanguageProfilePatch; mode?: Mode } {
   const patch: LearnerPatch = {};
+  const languageBody: Record<string, unknown> = {};
   let mode: Mode | undefined;
-  for (const [key, value] of Object.entries(body)) {
+  for (const [key, value] of Object.entries(bodyObject(body, "learner"))) {
     if (key === "id") continue; // an echoed id is harmless; the path names the learner
     if (key === "mode") {
-      if (!allowMode) throw new HttpError(400, "a learner's mode can't change; add a new learner instead");
+      if (!creating) throw new HttpError(400, "a learner's mode can't change; add a new learner instead");
       if (!isMode(value)) throw new HttpError(400, `mode must be one of ${MODES.join(", ")}`);
       mode = value;
       continue;
     }
-    // Own keys only: "constructor" or "__proto__" would otherwise find
-    // Object.prototype's and reach the query as a column.
-    const spec = Object.hasOwn(TEXT_KEYS, key) ? TEXT_KEYS[key as keyof typeof TEXT_KEYS] : undefined;
+    if (Object.hasOwn(LANGUAGE_KEYS, key)) {
+      if (!creating) throw new HttpError(400, `${key} belongs to a language: edit it with PATCH /api/learners/:id/languages/:languageId`);
+      languageBody[key] = value;
+      continue;
+    }
+    const spec = Object.hasOwn(LEARNER_KEYS, key) ? LEARNER_KEYS[key as keyof typeof LEARNER_KEYS] : undefined;
     if (!spec) throw new HttpError(400, `unknown learner field "${key}"`);
-    if (typeof value !== "string") throw new HttpError(400, `${key} must be a string`);
-    if (value.length > spec.max) throw new HttpError(400, `${key} is too long (at most ${spec.max} characters)`);
-    patch[spec.col] = value.trim();
+    patch[spec.col] = textField(key, value, spec.max);
   }
   if (patch.name !== undefined && !patch.name) throw new HttpError(400, "a learner needs a name");
-  return { patch, mode };
+  return { patch, language: languagePatch(languageBody), mode };
 }
 
 export async function handleLearners(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
@@ -335,38 +445,89 @@ export async function handleLearners(req: IncomingMessage, res: ServerResponse, 
   if (!seg) {
     if (req.method === "GET") {
       const learners = await listLearners(db, ctx.user.id);
-      return sendJson(res, 200, { learners: learners.map(learnerInfo) } satisfies LearnersReply);
+      const languages = await languagesByLearner(db, ctx.user.id);
+      return sendJson(res, 200, { learners: learners.map((l) => learnerInfo(l, languages.get(l.id) ?? [])) } satisfies LearnersReply);
     }
     if (req.method === "POST") {
-      const { patch, mode } = learnerPatch(await readJsonBody<unknown>(req), true);
+      const { patch, language, mode } = learnerPatch(await readJsonBody<unknown>(req), true);
       if (!patch.name) throw new HttpError(400, "a learner needs a name");
       if (!mode) throw new HttpError(400, `a learner needs a mode (one of ${MODES.join(", ")})`);
-      // A new learner starts at the mode's first level unless one is given.
-      const values: NewLearner = { ...patch, name: patch.name, mode, level: patch.level || LEVELS_BY_MODE[mode][0] || "" };
+      // A new learner comes with its first language, which starts at the
+      // mode's first level unless one is given.
+      const values: NewLearnerWithLanguage = { ...patch, ...language, name: patch.name, mode, level: language.level || LEVELS_BY_MODE[mode][0] || "" };
       const learner = await createLearner(db, ctx.user.id, values);
-      return sendJson(res, 200, { learner: learnerInfo(learner) } satisfies LearnerReply);
+      return sendJson(res, 200, { learner: learnerInfo(learner, [learner.language]) } satisfies LearnerReply);
     }
     return methodNotAllowed(res, "GET, POST");
   }
   const [id, action, ...rest] = seg.split("/");
+  if (action === "languages") return handleLanguages(req, res, ctx, id, rest);
   if (rest.length) return sendJson(res, 404, { error: "no such route" });
   if (action === "archive") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     const learner = await archiveLearner(db, ctx.user.id, id);
     if (!learner) throw new HttpError(404, "no such learner");
-    return sendJson(res, 200, { learner: learnerInfo(learner) } satisfies LearnerReply);
+    return sendJson(res, 200, { learner: await learnerInfoOf(learner) } satisfies LearnerReply);
   }
   if (action !== undefined) return sendJson(res, 404, { error: "no such route" });
   if (req.method === "GET") {
     const learner = await getLearner(db, ctx.user.id, id);
     if (!learner) throw new HttpError(404, "no such learner");
-    return sendJson(res, 200, { learner: learnerInfo(learner) } satisfies LearnerReply);
+    return sendJson(res, 200, { learner: await learnerInfoOf(learner) } satisfies LearnerReply);
   }
   if (req.method === "PATCH") {
     const { patch } = learnerPatch(await readJsonBody<unknown>(req), false);
     const learner = await updateLearner(db, ctx.user.id, id, patch);
     if (!learner) throw new HttpError(404, "no such learner");
-    return sendJson(res, 200, { learner: learnerInfo(learner) } satisfies LearnerReply);
+    return sendJson(res, 200, { learner: await learnerInfoOf(learner) } satisfies LearnerReply);
+  }
+  methodNotAllowed(res, "GET, PATCH");
+}
+
+/** /api/learners/:id/languages[/:languageId[/archive]]: a learner's
+ *  languages. The learner is looked up through the user's scope and the
+ *  language through the learner's, so another account's learner or another
+ *  learner's language is a 404 like a missing one. Any of the user's
+ *  learners, not only the active one (as for the learner routes): these
+ *  don't act for the page, so they carry no stale check. */
+async function handleLanguages(req: IncomingMessage, res: ServerResponse, ctx: Ctx, learnerId: string, rest: string[]): Promise<void> {
+  const db = rawDb();
+  const learner = await getLearner(db, ctx.user.id, learnerId);
+  if (!learner) throw new HttpError(404, "no such learner");
+  const [languageId, action, ...more] = rest;
+  if (more.length) return sendJson(res, 404, { error: "no such route" });
+  if (languageId === undefined) {
+    if (req.method === "GET") {
+      const archived = new URL(req.url ?? "/", "http://localhost").searchParams.get("archived") === "1";
+      const languages = await listLanguageProfiles(db, learner.id, { archived });
+      return sendJson(res, 200, { languages: languages.map(languageInfo) } satisfies LanguagesReply);
+    }
+    if (req.method === "POST") {
+      const patch = languagePatch(await readJsonBody<unknown>(req));
+      const language = await createLanguageProfile(db, learner.id, { ...patch, level: patch.level || LEVELS_BY_MODE[learner.mode][0] || "" });
+      return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
+    }
+    return methodNotAllowed(res, "GET, POST");
+  }
+  if (action === "archive") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    const result = await archiveLanguageProfile(db, ctx.user.id, learner.id, languageId);
+    if ("refused" in result) {
+      if (result.refused === "last") throw new HttpError(409, `${learner.name} needs at least one language; add another before archiving this one`);
+      throw new HttpError(404, "no such language");
+    }
+    return sendJson(res, 200, { language: languageInfo(result.profile) } satisfies LanguageReply);
+  }
+  if (action !== undefined) return sendJson(res, 404, { error: "no such route" });
+  if (req.method === "GET") {
+    const language = await getLanguageProfile(db, learner.id, languageId);
+    if (!language) throw new HttpError(404, "no such language");
+    return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
+  }
+  if (req.method === "PATCH") {
+    const language = await updateLanguageProfile(db, learner.id, languageId, languagePatch(await readJsonBody<unknown>(req)));
+    if (!language) throw new HttpError(404, "no such language");
+    return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);
   }
   methodNotAllowed(res, "GET, PATCH");
 }

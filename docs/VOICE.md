@@ -192,7 +192,7 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
 
 ## Saved conversations
 
-Every session is saved for the active learner, turn by turn, and listed in
+Every session is saved for the active learner's current language, turn by turn, and listed in
 the Library tab's **History** (docs/DATA.md §Conversations has the tables).
 
 - **Start.** The session's first turn makes a conversation

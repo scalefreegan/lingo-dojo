@@ -18,7 +18,7 @@ import { ADULT, KID, PASSWORD, addUser, client } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { tokenHash } from "../auth.mjs";
 import { disableUser, enableUser, setPassword } from "../db/accounts.ts";
-import { agentMessages, authSessions, learners, userSettings, users } from "../db/schema.ts";
+import { agentMessages, authSessions, languageProfiles, learners, userSettings, users } from "../db/schema.ts";
 
 const root = copyFixture();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
@@ -73,7 +73,7 @@ test("first run: /me says so; the first account is an admin seeded from the prof
   );
   try {
     const me = await anon().call("GET", "/api/auth/me");
-    assert.deepEqual(me.body, { firstRun: true, firstRunHere: true, user: null, learners: [], learner: null });
+    assert.deepEqual(me.body, { firstRun: true, firstRunHere: true, user: null, learners: [], learner: null, language: null });
 
     const c = anon();
     const r = await c.call("POST", "/api/auth/first-run", { username: " Robin ", password: PASSWORD });
@@ -82,9 +82,14 @@ test("first run: /me says so; the first account is an admin seeded from the prof
     assert.equal(r.body.user.username, "robin", "normalized");
     assert.equal(r.body.user.isAdmin, true);
     assert.equal(r.body.learner, null, "the picker comes next");
-    assert.deepEqual(r.body.learners.map((l) => [l.name, l.mode, l.level]), [["Sam", "adult", "A2"], ["Pip", "kids", "First words"]]);
-    assert.equal(r.body.learners[0].goals, "Order food and chat with vendors.");
-    assert.equal(r.body.learners[0].target_variant, "Mexican Spanish");
+    assert.equal(r.body.language, null);
+    // Each seeded learner has one language: the profile's.
+    assert.deepEqual(r.body.learners.map((l) => [l.name, l.mode, l.languages.map((g) => [g.target_language, g.level])]), [
+      ["Sam", "adult", [["Spanish", "A2"]]],
+      ["Pip", "kids", [["German", "First words"]]],
+    ]);
+    assert.equal(r.body.learners[0].languages[0].goals, "Order food and chat with vendors.");
+    assert.equal(r.body.learners[0].languages[0].target_variant, "Mexican Spanish");
     assert.match(c.jar.cookie, /^ld_session=/);
 
     const [settings] = await db.select().from(userSettings);
@@ -159,7 +164,7 @@ test("first run: a request that came through the proxy is refused with a 403 and
   assert.equal((await db.select().from(users)).length, 0);
 
   const me = await raw("GET", "/api/auth/me", viaProxy);
-  assert.deepEqual(me.body, { firstRun: true, firstRunHere: false, user: null, learners: [], learner: null });
+  assert.deepEqual(me.body, { firstRun: true, firstRunHere: false, user: null, learners: [], learner: null, language: null });
 
   // The same body from a direct local request still works.
   const ok = await raw("POST", "/api/auth/first-run", { Host: "localhost:38400" }, body);
@@ -426,36 +431,47 @@ test("learners: add, list, edit, archive and pick; the picked learner is on the 
   const { c } = await as(db, "robin");
   assert.deepEqual((await c.call("GET", "/api/learners")).body, { learners: [] }, "a CLI-made user starts with none");
 
+  // A new learner comes with its first language, from the same body.
   const made = await c.call("POST", "/api/learners", { name: " Ana ", mode: "adult", target_language: "Italian" });
   assert.equal(made.status, 200, JSON.stringify(made.body));
   assert.equal(made.body.learner.name, "Ana");
-  assert.equal(made.body.learner.level, "A1", "the mode's first level by default");
-  const kid = (await c.call("POST", "/api/learners", { name: "Bo", mode: "kids" })).body.learner;
-  assert.equal(kid.level, "First words");
+  assert.equal(made.body.learner.languages.length, 1);
+  assert.equal(made.body.learner.languages[0].target_language, "Italian");
+  assert.equal(made.body.learner.languages[0].level, "A1", "the mode's first level by default");
+  const kid = (await c.call("POST", "/api/learners", { name: "Bo", mode: "kids", target_language: "Spanish" })).body.learner;
+  assert.equal(kid.languages[0].level, "First words");
   for (const bad of [{ mode: "adult" }, { name: "x" }, { name: "x", mode: "teen" }, { name: "x", mode: "adult", wizard: 1 }, { name: "x", mode: "adult", level: 3 }, { name: "x".repeat(81), mode: "adult" }, [], "nope"]) {
     assert.equal((await c.call("POST", "/api/learners", bad)).status, 400, JSON.stringify(bad));
   }
   assert.deepEqual((await c.call("GET", "/api/learners")).body.learners.map((l) => l.name), ["Ana", "Bo"]);
 
+  // An edit takes the person's own fields; a language's go through its route.
   const id = made.body.learner.id;
-  const edited = await c.call("PATCH", `/api/learners/${id}`, { level: "B1", goals: "Read menus.", notes: "" });
+  const edited = await c.call("PATCH", `/api/learners/${id}`, { name: "Anna", native_language: "German" });
   assert.equal(edited.status, 200);
-  assert.deepEqual([edited.body.learner.level, edited.body.learner.goals, edited.body.learner.target_language], ["B1", "Read menus.", "Italian"]);
-  assert.equal((await c.call("GET", `/api/learners/${id}`)).body.learner.level, "B1");
+  assert.deepEqual([edited.body.learner.name, edited.body.learner.native_language, edited.body.learner.languages[0].target_language], ["Anna", "German", "Italian"]);
+  assert.equal((await c.call("GET", `/api/learners/${id}`)).body.learner.name, "Anna");
   assert.equal((await c.call("PATCH", `/api/learners/${id}`, { mode: "kids" })).status, 400, "the mode is fixed");
   assert.equal((await c.call("PATCH", `/api/learners/${id}`, { name: "" })).status, 400);
+  const misplaced = await c.call("PATCH", `/api/learners/${id}`, { level: "B1" });
+  assert.equal(misplaced.status, 400, "level belongs to a language");
+  assert.match(misplaced.body.error, /languages/);
 
-  // Pick: the session carries it, and the mode follows the learner.
+  // Pick: the session carries the learner and its language, and the mode follows the learner.
   const picked = await c.call("PUT", "/api/auth/learner", { learnerId: kid.id });
   assert.equal(picked.status, 200);
   assert.equal(picked.body.learner.name, "Bo");
-  assert.equal((await c.call("GET", "/api/auth/me")).body.learner.id, kid.id);
+  assert.equal(picked.body.language.id, kid.languages[0].id, "on its one language");
+  const me = (await c.call("GET", "/api/auth/me")).body;
+  assert.deepEqual([me.learner.id, me.language.id], [kid.id, kid.languages[0].id]);
   assert.equal((await c.call("GET", "/api/content")).body.mode, "kids");
   await c.call("PUT", "/api/auth/learner", { learnerId: id });
   assert.equal((await c.call("GET", "/api/content")).body.mode, "adult");
-  assert.equal((await c.call("GET", "/api/content")).body.profile.learner_name, "Ana");
+  assert.equal((await c.call("GET", "/api/content")).body.profile.learner_name, "Anna");
+  assert.equal((await c.call("GET", "/api/content")).body.profile.target_language, "Italian");
   // Back to the picker.
-  assert.equal((await c.call("PUT", "/api/auth/learner", { learnerId: null })).body.learner, null);
+  const none = (await c.call("PUT", "/api/auth/learner", { learnerId: null })).body;
+  assert.deepEqual([none.learner, none.language], [null, null]);
   for (const bad of [{}, { learnerId: "not-a-uuid" }, { learnerId: "00000000-0000-4000-8000-000000000000" }]) {
     assert.equal((await c.call("PUT", "/api/auth/learner", bad)).status, 404, JSON.stringify(bad));
   }
@@ -465,13 +481,120 @@ test("learners: add, list, edit, archive and pick; the picked learner is on the 
   const archived = await c.call("POST", `/api/learners/${id}/archive`);
   assert.equal(archived.status, 200);
   assert.deepEqual((await c.call("GET", "/api/learners")).body.learners.map((l) => l.name), ["Bo"]);
-  assert.equal((await c.call("GET", "/api/auth/me")).body.learner, null);
+  const after = (await c.call("GET", "/api/auth/me")).body;
+  assert.deepEqual([after.learner, after.language], [null, null]);
   assert.equal((await c.call("PUT", "/api/auth/learner", { learnerId: id })).status, 404);
   assert.equal((await c.call("POST", `/api/learners/${id}/archive`)).status, 404, "already archived");
-  assert.equal((await c.call("PATCH", `/api/learners/${id}`, { level: "C1" })).status, 404);
+  assert.equal((await c.call("PATCH", `/api/learners/${id}`, { name: "C" })).status, 404);
+  assert.equal((await c.call("GET", `/api/learners/${id}/languages`)).status, 404, "nor are its languages reachable");
   assert.ok((await db.select().from(learners).where(eq(learners.id, id)))[0].archivedAt, "kept, not deleted");
   assert.equal((await c.call("GET", "/api/learners/x/y/z")).status, 404);
   assert.equal((await c.call("DELETE", `/api/learners/${kid.id}`)).status, 405);
+});
+
+test("languages: a learner adds, edits, picks and archives its languages; it keeps at least one; picking one lands the session on it, and a learner re-picked lands on its last-used one", async () => {
+  const { db } = await freshRoutes();
+  const { c } = await as(db, "robin", { learners: [ADULT] });
+  const sam = (await c.call("GET", "/api/learners")).body.learners[0];
+  const spanish = sam.languages[0];
+  const url = `/api/learners/${sam.id}/languages`;
+
+  // Add: the mode's first level unless one is given; bad bodies are a 400 and add nothing.
+  const added = await c.call("POST", url, { target_language: "German", level: "B1", goals: "Talk with colleagues." });
+  assert.equal(added.status, 200, added.text);
+  const german = added.body.language;
+  assert.deepEqual([german.learner_id, german.target_language, german.level, german.goals], [sam.id, "German", "B1", "Talk with colleagues."]);
+  const chinese = (await c.call("POST", url, { target_language: "Mandarin Chinese" })).body.language;
+  assert.equal(chinese.level, "A1");
+  for (const bad of [{ name: "x" }, { mode: "kids" }, { level: 3 }, { goals: "x".repeat(2001) }, { constructor: "x" }, [], "nope"]) {
+    assert.equal((await c.call("POST", url, bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.deepEqual((await c.call("GET", url)).body.languages.map((l) => l.target_language), ["Spanish", "German", "Mandarin Chinese"]);
+  assert.deepEqual((await c.call("GET", "/api/auth/me")).body.learners[0].languages.map((l) => l.target_language), ["Spanish", "German", "Mandarin Chinese"], "/me lists them with the learner");
+
+  // Edit one language; the others are untouched.
+  const edited = await c.call("PATCH", `${url}/${chinese.id}`, { target_variant: "Taiwan", level: "A2", notes: "Tones first." });
+  assert.equal(edited.status, 200);
+  assert.deepEqual([edited.body.language.target_variant, edited.body.language.level, edited.body.language.notes], ["Taiwan", "A2", "Tones first."]);
+  assert.equal((await c.call("GET", `${url}/${german.id}`)).body.language.level, "B1");
+  assert.equal((await c.call("PATCH", `${url}/${chinese.id}`, { name: "x" })).status, 400);
+
+  // Pick a learner: it lands on its last-used language; then pick another of its languages.
+  await c.pick("Sam");
+  assert.equal((await c.call("GET", "/api/content")).body.profile.target_language, "Spanish");
+  const switched = await c.call("PUT", "/api/auth/language", { languageId: german.id }, { "X-Language-Profile-Id": c.languageId });
+  assert.equal(switched.status, 200, switched.text);
+  assert.equal(switched.body.language.id, german.id);
+  assert.equal(switched.body.learner.id, sam.id);
+  c.languageId = german.id;
+  const content = (await c.call("GET", "/api/content")).body;
+  assert.deepEqual([content.profile.learner_name, content.profile.target_language, content.profile.level], ["Sam", "German", "B1"]);
+  // Leaving and coming back to Sam: German, the one used last.
+  await c.call("PUT", "/api/auth/learner", { learnerId: null });
+  const back = await c.call("PUT", "/api/auth/learner", { learnerId: sam.id });
+  assert.equal(back.body.language.id, german.id, "last used wins");
+  c.languageId = german.id;
+  for (const bad of [{}, { languageId: "not-a-uuid" }, { languageId: "00000000-0000-4000-8000-000000000000" }]) {
+    assert.equal((await c.call("PUT", "/api/auth/language", bad)).status, 404, JSON.stringify(bad));
+  }
+
+  // Archive: the active one moves the session to the learner's default; the last one can't go.
+  const gone = await c.call("POST", `${url}/${german.id}/archive`);
+  assert.equal(gone.status, 200);
+  const me = (await c.call("GET", "/api/auth/me")).body;
+  assert.notEqual(me.language.id, german.id, "the session moved off it");
+  assert.equal(me.language.learner_id, sam.id);
+  assert.deepEqual((await c.call("GET", url)).body.languages.map((l) => l.target_language), ["Spanish", "Mandarin Chinese"]);
+  assert.deepEqual((await c.call("GET", `${url}?archived=1`)).body.languages.map((l) => l.target_language).sort(), ["German", "Mandarin Chinese", "Spanish"]);
+  assert.equal((await c.call("PUT", "/api/auth/language", { languageId: german.id })).status, 404, "no longer pickable");
+  assert.equal((await c.call("PATCH", `${url}/${german.id}`, { level: "C1" })).status, 404);
+  assert.equal((await c.call("POST", `${url}/${german.id}/archive`)).status, 404, "already archived");
+  assert.equal((await c.call("POST", `${url}/${chinese.id}/archive`)).status, 200);
+  const last = await c.call("POST", `${url}/${spanish.id}/archive`);
+  assert.equal(last.status, 409, "a learner keeps at least one language");
+  assert.match(last.body.error, /at least one language/);
+  assert.deepEqual((await c.call("GET", url)).body.languages.map((l) => l.target_language), ["Spanish"]);
+  assert.ok((await db.select().from(languageProfiles).where(eq(languageProfiles.id, german.id)))[0].archivedAt, "kept, not deleted");
+
+  // Routes past the end, or methods they don't take.
+  assert.equal((await c.call("GET", `${url}/${spanish.id}/archive/x`)).status, 404);
+  assert.equal((await c.call("DELETE", `${url}/${spanish.id}`)).status, 405);
+  assert.equal((await c.call("GET", "/api/auth/language")).status, 405);
+});
+
+test("languages across learners and accounts: another learner's or another account's language is a 404 on every route and changes nothing", async () => {
+  const { db } = await freshRoutes();
+  const a = await as(db, "robin", { learners: [ADULT, KID] });
+  const b = await as(db, "lee", { learners: [{ ...ADULT, name: "Lee" }] });
+  const [sam, pip] = a.learners;
+  const samLanguage = (await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, sam.id)))[0];
+  const pipLanguage = (await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, pip.id)))[0];
+  // Picking touches last_used_at; everything else must stay as it was.
+  const rows = async () => (await db.select().from(languageProfiles)).map(({ lastUsedAt, ...r }) => r).sort((x, y) => x.id.localeCompare(y.id));
+  const before = await rows();
+
+  // Another account: neither the learner nor its language is there.
+  for (const [m, u, body] of [
+    ["GET", `/api/learners/${sam.id}/languages`], ["POST", `/api/learners/${sam.id}/languages`, { target_language: "Hijacked" }],
+    ["GET", `/api/learners/${sam.id}/languages/${samLanguage.id}`], ["PATCH", `/api/learners/${sam.id}/languages/${samLanguage.id}`, { level: "C2" }],
+    ["POST", `/api/learners/${sam.id}/languages/${samLanguage.id}/archive`],
+  ]) {
+    assert.equal((await b.c.call(m, u, body)).status, 404, `lee: ${m} ${u}`);
+  }
+  await b.c.pick("Lee");
+  assert.equal((await b.c.call("PUT", "/api/auth/language", { languageId: samLanguage.id })).status, 404, "lee can't pick Sam's language");
+
+  // The same account, the wrong learner: Pip's language under Sam's path, or picked while Sam is active.
+  await a.c.pick("Sam");
+  assert.equal((await a.c.call("GET", `/api/learners/${sam.id}/languages/${pipLanguage.id}`)).status, 404);
+  assert.equal((await a.c.call("PATCH", `/api/learners/${sam.id}/languages/${pipLanguage.id}`, { level: "C2" })).status, 404);
+  assert.equal((await a.c.call("POST", `/api/learners/${sam.id}/languages/${pipLanguage.id}/archive`)).status, 404);
+  assert.equal((await a.c.call("PUT", "/api/auth/language", { languageId: pipLanguage.id })).status, 404, "only the active learner's languages");
+  assert.deepEqual(await rows(), before, "nothing changed");
+
+  // The session table refuses a language that isn't its learner's, even past the route.
+  const session = (await db.select().from(authSessions).where(eq(authSessions.userId, a.user.id)))[0];
+  await assert.rejects(db.update(authSessions).set({ languageProfileId: pipLanguage.id }).where(eq(authSessions.id, session.id)));
 });
 
 /* ------------------------------- cross-tenant ----------------------------- */

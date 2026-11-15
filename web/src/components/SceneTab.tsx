@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ContentReply, Scenario } from "../types";
-import { foreignLanguage, fold, learnerKey, sessionValues, type Draft } from "../draft";
+import { foreignLanguage, fold, languageKey, sessionValues, type Draft } from "../draft";
 import { Button, Chevron, inputClass } from "./ui";
 
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
@@ -12,9 +12,9 @@ const FOLDERS_KEY = "lingo-dojo.scene-folders.v1";
 
 /** Open/closed per collection, as the user last left it. A collection absent
  *  from the map has never been toggled and takes its default. */
-function loadFolders(learnerId: string): Record<string, boolean> {
+function loadFolders(languageId: string): Record<string, boolean> {
   try {
-    const raw = JSON.parse(localStorage.getItem(learnerKey(FOLDERS_KEY, learnerId)) ?? "null") as Record<string, unknown> | null;
+    const raw = JSON.parse(localStorage.getItem(languageKey(FOLDERS_KEY, languageId)) ?? "null") as Record<string, unknown> | null;
     if (!raw || typeof raw !== "object") return {};
     return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === "boolean")) as Record<string, boolean>;
   } catch {
@@ -28,9 +28,9 @@ interface Filter {
   category: string;
 }
 
-function loadFilter(learnerId: string): Filter {
+function loadFilter(languageId: string): Filter {
   try {
-    const f = JSON.parse(localStorage.getItem(learnerKey(FILTER_KEY, learnerId)) ?? "null") as Partial<Filter> | null;
+    const f = JSON.parse(localStorage.getItem(languageKey(FILTER_KEY, languageId)) ?? "null") as Partial<Filter> | null;
     return { query: typeof f?.query === "string" ? f.query : "", category: typeof f?.category === "string" ? f.category : "" };
   } catch {
     return { query: "", category: "" };
@@ -41,18 +41,18 @@ function loadFilter(learnerId: string): Filter {
  * Library scenes sit in collapsible collection folders under search and
  * category chips; who the session is for lives in the top bar's Profile
  * control, and the note for the dojo master on the Go tab. Filters and
- * folder state are remembered per learner (the search box is that learner's
- * typing); App remounts on a learner switch, so the initial-state readers
- * run again. */
+ * folder state are remembered per language profile (the search box is that
+ * learner's typing in that language); App remounts on a learner or language
+ * switch, so the initial-state readers run again. */
 export default function SceneTab({
-  learnerId,
+  languageId,
   content,
   draft,
   onChange,
   onNext,
 }: {
-  /** Whose filters and folder state to remember (draft.ts learnerKey). */
-  learnerId: string;
+  /** Which language profile's filters and folder state to remember (draft.ts languageKey). */
+  languageId: string;
   content: ContentReply;
   draft: Draft;
   onChange: (d: Draft) => void;
@@ -60,19 +60,19 @@ export default function SceneTab({
 }) {
   const quick = draft.scenarioMode === "quick";
   const { scenarios } = content;
-  const [filter, setFilterState] = useState<Filter>(() => loadFilter(learnerId));
+  const [filter, setFilterState] = useState<Filter>(() => loadFilter(languageId));
   const setFilter = (f: Filter) => {
     setFilterState(f);
     setTransient({});
     try {
-      localStorage.setItem(learnerKey(FILTER_KEY, learnerId), JSON.stringify(f));
+      localStorage.setItem(languageKey(FILTER_KEY, languageId), JSON.stringify(f));
     } catch {
       /* blocked storage: the filter just won't survive a refresh */
     }
   };
   const clear = () => setFilter({ query: "", category: "" });
 
-  const [stored, setStored] = useState<Record<string, boolean>>(() => loadFolders(learnerId));
+  const [stored, setStored] = useState<Record<string, boolean>>(() => loadFolders(languageId));
   // While a search or chip is active, folders with matches open on their own;
   // clicking one then is a this-filter-only choice, forgotten when the filter
   // changes, and never written to storage.
@@ -129,7 +129,7 @@ export default function SceneTab({
     const map = { ...stored, [g.key]: next };
     setStored(map);
     try {
-      localStorage.setItem(learnerKey(FOLDERS_KEY, learnerId), JSON.stringify(map));
+      localStorage.setItem(languageKey(FOLDERS_KEY, languageId), JSON.stringify(map));
     } catch {
       /* blocked storage: folders just reopen to their defaults next visit */
     }

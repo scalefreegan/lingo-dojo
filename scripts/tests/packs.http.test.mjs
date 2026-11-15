@@ -17,7 +17,7 @@ import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
-import { packRevisions, packs } from "../db/schema.ts";
+import { packFolders, packRevisions, packs } from "../db/schema.ts";
 
 const root = copyFixture();
 process.env.LINGO_CONTENT_DIR = root;
@@ -498,5 +498,74 @@ test("a cross-origin request is refused on the revision routes too", async () =>
   for (const [m, u] of [["GET", "/api/pack-revisions/deleted"], ["POST", "/api/pack-revisions/00000000-0000-4000-8000-000000000000/restore"]]) {
     const r = await call(m, u, undefined, { Origin: "https://evil.example" });
     assert.equal(r.status, 403, `${m} ${u}`);
+  }
+});
+
+test("isolation between one learner's languages: German never sees or changes Spanish's packs, folders, revisions or deleted packs, even by guessing ids", async () => {
+  // Spanish (Sam's first language): a pack in a folder, a deleted pack, their revisions.
+  await call("PUT", "/api/packs/secret/2026-10-26-es", { ...pack, title: "Spanish pack" });
+  await call("PUT", "/api/packs/2026-10-26-gone", { ...pack, title: "Spanish deleted" });
+  await call("DELETE", "/api/packs/2026-10-26-gone");
+  const esRevision = (await call("GET", "/api/pack-revisions?id=secret%2F2026-10-26-es")).body.revisions[0].revision;
+  const esDeleted = (await call("GET", "/api/pack-revisions/deleted")).body.packs.find((d) => d.pack.id === "2026-10-26-gone").revision;
+  const esState = async () => ({ packs: (await call("GET", "/api/packs")).body, revisions: await history("secret/2026-10-26-es"), deleted: await allDeleted() });
+  const before = await esState();
+  const spanishId = robin.languageId;
+
+  // Sam in German, in another login of the same account (another device),
+  // so this page stays on Spanish and current.
+  const de = client(base);
+  await de.login("robin");
+  await de.pick("Sam");
+  const german = await de.addLanguage({ target_language: "German", level: "B1" });
+  try {
+    assert.deepEqual((await de.call("GET", "/api/packs")).body, { packs: [], folders: [], problems: [] });
+    assert.deepEqual((await de.call("GET", "/api/pack-revisions/deleted")).body.packs, []);
+    for (const [m, u, body] of [
+      ["GET", "/api/packs/secret/2026-10-26-es"], ["GET", "/api/pack-revisions?id=secret%2F2026-10-26-es"],
+      ["DELETE", "/api/packs/secret/2026-10-26-es"], ["POST", "/api/packs/secret/2026-10-26-es/move", { folder: "" }],
+      ["POST", "/api/packs/secret/2026-10-26-es/rename", { title: "Mine now" }], ["DELETE", "/api/folders/secret"],
+      ["POST", `/api/pack-revisions/${esRevision}/restore`], ["POST", `/api/pack-revisions/${esDeleted}/restore`],
+    ]) {
+      assert.equal((await de.call(m, u, body)).status, 404, `${m} ${u}`);
+    }
+    // The same id and folder name are German's to use, separately.
+    assert.equal((await de.call("POST", "/api/folders", { name: "secret" })).status, 200);
+    assert.equal((await de.call("PUT", "/api/packs/secret/2026-10-26-es", { ...pack, title: "German pack" })).status, 200);
+    assert.deepEqual((await de.call("GET", "/api/packs")).body.packs.map((p) => p.title), ["German pack"]);
+    const [row] = await db.select().from(packs).where(eq(packs.title, "German pack"));
+    assert.equal(row.languageProfileId, german.id);
+    assert.deepEqual(await esState(), before, "Spanish's packs, folders, history and deleted packs are untouched");
+
+    // Switching this page's own language shows German's; switching back, Spanish's.
+    await robin.pickLanguage(german.id);
+    assert.deepEqual((await call("GET", "/api/packs")).body.packs.map((p) => p.title), ["German pack"]);
+    await clear();
+  } finally {
+    await robin.pickLanguage(spanishId);
+  }
+  assert.deepEqual((await call("GET", "/api/packs")).body.packs.map((p) => p.title), ["Spanish pack"]);
+  await clear();
+});
+
+test("a page showing the learner's other language gets 409 stale_learner on every pack route, and nothing is written", async () => {
+  const other = tab(base, robin);
+  await other.addLanguage({ target_language: "Italian", level: "A1" });
+  const spanishId = robin.languageId;
+  const rowsBefore = [...(await db.select().from(packs)), ...(await db.select().from(packFolders))];
+  try {
+    for (const [m, u, body] of [
+      ["GET", "/api/packs"], ["PUT", "/api/packs/2026-10-27-stale", pack], ["DELETE", "/api/packs/2026-10-27-stale"],
+      ["POST", "/api/folders", { name: "stale" }], ["GET", "/api/pack-revisions/deleted"],
+      ["POST", "/api/assemble", { pack }], ["PUT", "/api/profile", { level: "C2" }],
+    ]) {
+      const r = await call(m, u, body);
+      assert.equal(r.status, 409, `${m} ${u}`);
+      assert.equal(r.body.code, "stale_learner", `${m} ${u}`);
+    }
+    assert.deepEqual([...(await db.select().from(packs)), ...(await db.select().from(packFolders))], rowsBefore);
+    assert.equal((await other.call("GET", "/api/packs")).status, 200, "the tab that switched is current");
+  } finally {
+    await robin.pickLanguage(spanishId);
   }
 });

@@ -1,7 +1,8 @@
 # Learners, memory and practice: the database design
 
 Status: **phase 0 (foundation), phase 1 (logins and learners), phase 2
-(packs in the database, and their import) and phase 3 (conversations)
+(packs in the database, and their import), phase 3 (conversations) and
+language profiles (bead `ld-gf9.2`: one learner, several languages)
 built**; phases 4–11 are plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
@@ -16,7 +17,8 @@ used, or keep missing. This design adds:
 
 1. **Logins and learners.** A few people share the app on this Mac, each with a
    password. Under a login are one or more learners (you; your child in kids
-   mode), Netflix-style.
+   mode), Netflix-style, and under a learner one or more languages (German at
+   B1, Chinese at A1), each with its own level, packs and History.
 2. **Saved conversations.** Every voice session's transcript is stored.
 3. **A phrase bank per learner** with metrics: when each phrase was last seen,
    last practiced, and how well it is known (FSRS spaced repetition).
@@ -68,12 +70,12 @@ browser ──cookie──▶ Vite middleware (web/server/*)
 scripts/
   db/schema.ts        Drizzle tables (shared by server, CLI, tests)
   db/migrations/      generated SQL, committed
-  db/owned.ts         owned-row scopes: forLearner / forUser (built, phase 0)
+  db/owned.ts         owned-row scopes: forLearner / forUser (built, phase 0); forLanguageProfile (language profiles)
   db/config.mjs       DATABASE_URL, migrations dir (built, phase 0)
   db/migrations.mjs   by-hash migrator and migration state (built, phase 0)
-  db/hand-edits.mjs   the documented hand edits to 0000_init.sql (built, phase 0)
+  db/hand-edits.mjs   the documented hand edits to 0000_init.sql (built, phase 0) and 0002_language_profiles.sql
   db/setup.mjs        CLI: db:setup / db:migrate (built, phase 0)
-  db/accounts.ts      users, sessions, learners, settings, agent messages (built, phase 1)
+  db/accounts.ts      users, sessions, learners, language profiles, settings, agent messages (built, phase 1)
   db/packs.ts         packs, folders, revisions, restore, the pack import (built, phase 2)
   db/import.ts        the import's account and learner choice, and its report (built, phase 2)
   auth.mjs            pure: scrypt, tokens, the cookie, the login throttle (built, phase 1)
@@ -136,9 +138,10 @@ missing file by hash in one transaction (which repairs *skipped*), and refuse
 
 All ids are `uuid` (`gen_random_uuid()`), timestamps `timestamptz` (two
 exceptions below: `packs.created` and `reviews.id`). Every personal table
-carries `learner_id` (or `user_id` for account-level rows), and every query
-goes through a helper that requires it, so a forgotten `where` is a type
-error, not a leak.
+carries `learner_id` (or `user_id` for account-level rows), the tables that
+belong to one language (packs, folders, revisions, conversations, turns)
+`language_profile_id` too, and every query goes through a helper that
+requires them, so a forgotten `where` is a type error, not a leak.
 
 As built (phase 0): child tables (`pack_revisions`, `turns`,
 `phrase_examples`, `cards`, `reviews`, `cloze_items`) carry `learner_id`
@@ -158,6 +161,7 @@ another owner's row:
 | `phrase_examples.conversation_id` | `conversations (id, learner_id)` |
 | `phrase_examples.turn_id` | `turns (id, learner_id)` |
 | `auth_sessions.learner_id` | `learners (id, user_id)` |
+| `auth_sessions.language_profile_id` | `language_profiles (id, learner_id)` (migration 0002) |
 
 On delete they null only the link column: `ON DELETE SET NULL (col)`, which
 needs PostgreSQL 15+. Deleting a conversation never erases memory, and
@@ -169,14 +173,16 @@ output plus exactly two documented hand edits:
 1. `CREATE EXTENSION pg_trgm`.
 2. The four `SET NULL (col)` clauses.
 
-Both live in `scripts/db/hand-edits.mjs`. `scripts/tests/db-migrations.test.mjs`
-regenerates the SQL from `schema.ts`, checks that the committed file is
-exactly that output with the hand edits applied, checks that `schema.ts` has
+Both live in `scripts/db/hand-edits.mjs`, beside those of
+`0002_language_profiles.sql` (see Language profiles). `scripts/tests/db-migrations.test.mjs`
+regenerates the latest migration's SQL from `schema.ts`, checks that the committed file is
+exactly that output with its hand edits applied, checks that `schema.ts` has
 no change missing from the snapshot, and checks the delete columns in the
 catalog.
 
 **The owned-row helper** is `scripts/db/owned.ts`:
-`forLearner(db, learnerId)` and `forUser(db, userId)` return a scope with
+`forLearner(db, learnerId)`, `forUser(db, userId)` and
+`forLanguageProfile(db, { id, learnerId })` return a scope with
 `list`, `get`, `insert`, `insertOrIgnore` (added in phase 2), `upsert`, `update`, `remove`, `removeAllOwned` and
 `where`. Each one adds `owner = id and (cond)`, or stamps the owner on insert.
 The caller's condition is always parenthesized, so a raw `a or b` can't
@@ -192,6 +198,14 @@ escape the filter.
   UPDATE SET … WHERE owner = id`. The owner is always part of the conflict
   target.
 - **`where(table, cond)`** is for joins and aggregates.
+- **Language profiles.** `forLanguageProfile(db, { id, learnerId })` filters
+  on and stamps both `language_profile_id` and `learner_id` (an upsert's
+  conflict target gets both), so a row can't be written under one learner's
+  language and another learner. A table with `language_profile_id` (packs,
+  pack folders, revisions, conversations, turns) is refused by `forLearner`,
+  as a type error and at runtime: a learner scope would see every language's
+  rows. The phrase bank has no `language_profile_id` and stays the learner's
+  (its rows are keyed by `lang`).
 
 The server's raw handle is `rawDb()` in `web/server/db.ts`, and it's only for
 owner-less lookups (a login by username, a session by token hash, the
@@ -204,34 +218,116 @@ zero-users check of the first run). As built, every account query is in
 users           id, username (unique, lowercased), password_hash, is_admin,
                 created_at, disabled_at
 auth_sessions   id (sha256 of the cookie token), user_id, learner_id (active;
-                one of user_id's learners, composite key), created_at,
-                expires_at, last_seen_at
+                one of user_id's learners, composite key),
+                language_profile_id (active; one of learner_id's languages,
+                composite key), created_at, expires_at, last_seen_at
 learners        id, user_id, name, mode (adult|kids), native_language,
-                target_language, target_variant, level, goals, notes,
                 created_at, archived_at; unique (id, user_id)
+language_profiles id, learner_id, target_language, target_variant, level,
+                goals, notes, created_at, last_used_at, archived_at;
+                unique (id, learner_id); index (learner_id)
 user_settings   user_id (pk), model, voice jsonb (today's data/voice.json shape)
 agent_messages  id, user_id, seq (bigserial: order by it), role
                 (user|assistant|commit), text, ts    (was data/chat.jsonl)
 ```
 
-`learners` holds exactly the profile keys `profile.yaml` has today, so
-`assemble()` takes a learner row where it took `content.profile`. The
-`profile.yaml` files stay as seeds for a fresh install and for the offline
-`npm run export` CLI. As built, `assemble()`'s signature is unchanged: the
-server hands it the library with `profile` replaced by the learner as
-profile keys (`profileFromLearner`, blanks left out), so the export CLI and
-the app share one assembler.
+A learner and its active language profile hold between them exactly the
+profile keys `profile.yaml` has: the learner the person's (`learner_name`,
+`native_language`), the language the rest (`target_language`,
+`target_variant`, `level`, `goals`, `notes`). The `profile.yaml` files stay
+as seeds for a fresh install and for the offline `npm run export` CLI. As
+built, `assemble()`'s signature is unchanged: the server hands it the
+library with `profile` replaced by the learner and its language as profile
+keys (`profileFromLearner(learner, language)`, blanks left out, each row
+giving only its own keys), so the export CLI and the app share one
+assembler.
+
+### Language profiles
+
+Built with bead `ld-gf9.2`, migration `0002_language_profiles`. A learner
+(the person: name, native language, mode) practises one or more languages,
+each a **language profile** with its own target language and variant,
+level, goals and notes, and its own packs, folders, pack history and
+conversations. The phrase bank stays the learner's (keyed by `lang`).
+
+- **Keep one.** A learner always has at least one live language: a new
+  learner is created with its first (`POST /api/learners` takes the
+  language keys too), and archiving the last one is a 409. Archiving keeps
+  the row and everything under it; it leaves the switcher.
+- **Last used.** Picking a learner lands the session on its most recently
+  used language: `language_profiles.last_used_at`, set whenever a session
+  picks it (`setSessionLearner`), newest first, then the oldest created.
+  It is a column on the profile, not a `learners.last_language_profile_id`,
+  which would make the two tables reference each other.
+- **The session.** `auth_sessions.language_profile_id` is the active
+  language, one of the active learner's (composite key to
+  `language_profiles (id, learner_id)`, `ON DELETE SET NULL
+  (language_profile_id)`). A session with a learner but no language (a
+  session from before 0002, or its language archived elsewhere) is healed on
+  the next request to the learner's default language (`sessionFor` in
+  `web/server/auth.ts`), and archiving a language moves every session on it
+  to the learner's default.
+- **Ownership.** Packs, pack folders, pack revisions, conversations and
+  turns carry `language_profile_id` (not null) beside `learner_id`, with
+  composite keys: `(language_profile_id, learner_id)` → `language_profiles
+  (id, learner_id)` on packs, folders and conversations (cascade), and the
+  children to their parent's `(id, language_profile_id)` (`pack_revisions
+  (pack_id, language_profile_id)` → `packs`, `turns (conversation_id,
+  language_profile_id)` → `conversations`). The live-pack slug index and the
+  folder key are per language: `packs_profile_folder_slug_live` on
+  `(language_profile_id, folder, slug) where deleted_at is null`, and
+  `pack_folders` keyed `(language_profile_id, name)`. The learner keys stay,
+  so a row still can't name a language of another learner.
+- **Routes.** `GET /api/learners/:id/languages` (`?archived=1` adds archived
+  ones), `POST` (a new one; level defaults to the mode's first), `GET` and
+  `PATCH /api/learners/:id/languages/:languageId`, `POST
+  …/:languageId/archive` (409 for the last), and `PUT /api/auth/language
+  {languageId}` (one of the active learner's; anything else is a 404).
+  `/api/auth/me` and `GET /api/learners` list each learner's languages
+  (`LearnerInfo.languages`), and `/api/auth/me` the session's
+  (`MeReply.language`). `PATCH /api/learners/:id` takes only `name` and
+  `native_language`; a language key there is a 400 naming the language
+  route. `PUT /api/profile` ("Save as my defaults") writes the learner's keys
+  to the learner and the rest to the active language, in one transaction.
+- **The UI.** The top bar's language pill ("German · B1") switches between
+  the learner's languages, adds one ("Add and switch") and archives the
+  active one. The learner picker lists each learner's languages, and its Add
+  form asks for the first. A switch remounts the app like a learner switch.
+
+**Migration `0002_language_profiles`** is drizzle-kit's output plus hand
+edits (`EDITS["0002_language_profiles"]` in `scripts/db/hand-edits.mjs`):
+drizzle-kit wrote the new primary key and foreign keys before the columns
+and unique keys they need and added the new columns `NOT NULL` with no
+default, which no populated table accepts. The edits put the statements in
+a runnable order and backfill existing rows before the constraints: the new
+columns are added nullable; one `language_profiles` row is inserted per
+learner (archived ones too) from its `target_language`, `target_variant`,
+`level`, `goals` and `notes`, with the learner's `created_at` and
+`last_used_at = now()`; every pack, folder, revision, conversation and turn
+gets its learner's profile, and every auth session with a learner that
+learner's profile; then the columns become `NOT NULL`, the old pack index and
+folder key are replaced by the per-language ones, the keys and indexes are
+added, and last the five columns are dropped from `learners`. Nothing is
+deleted and no row changes owner. `scripts/tests/db-migration-0002.test.mjs`
+(PGlite) and `migration-0002.pg.test.mjs` (PostgreSQL 17, with
+`LINGO_TEST_PG_URL`) build a database at 0001, fill it the way the code
+before 0002 wrote rows (two accounts, adult, kids and archived learners,
+live and deleted packs, folders, revisions, conversations and turns,
+sessions with and without a learner, phrase-bank rows), migrate, and check
+every row.
 
 ### Packs
 
 ```
-packs           id, learner_id, folder ('' or one kebab segment), slug,
-                title, created, scenario, quick_scenario, units jsonb,
-                overrides jsonb, notes, updated_at, deleted_at
-                unique (learner_id, folder, slug) where deleted_at is null
-pack_folders    learner_id, name, created_at; pk (learner_id, name)
-pack_revisions  id, pack_id, learner_id, seq (bigserial: order by it),
-                snapshot jsonb, action, at
+packs           id, learner_id, language_profile_id, folder ('' or one
+                kebab segment), slug, title, created, scenario,
+                quick_scenario, units jsonb, overrides jsonb, notes,
+                updated_at, deleted_at
+                unique (language_profile_id, folder, slug) where deleted_at is null
+pack_folders    learner_id, language_profile_id, name, created_at;
+                pk (language_profile_id, name)
+pack_revisions  id, pack_id, learner_id, language_profile_id, seq
+                (bigserial: order by it), snapshot jsonb, action, at
 ```
 
 As built: `created` is `text`, the wire value verbatim (ISO with its offset).
@@ -248,12 +344,13 @@ and deletes are soft.
 
 As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
 
-- **Per learner.** Every pack and folder route works on the active learner's
-  rows (`learner: true`, so a stale page is a 409 `stale_learner`), through
-  `forLearner(tx, learnerId)` inside each write's transaction (the scope
-  `learnerRows()` is, on the transaction rather than the pool). Another
-  learner's pack, folder or revision id, of the same account or another, is a
-  404 like a missing one. A kids learner's packs are kids packs because the
+- **Per language profile.** Every pack and folder route works on the active
+  language's rows (`learner: true`, so a stale page is a 409
+  `stale_learner`), through `forLanguageProfile(tx, profile)` inside each
+  write's transaction (the scope `profileRows()` is, on the transaction
+  rather than the pool). Another language's pack, folder or revision id, of
+  the same learner, another learner or another account, is a 404 like a
+  missing one. A kids learner's packs are kids packs because the
   learner is; there is no per-mode tree any more.
 - **Ids.** `Pack.id` is `<slug>` or `<folder>/<slug>`, checked with the
   loader's `PACK_ID_RE` (one folder deep, kebab segments); a rename re-slugs
@@ -310,11 +407,9 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
   on a deleted pack. `scripts/tests/packs.pg.test.mjs` races each of these on
   a real Postgres.
 - **Owner scoping in one place.** Every query in `packs.ts` goes through
-  `forLearner(tx, learnerId)` (inserts that may conflict through its
-  `insertOrIgnore`, which puts the owner in the conflict target), and the
-  routes only pass the active learner's id. A later bead is to move packs
-  under a per-learner language profile; that changes the owner key in
-  `packs.ts` (and the schema), not the routes or the UI.
+  `forLanguageProfile(tx, profile)` (inserts that may conflict through its
+  `insertOrIgnore`, which puts both owners in the conflict target), and the
+  routes only pass the session's active language (`ctx.language`).
 - **No files, no commits.** No pack route reads or writes `content/**/packs`
   or calls git; `commitPacks` is gone (the agent's `content/` commit stays),
   and so are the file write functions in `scripts/content.mjs` (savePack,
@@ -328,11 +423,11 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
 ### Conversations
 
 ```
-conversations   id, learner_id, pack_snapshot jsonb, scenario_id, title,
+conversations   id, learner_id, language_profile_id, pack_snapshot jsonb, scenario_id, title,
                 mode, native_language, target_language, target_variant,
                 model, planned_minutes, started_at, ended_at, turn_count,
                 summary, extraction jsonb, extracted_at
-turns           id, conversation_id, learner_id, idx, role (learner|master),
+turns           id, conversation_id, learner_id, language_profile_id, idx, role (learner|master),
                 text, lines jsonb, glosses jsonb, choices jsonb, stage,
                 cast_notes jsonb, from_client boolean, duration_ms, cost_usd,
                 lookup jsonb, created_at
@@ -346,9 +441,10 @@ can be shown with the existing transcript components.
 Added by migration `0001_conversation_languages_from_client` (phase 3 review):
 `native_language`, `target_language` (with `target_variant`, the session's
 languages when it started; `''` for none) and `turns.from_client` (not null,
-default false; see Conversations, "Reconciling"). A later bead moves
-conversations under a per-learner language profile; these three columns are
-what it would take its languages from.
+default false; see Conversations, "Reconciling"). Migration 0002 moved
+conversations under the learner's language profile (`language_profile_id`);
+these columns stay the session's own languages, which a pack's overrides can
+make differ from its profile's.
 
 ### Phrase bank
 
@@ -462,20 +558,23 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   new route is protected unless it says otherwise. Only `/api/auth/login`,
   `/api/auth/me` and `/api/auth/first-run` are public (and the `/api` 404).
   No session is a 401, a non-admin on an admin route a 403. The handler
-  receives `ctx = { user: { id, username, isAdmin }, learner, sessionId }`;
-  `learner` is the session's active learner row (null until picked, or once
+  receives `ctx = { user: { id, username, isAdmin }, learner, language, sessionId }`;
+  `learner` is the session's active learner row and `language` its active
+  language profile row (both null until picked, or once the learner is
   archived), re-read on every request. Only an `HttpError`'s sentence reaches
   the client; any other error (a database error carries the failed query and
   its parameters) is logged and answered with a generic 500.
 - **The page's learner:** the session cookie is shared by every tab of a
   browser, so a tab can be out of date: tab 1 shows Sam, tab 2 picks Ana (or
-  another account logs in on the same browser), and tab 1's "Save as my
-  defaults" or voice turn would act on Ana. So every call from the client
-  carries the learner its page shows in an `X-Learner-Id` header (set in one
-  place, `web/src/api.ts`), and a learner-scoped route (`wrap(fn, { learner:
-  true })`: profile, packs, folders, assemble, export, voice turn and cast, conversations)
-  answers **409 with `code: "stale_learner"`** when that header is missing or
-  isn't the session's active learner, or when no learner is picked. On that
+  Sam's other language, or another account logs in on the same browser), and
+  tab 1's "Save as my defaults" or voice turn would act on Ana. So every
+  call from the client carries the learner its page shows in an
+  `X-Learner-Id` header and the language in `X-Language-Profile-Id` (both
+  set in one place, `web/src/api.ts`), and a learner-scoped route
+  (`wrap(fn, { learner: true })`: profile, packs, folders, assemble, export,
+  voice turn and cast, conversations) answers **409 with `code:
+  "stale_learner"`** when either header is missing or isn't the session's
+  active one, or when no learner is picked. On that
   code the client re-reads `/api/auth/me`, which shows the right learner or
   the picker; any other 409 (the turn lock, a non-empty folder) is an
   ordinary error.
@@ -534,9 +633,10 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   learner's row. Routes: `GET/POST /api/learners`, `GET/PATCH
   /api/learners/:id` (the mode can't change), `POST /api/learners/:id/archive`
   (kept, out of the picker; sessions that had it go back to the picker) and
-  `PUT /api/auth/learner {learnerId}` (null clears it). Every learner id is
-  looked up through the user's own scope, so another account's id is a 404,
-  the same as a missing one.
+  `PUT /api/auth/learner {learnerId}` (null clears it; a learner lands on
+  its last-used language). Every learner id is looked up through the user's
+  own scope, so another account's id is a 404, the same as a missing one.
+  A learner's languages: see Language profiles.
 - **Per-user settings:** voice settings and casting (`user_settings.voice`),
   the agent's model (`user_settings.model`) and its chat (`agent_messages`,
   ordered by `seq`), all through `forUser`. A voice-settings save is a merge
@@ -548,11 +648,14 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   don't block each other; a turn that isn't being saved falls back to its
   login session (two tabs of one browser share a session, and its lock).
 - **Browser storage:** the remembered draft, tab, Scene filter and folder
-  state are kept per learner (`<key>.learner.<id>`), so the next learner or
-  account on the same browser never sees the last one's unsaved name, level,
-  language or quick-scenario text. The per-mode keys they had before logins
-  are dropped on the first page load, not adopted: there is no telling whose
-  they were. The voice timeline's open/closed state stays per browser.
+  state are kept per language profile (`<key>.language.<id>`), so German and
+  Chinese keep their own unsaved picks, and the next learner or account on
+  the same browser never sees the last one's unsaved name, level, language
+  or quick-scenario text. The per-learner keys of before language profiles
+  (`<key>.learner.<id>`) move to the first of that learner's languages this
+  browser opens (`adoptLearnerKeys` in `web/src/draft.ts`); the per-mode
+  keys they had before logins are dropped on the first page load, not
+  adopted: there is no telling whose they were. The voice timeline's open/closed state stays per browser.
 
 Routes that took `?mode=` change as follows:
 
@@ -686,7 +789,7 @@ docs/VOICE.md §Saved conversations is the user's side.
      conversation and the session; it can't be resumed until the history is
      read back from the database.
    - The idle end is lazy: every conversation route and the voice turn first
-     end the learner's open conversations whose last turn (or start, with
+     end the active language profile's open conversations whose last turn (or start, with
      none) is two hours old or more, with `ended_at` set to that last
      activity rather than now, so History's length isn't two idle hours
      longer. A conversation with a turn running is skipped (its last turn is
@@ -697,7 +800,7 @@ docs/VOICE.md §Saved conversations is the user's side.
      set `ended_at` (whichever way it ended). Deleting a conversation that
      is still open does not call it; it never ends, it is gone (tested). It
      does nothing yet.
-   - An End sent after the page switched learner is a `stale_learner` and
+   - An End sent after the page switched learner or language is a `stale_learner` and
      is ignored; that conversation ends by the idle rule.
 4. **One turn at a time per conversation.** Today a single global flag refuses
    a second voice turn while any turn is running. With more than one person
@@ -719,7 +822,7 @@ docs/VOICE.md §Saved conversations is the user's side.
    start (`offset`, `from`) past 2^31 − 1 is clamped there: an empty page,
    never a query Postgres refuses.
 6. **Routes** (`wrap(…, { learner: true })`, every row through
-   `learnerRows(id)`): another learner's conversation, guessed id or not, is
+   `profileRows(ctx.language)`): another language's or learner's conversation, guessed id or not, is
    the same 404 as a missing one, and an id that isn't a uuid never reaches
    Postgres.
 
@@ -1058,7 +1161,8 @@ npm run db:import -- --user <name>   # into that account's learners
   add <name> --admin`) and no learner. The account is `--user`, else the
   oldest admin that isn't disabled. The learner is that account's first
   non-archived learner of each mode (the picker's order); a mode with none is
-  skipped, and the output says so.
+  skipped, and the output says so. The packs go to that learner's default
+  language (the last used, as a pick would land on), named in the output.
 - `content/packs/**` goes to the adult learner and `content/kids/packs/**` to
   the kids learner, keeping folder, slug, title and created; every folder
   under `packs/` (an empty one with its `.keep` too) becomes a folder row.
@@ -1068,11 +1172,13 @@ npm run db:import -- --user <name>   # into that account's learners
   one the database refuses for any other reason is rolled back alone, logged,
   and listed (`failed`), and the rest import. That keeps a bad seed file from
   failing the first run, which imports in the admin's transaction.
-- Re-runs: a pack is skipped when the learner has any row at that folder and
+- Re-runs: a pack is skipped when the language profile has any row at that folder and
   slug, a soft-deleted one included, or an `import` revision whose snapshot
   has that id, so a pack renamed, moved or deleted in the app since is not
   imported again. A folder deleted in the app does come back (folders have no
-  deleted state; it comes back empty). One transaction per learner.
+  deleted state; it comes back empty). One transaction per language profile.
+  Idempotence is per language: a learner whose default language changed
+  since gets the packs again, in that language.
 - `--user` naming a disabled account is an error (enable it first, or name
   another): its packs would land where nobody can log in to see them.
 - It reads `DATABASE_URL` like the other CLIs, and the pack files from
@@ -1082,7 +1188,7 @@ npm run db:import -- --user <name>   # into that account's learners
 ```
 database: postgres://localhost/lingo_dojo
 packs → robin (admin)
-adult (content/packs/) → Sam: 1 imported, 1 already there, 1 folder added
+adult (content/packs/) → Sam (Spanish · A2): 1 imported, 1 already there, 1 folder added
   + oaxaca/2026-10-20-mezcal
   = 2026-10-19-market-gentle (already there)
   + folder oaxaca
@@ -1090,7 +1196,7 @@ kids (content/kids/packs/): skipped, robin has no kids learner (add one in the a
 ```
 
 The first run (`createFirstAdmin`) runs the same `importPacks` for each
-learner it makes, in its transaction.
+learner it makes, into that learner's one language, in its transaction.
 
 ## Backups (proposed)
 
@@ -1155,7 +1261,15 @@ deletes cover undoing a single change.
   `conversations.test.mjs` the pure reconciliation;
   `conversations.pg.test.mjs` (with `LINGO_TEST_PG_URL`) sends End and a
   turn at once on 60 fresh conversations (it fails on the code before the
-  phase 3 review's lock fix).
+  phase 3 review's lock fix). Language profiles: `auth.http.test.mjs` covers
+  language CRUD, picking, the last-used landing, the keep-one rule, and
+  another learner's or account's language on every route;
+  `packs.http.test.mjs` and `conversations.http.test.mjs` one learner's two
+  languages against each other on every pack, folder, revision, conversation
+  and voice-turn route, and the `stale_learner` 409 for a tab on the other
+  language; `packs.test.mjs` the import into the default language and its
+  per-language idempotence; `db.test.mjs` the scopes and keys; and the
+  migration tests above every existing row.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).
@@ -1180,6 +1294,7 @@ deletes cover undoing a single change.
 | 1 | Auth + learners: login, sessions, `wrap` auth levels, user CLI, learner picker, profile on DB, admin-only agent, per-user settings, first-run screen. **Built** | 0 |
 | 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits. **Built** | 1 |
 | 3 | Conversations: persist turns, End, the History view. **Built** | 1 |
+| 3.5 | Language profiles (`ld-gf9.2`): several languages per learner, each with its own packs and History. **Built** | 2, 3 |
 | 4 | Phrase bank: tables, gloss capture, scenario lists, star/add, the bank UI with metrics | 3 |
 | 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |
 | 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |

@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
   ApiError, addLibraryVoice, createConversation, endConversation, getCast, getPageLearner, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
-  transcribe, voiceTurn, type VoiceLanguages,
+  transcribe, voiceTurn, type PageLearner, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
@@ -95,8 +95,8 @@ export default function VoicePanel({
 
 /** The saved conversation a session writes to: its id, the transcript index
  *  it began at (0, unless an earlier one of this session was ended: leaving
- *  Go, two idle hours), and the learner it was started for. */
-type SavedConversation = { id: string; start: number; learnerId: string };
+ *  Go, two idle hours), and the learner and language it was started for. */
+type SavedConversation = { id: string; start: number; page: PageLearner };
 
 function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
@@ -561,7 +561,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
   function endOnce(c: SavedConversation) {
     if (endsSent.current.has(c.id)) return;
     endsSent.current.add(c.id);
-    void endConversation(c.id, c.learnerId);
+    void endConversation(c.id, c.page);
   }
 
   /** End `c` once its turn on the way, if any, has its answer, so that turn
@@ -609,11 +609,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
     if (convRef.current) return Promise.resolve(convRef.current);
     if (creating.current) return creating.current;
     const epoch = sessionEpoch.current;
-    const learnerId = getPageLearner() ?? "";
+    const page = getPageLearner() ?? { learnerId: "", languageId: "" };
     const start = Math.min(unsavedFrom.current ?? here, here);
     const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
       ({ conversation }) => {
-        const c = { id: conversation.id, start, learnerId };
+        const c = { id: conversation.id, start, page };
         if (creating.current === made) creating.current = null;
         const fate = conversationFate({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life });
         if (fate === "drop") {

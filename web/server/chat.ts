@@ -121,7 +121,7 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse, ctx: Ct
   try {
     const prior = await readHistory(ctx.user.id, HISTORY_WINDOW);
     const model = await getModel(ctx.user.id);
-    const system = systemPrompt(contentReply(mode, ctx.learner));
+    const system = systemPrompt(contentReply(mode, ctx.learner, ctx.language));
     await appendHistory(ctx.user.id, { role: "user", text: message, ts: now() });
     send("start", { model } satisfies ChatStart);
 

@@ -3,7 +3,7 @@
 // does, and so the HTTP tests do) never opens a connection. docs/DATA.md is
 // the design; scripts/db/ holds the schema, migrations and setup CLI.
 //
-// Route code reaches personal rows through forLearner()/forUser()
+// Route code reaches personal rows through forLanguageProfile()/forLearner()/forUser()
 // (scripts/db/owned.ts), which cannot build a query without the owner id.
 // rawDb() is for the few owner-less lookups (a login by username, a session
 // by token hash); a call to it in a route deserves a second look in review.
@@ -12,7 +12,7 @@ import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { databaseUrl, redact } from "../../scripts/db/config.mjs";
 import { describeMigrations, migrationState } from "../../scripts/db/migrations.mjs";
-import { forLearner, forUser, type Db } from "../../scripts/db/owned.ts";
+import { forLanguageProfile, forLearner, forUser, type Db, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import * as schema from "../../scripts/db/schema.ts";
 
 export { schema };
@@ -53,6 +53,8 @@ export function rawDb(): Db {
 
 /** Rows owned by this learner (scripts/db/owned.ts). */
 export const learnerRows = (learnerId: string) => forLearner(rawDb(), learnerId);
+/** Rows owned by one of a learner's languages: packs, conversations, turns, … */
+export const profileRows = (profile: LanguageProfileRef) => forLanguageProfile(rawDb(), profile);
 /** Account rows owned by this user (scripts/db/owned.ts). */
 export const userRows = (userId: string) => forUser(rawDb(), userId);
 

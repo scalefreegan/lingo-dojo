@@ -5,16 +5,20 @@
 // Which account: the one named (refused when it is disabled: its packs
 // would land where nobody can log in to see them), else the first admin
 // (oldest, not disabled). Which learner: that account's first live learner of each mode
-// (listLearners' order). Nothing is created: with no such account or
-// learner, that part is skipped and the report says why. The import itself
-// is packs.ts importPacks, which skips any pack the learner already has at
-// that id (deleted ones included) or imported before (wherever it lives
-// now), so a re-run adds only what is new.
+// (listLearners' order). Which language: that learner's most recently used
+// live language profile, else its oldest (accounts.ts defaultLanguageProfile).
+// Nothing is created: with no such account or learner, that part is
+// skipped and the report says why. The import itself is packs.ts
+// importPacks, which skips any pack that language already has at that id
+// (deleted ones included) or imported before (wherever it lives now), so a
+// re-run adds only what is new. Another language of the same learner is
+// another library: a pack imported into German is imported again if the
+// import later lands on Chinese.
 //
 // Erasable TypeScript only: the CLI and the tests import it as is.
 
 import { and, asc, eq, isNull } from "drizzle-orm";
-import { findUserByUsername, listLearners, type User } from "./accounts.ts";
+import { defaultLanguageProfile, findUserByUsername, listLearners, type User } from "./accounts.ts";
 import type { Db } from "./owned.ts";
 import { importPacks, type ImportResult, type PackFiles } from "./packs.ts";
 import { users } from "./schema.ts";
@@ -26,6 +30,8 @@ export interface ModeReport {
   /** The learner the packs went to; null when the account has none of this
    *  mode (then `skipped` says so and nothing was imported). */
   learner: { id: string; name: string } | null;
+  /** The learner's language the packs went to. */
+  language?: { id: string; targetLanguage: string; level: string };
   skipped?: string;
   result?: ImportResult;
   /** Pack files that did not load (bad YAML, no title): never imported. */
@@ -66,8 +72,17 @@ export async function importFilePacks(db: Db, opts: { username?: string; files: 
       modes.push({ mode, learner: null, skipped: `${user.username} has no ${mode} learner (add one in the app, then re-run)`, unreadable });
       continue;
     }
-    const result = await importPacks(db, learner.id, files);
-    modes.push({ mode, learner: { id: learner.id, name: learner.name }, result, unreadable });
+    const language = await defaultLanguageProfile(db, learner.id);
+    if (!language) {
+      // The keep-one rule never leaves a live learner without one; said
+      // rather than thrown, like a missing learner.
+      modes.push({ mode, learner: { id: learner.id, name: learner.name }, skipped: `${learner.name} has no language (add one in the app, then re-run)`, unreadable });
+      continue;
+    }
+    const result = await importPacks(db, language, files);
+    modes.push({
+      mode, learner: { id: learner.id, name: learner.name }, language: { id: language.id, targetLanguage: language.targetLanguage, level: language.level }, result, unreadable,
+    });
   }
   return { user: { id: user.id, username: user.username, isAdmin: user.isAdmin }, modes };
 }
@@ -75,7 +90,7 @@ export async function importFilePacks(db: Db, opts: { username?: string; files: 
 /** The report as the CLI prints it, one line per pack:
  *
  *    packs → robin (admin)
- *    adult (content/packs/) → Sam: 1 imported, 1 already there, 1 folder added
+ *    adult (content/packs/) → Sam (Spanish · A2): 1 imported, 1 already there, 1 folder added
  *      + oaxaca/2026-10-20-mezcal
  *      = 2026-10-19-market-gentle (already there)
  *      + folder oaxaca
@@ -94,7 +109,8 @@ export function formatImportReport(report: ImportReport, trees: Record<ImportMod
     if (r.invalid.length) parts.push(`${r.invalid.length} invalid`);
     if (r.failed.length) parts.push(`${r.failed.length} failed`);
     if (m.unreadable.length) parts.push(n(m.unreadable.length, "unreadable file"));
-    out.push(`${m.mode} (${trees[m.mode]}) → ${m.learner.name}: ${parts.join(", ")}`);
+    const lang = m.language ? ` (${[m.language.targetLanguage || "no language set", m.language.level].filter(Boolean).join(" · ")})` : "";
+    out.push(`${m.mode} (${trees[m.mode]}) → ${m.learner.name}${lang}: ${parts.join(", ")}`);
     for (const id of r.imported) out.push(`  + ${id}`);
     for (const id of r.present) out.push(`  = ${id} (already there)`);
     for (const f of r.folders) out.push(`  + folder ${f}`);

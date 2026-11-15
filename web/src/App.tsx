@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
 } from "./api";
-import type { AssembleResult, AuthUser, ContentReply, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
+import type { AssembleResult, AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, learnerKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -27,11 +27,11 @@ function isTab(v: string | null): v is Tab {
   return v === "scene" || v === "customize" || v === "go" || v === "library";
 }
 
-/** The last tab this learner was on in this browser — "Scene" the first
- *  time, or if storage is blocked or holds something unrecognized. */
-function loadRememberedTab(learnerId: string): Tab {
+/** The last tab this language profile was on in this browser — "Scene" the
+ *  first time, or if storage is blocked or holds something unrecognized. */
+function loadRememberedTab(languageId: string): Tab {
   try {
-    const raw = localStorage.getItem(learnerKey(TAB_KEY, learnerId));
+    const raw = localStorage.getItem(languageKey(TAB_KEY, languageId));
     return isTab(raw) ? raw : "scene";
   } catch {
     return "scene";
@@ -41,8 +41,10 @@ function loadRememberedTab(learnerId: string): Tab {
 export default function App({
   user,
   learner,
+  language,
   learners,
   onSwitchLearner,
+  onSwitchLanguage,
   onManageLearners,
   onLogout,
   onLearnerSaved,
@@ -50,19 +52,23 @@ export default function App({
   user: AuthUser;
   /** Who's practising: the session's active learner. */
   learner: LearnerInfo;
+  /** In which language: the session's active language profile, one of learner.languages. */
+  language: LanguageInfo;
   learners: LearnerInfo[];
   onSwitchLearner: (id: string) => void;
+  onSwitchLanguage: (id: string) => void;
   onManageLearners: () => void;
   onLogout: () => void;
-  /** The learner row changed (Save as my defaults): refresh what the gate holds. */
+  /** The learner or its languages changed (Save as my defaults, a language
+   *  archived): refresh what the gate holds. */
   onLearnerSaved: () => Promise<void> | void;
 }) {
-  // Which library is open: the active learner's. Content and packs are this
-  // mode's; the remembered draft, tab and Scene filters are this learner's
-  // (draft.ts learnerKey). Switching learner remounts App (AuthGate keys it
-  // by learner), which reloads the lot and swaps in that learner's own
-  // remembered draft, so two learners — or two accounts on one browser —
-  // never see each other's unsaved picks.
+  // Which library is open: the active learner's. Content is this mode's;
+  // packs, the remembered draft, tab and Scene filters are this language
+  // profile's (draft.ts languageKey). Switching learner or language remounts
+  // App (AuthGate keys it by both), which reloads the lot and swaps in that
+  // profile's own remembered draft, so two languages, two learners — or two
+  // accounts on one browser — never see each other's unsaved picks.
   const mode: Mode = learner.mode;
   const [content, setContent] = useState<ContentReply | null>(null);
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -86,18 +92,18 @@ export default function App({
   // The sticky bar's Practice: go to the Go tab with the voice session open.
   // Cleared once the panel has opened, so a later visit to Go doesn't reopen it.
   const [practiceRequest, setPracticeRequest] = useState(false);
-  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(learner.id));
+  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(language.id));
 
   const setTab = useCallback(
     (t: Tab) => {
       setTabState(t);
       try {
-        localStorage.setItem(learnerKey(TAB_KEY, learner.id), t);
+        localStorage.setItem(languageKey(TAB_KEY, language.id), t);
       } catch {
         /* private window or blocked storage: the next visit just starts on Scene */
       }
     },
-    [learner.id],
+    [language.id],
   );
 
   // The mode on <html>, for the stylesheet's kids accent.
@@ -106,36 +112,36 @@ export default function App({
   }, [mode]);
 
   /** Put a loaded library into state. `fresh` is true on the first load:
-   *  the draft is then this learner's remembered one (so a refresh keeps
+   *  the draft is then this language's remembered one (so a refresh keeps
    *  today's picks), else the library's defaults. A reload keeps the draft
    *  (a unit that vanished shows up as a warning). */
-  const applyLoad = useCallback((learnerId: string, c: ContentReply, p: PacksReply, fresh: boolean) => {
+  const applyLoad = useCallback((languageId: string, c: ContentReply, p: PacksReply, fresh: boolean) => {
     setContent(c);
     setPacks(p.packs);
     setFolders(p.folders);
     setLoadError(null);
     setContentVersion((v) => v + 1);
-    setDraft((d) => (fresh || !d ? (loadRememberedDraft(learnerId) ?? newDraft(c)) : d));
+    setDraft((d) => (fresh || !d ? (loadRememberedDraft(languageId) ?? newDraft(c)) : d));
   }, []);
 
   // Load the library. The effect's own `live` flag drops a reply that lands
-  // after the component is gone (a learner switch).
+  // after the component is gone (a learner or language switch).
   useEffect(() => {
     let live = true;
     Promise.all([getContent(mode), listPacks(mode)]).then(
-      ([c, p]) => live && applyLoad(learner.id, c, p, true),
+      ([c, p]) => live && applyLoad(language.id, c, p, true),
       (e) => live && setLoadError((e as Error).message),
     );
     return () => {
       live = false;
     };
-  }, [mode, learner.id, applyLoad]);
+  }, [mode, language.id, applyLoad]);
 
   async function reloadContent() {
     setReloading(true);
     try {
       const [c, p] = await Promise.all([getContent(mode), listPacks(mode)]);
-      applyLoad(learner.id, c, p, false);
+      applyLoad(language.id, c, p, false);
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {
@@ -325,7 +331,7 @@ export default function App({
   }
 
   /** "Save as my defaults": write the shown values to the active learner's
-   *  row, reload so content.profile is the new row, then clear the overrides
+   *  row and its active language's, reload so content.profile is the new row, then clear the overrides
    *  — they are the defaults now, so neither the draft nor a pack saved from
    *  it should repeat them. Resolves to an error sentence, or null. */
   async function saveDefaults(values: ProfileRequest): Promise<string | null> {
@@ -336,7 +342,7 @@ export default function App({
     }
     await reloadContent();
     setDraft((d) => (d ? { ...d, overrides: emptyOverrides() } : d));
-    // The learner switcher shows the name: let the gate re-read it.
+    // The learner and language switchers show the name and level: let the gate re-read them.
     await onLearnerSaved();
     return null;
   }
@@ -358,12 +364,12 @@ export default function App({
     setTab("go");
   }
 
-  // Remember every change under this learner's key; "New pack" below is the
+  // Remember every change under this language's key; "New pack" below is the
   // way back to the defaults. The draft is null until the first load, and a
   // null is not written (it would erase the remembered one).
   useEffect(() => {
-    if (draft && content?.mode === mode) rememberDraft(learner.id, draft);
-  }, [mode, learner.id, content, draft]);
+    if (draft && content?.mode === mode) rememberDraft(language.id, draft);
+  }, [mode, language.id, content, draft]);
 
   function startNew() {
     if (!content) return;
@@ -389,8 +395,11 @@ export default function App({
         mode={mode}
         user={user}
         learner={learner}
+        language={language}
         learners={learners}
         onSwitchLearner={onSwitchLearner}
+        onSwitchLanguage={onSwitchLanguage}
+        onLanguagesChanged={onLearnerSaved}
         onManageLearners={onManageLearners}
         onLogout={onLogout}
         content={ready}
@@ -414,7 +423,7 @@ export default function App({
         <main className="flex-1 p-4">
           <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : "max-w-3xl"}`}>
             {tab === "scene" && (
-              <SceneTab key={mode} learnerId={learner.id} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
+              <SceneTab key={mode} languageId={language.id} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
             )}
             {tab === "customize" && <CustomizeTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("go")} />}
             {/* Go stays mounted while another tab is open, so a practice

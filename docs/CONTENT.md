@@ -200,7 +200,8 @@ profile's `native_language`, or English when the profile has none.
 
 ## `content/packs/<date>-<slug>.yaml` — a pack
 
-Saved packs live in the database, one set per learner (docs/DATA.md §Packs):
+Saved packs live in the database, one set per learner per language
+(a language profile; docs/DATA.md §Packs, §Language profiles):
 the app's Save, Move, Rename and Delete write rows there, never files. The
 YAML files under `content/packs/` and `content/kids/packs/` are **seed
 packs** (copied to a new install's learners at the first run, and by

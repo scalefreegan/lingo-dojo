@@ -1,13 +1,16 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, archiveLearner, createLearner, getContent } from "../api";
 import type { ContentReply, LearnerInfo, MeReply, Mode } from "../types";
+import { languageLine } from "../draft";
+import { LanguageFields } from "./LanguageSwitcher";
 import { Mochi } from "./Mascots";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* "Who's practicing?" — after login, whenever the session has no learner,
  * and from the app's menu to add or archive one. A learner is adult or kids;
- * picking one opens the app in that mode. A user the CLI made starts with
- * none, so this opens straight on Add. */
+ * picking one opens the app in that mode, on the language it practised last
+ * (each card lists its languages; the app's language switcher adds more). A
+ * user the CLI made starts with none, so this opens straight on Add. */
 export default function LearnerPicker({
   me,
   error,
@@ -70,8 +73,14 @@ export default function LearnerPicker({
                   {l.mode === "kids" && <Badge tone="accent">Kids</Badge>}
                   {me.learner?.id === l.id && <Badge>Now</Badge>}
                 </span>
-                <span className="text-sm text-fg-2">
-                  {[l.native_language && l.target_language ? `${l.native_language} → ${l.target_language}` : l.target_language, l.target_variant, l.level].filter(Boolean).join(" · ") || "No languages set yet"}
+                <span className="flex flex-col text-sm text-fg-2" data-testid={`languages-${l.name}`}>
+                  {l.languages.length === 0 && "No languages set yet"}
+                  {l.languages.map((g) => (
+                    <span key={g.id}>
+                      {l.native_language ? `${l.native_language} → ` : ""}
+                      {languageLine(g)}
+                    </span>
+                  ))}
                 </span>
               </button>
               <div className="mt-auto flex justify-end">
@@ -108,16 +117,15 @@ export default function LearnerPicker({
   );
 }
 
-/** The Add form. The language and level pickers come from the chosen mode's
- *  library (its languages.yaml is shared; its levels are not). */
+/** The Add form: the learner and its first language (a learner always has
+ *  one). The language and level pickers come from the chosen mode's library
+ *  (its languages.yaml is shared; its levels are not). */
 function AddLearner({ onAdded, onCancel }: { onAdded: (l: LearnerInfo) => void | Promise<void>; onCancel?: () => void }) {
   const [mode, setMode] = useState<Mode>("adult");
   const [library, setLibrary] = useState<ContentReply | null>(null);
   const [name, setName] = useState("");
   const [native, setNative] = useState("English");
-  const [target, setTarget] = useState("");
-  const [variant, setVariant] = useState("");
-  const [level, setLevel] = useState("");
+  const [first, setFirst] = useState({ target_language: "", target_variant: "", level: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,7 +135,7 @@ function AddLearner({ onAdded, onCancel }: { onAdded: (l: LearnerInfo) => void |
       (c) => {
         if (!live) return;
         setLibrary(c);
-        setLevel(c.levels[0] ?? "");
+        setFirst((f) => ({ ...f, level: c.levels[0] ?? "" }));
       },
       () => live && setLibrary(null),
     );
@@ -137,14 +145,15 @@ function AddLearner({ onAdded, onCancel }: { onAdded: (l: LearnerInfo) => void |
   }, [mode]);
 
   const languages = library?.languages ?? [];
-  const variants = languages.find((l) => l.name === target)?.variants ?? [];
+  // Without a languages.yaml there is nothing to pick from, so nothing is required.
+  const needsTarget = languages.length > 0 && !first.target_language;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const { learner } = await createLearner({ name, mode, native_language: native, target_language: target, target_variant: variant, level });
+      const { learner } = await createLearner({ name, mode, native_language: native, ...first });
       await onAdded(learner);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
@@ -185,47 +194,12 @@ function AddLearner({ onAdded, onCancel }: { onAdded: (l: LearnerInfo) => void |
                 ))}
               </select>
             </label>
-            <label className={label}>
-              Target language
-              <select
-                className={inputClass}
-                value={target}
-                onChange={(e) => {
-                  setTarget(e.target.value);
-                  setVariant(languages.find((l) => l.name === e.target.value)?.variants[0] ?? "");
-                }}
-              >
-                <option value="">—</option>
-                {languages.map((l) => (
-                  <option key={l.name}>{l.name}</option>
-                ))}
-              </select>
-            </label>
-            {variants.length > 0 && (
-              <label className={label}>
-                Variant
-                <select className={inputClass} value={variant} onChange={(e) => setVariant(e.target.value)}>
-                  {variants.map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-              </label>
-            )}
           </>
         )}
-        {library && (
-          <label className={label}>
-            Level
-            <select className={inputClass} value={level} onChange={(e) => setLevel(e.target.value)}>
-              {library.levels.map((l) => (
-                <option key={l}>{l}</option>
-              ))}
-            </select>
-          </label>
-        )}
+        {library && <LanguageFields languages={languages} levels={library.levels} value={first} onChange={setFirst} />}
         {error && <p className="text-sm text-err">{error}</p>}
         <div className="flex items-center gap-2">
-          <Button type="submit" variant="primary" disabled={busy || !name.trim()}>
+          <Button type="submit" variant="primary" disabled={busy || !name.trim() || needsTarget}>
             {busy ? "Adding…" : "Add"}
           </Button>
           {onCancel && (

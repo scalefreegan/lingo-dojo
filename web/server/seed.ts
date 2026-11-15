@@ -4,16 +4,16 @@ import { learnerFromProfile } from "../../scripts/auth.mjs";
 import { isAgentModel } from "../../scripts/claude.mjs";
 import { REPO_ROOT, loadContent, loadPackFiles, modeRoot } from "../../scripts/content.mjs";
 import { normalizeVoiceSettings } from "../../scripts/voice.mjs";
-import type { AgentMessage, FirstRunSeed, NewLearner } from "../../scripts/db/accounts.ts";
+import type { AgentMessage, FirstRunSeed, NewLearnerWithLanguage } from "../../scripts/db/accounts.ts";
 import type { Mode } from "../shared/wire.ts";
 
 // The first admin's starting data (docs/DATA.md §Auth, first run), read once
 // from the files that held it before logins:
 //
-//   content/profile.yaml        → an adult learner
-//   content/kids/profile.yaml   → a kids learner
-//   content/packs/**            → the adult learner's packs and folders
-//   content/kids/packs/**       → the kids learner's packs and folders
+//   content/profile.yaml        → an adult learner, with its one language
+//   content/kids/profile.yaml   → a kids learner, with its one language
+//   content/packs/**            → the adult learner's language: its packs and folders
+//   content/kids/packs/**       → the kids learner's language: its packs and folders
 //   data/voice.json             → user_settings.voice
 //   data/settings.json          → user_settings.model
 //   data/chat.jsonl             → agent_messages
@@ -35,12 +35,12 @@ export function dataDir(): string {
 
 const FALLBACK_NAME: Record<Mode, string> = { adult: "Me", kids: "Kid" };
 
-function learnerSeed(mode: Mode): NewLearner | null {
+function learnerSeed(mode: Mode): NewLearnerWithLanguage | null {
   const root = modeRoot(mode);
   if (!fs.existsSync(path.join(root, "profile.yaml"))) return null;
   // The loader's reading, so the seed is what the app showed until now (a
   // file that is not a mapping loads as {} and seeds a blank learner).
-  return learnerFromProfile(loadContent(root).profile, mode, FALLBACK_NAME[mode]) as NewLearner;
+  return learnerFromProfile(loadContent(root).profile, mode, FALLBACK_NAME[mode]) as NewLearnerWithLanguage;
 }
 
 function readJson(file: string): unknown {
@@ -82,7 +82,7 @@ export function readFirstRunSeed(): FirstRunSeed {
   const voiceRaw = readJson(path.join(dir, "voice.json"));
   const settings = readJson(path.join(dir, "settings.json")) as { model?: unknown } | null;
   return {
-    learners: (["adult", "kids"] as Mode[]).map(learnerSeed).filter((l): l is NewLearner => !!l),
+    learners: (["adult", "kids"] as Mode[]).map(learnerSeed).filter((l): l is NewLearnerWithLanguage => !!l),
     // Normalized on the way in, so the row holds a complete, valid shape.
     voice: voiceRaw && typeof voiceRaw === "object" ? (normalizeVoiceSettings(voiceRaw) as unknown as Record<string, unknown>) : null,
     model: isAgentModel(settings?.model) ? settings.model : null,

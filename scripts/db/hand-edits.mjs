@@ -1,20 +1,38 @@
-// The hand edits to the generated initial migration, in one place: the
-// committed 0000_init.sql is exactly `applyHandEdits(<drizzle-kit output>)`.
-// scripts/tests/db-drift.test.mjs regenerates the SQL from schema.ts and
-// checks that, so schema, snapshot and SQL can't drift apart unnoticed.
+// The hand edits to generated migrations, in one place: each committed
+// migration is exactly `applyHandEdits(<drizzle-kit output>, <tag>)`.
+// scripts/tests/db-migrations.test.mjs regenerates the SQL from schema.ts
+// and checks that, so schema, snapshot and SQL can't drift apart unnoticed.
+// A migration with no entry in EDITS is drizzle-kit's output as it is.
 //
-// The edits, both things drizzle-kit can't express:
+// 0000_init, two things drizzle-kit can't express:
 //  1. `CREATE EXTENSION IF NOT EXISTS pg_trgm` first, before the
 //     gin_trgm_ops indexes need it.
 //  2. Composite provenance keys delete with `ON DELETE SET NULL (<col>)`
 //     (PostgreSQL 15+), nulling only the link and keeping the not-null
 //     owner column. schema.ts declares them with a plain "set null".
 //
-//   node scripts/db/hand-edits.mjs   re-applies them to 0000_init.sql after
-//                                    regenerating it (idempotent)
+// 0002_language_profiles (language profiles, docs/DATA.md §Schema), whose
+// generated SQL can't run at all, even on an empty database, and knows
+// nothing of the rows already there:
+//  1. Reordered: drizzle-kit adds pack_folders' new primary key before the
+//     column it is on, and the (pack_id, language_profile_id) foreign key
+//     before the unique key it references. The statements are sorted into
+//     the order below; every generated statement must land in exactly one
+//     place, or this throws (a regenerated migration with a statement it
+//     doesn't know is a schema change to look at, not to paper over).
+//  2. The five `language_profile_id … NOT NULL` columns are added nullable,
+//     filled from the backfill, then set NOT NULL.
+//  3. The backfill (BACKFILL below): one profile per existing learner from
+//     its own target_language, target_variant, level, goals and notes;
+//     every pack, folder, revision, conversation and turn is pointed at its
+//     learner's profile, and every session with a learner gets it as the
+//     active one. All before the learner columns are dropped (last).
+//  4. auth_sessions_language_profile_fk deletes with SET NULL
+//     ("language_profile_id"), as in 0000.
 //
-// Later migrations (0001+) are generated as they are; if one ever needs a
-// hand edit, add it here the same way and extend the drift test.
+//   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
+//                                          (default 0000_init) after
+//                                          regenerating it (idempotent)
 
 import fs from "node:fs";
 import path from "node:path";
@@ -23,34 +41,121 @@ import { MIGRATIONS_DIR } from "./config.mjs";
 
 export const INITIAL_MIGRATION = path.join(MIGRATIONS_DIR, "0000_init.sql");
 
+const BREAK = "--> statement-breakpoint";
+
+/* -------------------------------- 0000_init -------------------------------- */
+
 const EXTENSION = `-- Hand-added (scripts/db/hand-edits.mjs): trigram search needs pg_trgm before
 -- the gin_trgm_ops indexes below.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
---> statement-breakpoint
+${BREAK}
 `;
 
-/** Constraint name → the one column its ON DELETE nulls. */
-export const SET_NULL_COLUMNS = {
+/** 0000's constraint name → the one column its ON DELETE nulls. */
+const INITIAL_SET_NULL = {
   auth_sessions_learner_fk: "learner_id",
   phrase_examples_conversation_fk: "conversation_id",
   phrase_examples_turn_fk: "turn_id",
   reviews_conversation_fk: "conversation_id",
 };
 
-export function applyHandEdits(generated) {
-  let out = generated.startsWith(EXTENSION) ? generated : EXTENSION + generated;
-  for (const [name, col] of Object.entries(SET_NULL_COLUMNS)) {
+/** 0002's. */
+const PROFILE_SET_NULL = { auth_sessions_language_profile_fk: "language_profile_id" };
+
+/** Every SET NULL (col) key in the schema, constraint name → column (the
+ *  catalog test checks the migrated database has exactly these). */
+export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL };
+
+function setNull(sql, keys) {
+  let out = sql;
+  for (const [name, col] of Object.entries(keys)) {
     const line = new RegExp(`(ADD CONSTRAINT "${name}" FOREIGN KEY [^\\n]*?ON DELETE )(set null|SET NULL \\("${col}"\\))`);
-    const m = out.match(line);
-    if (!m) throw new Error(`hand-edits: no ON DELETE set null for constraint ${name} in the generated SQL`);
+    if (!line.test(out)) throw new Error(`hand-edits: no ON DELETE set null for constraint ${name} in the generated SQL`);
     out = out.replace(line, `$1SET NULL ("${col}")`);
   }
   return out;
 }
 
+function initEdits(generated) {
+  const out = generated.startsWith(EXTENSION) ? generated : EXTENSION + generated;
+  return setNull(out, INITIAL_SET_NULL);
+}
+
+/* -------------------------- 0002_language_profiles ------------------------- */
+
+/** The tables that move under a language profile, in the backfill's order. */
+const PROFILE_TABLES = ["packs", "pack_folders", "pack_revisions", "conversations", "turns"];
+
+const MARK = "-- Hand-written (scripts/db/hand-edits.mjs, 0002 edit 3):";
+
+const BACKFILL = [
+  `${MARK} one language profile per existing
+-- learner, from the learner's own per-language columns (dropped below). It
+-- is the learner's only one, so last_used_at makes it the one picking the
+-- learner lands on.
+INSERT INTO "language_profiles" ("learner_id", "target_language", "target_variant", "level", "goals", "notes", "created_at", "last_used_at")
+SELECT "id", "target_language", "target_variant", "level", "goals", "notes", "created_at", now() FROM "learners";`,
+  ...PROFILE_TABLES.map(
+    (t) => `${MARK} every ${t} row goes under its learner's profile.
+UPDATE "${t}" SET "language_profile_id" = lp."id" FROM "language_profiles" lp WHERE lp."learner_id" = "${t}"."learner_id";`,
+  ),
+  `${MARK} a session with a learner practises that learner's
+-- one language.
+UPDATE "auth_sessions" SET "language_profile_id" = lp."id" FROM "language_profiles" lp WHERE lp."learner_id" = "auth_sessions"."learner_id";`,
+  ...PROFILE_TABLES.map((t) => `ALTER TABLE "${t}" ALTER COLUMN "language_profile_id" SET NOT NULL;`),
+];
+
+/** Where each generated statement goes, in order; the first rule a
+ *  statement matches places it. */
+const ORDER = [
+  { name: "create language_profiles", re: /^CREATE TABLE "language_profiles"/ },
+  { name: "language_profiles' own keys", re: /^(ALTER TABLE "language_profiles" ADD CONSTRAINT|CREATE INDEX "language_profiles_)/ },
+  { name: "new columns", re: /^ALTER TABLE "\w+" ADD COLUMN "language_profile_id" uuid( NOT NULL)?;$/ },
+  { name: "backfill", insert: BACKFILL },
+  { name: "old keys out", re: /^(DROP INDEX "packs_learner_folder_slug_live"|ALTER TABLE "pack_folders" DROP CONSTRAINT "pack_folders_learner_id_name_pk");$/ },
+  { name: "new primary and unique keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" (PRIMARY KEY|UNIQUE)\(/ },
+  { name: "foreign keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" FOREIGN KEY / },
+  { name: "indexes", re: /^CREATE (UNIQUE )?INDEX "/ },
+  { name: "learner columns out, last", re: /^ALTER TABLE "learners" DROP COLUMN "(target_language|target_variant|level|goals|notes)";$/ },
+];
+
+const statements = (sql) => sql.split(BREAK).map((s) => s.trim()).filter(Boolean);
+const joinStatements = (list) => list.map((s) => `${s}\n`).join(`${BREAK}\n`);
+
+function languageProfileEdits(generated) {
+  if (generated.includes(MARK)) return generated; // already applied
+  const buckets = ORDER.map(() => []);
+  for (const stmt of statements(generated)) {
+    const i = ORDER.findIndex((o) => o.re?.test(stmt));
+    if (i < 0) throw new Error(`hand-edits 0002: a generated statement no rule places:\n${stmt}`);
+    // Added nullable; the backfill fills it and sets NOT NULL.
+    buckets[i].push(ORDER[i].name === "new columns" ? stmt.replace(/ NOT NULL;$/, ";") : stmt);
+  }
+  ORDER.forEach((o, i) => {
+    if (o.insert) buckets[i].push(...o.insert);
+    else if (!buckets[i].length) throw new Error(`hand-edits 0002: the generated SQL has nothing for "${o.name}"`);
+  });
+  return setNull(joinStatements(buckets.flat()), PROFILE_SET_NULL);
+}
+
+/* ---------------------------------- all ------------------------------------ */
+
+const EDITS = {
+  "0000_init": initEdits,
+  "0002_language_profiles": languageProfileEdits,
+};
+
+/** The migration `tag` as committed, from drizzle-kit's output for it. */
+export function applyHandEdits(generated, tag = "0000_init") {
+  const edit = EDITS[tag];
+  return edit ? edit(generated) : generated;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const before = fs.readFileSync(INITIAL_MIGRATION, "utf8");
-  const after = applyHandEdits(before);
-  fs.writeFileSync(INITIAL_MIGRATION, after);
-  console.log(before === after ? "hand edits already applied" : `hand edits applied to ${INITIAL_MIGRATION}`);
+  const tag = process.argv[2] ?? "0000_init";
+  const file = path.join(MIGRATIONS_DIR, `${tag}.sql`);
+  const before = fs.readFileSync(file, "utf8");
+  const after = applyHandEdits(before, tag);
+  fs.writeFileSync(file, after);
+  console.log(before === after ? "hand edits already applied" : `hand edits applied to ${file}`);
 }

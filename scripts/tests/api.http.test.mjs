@@ -20,7 +20,7 @@ import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
-import { learners, packFolders, packs } from "../db/schema.ts";
+import { languageProfiles, learners, packFolders, packs } from "../db/schema.ts";
 
 const root = copyFixture();
 const exportsDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-exports-"));
@@ -95,18 +95,24 @@ test("GET /api/content: the library without packs, problems included", async () 
 
 /** Sam's row, as stored. */
 const samRow = async () => (await db.select().from(learners).where(eq(learners.name, "Sam")))[0];
+/** A learner's one language (the fixtures give each learner one), as stored. */
+const languageOf = async (learnerId) => (await db.select().from(languageProfiles).where(eq(languageProfiles.learnerId, learnerId)))[0];
+/** Sam's language row: target language, variant and level live there. */
+const samLanguage = async () => languageOf((await samRow()).id);
+/** Both of Sam's rows: what a rejected write must leave alone. */
+const samBoth = async () => ({ learner: await samRow(), language: await samLanguage() });
 
 test("PUT /api/profile merges the picker keys into the active learner, keeps the rest, validates the body, and leaves profile.yaml alone", async () => {
   const file = path.join(root, "profile.yaml");
   const fileBefore = fs.readFileSync(file, "utf8");
-  const rowBefore = await samRow();
+  const rowBefore = await samLanguage();
   try {
     const r = await call("PUT", "/api/profile", { target_language: "Japanese", target_variant: "Kansai dialect", level: "B1" });
     assert.equal(r.status, 200);
     assert.equal(r.body.profile.target_language, "Japanese");
     assert.equal(r.body.profile.learner_name, "Sam", "keys the body doesn't name are kept");
     assert.equal(r.body.profile.goals, "Order food and chat with vendors.");
-    const row = await samRow();
+    const row = await samLanguage();
     assert.deepEqual([row.targetLanguage, row.targetVariant, row.level], ["Japanese", "Kansai dialect", "B1"]);
     assert.equal(fs.readFileSync(file, "utf8"), fileBefore, "the file is a seed now, never written by the app");
     assert.equal((await call("GET", "/api/content")).body.profile.level, "B1", "the next content read sees it");
@@ -115,23 +121,23 @@ test("PUT /api/profile merges the picker keys into the active learner, keeps the
     const cleared = await call("PUT", "/api/profile", { target_variant: "" });
     assert.equal(cleared.status, 200);
     assert.equal(cleared.body.profile.target_variant, undefined);
-    assert.equal((await samRow()).targetVariant, "");
+    assert.equal((await samLanguage()).targetVariant, "");
 
     // rejected bodies: unknown key, non-string, too long, blank name, not an object, empty, not JSON
-    const after = await samRow();
+    const after = await samBoth();
     for (const bad of [{ goals: "prose, not a picker key" }, { level: 42 }, { level: "x".repeat(81) }, { level: "B1", goals: "" }, { learner_name: " " }, [], {}, "{not json"]) {
       const r = await call("PUT", "/api/profile", bad);
       assert.equal(r.status, 400, JSON.stringify(bad));
       assert.match(r.body.error, /./);
     }
-    assert.deepEqual(await samRow(), after, "a rejected body writes nothing");
+    assert.deepEqual(await samBoth(), after, "a rejected body writes nothing");
     assert.equal((await call("GET", "/api/profile")).status, 405);
     assert.equal((await call("PUT", "/api/profile/extra", { level: "A1" })).status, 404);
     assert.equal((await call("PUT", "/api/profile?mode=kids", { level: "A1" })).status, 400, "Sam is adult");
-    assert.deepEqual(await samRow(), after);
+    assert.deepEqual(await samBoth(), after);
   } finally {
     // the later tests assemble against the fixture values
-    await db.update(learners).set({ targetLanguage: rowBefore.targetLanguage, targetVariant: rowBefore.targetVariant, level: rowBefore.level }).where(eq(learners.id, rowBefore.id));
+    await db.update(languageProfiles).set({ targetLanguage: rowBefore.targetLanguage, targetVariant: rowBefore.targetVariant, level: rowBefore.level }).where(eq(languageProfiles.id, rowBefore.id));
   }
 });
 
@@ -260,15 +266,18 @@ test("a ?mode= that disagrees with the active learner is a 400 on pack, profile,
 
 test("the assembled prompt's Learner block is the active learner's row, not profile.yaml", async () => {
   const before = await samRow();
+  const language = await samLanguage();
   try {
-    await db.update(learners).set({ name: "Samira", level: "C1" }).where(eq(learners.id, before.id));
+    await db.update(learners).set({ name: "Samira" }).where(eq(learners.id, before.id));
+    await db.update(languageProfiles).set({ level: "C1" }).where(eq(languageProfiles.id, language.id));
     const r = await call("POST", "/api/assemble", { pack });
     assert.equal(r.status, 200);
     assert.match(r.body.markdown, /Samira/);
     assert.doesNotMatch(r.body.markdown, /\bSam\b/);
     assert.match(fs.readFileSync(path.join(root, "profile.yaml"), "utf8"), /learner_name: Sam\n/, "the file is untouched");
   } finally {
-    await db.update(learners).set({ name: before.name, level: before.level }).where(eq(learners.id, before.id));
+    await db.update(learners).set({ name: before.name }).where(eq(learners.id, before.id));
+    await db.update(languageProfiles).set({ level: language.level }).where(eq(languageProfiles.id, language.id));
   }
 });
 
@@ -320,7 +329,7 @@ test("a stale tab (another tab picked a learner of the same mode) gets 409 stale
   const anaId = made.body.learner.id;
   const other = tab(base, session);
   await other.pick("Ana");
-  const anaRow = async () => (await db.select().from(learners).where(eq(learners.id, anaId)))[0];
+  const anaRow = async () => ({ learner: (await db.select().from(learners).where(eq(learners.id, anaId)))[0], language: await languageOf(anaId) });
   try {
     const anaBefore = await anaRow();
     const rowsBefore = await packRows();
@@ -344,7 +353,7 @@ test("a stale tab (another tab picked a learner of the same mode) gets 409 stale
     // The current tab works, and writes Ana.
     const ok = await other.call("PUT", "/api/profile", { level: "B1" });
     assert.equal(ok.status, 200, ok.text);
-    assert.equal((await anaRow()).level, "B1");
+    assert.equal((await anaRow()).language.level, "B1");
   } finally {
     await session.pick("Sam");
     await call("POST", `/api/learners/${anaId}/archive`, {});
@@ -362,7 +371,7 @@ test("another account logged in on the same browser: the first account's open pa
     assert.equal(r.status, 409);
     assert.equal(r.body.code, "stale_learner");
     const leeRow = (await db.select().from(learners).where(eq(learners.name, "Lee")))[0];
-    assert.equal(leeRow.level, "A2", "lee's learner is untouched");
+    assert.equal((await languageOf(leeRow.id)).level, "A2", "lee's learner is untouched");
   } finally {
     await session.login("robin");
     await session.pick("Sam");

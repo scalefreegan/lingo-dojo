@@ -9,10 +9,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { eq, sql } from "drizzle-orm";
 import { loadPackFiles } from "../content.mjs";
-import { createFirstAdmin, createLearner, createUser, disableUser } from "../db/accounts.ts";
+import { createFirstAdmin, createLanguageProfile, createLearner, createUser, defaultLanguageProfile, disableUser } from "../db/accounts.ts";
 import { formatImportReport, importFilePacks } from "../db/import.ts";
 import { deletePack, importPacks, listDeleted, listPacks, movePack, renamePack } from "../db/packs.ts";
-import { packRevisions, packs } from "../db/schema.ts";
+import { languageProfiles, packRevisions, packs } from "../db/schema.ts";
 import { copyFixture, write } from "./helpers.mjs";
 import { ADULT, KID } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
@@ -28,6 +28,10 @@ function library() {
 }
 
 const TREES = { adult: "content/packs/", kids: "content/kids/packs/" };
+
+/** A learner made by createLearner (which returns its first language) as the
+ *  language-profile ref the pack functions take. */
+const ref = (l) => ({ id: l.language.id, learnerId: l.id });
 
 async function setup(t) {
   const { db, close } = await freshDb();
@@ -61,25 +65,25 @@ test("import: both modes to the first admin's learners, keeping folder, slug, ti
   assert.match(adult.unreadable[0].file, /2026-10-21-broken\.yaml$/);
   assert.deepEqual(kids.result.imported, ["2026-10-20-farm-first"]);
 
-  const samPacks = await listPacks(db, sam.id);
+  const samPacks = await listPacks(db, ref(sam));
   assert.deepEqual(samPacks.folders, ["empty", "oaxaca"]);
   const mezcal = samPacks.packs.find((p) => p.id === "oaxaca/2026-10-20-mezcal");
   assert.deepEqual([mezcal.folder, mezcal.title, mezcal.created, mezcal.units], ["oaxaca", "Mezcal", "2026-10-20T10:00:00-06:00", ["intro-native"]]);
   assert.equal(samPacks.packs.find((p) => p.id === "2026-10-19-market-gentle").overrides.level, "B1");
-  assert.deepEqual((await listPacks(db, pip.id)).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
+  assert.deepEqual((await listPacks(db, ref(pip))).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
   const revs = await db.select().from(packRevisions).where(eq(packRevisions.learnerId, sam.id));
   assert.deepEqual(revs.map((r) => r.action), ["import", "import"]);
 
   assert.deepEqual(formatImportReport(report, TREES), [
     "packs → robin (admin)",
-    "adult (content/packs/) → Sam: 2 imported, 0 already there, 2 folders added, 1 invalid, 1 unreadable file",
+    "adult (content/packs/) → Sam (Spanish · A2): 2 imported, 0 already there, 2 folders added, 1 invalid, 1 unreadable file",
     "  + 2026-10-19-market-gentle",
     "  + oaxaca/2026-10-20-mezcal",
     "  + folder empty",
     "  + folder oaxaca",
     "  ! Bad Name/2026-10-22-x: not a valid pack id, no title, or a NUL character; skipped",
     `  ! ${adult.unreadable[0].file}: ${adult.unreadable[0].message}; skipped`,
-    "kids (content/kids/packs/) → Pip: 1 imported, 0 already there, 0 folders added",
+    "kids (content/kids/packs/) → Pip (German · First words): 1 imported, 0 already there, 0 folders added",
     "  + 2026-10-20-farm-first",
   ]);
 });
@@ -100,12 +104,12 @@ test("import: a re-run adds nothing, and a pack deleted in the app stays deleted
   assert.deepEqual(await db.select().from(packs), rowsAfterFirst, "nothing changed");
 
   // Deleted in the app (soft): the re-run must not bring it back.
-  assert.equal(await deletePack(db, sam.id, "2026-10-19-market-gentle"), true);
+  assert.equal(await deletePack(db, ref(sam), "2026-10-19-market-gentle"), true);
   const third = await importFilePacks(db, { files: library() });
   assert.ok(third.modes[0].result.present.includes("2026-10-19-market-gentle"));
   assert.deepEqual(third.modes[0].result.imported, []);
-  assert.deepEqual((await listPacks(db, sam.id)).packs.map((p) => p.id), ["oaxaca/2026-10-20-mezcal"]);
-  assert.deepEqual((await listDeleted(db, sam.id)).items.map((d) => d.pack.id), ["2026-10-19-market-gentle"]);
+  assert.deepEqual((await listPacks(db, ref(sam))).packs.map((p) => p.id), ["oaxaca/2026-10-20-mezcal"]);
+  assert.deepEqual((await listDeleted(db, ref(sam))).items.map((d) => d.pack.id), ["2026-10-19-market-gentle"]);
   assert.match(formatImportReport(third, TREES)[1], /0 imported, 2 already there, 0 folders added/);
   assert.ok(formatImportReport(third, TREES).includes("  = 2026-10-19-market-gentle (already there)"));
 });
@@ -122,16 +126,16 @@ test("import: a re-run after the app renamed, moved and deleted the imported pac
     ],
     folders: [],
   };
-  assert.equal((await importPacks(db, sam.id, files)).imported.length, 3);
-  await renamePack(db, sam.id, "2026-10-01-one", "Uno");
-  await movePack(db, sam.id, "2026-10-02-two", "kept");
-  await deletePack(db, sam.id, "2026-10-03-three");
-  const before = (await listPacks(db, sam.id)).packs.map((p) => p.id);
+  assert.equal((await importPacks(db, ref(sam), files)).imported.length, 3);
+  await renamePack(db, ref(sam), "2026-10-01-one", "Uno");
+  await movePack(db, ref(sam), "2026-10-02-two", "kept");
+  await deletePack(db, ref(sam), "2026-10-03-three");
+  const before = (await listPacks(db, ref(sam))).packs.map((p) => p.id);
   assert.deepEqual(before, ["2026-10-01-uno", "kept/2026-10-02-two"]);
-  const again = await importPacks(db, sam.id, files);
+  const again = await importPacks(db, ref(sam), files);
   assert.deepEqual(again.imported, []);
   assert.deepEqual(again.present, ["2026-10-01-one", "2026-10-02-two", "2026-10-03-three"]);
-  assert.deepEqual((await listPacks(db, sam.id)).packs.map((p) => p.id), before);
+  assert.deepEqual((await listPacks(db, ref(sam))).packs.map((p) => p.id), before);
   assert.equal((await db.select().from(packs)).length, 3, "no new row");
 });
 
@@ -157,13 +161,14 @@ test("import: a pack with a NUL is invalid and one the database refuses is faile
   assert.ok(user, "the admin was created");
   const { listLearners } = await import("../db/accounts.ts");
   const [sam] = await listLearners(db, user.id);
-  const listed = await listPacks(db, sam.id);
+  sam.language = await defaultLanguageProfile(db, sam.id);
+  const listed = await listPacks(db, ref(sam));
   assert.deepEqual(listed.packs.map((p) => p.id), ["2026-10-01-ok", "2026-10-05-after"]);
   assert.deepEqual(listed.folders, [], "the refused pack left no folder");
   assert.equal(errors.length, 1);
   assert.match(errors[0], /boomed\/2026-10-04-boom skipped/);
 
-  const r = await importPacks(db, sam.id, files);
+  const r = await importPacks(db, ref(sam), files);
   assert.deepEqual(r.invalid, ["2026-10-02-nul", "2026-10-03-nul-key"]);
   assert.deepEqual(r.failed, ["boomed/2026-10-04-boom"]);
   assert.deepEqual(r.present, ["2026-10-01-ok", "2026-10-05-after"]);
@@ -207,10 +212,10 @@ test("importPacks into a learner that already has a live pack at an id skips it,
   const robin = await createUser(db, { username: "robin", passwordHash: "x", isAdmin: true });
   const sam = await createLearner(db, robin.id, ADULT);
   const files = library().adult;
-  await importPacks(db, sam.id, { packs: [{ ...files.packs[0], title: "Edited in the app" }], folders: [] });
-  const r = await importPacks(db, sam.id, files);
+  await importPacks(db, ref(sam), { packs: [{ ...files.packs[0], title: "Edited in the app" }], folders: [] });
+  const r = await importPacks(db, ref(sam), files);
   assert.deepEqual(r.present, ["2026-10-19-market-gentle"]);
-  assert.equal((await listPacks(db, sam.id)).packs.find((p) => p.id === "2026-10-19-market-gentle").title, "Edited in the app");
+  assert.equal((await listPacks(db, ref(sam))).packs.find((p) => p.id === "2026-10-19-market-gentle").title, "Edited in the app");
 });
 
 test("the first run seeds each learner with its mode's packs, in the same transaction as the admin", async (t) => {
@@ -223,11 +228,37 @@ test("the first run seeds each learner with its mode's packs, in the same transa
   assert.equal(rows.length, 3);
   const { listLearners } = await import("../db/accounts.ts");
   const [sam, pip] = await listLearners(db, user.id);
-  assert.deepEqual((await listPacks(db, sam.id)).packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
-  assert.deepEqual((await listPacks(db, pip.id)).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
+  for (const l of [sam, pip]) l.language = await defaultLanguageProfile(db, l.id);
+  assert.deepEqual((await listPacks(db, ref(sam))).packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.deepEqual((await listPacks(db, ref(pip))).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
   // No seed packs (an older caller): fine, none.
   const { db: db2, close } = await freshDb();
   t.after(close);
   await createFirstAdmin(db2, { username: "robin", passwordHash: "x" }, { learners: [{ ...ADULT }], voice: null, model: null, messages: [] });
   assert.deepEqual(await db2.select().from(packs), []);
+});
+
+test("import: a learner with two languages gets the packs in its last-used one; a re-run adds nothing there, and the other language stays empty until it is the last used", async (t) => {
+  const db = await setup(t);
+  const robin = await createUser(db, { username: "robin", passwordHash: "x", isAdmin: true });
+  const sam = await createLearner(db, robin.id, ADULT);
+  const spanish = ref(sam);
+  const german = await createLanguageProfile(db, sam.id, { targetLanguage: "German", level: "B1" });
+  await db.update(languageProfiles).set({ lastUsedAt: new Date() }).where(eq(languageProfiles.id, german.id));
+
+  const first = await importFilePacks(db, { files: library() });
+  assert.deepEqual(first.modes[0].language, { id: german.id, targetLanguage: "German", level: "B1" });
+  assert.match(formatImportReport(first, TREES)[1], /→ Sam \(German · B1\): 2 imported/);
+  assert.deepEqual((await listPacks(db, german)).packs.map((p) => p.id), ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.deepEqual(await listPacks(db, spanish), { packs: [], folders: [] }, "the other language gets nothing");
+  const again = await importFilePacks(db, { files: library() });
+  assert.deepEqual(again.modes[0].result.imported, [], "idempotent per language");
+
+  // Practising Spanish later makes it the default: a re-run fills it once.
+  await db.update(languageProfiles).set({ lastUsedAt: new Date(Date.now() + 1000) }).where(eq(languageProfiles.id, spanish.id));
+  const third = await importFilePacks(db, { files: library() });
+  assert.equal(third.modes[0].language.id, spanish.id);
+  assert.deepEqual(third.modes[0].result.imported, ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"]);
+  assert.equal((await importFilePacks(db, { files: library() })).modes[0].result.imported.length, 0);
+  assert.equal((await listPacks(db, german)).packs.length, 2, "German's are its own");
 });

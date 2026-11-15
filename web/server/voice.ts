@@ -34,8 +34,8 @@ import { conversationIdOf, openConversation, saveTurn, takeTurnLock } from "./co
 //   POST    /api/voice/library/add   add a library voice to the account (admin)
 //   POST    /api/voice/cast          this session's voices
 //
-// turn and cast act for the active learner, so api.ts mounts them with
-// wrap's `learner: true` (the page must name that learner).
+// turn and cast act for the active learner and language, so api.ts mounts them with
+// wrap's `learner: true` (the page must name both).
 //
 // The browser holds the session: it sends the whole history with every
 // turn. A turn that names a saved conversation (conversations.ts) is stored
@@ -322,9 +322,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // A saved conversation must be this learner's and still open (else a 404
     // or 409 whose code sends the Go tab to start a new one), checked before
     // anything runs. Its part of the history starts at conversationStart.
-    const conversation = conversationId ? await openConversation(ctx.learner.id, conversationId) : null;
-    // The active learner is the profile (content.profile is the file's).
-    const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner) };
+    const conversation = conversationId ? await openConversation(ctx.language, conversationId) : null;
+    // The active learner and language are the profile (content.profile is the file's).
+    const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
     const { markdown, warnings } = assemble(content, body.pack, mode);
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
@@ -371,7 +371,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
         durationMs: run.durationMs, costUsd: run.costUsd,
       };
-      reply.saved = await saveTurn(ctx.learner.id, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model }).catch((e) => {
+      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model }).catch((e) => {
         console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
         return false;
       });

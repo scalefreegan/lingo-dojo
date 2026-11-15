@@ -128,7 +128,7 @@ test("0000_init.sql is drizzle-kit's output plus exactly the documented hand edi
   assert.equal(fs.readFileSync(INITIAL_MIGRATION, "utf8"), applyHandEdits(generated));
 });
 
-test("the latest later migration is exactly drizzle-kit's output from the ones before it (no hand edits)", (t) => {
+test("the latest later migration is exactly drizzle-kit's output from the ones before it, plus its documented hand edits", (t) => {
   const { entries } = journal();
   if (entries.length < 2) return t.skip("only the initial migration");
   const latest = entries[entries.length - 1];
@@ -146,7 +146,27 @@ test("the latest later migration is exactly drizzle-kit's output from the ones b
   const log = generate(out);
   const made = fs.readdirSync(out).filter((f) => f.endsWith(".sql") && !prior.some((e) => f === `${e.tag}.sql`));
   assert.equal(made.length, 1, `drizzle-kit wrote no new migration:\n${log}`);
-  assert.equal(fs.readFileSync(path.join(MIGRATIONS_DIR, `${latest.tag}.sql`), "utf8"), fs.readFileSync(path.join(out, made[0]), "utf8"));
+  // applyHandEdits is the identity for a migration with no edits (0001).
+  const generated = fs.readFileSync(path.join(out, made[0]), "utf8");
+  assert.equal(fs.readFileSync(path.join(MIGRATIONS_DIR, `${latest.tag}.sql`), "utf8"), applyHandEdits(generated, latest.tag));
+});
+
+test("0002's hand edits only reorder drizzle-kit's statements, relax five NOT NULLs, add the backfill and SET NULL (col)", () => {
+  // Pinned on the committed file, so a change to hand-edits.mjs that slips
+  // in anything else shows here, not only as a different hash.
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, "0002_language_profiles.sql"), "utf8");
+  const stmts = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+  const handWritten = stmts.filter((s) => s.startsWith("-- Hand-written") || /ALTER COLUMN "language_profile_id" SET NOT NULL/.test(s));
+  assert.equal(handWritten.length, 1 + 5 + 1 + 5, "one insert, five table updates, one session update, five SET NOT NULL");
+  const at = (re) => stmts.findIndex((s) => re.test(s));
+  // Each step after what it needs.
+  assert.ok(at(/^CREATE TABLE "language_profiles"/) < at(/INSERT INTO "language_profiles"/));
+  assert.ok(at(/ADD COLUMN "language_profile_id"/) < at(/INSERT INTO "language_profiles"/));
+  assert.ok(at(/SET NOT NULL/) < at(/PRIMARY KEY\("language_profile_id"/));
+  assert.ok(at(/UNIQUE\("id","language_profile_id"\)/) < at(/"pack_revisions_pack_profile_fk"/));
+  assert.ok(stmts.slice(at(/DROP COLUMN/)).every((s) => /^ALTER TABLE "learners" DROP COLUMN/.test(s)), "the learner columns go last");
+  assert.match(sql, /"auth_sessions_language_profile_fk" FOREIGN KEY [^\n]*ON DELETE SET NULL \("language_profile_id"\)/);
+  assert.doesNotMatch(sql, /ADD COLUMN "language_profile_id" uuid NOT NULL/);
 });
 
 test("the hand-edited keys null only their link column (PGlite catalog)", async (t) => {

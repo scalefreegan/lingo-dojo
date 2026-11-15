@@ -15,6 +15,15 @@
 // the row-level security planned for the read-only role (bead ld-t5f) be one
 // `learner_id = …` policy per table instead of a join per table.
 //
+// One level deeper (migration 0002): what belongs to one of a learner's
+// languages (packs, pack folders, pack revisions, conversations, turns)
+// also carries `language_profile_id`, and reaches the profile through
+// (language_profile_id, learner_id) → language_profiles (id, learner_id). A
+// child of such a row (a revision, a turn) reaches its parent through both
+// (parent id, learner_id) and (parent id, language_profile_id), so it can't
+// sit under another language, learner or account than its parent. The
+// phrase bank stays keyed by learner and `lang`.
+//
 // Deletes cascade from a parent to children that mean nothing without it
 // (a learner's packs, a conversation's turns, a phrase's cards). Links that
 // are only provenance (a review's conversation, an example's turn, a
@@ -81,13 +90,11 @@ export const learners = pgTable(
     /** The profile's learner_name. */
     name: text("name").notNull(),
     mode: text("mode").$type<"adult" | "kids">().notNull(),
-    // The profile.yaml keys, as text (blank allowed, as in the YAML today).
+    // The one profile.yaml key that belongs to the person rather than to a
+    // language (blank allowed, as in the YAML). The per-language keys
+    // (target language, variant, level, goals, notes) moved to
+    // language_profiles in migration 0002.
     nativeLanguage: text("native_language").notNull().default(""),
-    targetLanguage: text("target_language").notNull().default(""),
-    targetVariant: text("target_variant").notNull().default(""),
-    level: text("level").notNull().default(""),
-    goals: text("goals").notNull().default(""),
-    notes: text("notes").notNull().default(""),
     createdAt: createdAt(),
     archivedAt: tz("archived_at"),
   },
@@ -95,6 +102,35 @@ export const learners = pgTable(
     check("learners_mode", sql`${t.mode} in ('adult', 'kids')`),
     index("learners_user_idx").on(t.userId),
     unique("learners_id_user").on(t.id, t.userId),
+  ],
+);
+
+/** One language a learner practises: profile.yaml's per-language keys. A
+ *  learner keeps at least one that isn't archived; the login session holds
+ *  the active one (so two devices can practise two languages), and the most
+ *  recently used is where picking the learner lands. Packs and
+ *  conversations belong to one of these. */
+export const languageProfiles = pgTable(
+  "language_profiles",
+  {
+    id: id(),
+    learnerId: uuid("learner_id")
+      .notNull()
+      .references(() => learners.id, { onDelete: "cascade" }),
+    targetLanguage: text("target_language").notNull().default(""),
+    targetVariant: text("target_variant").notNull().default(""),
+    level: text("level").notNull().default(""),
+    goals: text("goals").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    createdAt: createdAt(),
+    /** Set whenever a session picks it: the learner's newest is the one a
+     *  pick of the learner (and the pack import) lands on. */
+    lastUsedAt: tz("last_used_at"),
+    archivedAt: tz("archived_at"),
+  },
+  (t) => [
+    index("language_profiles_learner_idx").on(t.learnerId),
+    unique("language_profiles_id_learner").on(t.id, t.learnerId),
   ],
 );
 
@@ -110,6 +146,10 @@ export const authSessions = pgTable(
      *  the learner nulls only this column, so the session falls back to the
      *  picker. */
     learnerId: uuid("learner_id"),
+    /** The active language, one of the active learner's (composite key), so
+     *  two devices of one learner can practise two languages. Deleting it
+     *  nulls only this column. */
+    languageProfileId: uuid("language_profile_id"),
     createdAt: createdAt(),
     expiresAt: tz("expires_at").notNull(),
     lastSeenAt: tz("last_seen_at").notNull().defaultNow(),
@@ -117,6 +157,8 @@ export const authSessions = pgTable(
   (t) => [
     // Hand-edited to ON DELETE SET NULL ("learner_id") (hand-edits.mjs).
     foreignKey({ name: "auth_sessions_learner_fk", columns: [t.learnerId, t.userId], foreignColumns: [learners.id, learners.userId] }).onDelete("set null"),
+    // Hand-edited to ON DELETE SET NULL ("language_profile_id") (hand-edits.mjs).
+    foreignKey({ name: "auth_sessions_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("set null"),
     index("auth_sessions_user_idx").on(t.userId),
     index("auth_sessions_expires_idx").on(t.expiresAt),
   ],
@@ -161,6 +203,8 @@ export const packs = pgTable(
     learnerId: uuid("learner_id")
       .notNull()
       .references(() => learners.id, { onDelete: "cascade" }),
+    /** The language it is for, one of the learner's (composite key). */
+    languageProfileId: uuid("language_profile_id").notNull(),
     /** "" at the top level, else one kebab segment. */
     folder: text("folder").notNull().default(""),
     slug: text("slug").notNull(),
@@ -178,9 +222,12 @@ export const packs = pgTable(
     deletedAt: tz("deleted_at"),
   },
   (t) => [
-    // Soft deletes: a deleted pack frees its id for a new one.
-    uniqueIndex("packs_learner_folder_slug_live").on(t.learnerId, t.folder, t.slug).where(sql`${t.deletedAt} is null`),
+    foreignKey({ name: "packs_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    // Soft deletes: a deleted pack frees its id for a new one. Ids are per
+    // language: each of a learner's languages may have a pack at one id.
+    uniqueIndex("packs_profile_folder_slug_live").on(t.languageProfileId, t.folder, t.slug).where(sql`${t.deletedAt} is null`),
     unique("packs_id_learner").on(t.id, t.learnerId),
+    unique("packs_id_profile").on(t.id, t.languageProfileId),
   ],
 );
 
@@ -192,10 +239,14 @@ export const packFolders = pgTable(
     learnerId: uuid("learner_id")
       .notNull()
       .references(() => learners.id, { onDelete: "cascade" }),
+    languageProfileId: uuid("language_profile_id").notNull(),
     name: text("name").notNull(),
     createdAt: createdAt(),
   },
-  (t) => [primaryKey({ columns: [t.learnerId, t.name] })],
+  (t) => [
+    primaryKey({ name: "pack_folders_profile_name_pk", columns: [t.languageProfileId, t.name] }),
+    foreignKey({ name: "pack_folders_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+  ],
 );
 
 export const packRevisions = pgTable(
@@ -204,6 +255,7 @@ export const packRevisions = pgTable(
     id: id(),
     packId: uuid("pack_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     /** Revision order (`at` ties within a transaction). */
     seq: bigserial("seq", { mode: "number" }).notNull(),
     /** The pack row as it was after this action (before it, for a delete). */
@@ -213,6 +265,7 @@ export const packRevisions = pgTable(
   },
   (t) => [
     foreignKey({ columns: [t.packId, t.learnerId], foreignColumns: [packs.id, packs.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "pack_revisions_pack_profile_fk", columns: [t.packId, t.languageProfileId], foreignColumns: [packs.id, packs.languageProfileId] }).onDelete("cascade"),
     index("pack_revisions_pack_seq_idx").on(t.packId, t.seq),
   ],
 );
@@ -226,6 +279,8 @@ export const conversations = pgTable(
     learnerId: uuid("learner_id")
       .notNull()
       .references(() => learners.id, { onDelete: "cascade" }),
+    /** The language practised, one of the learner's (composite key). */
+    languageProfileId: uuid("language_profile_id").notNull(),
     /** What was played, frozen: packs change later. */
     packSnapshot: jsonb("pack_snapshot").$type<Record<string, unknown>>().notNull(),
     scenarioId: text("scenario_id"),
@@ -249,8 +304,11 @@ export const conversations = pgTable(
   },
   (t) => [
     check("conversations_mode", sql`${t.mode} in ('adult', 'kids')`),
+    foreignKey({ name: "conversations_language_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
     unique("conversations_id_learner").on(t.id, t.learnerId),
+    unique("conversations_id_profile").on(t.id, t.languageProfileId),
     index("conversations_learner_started_idx").on(t.learnerId, t.startedAt),
+    index("conversations_profile_started_idx").on(t.languageProfileId, t.startedAt),
   ],
 );
 
@@ -260,6 +318,7 @@ export const turns = pgTable(
     id: id(),
     conversationId: uuid("conversation_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
     /** 0-based position in the conversation. */
     idx: integer("idx").notNull(),
     role: text("role").$type<"learner" | "master">().notNull(),
@@ -284,6 +343,7 @@ export const turns = pgTable(
   (t) => [
     check("turns_role", sql`${t.role} in ('learner', 'master')`),
     foreignKey({ columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "turns_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("cascade"),
     unique("turns_conversation_position").on(t.conversationId, t.idx),
     unique("turns_id_learner").on(t.id, t.learnerId),
   ],
