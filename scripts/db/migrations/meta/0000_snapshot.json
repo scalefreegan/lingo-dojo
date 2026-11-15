@@ -1,5 +1,5 @@
 {
-  "id": "9ca72625-3163-4acc-9b1d-cdafcce7a223",
+  "id": "5f74d64d-2c1b-490d-b028-dc22dffecdf2",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -18,6 +18,12 @@
         "user_id": {
           "name": "user_id",
           "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "bigserial",
           "primaryKey": false,
           "notNull": true
         },
@@ -42,8 +48,8 @@
         }
       },
       "indexes": {
-        "agent_messages_user_ts_idx": {
-          "name": "agent_messages_user_ts_idx",
+        "agent_messages_user_seq_idx": {
+          "name": "agent_messages_user_seq_idx",
           "columns": [
             {
               "expression": "user_id",
@@ -52,7 +58,7 @@
               "nulls": "last"
             },
             {
-              "expression": "ts",
+              "expression": "seq",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -179,15 +185,17 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "auth_sessions_learner_id_learners_id_fk": {
-          "name": "auth_sessions_learner_id_learners_id_fk",
+        "auth_sessions_learner_fk": {
+          "name": "auth_sessions_learner_fk",
           "tableFrom": "auth_sessions",
           "tableTo": "learners",
           "columnsFrom": [
-            "learner_id"
+            "learner_id",
+            "user_id"
           ],
           "columnsTo": [
-            "id"
+            "id",
+            "user_id"
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
@@ -755,7 +763,16 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
+      "uniqueConstraints": {
+        "learners_id_user": {
+          "name": "learners_id_user",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "user_id"
+          ]
+        }
+      },
       "policies": {},
       "checkConstraints": {
         "learners_mode": {
@@ -842,6 +859,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "seq": {
+          "name": "seq",
+          "type": "bigserial",
+          "primaryKey": false,
+          "notNull": true
+        },
         "snapshot": {
           "name": "snapshot",
           "type": "jsonb",
@@ -863,8 +886,8 @@
         }
       },
       "indexes": {
-        "pack_revisions_pack_at_idx": {
-          "name": "pack_revisions_pack_at_idx",
+        "pack_revisions_pack_seq_idx": {
+          "name": "pack_revisions_pack_seq_idx",
           "columns": [
             {
               "expression": "pack_id",
@@ -873,7 +896,7 @@
               "nulls": "last"
             },
             {
-              "expression": "at",
+              "expression": "seq",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1132,32 +1155,6 @@
         }
       },
       "foreignKeys": {
-        "phrase_examples_conversation_id_conversations_id_fk": {
-          "name": "phrase_examples_conversation_id_conversations_id_fk",
-          "tableFrom": "phrase_examples",
-          "tableTo": "conversations",
-          "columnsFrom": [
-            "conversation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "phrase_examples_turn_id_turns_id_fk": {
-          "name": "phrase_examples_turn_id_turns_id_fk",
-          "tableFrom": "phrase_examples",
-          "tableTo": "turns",
-          "columnsFrom": [
-            "turn_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "phrase_examples_phrase_id_learner_id_phrases_id_learner_id_fk": {
           "name": "phrase_examples_phrase_id_learner_id_phrases_id_learner_id_fk",
           "tableFrom": "phrase_examples",
@@ -1171,6 +1168,36 @@
             "learner_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "phrase_examples_conversation_fk": {
+          "name": "phrase_examples_conversation_fk",
+          "tableFrom": "phrase_examples",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "phrase_examples_turn_fk": {
+          "name": "phrase_examples_turn_fk",
+          "tableFrom": "phrase_examples",
+          "tableTo": "turns",
+          "columnsFrom": [
+            "turn_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1213,10 +1240,16 @@
           "name": "norm",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "meaning": {
           "name": "meaning",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "meaning_norm": {
+          "name": "meaning_norm",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1288,6 +1321,62 @@
         }
       },
       "indexes": {
+        "phrases_identity": {
+          "name": "phrases_identity",
+          "columns": [
+            {
+              "expression": "learner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lang",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "norm",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"phrases\".\"text\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "phrases_pending_identity": {
+          "name": "phrases_pending_identity",
+          "columns": [
+            {
+              "expression": "learner_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lang",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "meaning_norm",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"phrases\".\"text\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "phrases_text_trgm": {
           "name": "phrases_text_trgm",
           "columns": [
@@ -1338,15 +1427,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "phrases_identity": {
-          "name": "phrases_identity",
-          "nullsNotDistinct": false,
-          "columns": [
-            "learner_id",
-            "lang",
-            "norm"
-          ]
-        },
         "phrases_id_learner": {
           "name": "phrases_id_learner",
           "nullsNotDistinct": false,
@@ -1361,6 +1441,10 @@
         "phrases_source": {
           "name": "phrases_source",
           "value": "\"phrases\".\"source\" in ('gloss', 'extraction', 'manual', 'scenario')"
+        },
+        "phrases_complete_or_pending": {
+          "name": "phrases_complete_or_pending",
+          "value": "(\"phrases\".\"text\" is not null and \"phrases\".\"norm\" is not null) or (\"phrases\".\"text\" is null and \"phrases\".\"norm\" is null and \"phrases\".\"meaning_norm\" is not null)"
         }
       },
       "isRLSEnabled": false
@@ -1435,9 +1519,37 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "card_before": {
+          "name": "card_before",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {
+        "reviews_one_session_review": {
+          "name": "reviews_one_session_review",
+          "columns": [
+            {
+              "expression": "card_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"reviews\".\"mode\" = 'session'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "reviews_card_at_idx": {
           "name": "reviews_card_at_idx",
           "columns": [
@@ -1482,19 +1594,6 @@
         }
       },
       "foreignKeys": {
-        "reviews_conversation_id_conversations_id_fk": {
-          "name": "reviews_conversation_id_conversations_id_fk",
-          "tableFrom": "reviews",
-          "tableTo": "conversations",
-          "columnsFrom": [
-            "conversation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
         "reviews_card_id_learner_id_cards_id_learner_id_fk": {
           "name": "reviews_card_id_learner_id_cards_id_learner_id_fk",
           "tableFrom": "reviews",
@@ -1508,6 +1607,21 @@
             "learner_id"
           ],
           "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "reviews_conversation_fk": {
+          "name": "reviews_conversation_fk",
+          "tableFrom": "reviews",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -1653,6 +1767,14 @@
           "columns": [
             "conversation_id",
             "idx"
+          ]
+        },
+        "turns_id_learner": {
+          "name": "turns_id_learner",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "learner_id"
           ]
         }
       },

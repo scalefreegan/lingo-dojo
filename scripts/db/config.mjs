@@ -5,21 +5,46 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { REPO_ROOT } from "../content.mjs";
 import { envFile, parseEnv } from "../voice.mjs";
 
 export const DEFAULT_DATABASE_URL = "postgres://localhost/lingo_dojo";
 export const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 
-/** DATABASE_URL: the shell environment, else the repo-root .env.local (read
- *  the same way as the voice keys, so the Dock app, which starts without a
- *  shell profile, sees it too), else the default local database. */
-export function databaseUrl(env = process.env, file = envFile()) {
+/** A linked git worktree has a `.git` file (pointing at the main repo's
+ *  git dir) where the main checkout has a `.git` directory. */
+export function isLinkedWorktree(root = REPO_ROOT) {
+  try {
+    return fs.statSync(path.join(root, ".git")).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * DATABASE_URL: the shell environment, else the checkout's .env.local (read
+ * the same way as the voice keys, so the Dock app, which starts without a
+ * shell profile, sees it too), else the default local database.
+ *
+ * Except in a linked worktree. .env.local is gitignored and per checkout, so
+ * a worktree usually has none, and the default would be the real database:
+ * the boot check's advice (`npm run db:setup`) would then apply an unmerged
+ * branch's migrations to it. There, no URL is an error, not the default.
+ */
+export function databaseUrl(env = process.env, file = envFile(), root = REPO_ROOT) {
   if (env.DATABASE_URL?.trim()) return env.DATABASE_URL.trim();
   try {
     const v = parseEnv(fs.readFileSync(file, "utf8")).DATABASE_URL?.trim();
     if (v) return v;
   } catch {
     /* no file: the default */
+  }
+  if (isLinkedWorktree(root)) {
+    throw new Error(
+      `No DATABASE_URL is set, and ${root} is a linked git worktree. Branches and worktrees never use the ` +
+        `real database (${DEFAULT_DATABASE_URL}). Set DATABASE_URL, in the shell or in this checkout's .env.local, ` +
+        `to a scratch database such as postgres://localhost/lingo_dojo_scratch_<branch>, then run \`npm run db:setup\`.`,
+    );
   }
   return DEFAULT_DATABASE_URL;
 }
@@ -40,16 +65,4 @@ export function redact(url) {
   } catch {
     return "(unparseable DATABASE_URL)";
   }
-}
-
-/**
- * How far a database is behind the committed migrations. drizzle's migrator
- * records each applied migration's folderMillis in
- * drizzle.__drizzle_migrations.created_at and applies only those newer than
- * the latest row, so "current" means the latest row is at least the newest
- * migration on disk. `latestApplied` is null for a database never migrated.
- */
-export function pendingMigrations(migrations, latestApplied) {
-  const last = latestApplied == null ? -Infinity : Number(latestApplied);
-  return migrations.filter((m) => m.folderMillis > last);
 }

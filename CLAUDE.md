@@ -28,11 +28,18 @@ files as described below.
   reach the browser. Voice turns spawn `claude -p` with **no tools**.
 - Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated
   SQL in `scripts/db/migrations/` (commit it; edit the schema, then
-  `npm run db:generate`, never hand-write a migration except the extension
-  lines). `web/server/db.ts` holds the one lazy pg Pool; `DATABASE_URL` comes
-  from `.env.local`, default `postgres://localhost/lingo_dojo`. Personal rows
-  go through `forLearner()` / `forUser()` (`scripts/db/owned.ts`), never a bare
+  `npm run db:generate`). Never hand-edit a migration except through
+  `scripts/db/hand-edits.mjs`; a test checks the SQL against the schema.
+  Migrations are applied and checked by hash (`scripts/db/migrations.mjs`).
+  `web/server/db.ts` holds the one lazy pg Pool; `DATABASE_URL` comes from
+  `.env.local`, default `postgres://localhost/lingo_dojo`. Personal rows go
+  through `forLearner()` / `forUser()` (`scripts/db/owned.ts`), never a bare
   query. The dev server refuses to start until `npm run db:setup` has run.
+- **Branches and worktrees never point at the real database.** Set
+  `DATABASE_URL` to a scratch database (a linked worktree with none set
+  refuses to start or migrate). Add new migrations one branch at a time, never
+  in parallel branches. Migration SQL must run on PostgreSQL 17 (the app's
+  Homebrew server) even though the tests run on PGlite (PostgreSQL 18).
 - Runtime state (chat history, model setting, voice settings) is JSON under `data/` (gitignored).
   Exports go to `exports/` (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM

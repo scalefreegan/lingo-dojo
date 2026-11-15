@@ -1,10 +1,11 @@
--- Hand-added (drizzle-kit does not generate extensions): trigram search for
--- per-turn retrieval and LOOKUP, needed before the gin_trgm_ops indexes below.
+-- Hand-added (scripts/db/hand-edits.mjs): trigram search needs pg_trgm before
+-- the gin_trgm_ops indexes below.
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 --> statement-breakpoint
 CREATE TABLE "agent_messages" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid NOT NULL,
+	"seq" bigserial NOT NULL,
 	"role" text NOT NULL,
 	"text" text NOT NULL,
 	"ts" timestamp with time zone DEFAULT now() NOT NULL,
@@ -88,6 +89,7 @@ CREATE TABLE "learners" (
 	"notes" text DEFAULT '' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"archived_at" timestamp with time zone,
+	CONSTRAINT "learners_id_user" UNIQUE("id","user_id"),
 	CONSTRAINT "learners_mode" CHECK ("learners"."mode" in ('adult', 'kids'))
 );
 --> statement-breakpoint
@@ -102,6 +104,7 @@ CREATE TABLE "pack_revisions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"pack_id" uuid NOT NULL,
 	"learner_id" uuid NOT NULL,
+	"seq" bigserial NOT NULL,
 	"snapshot" jsonb NOT NULL,
 	"action" text NOT NULL,
 	"at" timestamp with time zone DEFAULT now() NOT NULL
@@ -140,8 +143,9 @@ CREATE TABLE "phrases" (
 	"learner_id" uuid NOT NULL,
 	"lang" text NOT NULL,
 	"text" text,
-	"norm" text NOT NULL,
+	"norm" text,
 	"meaning" text,
+	"meaning_norm" text,
 	"note" text,
 	"source" text NOT NULL,
 	"alternates" jsonb DEFAULT '[]'::jsonb NOT NULL,
@@ -152,9 +156,9 @@ CREATE TABLE "phrases" (
 	"seen_count" integer DEFAULT 0 NOT NULL,
 	"last_practiced_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "phrases_identity" UNIQUE("learner_id","lang","norm"),
 	CONSTRAINT "phrases_id_learner" UNIQUE("id","learner_id"),
-	CONSTRAINT "phrases_source" CHECK ("phrases"."source" in ('gloss', 'extraction', 'manual', 'scenario'))
+	CONSTRAINT "phrases_source" CHECK ("phrases"."source" in ('gloss', 'extraction', 'manual', 'scenario')),
+	CONSTRAINT "phrases_complete_or_pending" CHECK (("phrases"."text" is not null and "phrases"."norm" is not null) or ("phrases"."text" is null and "phrases"."norm" is null and "phrases"."meaning_norm" is not null))
 );
 --> statement-breakpoint
 CREATE TABLE "reviews" (
@@ -169,6 +173,7 @@ CREATE TABLE "reviews" (
 	"duration_ms" integer,
 	"reviewed_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"conversation_id" uuid,
+	"card_before" jsonb NOT NULL,
 	CONSTRAINT "reviews_mode" CHECK ("reviews"."mode" in ('flashcard', 'cloze', 'listening', 'speak', 'session')),
 	CONSTRAINT "reviews_rating" CHECK ("reviews"."rating" between 1 and 4),
 	CONSTRAINT "reviews_verdict" CHECK ("reviews"."verdict" in ('exact', 'close', 'accepted', 'wrong', 'self'))
@@ -191,6 +196,7 @@ CREATE TABLE "turns" (
 	"lookup" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "turns_conversation_position" UNIQUE("conversation_id","idx"),
+	CONSTRAINT "turns_id_learner" UNIQUE("id","learner_id"),
 	CONSTRAINT "turns_role" CHECK ("turns"."role" in ('learner', 'master'))
 );
 --> statement-breakpoint
@@ -213,7 +219,7 @@ CREATE TABLE "users" (
 --> statement-breakpoint
 ALTER TABLE "agent_messages" ADD CONSTRAINT "agent_messages_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_learner_id_learners_id_fk" FOREIGN KEY ("learner_id") REFERENCES "public"."learners"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "auth_sessions" ADD CONSTRAINT "auth_sessions_learner_fk" FOREIGN KEY ("learner_id","user_id") REFERENCES "public"."learners"("id","user_id") ON DELETE SET NULL ("learner_id") ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cards" ADD CONSTRAINT "cards_phrase_id_learner_id_phrases_id_learner_id_fk" FOREIGN KEY ("phrase_id","learner_id") REFERENCES "public"."phrases"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "cloze_items" ADD CONSTRAINT "cloze_items_phrase_id_learner_id_phrases_id_learner_id_fk" FOREIGN KEY ("phrase_id","learner_id") REFERENCES "public"."phrases"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "conversations" ADD CONSTRAINT "conversations_learner_id_learners_id_fk" FOREIGN KEY ("learner_id") REFERENCES "public"."learners"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -221,25 +227,28 @@ ALTER TABLE "learners" ADD CONSTRAINT "learners_user_id_users_id_fk" FOREIGN KEY
 ALTER TABLE "pack_folders" ADD CONSTRAINT "pack_folders_learner_id_learners_id_fk" FOREIGN KEY ("learner_id") REFERENCES "public"."learners"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "pack_revisions" ADD CONSTRAINT "pack_revisions_pack_id_learner_id_packs_id_learner_id_fk" FOREIGN KEY ("pack_id","learner_id") REFERENCES "public"."packs"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "packs" ADD CONSTRAINT "packs_learner_id_learners_id_fk" FOREIGN KEY ("learner_id") REFERENCES "public"."learners"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "phrase_examples" ADD CONSTRAINT "phrase_examples_conversation_id_conversations_id_fk" FOREIGN KEY ("conversation_id") REFERENCES "public"."conversations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "phrase_examples" ADD CONSTRAINT "phrase_examples_turn_id_turns_id_fk" FOREIGN KEY ("turn_id") REFERENCES "public"."turns"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "phrase_examples" ADD CONSTRAINT "phrase_examples_phrase_id_learner_id_phrases_id_learner_id_fk" FOREIGN KEY ("phrase_id","learner_id") REFERENCES "public"."phrases"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "phrase_examples" ADD CONSTRAINT "phrase_examples_conversation_fk" FOREIGN KEY ("conversation_id","learner_id") REFERENCES "public"."conversations"("id","learner_id") ON DELETE SET NULL ("conversation_id") ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "phrase_examples" ADD CONSTRAINT "phrase_examples_turn_fk" FOREIGN KEY ("turn_id","learner_id") REFERENCES "public"."turns"("id","learner_id") ON DELETE SET NULL ("turn_id") ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "phrases" ADD CONSTRAINT "phrases_learner_id_learners_id_fk" FOREIGN KEY ("learner_id") REFERENCES "public"."learners"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "reviews" ADD CONSTRAINT "reviews_conversation_id_conversations_id_fk" FOREIGN KEY ("conversation_id") REFERENCES "public"."conversations"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "reviews" ADD CONSTRAINT "reviews_card_id_learner_id_cards_id_learner_id_fk" FOREIGN KEY ("card_id","learner_id") REFERENCES "public"."cards"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "reviews" ADD CONSTRAINT "reviews_conversation_fk" FOREIGN KEY ("conversation_id","learner_id") REFERENCES "public"."conversations"("id","learner_id") ON DELETE SET NULL ("conversation_id") ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "turns" ADD CONSTRAINT "turns_conversation_id_learner_id_conversations_id_learner_id_fk" FOREIGN KEY ("conversation_id","learner_id") REFERENCES "public"."conversations"("id","learner_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "user_settings" ADD CONSTRAINT "user_settings_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX "agent_messages_user_ts_idx" ON "agent_messages" USING btree ("user_id","ts");--> statement-breakpoint
+CREATE INDEX "agent_messages_user_seq_idx" ON "agent_messages" USING btree ("user_id","seq");--> statement-breakpoint
 CREATE INDEX "auth_sessions_user_idx" ON "auth_sessions" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "auth_sessions_expires_idx" ON "auth_sessions" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "cards_learner_due_idx" ON "cards" USING btree ("learner_id","due");--> statement-breakpoint
 CREATE INDEX "cloze_items_phrase_idx" ON "cloze_items" USING btree ("phrase_id");--> statement-breakpoint
 CREATE INDEX "conversations_learner_started_idx" ON "conversations" USING btree ("learner_id","started_at");--> statement-breakpoint
 CREATE INDEX "learners_user_idx" ON "learners" USING btree ("user_id");--> statement-breakpoint
-CREATE INDEX "pack_revisions_pack_at_idx" ON "pack_revisions" USING btree ("pack_id","at");--> statement-breakpoint
+CREATE INDEX "pack_revisions_pack_seq_idx" ON "pack_revisions" USING btree ("pack_id","seq");--> statement-breakpoint
 CREATE UNIQUE INDEX "packs_learner_folder_slug_live" ON "packs" USING btree ("learner_id","folder","slug") WHERE "packs"."deleted_at" is null;--> statement-breakpoint
 CREATE INDEX "phrase_examples_phrase_idx" ON "phrase_examples" USING btree ("phrase_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "phrases_identity" ON "phrases" USING btree ("learner_id","lang","norm") WHERE "phrases"."text" is not null;--> statement-breakpoint
+CREATE UNIQUE INDEX "phrases_pending_identity" ON "phrases" USING btree ("learner_id","lang","meaning_norm") WHERE "phrases"."text" is null;--> statement-breakpoint
 CREATE INDEX "phrases_text_trgm" ON "phrases" USING gin ("text" gin_trgm_ops);--> statement-breakpoint
 CREATE INDEX "phrases_meaning_trgm" ON "phrases" USING gin ("meaning" gin_trgm_ops);--> statement-breakpoint
+CREATE UNIQUE INDEX "reviews_one_session_review" ON "reviews" USING btree ("card_id","conversation_id") WHERE "reviews"."mode" = 'session';--> statement-breakpoint
 CREATE INDEX "reviews_card_at_idx" ON "reviews" USING btree ("card_id","reviewed_at");--> statement-breakpoint
 CREATE INDEX "reviews_learner_at_idx" ON "reviews" USING btree ("learner_id","reviewed_at");

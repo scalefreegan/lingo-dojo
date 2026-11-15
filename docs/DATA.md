@@ -65,7 +65,8 @@ scripts/
   db/migrations/      generated SQL, committed
   db/owned.ts         owned-row scopes: forLearner / forUser (built, phase 0)
   db/config.mjs       DATABASE_URL, migrations dir (built, phase 0)
-  db/migrations.mjs   migration state for the boot check (built, phase 0)
+  db/migrations.mjs   by-hash migrator and migration state (built, phase 0)
+  db/hand-edits.mjs   the documented hand edits to 0000_init.sql (built, phase 0)
   db/setup.mjs        CLI: db:setup / db:migrate (built, phase 0)
   fsrs.mjs            pure: rating mapping, mastery bands (wraps ts-fsrs)
   match.mjs           pure: answer normalization and lenient match
@@ -90,6 +91,35 @@ half-migrated schema fails in confusing ways later). The check only reads; it
 never migrates on its own. The HTTP tests mount the plugin with
 `apiPlugins({ checkDatabase: false })`, so they need no Postgres.
 
+**Migrations are tracked by hash** (`scripts/db/migrations.mjs`), in
+drizzle's own `drizzle.__drizzle_migrations` table. We don't use drizzle's
+migrator. It treats a migration as applied when its timestamp is at or below
+the newest recorded one, so two branches that each generate a migration and
+merge in the other order leave one silently unapplied. The database is
+current only when the recorded hashes and the files on disk match exactly.
+Otherwise it is one of these:
+
+- *behind*: newer files not yet applied
+- *skipped*: an older file never ran
+- *ahead*: the database has migrations this checkout doesn't
+- *diverged*: both ahead and missing files
+
+The boot check refuses all four. `db:setup` / `db:migrate` apply every
+missing file by hash in one transaction (which repairs *skipped*), and refuse
+*ahead* and *diverged* without changing anything.
+
+**Rules for branches and migrations:**
+
+- **Never the real database from a branch.** A branch or worktree never
+  points at the real database. In a linked git worktree (its `.git` is a file)
+  with no `DATABASE_URL` in the shell or its own `.env.local`, the server,
+  `db:setup` and `db:migrate` refuse to default to `lingo_dojo` and ask for a
+  scratch database.
+- **One branch at a time.** New migrations are added one branch at a time,
+  never in parallel branches.
+- **Write for PostgreSQL 17.** Migration SQL must run on PostgreSQL 17
+  (Homebrew), even though the tests run on PGlite (PostgreSQL 18).
+
 ## Schema
 
 All ids are `uuid` (`gen_random_uuid()`), timestamps `timestamptz` (two
@@ -105,36 +135,69 @@ key on `(parent id, learner_id)`. A child can't belong to a different learner
 than its parent, every personal table is filtered the same way, and the RLS
 for `lingo_reader` can be a single `learner_id` policy per table. Deletes
 cascade to children that mean nothing without their parent (a learner's
-rows, a conversation's turns, a phrase's cards and reviews). Links that are
-only provenance (`reviews.conversation_id`, `phrase_examples.conversation_id`
-and `turn_id`, `auth_sessions.learner_id`) are set null instead, so deleting a
-conversation never erases memory.
+rows, a conversation's turns, a phrase's cards and reviews).
+
+Links that are only provenance are composite too, so they can't point at
+another owner's row:
+
+| Link | References |
+|---|---|
+| `reviews.conversation_id` | `conversations (id, learner_id)` |
+| `phrase_examples.conversation_id` | `conversations (id, learner_id)` |
+| `phrase_examples.turn_id` | `turns (id, learner_id)` |
+| `auth_sessions.learner_id` | `learners (id, user_id)` |
+
+On delete they null only the link column: `ON DELETE SET NULL (col)`, which
+needs PostgreSQL 15+. Deleting a conversation never erases memory, and
+deleting a learner sends its sessions back to the picker.
+
+drizzle-kit can't write the column list, so `0000_init.sql` is drizzle-kit's
+output plus exactly two documented hand edits:
+
+1. `CREATE EXTENSION pg_trgm`.
+2. The four `SET NULL (col)` clauses.
+
+Both live in `scripts/db/hand-edits.mjs`. `scripts/tests/db-migrations.test.mjs`
+regenerates the SQL from `schema.ts`, checks that the committed file is
+exactly that output with the hand edits applied, checks that `schema.ts` has
+no change missing from the snapshot, and checks the delete columns in the
+catalog.
 
 **The owned-row helper** is `scripts/db/owned.ts`:
 `forLearner(db, learnerId)` and `forUser(db, userId)` return a scope with
-`list`, `get`, `insert`, `update`, `remove` and `where`. Each one adds
-`owner = id` (or stamps it on insert), the owner can't be set or changed
-through it, and a table without that owner column doesn't type-check
-(`scripts/db/owned.typecheck.ts` pins this). `where(table, cond)` is for joins
-and aggregates. The server's raw handle is `rawDb()` in `web/server/db.ts`,
-and it's only for owner-less lookups (a login by username, a session by token
-hash).
+`list`, `get`, `insert`, `upsert`, `update`, `remove`, `removeAllOwned` and
+`where`. Each one adds `owner = id and (cond)`, or stamps the owner on insert.
+The caller's condition is always parenthesized, so a raw `a or b` can't
+escape the filter.
+
+- **Types.** The owner can't be set or changed through a scope, and a table
+  without that owner column doesn't type-check (`scripts/db/owned.typecheck.ts`
+  pins this).
+- **Runtime.** For untyped callers, a table without the owner column, an owner
+  in the values, or an `update`/`remove`/`get` without a condition throws.
+  Removing all of an owner's rows is the separate `removeAllOwned`.
+- **`upsert`.** `INSERT … ON CONFLICT (owner, …target) [WHERE targetWhere] DO
+  UPDATE SET … WHERE owner = id`. The owner is always part of the conflict
+  target.
+- **`where(table, cond)`** is for joins and aggregates.
+
+The server's raw handle is `rawDb()` in `web/server/db.ts`, and it's only for
+owner-less lookups (a login by username, a session by token hash).
 
 ### Accounts
 
 ```
 users           id, username (unique, lowercased), password_hash, is_admin,
                 created_at, disabled_at
-auth_sessions   id (sha256 of the cookie token), user_id, learner_id (active),
-                created_at, expires_at, last_seen_at
-                (that learner_id belongs to user_id is checked in code: a
-                composite key could not set just learner_id null)
+auth_sessions   id (sha256 of the cookie token), user_id, learner_id (active;
+                one of user_id's learners, composite key), created_at,
+                expires_at, last_seen_at
 learners        id, user_id, name, mode (adult|kids), native_language,
                 target_language, target_variant, level, goals, notes,
-                created_at, archived_at
+                created_at, archived_at; unique (id, user_id)
 user_settings   user_id (pk), model, voice jsonb (today's data/voice.json shape)
-agent_messages  id, user_id, role (user|assistant|commit), text, ts
-                                                     (was data/chat.jsonl)
+agent_messages  id, user_id, seq (bigserial: order by it), role
+                (user|assistant|commit), text, ts    (was data/chat.jsonl)
 ```
 
 `learners` holds exactly the profile keys `profile.yaml` has today, so
@@ -150,13 +213,16 @@ packs           id, learner_id, folder ('' or one kebab segment), slug,
                 overrides jsonb, notes, updated_at, deleted_at
                 unique (learner_id, folder, slug) where deleted_at is null
 pack_folders    learner_id, name, created_at; pk (learner_id, name)
-pack_revisions  id, pack_id, learner_id, snapshot jsonb, action, at
+pack_revisions  id, pack_id, learner_id, seq (bigserial: order by it),
+                snapshot jsonb, action, at
 ```
 
 As built: `created` is `text`, the wire value verbatim (ISO with its offset).
 `timestamptz` would drop the offset, and the pack's date stem is the
 learner's local date. `pack_folders` was added because the Library lists
-empty folders, which `packs.folder` alone can't express.
+empty folders, which `packs.folder` alone can't express. `seq` on
+`pack_revisions` and `agent_messages` gives the true order: `at`/`ts` is
+`now()`, the transaction's start, so rows written in one transaction tie.
 
 The wire `Pack.id` stays `folder/slug`, so the Library and Scene tabs keep
 working unchanged. Git used to make every pack change undoable. Here
@@ -173,7 +239,7 @@ turns           id, conversation_id, learner_id, idx, role (learner|master),
                 text, lines jsonb, glosses jsonb, choices jsonb, stage,
                 cast_notes jsonb, duration_ms, cost_usd, lookup jsonb,
                 created_at
-                unique (conversation_id, idx)
+                unique (conversation_id, idx); unique (id, learner_id)
 ```
 
 `pack_snapshot` freezes what was played, since packs change later. `turns`
@@ -184,13 +250,15 @@ can be shown with the existing transcript components.
 
 ```
 phrases         id, learner_id, lang (BCP-47 of the target variant, e.g. es-MX),
-                text (target form; null while pending), norm (match key),
-                meaning (native language), note, source
+                text (target form; null while pending), norm (match key of
+                text; null while pending), meaning (native language),
+                meaning_norm (a pending row's key), note, source
                 (gloss|extraction|manual|scenario), alternates jsonb
                 (accepted other forms, default []), starred, suspended,
                 first_seen_at, last_seen_at, seen_count,
                 last_practiced_at, created_at
-                unique (learner_id, lang, norm)
+                unique (learner_id, lang, norm) where text is not null
+                unique (learner_id, lang, meaning_norm) where text is null
                 trigram GIN indexes on text and meaning
 phrase_examples id, phrase_id, learner_id, conversation_id, turn_id,
                 sentence, speaker, created_at
@@ -202,7 +270,9 @@ cards           id, phrase_id, learner_id, skill (recognize|listen|produce),
 reviews         id (bigserial), card_id, learner_id, mode
                 (flashcard|cloze|listening|speak|session), rating (1-4),
                 answer, verdict (exact|close|accepted|wrong|self),
-                grader_note, duration_ms, reviewed_at, conversation_id
+                grader_note, duration_ms, reviewed_at, conversation_id,
+                card_before jsonb (the card's FSRS state before this review)
+                unique (card_id, conversation_id) where mode = 'session'
 cloze_items     id, phrase_id, learner_id, sentence, blank_start, blank_end,
                 hint, origin (example|generated), created_at
 ```
@@ -216,14 +286,27 @@ FSRS-7's `scheduleStatus` (new|learning|review) is derived from `state`, not
 stored. `reviews.id` is a `bigserial`: the table is append-only and the
 busiest one.
 
+The trigram GIN indexes serve the **LOOKUP** direction: a short query found
+inside phrases (`query <% text`). Per-turn retrieval runs the other way, a
+phrase found inside the learner's message (`word_similarity(text, message)`),
+and these indexes can't serve it. That query scans the learner's own rows,
+which is fine at the size of one learner's bank.
+
 - **Identity.** `norm` is NFC, case-folded, outer punctuation (including ¿ ¡ 「 」)
   and repeated spaces removed. Accents are kept: *papa* and *papá* are different
-  phrases. Same `(learner, lang, norm)` means the same phrase, so a gloss of
-  "¿A cómo?" in two sessions bumps one row.
+  phrases. Same `(learner, lang, norm)` means the same complete phrase, so a gloss
+  of "¿A cómo?" in two sessions bumps one row. The gloss write is the scope's
+  `upsert` on that partial index (`target: [lang, norm]`, `targetWhere: text is
+  not null`).
 - **Pending phrases.** A scenario's `phrases:` list is English meanings. Those
-  enter as rows with `meaning` set and `text` null. The first gloss or
-  extraction that pairs a target form with that meaning fills it in. Scenario
-  `vocab:` entries (target term + gloss) enter complete.
+  enter as rows with `meaning` and `meaning_norm` set and `text`/`norm` null
+  (a check enforces complete-or-pending). They have their own identity,
+  `(learner, lang, meaning_norm)`, so a pending "taxi" (English) never
+  captures the later gloss of the target word "taxi". **Merge rule:** when a
+  gloss or extraction pairs a target form with a pending row's meaning, the
+  pending row is filled in (text, norm, `meaning_norm` cleared) if no complete
+  phrase has that norm. Otherwise the pending row is deleted and the complete
+  one kept. Scenario `vocab:` entries (target term + gloss) enter complete.
 - **Language.** A phrase belongs to the variant it was learned in (`es-MX`).
   Recall and practice use the learner's current variant's language prefix, so
   switching to Castilian still shows the Mexican Spanish bank, while Japanese
@@ -343,7 +426,9 @@ and corrections show as a **Session recap** card under the transcript after
 End: new phrases (with ☆), what you nailed, and what to fix.
 
 Out-of-schedule reviews are fine: FSRS takes the real elapsed time into
-account. A phrase gets at most one session review per card per conversation.
+account. A phrase gets at most one session review per card per conversation
+(a partial unique index on `reviews (card_id, conversation_id)` where
+`mode = 'session'` enforces it).
 
 ## Recall in sessions
 
@@ -373,8 +458,11 @@ so a pasted session into ChatGPT voice also recycles phrases.
 Before each turn, the server searches the bank using the learner's message and
 the master's last line. The search is `pg_trgm` `word_similarity` on `text` and
 `meaning`; trigrams rather than full-text, because full-text tokenizing breaks
-on Japanese and Mandarin. The top 6 hits above a threshold are appended to the
-turn prompt as:
+on Japanese and Mandarin. The direction is "phrase found in the message"
+(`word_similarity(text, message)`), which the trigram GIN indexes don't serve,
+so this scans the learner's own rows. That's fine at the size of one bank (see
+Phrase bank). The top 6 hits above a threshold are appended to the turn
+prompt as:
 
 ```
 [FROM THE LEARNER'S PHRASE BANK]
@@ -462,7 +550,9 @@ a session length picker (5 / 10 / 20 items).
   phrase, so the same answer is exact next time.
 - **Override.** After any verdict, the learner can change it with
   Again / Hard / Good / Easy. The override is what FSRS records, with
-  `verdict=self`.
+  `verdict=self`. The review row keeps `card_before`, the card's full FSRS
+  state before it was graded. An override restores the card from it, then
+  reviews again with the new rating.
 - **Recognize cards.** Meanings in the native language vary a lot, so these
   lean on the claude check (or self-grade via Reveal). The claude check is told
   to be generous.
@@ -570,8 +660,11 @@ deletes cover undoing a single change.
   `lingo_dojo_test_<pid>` database) is therefore not built. The harness is
   `freshDb()` in `scripts/tests/testdb.mjs`. It returns `{ db, query, client,
   close }`, a fresh migrated database whose `db` is the same Drizzle API the
-  server uses. It migrates once per process and boots each database from that
-  image, about 0.1 s each.
+  server uses. It migrates once per process (with the same by-hash migrator
+  `db:setup` uses) and boots each database from that image, about 0.1 s each.
+  PGlite is PostgreSQL 18 and the app runs on 17, so migration SQL must stay
+  valid on 17. The phase 0 migration was also applied and its cross-owner and
+  `SET NULL (col)` behaviour checked on a scratch PostgreSQL 17 database.
 - **Isolation:** routes are tested with a seeded user and learner, including a
   second user whose rows must never appear (a cross-tenant test for every
   list route).

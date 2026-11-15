@@ -8,9 +8,10 @@
 //   await forLearner(db, learnerId).list(phrases);   // the server's Drizzle API
 //   t.after(close);
 //
-// The real migrations are applied, unchanged, through drizzle's migrator
-// (scripts/db/migrations.mjs is the server's half of the same files), with
-// pg_trgm loaded as a PGlite extension. Migrating takes about a second, so it
+// The real migrations are applied, unchanged, by the same by-hash migrator
+// `npm run db:setup` uses (scripts/db/migrations.mjs), with pg_trgm loaded
+// as a PGlite extension. PGlite is PostgreSQL 18 while the app runs on
+// Homebrew's 17: migration SQL must still be valid on 17. Migrating takes about a second, so it
 // is done once per process and the result kept as a data-dir image; each call
 // boots a new instance from that image (what PGlite's clone() does), so every
 // caller still starts from an empty, current schema of its own. The migrating
@@ -20,8 +21,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
-import { MIGRATIONS_DIR } from "../db/config.mjs";
+import { applyMigrations } from "../db/migrations.mjs";
 import * as schema from "../db/schema.ts";
 
 const extensions = { pg_trgm };
@@ -31,7 +31,7 @@ function migratedImage() {
   image ??= (async () => {
     const pg = await PGlite.create({ extensions });
     try {
-      await migrate(drizzle(pg), { migrationsFolder: MIGRATIONS_DIR });
+      await applyMigrations(async (text, params) => (await pg.query(text, params)).rows);
       return await pg.dumpDataDir("none");
     } finally {
       await pg.close();

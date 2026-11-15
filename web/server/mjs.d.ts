@@ -202,8 +202,10 @@ declare module "*/scripts/voice.mjs" {
 declare module "*/scripts/db/config.mjs" {
   export const DEFAULT_DATABASE_URL: string;
   export const MIGRATIONS_DIR: string;
-  /** The shell's DATABASE_URL, else .env.local's, else the default. */
-  export function databaseUrl(env?: Record<string, string | undefined>, file?: string): string;
+  export function isLinkedWorktree(root?: string): boolean;
+  /** The shell's DATABASE_URL, else .env.local's, else the default; throws
+   *  in a linked worktree with neither. */
+  export function databaseUrl(env?: Record<string, string | undefined>, file?: string, root?: string): string;
   /** Throws when the URL names no database. */
   export function databaseName(url: string): string;
   /** The URL with any password masked. */
@@ -211,11 +213,19 @@ declare module "*/scripts/db/config.mjs" {
 }
 
 declare module "*/scripts/db/migrations.mjs" {
-  /** Read-only: how far the database is behind the committed migrations. */
-  export function migrationState(
-    query: (text: string) => Promise<Record<string, unknown>[]>,
-    dir?: string,
-  ): Promise<{ latestApplied: number | null; total: number; pending: number }>;
+  type Migration = { sql: string[]; folderMillis: number; hash: string };
+  type MigrationState = {
+    status: "current" | "behind" | "skipped" | "ahead" | "diverged";
+    total: number;
+    applied: number;
+    missing: Migration[];
+    skipped: Migration[];
+    unknown: { hash: string; createdAt: number | null }[];
+  };
+  type Query = (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
+  /** Read-only: the database's recorded migrations against the files, by hash. */
+  export function migrationState(query: Query, disk?: Migration[]): Promise<MigrationState>;
+  export function describeMigrations(state: MigrationState): string;
 }
 
 // Everything else: untyped.

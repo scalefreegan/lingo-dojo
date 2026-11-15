@@ -11,7 +11,7 @@
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { databaseUrl, redact } from "../../scripts/db/config.mjs";
-import { migrationState } from "../../scripts/db/migrations.mjs";
+import { describeMigrations, migrationState } from "../../scripts/db/migrations.mjs";
 import { forLearner, forUser, type Db } from "../../scripts/db/owned.ts";
 import * as schema from "../../scripts/db/schema.ts";
 
@@ -56,12 +56,16 @@ export async function closeDb(): Promise<void> {
 const FIX = "Run `npm run db:setup` (creates the database if needed and applies migrations), then start the server again.";
 
 /**
- * The boot check: the database answers and every committed migration is
- * applied. Throws an Error whose message says what is wrong and what to run;
- * a half-migrated schema would otherwise fail later, far from the cause.
- * It only reads; migrating is always an explicit `npm run db:setup`.
+ * The boot check: the database answers and its recorded migrations match the
+ * committed ones exactly (scripts/db/migrations.mjs: behind, skipped, ahead
+ * and diverged all refuse). Throws an Error whose message says what is wrong
+ * and what to run; a half-migrated schema would otherwise fail later, far
+ * from the cause. It only reads; migrating is always an explicit
+ * `npm run db:setup`. In a linked worktree with no DATABASE_URL,
+ * databaseUrl() throws before anything connects (config.mjs).
  */
-export async function checkDatabase(url = databaseUrl()): Promise<{ applied: number; total: number }> {
+export async function checkDatabase(url?: string): Promise<{ applied: number; total: number }> {
+  url ??= databaseUrl();
   const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5000 });
   const where = redact(url);
   try {
@@ -75,13 +79,15 @@ export async function checkDatabase(url = databaseUrl()): Promise<{ applied: num
     throw new Error(`Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`);
   }
   try {
-    const state = await migrationState(async (text: string) => (await client.query(text)).rows);
-    if (state.pending) {
-      throw new Error(
-        `Lingo Dojo's database at ${where} is behind: ${state.pending} of ${state.total} migration(s) not applied.\n${FIX}`,
-      );
+    const state = await migrationState(async (text: string, params?: unknown[]) => (await client.query(text, params)).rows);
+    if (state.status !== "current") {
+      const fix =
+        state.status === "ahead" || state.status === "diverged"
+          ? "This checkout can't migrate it; point DATABASE_URL at a database for this branch (or update the checkout)."
+          : FIX;
+      throw new Error(`Lingo Dojo's database at ${where} is ${describeMigrations(state)}.\n${fix}`);
     }
-    return { applied: state.total, total: state.total };
+    return { applied: state.applied, total: state.total };
   } finally {
     await client.end().catch(() => {});
   }

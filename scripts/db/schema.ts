@@ -17,8 +17,14 @@
 //
 // Deletes cascade from a parent to children that mean nothing without it
 // (a learner's packs, a conversation's turns, a phrase's cards). Links that
-// are only provenance (a review's conversation, an example's turn) are set
-// null instead, so ending or deleting a conversation never erases memory.
+// are only provenance (a review's conversation, an example's turn, a
+// session's active learner) are composite too, so they can't point at another
+// owner's row, and on delete they null only the link column
+// (`ON DELETE SET NULL (col)`, PostgreSQL 15+). Deleting a conversation never
+// erases memory. drizzle-kit can't write the column list: those keys are
+// declared below with a plain "set null", and hand-edits.mjs rewrites them in
+// the generated SQL. A test regenerates the migration and checks that the
+// committed file is exactly the generated one plus those edits.
 
 import { sql } from "drizzle-orm";
 import {
@@ -88,6 +94,7 @@ export const learners = pgTable(
   (t) => [
     check("learners_mode", sql`${t.mode} in ('adult', 'kids')`),
     index("learners_user_idx").on(t.userId),
+    unique("learners_id_user").on(t.id, t.userId),
   ],
 );
 
@@ -99,16 +106,20 @@ export const authSessions = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    /** The active learner. Set null when that learner is deleted, so the
-     *  session falls back to the picker. That it belongs to `user_id` is the
-     *  auth code's to check: a composite key could not set only this column
-     *  null. */
-    learnerId: uuid("learner_id").references(() => learners.id, { onDelete: "set null" }),
+    /** The active learner, one of this user's (composite key). Deleting
+     *  the learner nulls only this column, so the session falls back to the
+     *  picker. */
+    learnerId: uuid("learner_id"),
     createdAt: createdAt(),
     expiresAt: tz("expires_at").notNull(),
     lastSeenAt: tz("last_seen_at").notNull().defaultNow(),
   },
-  (t) => [index("auth_sessions_user_idx").on(t.userId), index("auth_sessions_expires_idx").on(t.expiresAt)],
+  (t) => [
+    // Hand-edited to ON DELETE SET NULL ("learner_id") (hand-edits.mjs).
+    foreignKey({ name: "auth_sessions_learner_fk", columns: [t.learnerId, t.userId], foreignColumns: [learners.id, learners.userId] }).onDelete("set null"),
+    index("auth_sessions_user_idx").on(t.userId),
+    index("auth_sessions_expires_idx").on(t.expiresAt),
+  ],
 );
 
 export const userSettings = pgTable("user_settings", {
@@ -128,13 +139,16 @@ export const agentMessages = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    /** Insertion order. `ts` is now() (the transaction's start), so two
+     *  messages written in one transaction tie on it; order by this. */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
     role: text("role").$type<"user" | "assistant" | "commit">().notNull(),
     text: text("text").notNull(),
     ts: tz("ts").notNull().defaultNow(),
   },
   (t) => [
     check("agent_messages_role", sql`${t.role} in ('user', 'assistant', 'commit')`),
-    index("agent_messages_user_ts_idx").on(t.userId, t.ts),
+    index("agent_messages_user_seq_idx").on(t.userId, t.seq),
   ],
 );
 
@@ -190,6 +204,8 @@ export const packRevisions = pgTable(
     id: id(),
     packId: uuid("pack_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
+    /** Revision order (`at` ties within a transaction). */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
     /** The pack row as it was after this action (before it, for a delete). */
     snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
     action: text("action").$type<"create" | "update" | "move" | "rename" | "delete" | "restore" | "import">().notNull(),
@@ -197,7 +213,7 @@ export const packRevisions = pgTable(
   },
   (t) => [
     foreignKey({ columns: [t.packId, t.learnerId], foreignColumns: [packs.id, packs.learnerId] }).onDelete("cascade"),
-    index("pack_revisions_pack_at_idx").on(t.packId, t.at),
+    index("pack_revisions_pack_seq_idx").on(t.packId, t.seq),
   ],
 );
 
@@ -259,6 +275,7 @@ export const turns = pgTable(
     check("turns_role", sql`${t.role} in ('learner', 'master')`),
     foreignKey({ columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("cascade"),
     unique("turns_conversation_position").on(t.conversationId, t.idx),
+    unique("turns_id_learner").on(t.id, t.learnerId),
   ],
 );
 
@@ -275,10 +292,13 @@ export const phrases = pgTable(
     lang: text("lang").notNull(),
     /** Target form; null while pending (a scenario meaning not yet paired). */
     text: text("text"),
-    /** Match key (DATA.md §Identity). For a pending phrase, the key of its
-     *  meaning, so the same scenario line does not pend twice. */
-    norm: text("norm").notNull(),
+    /** Match key of `text` (DATA.md §Identity); null exactly when pending. */
+    norm: text("norm"),
     meaning: text("meaning"),
+    /** A pending phrase's identity: the match key of its meaning. Pending
+     *  rows live in their own namespace, so a pending "taxi" (an English
+     *  meaning) never captures the later gloss of the target word "taxi". */
+    meaningNorm: text("meaning_norm"),
     note: text("note"),
     source: text("source").$type<"gloss" | "extraction" | "manual" | "scenario">().notNull(),
     /** Other target forms the grader accepted, so they grade exact next time. */
@@ -293,11 +313,25 @@ export const phrases = pgTable(
   },
   (t) => [
     check("phrases_source", sql`${t.source} in ('gloss', 'extraction', 'manual', 'scenario')`),
-    unique("phrases_identity").on(t.learnerId, t.lang, t.norm),
+    // Complete: text and norm. Pending: neither, and a meaning key instead.
+    check(
+      "phrases_complete_or_pending",
+      sql`(${t.text} is not null and ${t.norm} is not null) or (${t.text} is null and ${t.norm} is null and ${t.meaningNorm} is not null)`,
+    ),
+    // Identity (DATA.md): complete phrases by target form, pending ones by
+    // meaning. When a target form turns up for a pending row, the pending row
+    // is filled in if no complete phrase has that norm; otherwise it is
+    // deleted and the complete one kept. The gloss upsert targets the first
+    // index (ON CONFLICT … WHERE text IS NOT NULL).
+    uniqueIndex("phrases_identity").on(t.learnerId, t.lang, t.norm).where(sql`${t.text} is not null`),
+    uniqueIndex("phrases_pending_identity").on(t.learnerId, t.lang, t.meaningNorm).where(sql`${t.text} is null`),
     unique("phrases_id_learner").on(t.id, t.learnerId),
     // Recall and the bank list by learner + language (prefix): the identity
-    // constraint's index already leads with (learner_id, lang).
-    // Per-turn retrieval and LOOKUP: pg_trgm word_similarity on both sides.
+    // index already leads with (learner_id, lang).
+    // Trigram GIN indexes serve the LOOKUP direction (a short query found
+    // inside phrases: `query <% text`). Per-turn retrieval runs the other way
+    // (a phrase found inside the message), which these indexes don't serve;
+    // it scans the learner's rows, which is fine at one learner's bank size.
     index("phrases_text_trgm").using("gin", t.text.op("gin_trgm_ops")),
     index("phrases_meaning_trgm").using("gin", t.meaning.op("gin_trgm_ops")),
   ],
@@ -309,14 +343,17 @@ export const phraseExamples = pgTable(
     id: id(),
     phraseId: uuid("phrase_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
-    conversationId: uuid("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
-    turnId: uuid("turn_id").references(() => turns.id, { onDelete: "set null" }),
+    conversationId: uuid("conversation_id"),
+    turnId: uuid("turn_id"),
     sentence: text("sentence").notNull(),
     speaker: text("speaker"),
     createdAt: createdAt(),
   },
   (t) => [
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    // Provenance, the learner's own only; hand-edited to SET NULL (col).
+    foreignKey({ name: "phrase_examples_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
+    foreignKey({ name: "phrase_examples_turn_fk", columns: [t.turnId, t.learnerId], foreignColumns: [turns.id, turns.learnerId] }).onDelete("set null"),
     index("phrase_examples_phrase_idx").on(t.phraseId),
   ],
 );
@@ -374,13 +411,20 @@ export const reviews = pgTable(
     graderNote: text("grader_note"),
     durationMs: integer("duration_ms"),
     reviewedAt: tz("reviewed_at").notNull().defaultNow(),
-    conversationId: uuid("conversation_id").references(() => conversations.id, { onDelete: "set null" }),
+    conversationId: uuid("conversation_id"),
+    /** The card's full FSRS state before this review. A grade override
+     *  (DATA.md) restores it and re-reviews with the new rating. */
+    cardBefore: jsonb("card_before").$type<Record<string, unknown>>().notNull(),
   },
   (t) => [
     check("reviews_mode", sql`${t.mode} in ('flashcard', 'cloze', 'listening', 'speak', 'session')`),
     check("reviews_rating", sql`${t.rating} between 1 and 4`),
     check("reviews_verdict", sql`${t.verdict} in ('exact', 'close', 'accepted', 'wrong', 'self')`),
     foreignKey({ columns: [t.cardId, t.learnerId], foreignColumns: [cards.id, cards.learnerId] }).onDelete("cascade"),
+    // Hand-edited to ON DELETE SET NULL ("conversation_id").
+    foreignKey({ name: "reviews_conversation_fk", columns: [t.conversationId, t.learnerId], foreignColumns: [conversations.id, conversations.learnerId] }).onDelete("set null"),
+    // At most one session review per card per conversation (DATA.md).
+    uniqueIndex("reviews_one_session_review").on(t.cardId, t.conversationId).where(sql`${t.mode} = 'session'`),
     index("reviews_card_at_idx").on(t.cardId, t.reviewedAt),
     // "Trouble": lapses in the last 30 days, per learner.
     index("reviews_learner_at_idx").on(t.learnerId, t.reviewedAt),
