@@ -497,3 +497,29 @@ test("scenarios: phrases, uses_location, and {{location}} where it can't be fill
     "beats[1] uses {{location}}, which is only filled in roles, twists and the body; it will show as-is",
   ]);
 });
+
+test("scenarios: an unquoted ': ' line is read back with a warning; a non-string language is dropped", () => {
+  const root = copyFixture();
+  write(root, "scenarios/colon.md", [
+    "---",
+    "id: colon",
+    "title: Colon",
+    "summary: S.",
+    "language: [es]",
+    "beats:",
+    "  - Arriving",
+    "  - Checkout: bags and payment",
+    "phrases: ['In {{location}}']",
+    "---",
+    "Body.",
+  ].join("\n"));
+  const c = loadContent(root);
+  const s = c.scenarios.find((x) => x.id === "colon");
+  assert.deepEqual(s.beats, ["Arriving", "Checkout: bags and payment"]);
+  assert.equal(s.language, null);
+  assert.deepEqual(problemFor(c, "colon.md").map((p) => p.message), [
+    'beats[1] parsed as a mapping (an unquoted ": "); read as "Checkout: bags and payment" — quote the line',
+    "phrases[0] uses {{location}}, which is only filled in roles, twists and the body; it will show as-is",
+    'language should be a code like "es-MX"; ignored',
+  ]);
+});

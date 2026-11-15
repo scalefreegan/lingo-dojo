@@ -12,7 +12,7 @@ beats:
   - Asking about membership types and prices
   - Asking about class schedules and what a class involves
   - Taking a tour and asking about facilities
-  - Filling in the sign-up: name, contact, payment
+  - "Filling in the sign-up: name, contact, payment"
   - Asking about the cancellation policy and the first visit
 phrases:
   - "I'd like to join the gym"

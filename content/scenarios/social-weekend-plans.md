@@ -17,7 +17,7 @@ beats:
 phrases:
   - "What are you doing this weekend?"
   - "Do you want to...?"
-  - "How about Saturday afternoon?"
+  - "How about [day] afternoon?"
   - "That works for me"
   - "I can't make it then"
   - "Where should we meet?"
@@ -28,7 +28,7 @@ phrases:
   - "Text me when you get there"
   - "See you then"
 twists:
-  - "The friend already has plans on Saturday, so {{learner_name}} must propose another time"
+  - "The friend already has plans on the first day {{learner_name}} suggests, so {{learner_name}} must propose another time"
   - "The friend suggests a place in {{location}} that {{learner_name}} has never heard of and needs directions"
   - "The weather forecast looks bad and the plan has to change to something indoors"
   - "The friend wants to bring someone {{learner_name}} has not met"

@@ -10,7 +10,7 @@ roles:
   learner: a visitor heading across town to a specific address, with no strong sense of the route
 beats:
   - Getting in and confirming the destination
-  - Driver's small talk: where are you from, how long are you here
+  - "Driver's small talk: where are you from, how long are you here"
   - Asking about the route, traffic, and how long it will take
   - Asking for a stop or a recommendation along the way
   - Arriving, paying, and saying goodbye
@@ -18,19 +18,19 @@ phrases:
   - "To this address, please"
   - "How long will it take?"
   - "Is there a lot of traffic?"
-  - "Could you turn on the meter?"
+  - "How is the fare worked out?"
   - "How much will it cost?"
   - "I'm from far away"
   - "Could you stop here, please?"
   - "Could you wait for me for a few minutes?"
-  - "Keep the change"
+  - "Is that the total?"
   - "Do you have change for this?"
-  - "Can I pay by card?"
+  - "How can I pay?"
   - "Thanks for the ride"
 twists:
   - "The driver misunderstands the destination and heads toward a similar-sounding place"
   - "A road is closed, so the driver takes a long detour and {{learner_name}} has to ask about the fare"
-  - "The driver has no change for the note {{learner_name}} offers"
+  - "The way {{learner_name}} wants to pay does not work for this driver, and they have to agree on another"
   - "The driver recommends a restaurant or sight in {{location}} and {{learner_name}} asks for details"
   - "{{learner_name}} realizes they want to stop at a cash machine on the way"
 ---

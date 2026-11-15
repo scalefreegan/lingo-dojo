@@ -10,7 +10,7 @@ roles:
   learner: a guest invited to dinner for the first time by a local friend or colleague
 beats:
   - Arriving, greeting, and handing over a small gift
-  - Being shown in and offered a drink
+  - Being shown in and offered something to drink
   - Sitting down, being served, and tasting the food
   - Conversation at the table about food, home, and travel
   - Politely declining seconds or accepting them, then thanking the host and leaving
@@ -25,7 +25,7 @@ phrases:
   - "I'm full, thank you"
   - "Just a little more, please"
   - "Where can I wash my hands?"
-  - "Cheers!"
+  - "To your health! (a toast)"
   - "Thank you for a lovely evening"
 twists:
   - "The host serves a dish {{learner_name}} cannot or does not want to eat and must decline politely"

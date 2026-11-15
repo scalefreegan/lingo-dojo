@@ -16,11 +16,11 @@ beats:
   - Wrapping up and agreeing a first task or next step
 phrases:
   - Nice to meet you
-  - My name is
-  - I am joining the team as
-  - I come from
+  - "My name is [your name]"
+  - "I am joining the team as [your role]"
+  - "I come from [your country or city]"
   - I have been here for two weeks
-  - I used to work in
+  - "I used to work in [field or company]"
   - I am still learning the language
   - Could you speak a little slower?
   - What does that mean?
@@ -29,7 +29,7 @@ phrases:
   - Thank you for the warm welcome
 twists:
   - "A colleague asks a technical question about the learner's last job that needs a precise answer"
-  - "The team lead mentions a project in {{location}} using jargon the learner does not know"
+  - "The team lead mentions a project using jargon the learner does not know"
   - "Someone jokes in an idiom and the learner has to ask what it meant"
   - "The learner is asked to say something about their plans for the first month"
   - "A colleague asks the learner why they moved to {{location}}"

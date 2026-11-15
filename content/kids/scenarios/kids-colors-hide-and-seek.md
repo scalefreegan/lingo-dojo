@@ -9,10 +9,10 @@ roles:
   dojo_master: Miss Rainbow, a cheerful neighbor who has hidden colored things all over the house and gives one color clue at a time
   learner: a young seeker finding something of each color and shouting it out
 beats:
-  - Miss Rainbow says hello and explains the game: find something of each color
+  - "Miss Rainbow says hello and explains the game: find something of each color"
   - First color, red; the seeker looks and names what they found
   - Second color, blue, then yellow and green, one at a time
-  - A tricky one: something that is two colors
+  - "A tricky one: something that is two colors"
   - Counting up everything found and a big cheer
 phrases:
   - "red"
@@ -37,5 +37,5 @@ they find and names it. The game lives on eight color words, "where?",
 and "here!", nothing harder. Partway through comes a tricky one: a thing
 with two colors, which earns a double cheer. Success looks like
 {{learner_name}} naming or pointing at something for at least three colors
-and shouting "hier!" at least once.
+and shouting "here!" (adapted to {{target_language}}) at least once.
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

@@ -30,7 +30,7 @@ phrases:
 twists:
   - "The landlord blames the neighbors upstairs and the learner has to explain it is urgent anyway"
   - "He asks the learner to find the water valve and talk him through turning it off"
-  - "The earliest repair slot in {{location}} is days away and the learner has to push for sooner"
+  - "The earliest repair slot is days away and the learner has to push for sooner"
   - "The handyman wants to know if anything was damaged and asks for photos"
   - "The landlord says the learner is responsible and the learner must politely disagree"
 ---

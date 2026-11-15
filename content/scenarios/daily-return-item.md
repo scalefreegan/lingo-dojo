@@ -24,7 +24,7 @@ phrases:
   - "Could I exchange it for another size?"
   - "I'd prefer store credit"
   - "It was a gift"
-  - "Is there a problem with the receipt?"
+  - "I've lost the receipt, is that a problem?"
   - "Could I speak to the manager?"
   - "Thank you for your patience"
 twists:

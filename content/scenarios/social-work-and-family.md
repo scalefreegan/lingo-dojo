@@ -18,9 +18,9 @@ phrases:
   - "I work as..."
   - "I work from home"
   - "I like my job, but it's tiring"
-  - "I have two brothers and a sister"
-  - "I'm married / I'm single"
-  - "I don't have any children"
+  - "I have an older brother and a younger sister"
+  - "My partner works in [field]"
+  - "Do you have family nearby?"
   - "My parents live in..."
   - "How about you?"
   - "What is your family like?"
@@ -30,7 +30,7 @@ phrases:
 twists:
   - "The other person has never heard of {{learner_name}}'s profession and asks for a simple explanation"
   - "They ask a slightly personal question about marriage or children, and {{learner_name}} must answer or deflect politely"
-  - "They mention a family event this weekend in {{location}} and invite {{learner_name}} along"
+  - "They mention a family event soon in {{location}} and invite {{learner_name}} along"
   - "They use a word for a family member that {{learner_name}} does not know"
 ---
 {{learner_name}} is having a relaxed coffee or lunch in {{location}} with someone they met through a friend. The conversation is low-pressure but real: the acquaintance wants to know what {{learner_name}} does all day, where they grew up, and who is back home. Play the character as genuinely interested; ask follow-up questions, react naturally, and share small details about your own job and family so the exchange feels two-way. Speak {{target_variant}} at a steady, clear pace and rephrase gently when {{learner_name}} looks lost. Do not rush from topic to topic; let each one breathe for a few turns. Success looks like {{learner_name}} describing their job in {{target_language}}, naming family members and their ages or occupations, asking the same kinds of questions back, and comparing life at home with life in {{location}}.

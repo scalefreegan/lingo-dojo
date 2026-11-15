@@ -25,7 +25,7 @@ phrases:
   - "Which platform does it leave from?"
   - "Is it direct, or do I have to change?"
   - "Is the train delayed?"
-  - "Where can I validate my ticket?"
+  - "Do I need to do anything with the ticket before I board?"
   - "Could you write that down?"
 twists:
   - "The morning service {{learner_name}} wanted is sold out, and the clerk offers an afternoon one"

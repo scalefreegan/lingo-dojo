@@ -30,7 +30,7 @@ phrases:
 twists:
   - "The officer asks {{learner_name}} to describe the thief and {{learner_name}} must give a quick description"
   - "{{learner_name}} does not remember the phone's serial number and has to find it in an email or account"
-  - "The officer says reports are handled differently in {{location}} and sends {{learner_name}} to another desk"
-  - "The officer asks if {{learner_name}} can spell their name and address aloud"
+  - "The officer says thefts are handled at another desk and {{learner_name}} has to start the explanation again"
+  - "The officer reads {{learner_name}}'s name and address back slowly and gets part of it wrong"
 ---
-{{learner_name}} has just had their phone stolen in {{location}} and has come to the police station to file a report, mostly because the insurance will need it. The officer is businesslike but patient, aware that the visitor is upset. Ask where and when it happened, how it was taken, what the phone looks like, and whether there is any way to track it. Use whatever procedures, forms, and tone are normal for a police station in {{location}}. Speak {{target_variant}} clearly, at a measured pace, and spell out or repeat anything important, such as names and numbers. Success looks like {{learner_name}} stating the theft in {{target_language}}, describing the circumstances and the phone, spelling personal details when asked, and requesting a copy of the report.
+{{learner_name}} has just had their phone stolen in {{location}} and has come to the police station to file a report, mostly because the insurance will need it. The officer is businesslike but patient, aware that the visitor is upset. Ask where and when it happened, how it was taken, what the phone looks like, and whether there is any way to track it. Use whatever procedures, forms, and tone are normal for a police station in {{location}}. Speak {{target_variant}} clearly, at a measured pace, and repeat anything important, such as names and numbers. Success looks like {{learner_name}} stating the theft in {{target_language}}, describing the circumstances and the phone, giving and checking personal details, and requesting a copy of the report.

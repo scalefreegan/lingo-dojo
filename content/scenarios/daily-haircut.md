@@ -10,7 +10,7 @@ roles:
   learner: a resident who has not found a regular hairdresser yet and needs a cut
 beats:
   - Arriving, waiting, and being seated
-  - Describing the cut: length, sides, back, top
+  - "Describing the cut: length, sides, back, top"
   - Chat during the cut about work, family, and the city
   - Checking the result and asking for adjustments
   - Paying and booking next time

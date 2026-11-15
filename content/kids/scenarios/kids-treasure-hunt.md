@@ -19,7 +19,7 @@ phrases:
   - "right"
   - "up"
   - "down"
-  - "one, two, three"
+  - "counting up to ten"
   - "the treasure"
   - "red"
   - "blue"

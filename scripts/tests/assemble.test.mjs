@@ -273,3 +273,20 @@ test("a fixed-setting scenario ignores a leftover location", () => {
   assert.deepEqual(warnings, []);
   assert.doesNotMatch(markdown, /Lyon|Setting:/);
 });
+
+test("a quick scene never takes a leftover location; {{location}} there is left as-is with a specific warning", () => {
+  const { markdown, warnings } = run({ scenario: "", quick_scenario: "A cafe in {{location}}.", overrides: { location: "Lyon" } });
+  assert.doesNotMatch(markdown, /Lyon|Setting:/);
+  assert.match(markdown, /A cafe in \{\{location\}\}\./);
+  assert.deepEqual(warnings, [
+    "Placeholder {{location}} in the quick scenario is only filled when the scenario uses {{location}} (a fixed-setting or quick scenario doesn't); left as-is.",
+  ]);
+});
+
+test("location comes from the pack only, never from profile.yaml", () => {
+  const c = anywhereContent();
+  const withProfileLocation = { ...c, profile: { ...c.profile, location: "Lyon" } };
+  const { markdown } = run({ scenario: "anywhere" }, withProfileLocation);
+  assert.doesNotMatch(markdown, /Lyon/);
+  assert.match(markdown, /You choose the city/);
+});

@@ -16,8 +16,8 @@ beats:
   - Excusing yourself politely and saying a warm goodbye
 phrases:
   - "Nice to meet you"
-  - "My name is..."
-  - "I'm from..."
+  - "My name is [your name]"
+  - "I'm from [your country or city]"
   - "I just moved here"
   - "How do you know the host?"
   - "What do you do?"
@@ -25,7 +25,7 @@ phrases:
   - "I'm still learning the language"
   - "Could you say that again, please?"
   - "That sounds interesting"
-  - "Let me get a drink"
+  - "Let me get something to drink"
   - "It was great talking to you"
 twists:
   - "A second guest joins and the first conversation splits into two topics at once"

@@ -13,7 +13,7 @@ beats:
   - Choosing between an apple, a banana, and a cookie
   - Bruno tries each snack with a huge reaction
   - Asking for more or saying all done
-  - Bruno says thank you and lets out a happy burp
+  - Bruno says thank you and pats his full, happy tummy
 phrases:
   - "the apple"
   - "the banana"

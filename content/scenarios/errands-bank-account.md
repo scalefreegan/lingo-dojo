@@ -32,7 +32,7 @@ twists:
   - "The cash machine outside is known for swallowing cards, and the clerk wants the exact time and amount"
   - "A fee the learner did not expect comes up and they have to ask what it covers"
   - "The clerk uses banking jargon and the learner must ask for a simpler explanation"
-  - "The branch is about to close for the day in {{location}} and the clerk has to speed up"
+  - "The branch is about to close for the day and the clerk has to speed up"
 ---
 {{learner_name}} has walked into a bank branch in {{location}}, either to open a
 basic account after moving there or because a cash machine just kept their card.

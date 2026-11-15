@@ -11,7 +11,7 @@
 // markdown is still produced, with a visible placeholder where a required
 // piece is missing, so an export is never silently incomplete.
 
-import { LOCATION_RE, PLACEHOLDERS, normalizePack } from "./content.mjs";
+import { PLACEHOLDERS, normalizePack } from "./content.mjs";
 
 /** Profile keys rendered in the Learner block, in this order, with labels.
  *  Any other key in the effective profile follows in its own order. */
@@ -83,8 +83,11 @@ export function assemble(content, rawPack) {
   // The session's location is a setting for the scene, not a fact about the
   // learner: it never shows in the Learner block, and only a scenario that
   // uses {{location}} reads it (a stale value left over from another scene
-  // on a fixed-setting scenario like Oaxaca is ignored, not rendered).
-  const location = typeof profile.location === "string" ? profile.location.trim() : "";
+  // on a fixed-setting scenario like Oaxaca is ignored, not rendered). It is
+  // read from the pack alone: the Scene tab is the only place it is set, so a
+  // `location` key in profile.yaml would steer the scene invisibly.
+  const rawLocation = pack.overrides.location;
+  const location = typeof rawLocation === "string" ? rawLocation.trim() : "";
   delete profile.location;
 
   const values = {};
@@ -101,7 +104,7 @@ export function assemble(content, rawPack) {
   // Deterministic on purpose: the randomness happens in the session, not here.
   if (scenario.uses_location) values.location = location || CHOSEN_CITY;
   else delete values.location;
-  const fill = (text, source) => substitute(text, values, source, warn);
+  const fill = (text, source) => substitute(text, values, source, warn, scenario.uses_location);
 
   // 3. Slots in schema order; each slot's units in pack order.
   const unitsById = new Map((content.units ?? []).map((u) => [u.id, u]));
@@ -184,7 +187,10 @@ function resolveScenario(content, pack, warn) {
     warn(`Unknown scenario "${pack.scenario}" (no content/scenarios/${pack.scenario}.md).`);
   }
   if (quick) {
-    return { id: null, title: QUICK_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], phrases: [], twists: [], body: quick, uses_location: LOCATION_RE.test(quick) };
+    // A quick scene is the learner's own text: they write the place into it.
+    // No {{location}} here, so a Location typed for an earlier library scene
+    // (and no longer on screen) can't leak into it.
+    return { id: null, title: QUICK_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], phrases: [], twists: [], body: quick, uses_location: false };
   }
   warn("No scenario selected.");
   return { id: null, title: NO_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], twists: [], body: "", missing: true };
@@ -196,9 +202,15 @@ function resolveScenario(content, pack, warn) {
  * source: a literal "{{level}}" in the export is visible, an empty string
  * would read as a sentence with a hole in it.
  */
-function substitute(text, values, source, warn) {
+function substitute(text, values, source, warn, scenarioUsesLocation) {
   return text.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (match, name) => {
     if (Object.hasOwn(values, name)) return values[name];
+    // Setting an override would not help here: {{location}} only has a value
+    // when the scenario itself is set wherever the session says.
+    if (name === "location" && !scenarioUsesLocation) {
+      warn(`Placeholder {{location}} in ${source} is only filled when the scenario uses {{location}} (a fixed-setting or quick scenario doesn't); left as-is.`);
+      return match;
+    }
     if (PLACEHOLDERS.includes(name)) warn(`Placeholder {{${name}}} in ${source} has no value (set it in profile.yaml or the pack's overrides); left as-is.`);
     else warn(`Unknown placeholder {{${name}}} in ${source}; left as-is.`);
     return match;

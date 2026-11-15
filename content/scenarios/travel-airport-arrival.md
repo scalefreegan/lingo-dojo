@@ -32,6 +32,6 @@ twists:
   - "One bag does not appear on the belt, and the attendant needs a description and a contact number"
   - "The transport desk says the train into {{location}} is not running today, so a bus is the only option"
   - "A driver outside offers a flat price that sounds high, and {{learner_name}} has to ask what is included"
-  - "The address {{learner_name}} wrote down is unclear and the clerk needs it spelled out"
+  - "The address {{learner_name}} wrote down is unclear and the clerk needs it read out slowly"
 ---
 {{learner_name}} steps off a long flight into the arrivals hall of the airport serving {{location}}, tired and a little disoriented. First comes immigration: a brisk officer asks why {{learner_name}} is visiting, for how long, and where they will stay. After that, the baggage hall, where finding the right belt may take some asking, and then the choice of how to reach town. Play each person as a real worker on a long shift: polite, efficient, not especially chatty, speaking at natural speed in {{target_variant}}. Follow whatever is customary in {{location}} for paperwork, money, and fares rather than inventing rules. Do not rescue the learner too quickly; repeat or rephrase once if needed. Success looks like answering the immigration questions, asking where baggage claim is, reporting a problem with a bag, asking what the fare into town costs, and giving the destination address clearly.

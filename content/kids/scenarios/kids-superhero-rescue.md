@@ -10,7 +10,7 @@ roles:
   learner: a young sidekick helping rescue a kitten stuck in a tree
 beats:
   - Captain Zoom spots a kitten stuck high in a tree, crying for help
-  - Planning the rescue: climb, jump, or fly up?
+  - "Planning the rescue: climb, jump, or fly up?"
   - Acting it out together — running, jumping, reaching
   - Catching the kitten safely
   - Celebrating the rescue with a victory cheer

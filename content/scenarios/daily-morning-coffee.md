@@ -10,10 +10,10 @@ roles:
   learner: a newly arrived resident who stops here most mornings on the way to work or class
 beats:
   - Greeting and ordering the usual
-  - Adjusting the order: size, milk, a pastry
+  - "Adjusting the order: size, milk, a pastry"
   - Small talk about the weather, weekend plans, or the neighborhood
   - Paying and a quick goodbye
-  - The next morning: a small change to the routine
+  - "The next morning: a small change to the routine"
 phrases:
   - "Good morning, the usual please"
   - "A small one, please"

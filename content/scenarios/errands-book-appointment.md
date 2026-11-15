@@ -20,17 +20,17 @@ phrases:
   - Is there anything earlier?
   - That time does not work for me
   - Could we do the afternoon instead?
-  - My name is, spelled like this
-  - Can I give you my phone number?
+  - "My name is [your name]"
+  - Let me read it back to you
   - How long will it take?
   - What do I need to bring?
   - Could you repeat the time, please?
   - I need to cancel or move it
   - Thank you, see you then
 twists:
-  - "The first available slot in {{location}} is weeks away and the learner has to ask about cancellations"
+  - "The first available slot is weeks away and the learner has to ask about cancellations"
   - "The line is bad and the receptionist has to repeat the date and time several times"
-  - "She asks the learner to spell their name and number and speaks fast when reading the details back"
+  - "She takes the learner's name and number and reads them back fast, getting one detail wrong"
   - "The learner realizes they are free only on one day and has to negotiate"
   - "She mentions a form or document to bring that the learner has to ask about"
 ---
@@ -43,5 +43,5 @@ booking customs are normal in {{location}}, including greetings and how
 details are confirmed. Speak {{target_variant}} at call speed, a touch fast,
 and slow down only if asked. Read the date and time back as a real receptionist
 would, so the learner has to catch numbers by ear. Success looks like stating
-the reason for the call, spelling their name, negotiating a workable time,
+the reason for the call, giving their name and number clearly, negotiating a workable time,
 asking what to bring, and repeating the confirmed date and time before hanging up.

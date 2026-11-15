@@ -10,7 +10,7 @@ roles:
   learner: a young listener helping Luna finish her bedtime story
 beats:
   - Luna yawns and says it's time for a story
-  - Luna starts the story: a star, a moon, a quiet forest
+  - "Luna starts the story: a star, a moon, a quiet forest"
   - Luna dozes off mid-sentence and the listener has to gently wake her
   - Finishing the story together, word by word
   - Luna says goodnight and falls asleep for real

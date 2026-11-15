@@ -29,8 +29,8 @@ phrases:
   - "Can I get your number?"
 twists:
   - "The partner switches into the learner's native language and {{learner_name}} must steer back to {{target_language}}"
-  - "The partner uses slang from {{location}} that {{learner_name}} has not learned yet"
+  - "The partner uses local slang that {{learner_name}} has not learned yet"
   - "The partner asks {{learner_name}} to explain a tricky grammar point in their own language"
   - "A third person joins and the conversation speeds up"
 ---
-{{learner_name}} is at a language-exchange meetup in a cafe or bar in {{location}}. Their partner is friendly, patient, and eager to practice the learner's native language too, so the evening is a fair swap. Stay mainly in {{target_language}} ({{target_variant}}) and keep the tone relaxed and playful. Ask about hobbies, travel, and why {{learner_name}} is learning the language. Offer a correction only when a mistake truly blocks understanding, and answer "how do you say...?" questions with a short, natural phrase. Let {{learner_name}} ask for slower speech without making it awkward. Success looks like {{learner_name}} introducing themselves and explaining in {{target_language}} why they are learning it, asking "how do you say...?" at least once, handling a slang word or correction gracefully, and arranging to meet again.
+{{learner_name}} is at a language-exchange meetup in a cafe in {{location}}. Their partner is friendly, patient, and eager to practice the learner's native language too, so the evening is a fair swap. Stay mainly in {{target_language}} ({{target_variant}}) and keep the tone relaxed and playful. Ask about hobbies, travel, and why {{learner_name}} is learning the language. Offer a correction only when a mistake truly blocks understanding, and answer "how do you say...?" questions with a short, natural phrase. Let {{learner_name}} ask for slower speech without making it awkward. Success looks like {{learner_name}} introducing themselves and explaining in {{target_language}} why they are learning it, asking "how do you say...?" at least once, handling a slang word or correction gracefully, and arranging to meet again.

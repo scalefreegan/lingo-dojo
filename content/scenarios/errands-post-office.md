@@ -26,11 +26,11 @@ phrases:
   - Can you check my address?
   - Is there anything I am not allowed to send?
   - Can I have a receipt?
-  - Could you spell that, please?
+  - Could you write it down for me?
 twists:
   - "The box is slightly over the weight limit and the clerk suggests removing something or repacking"
   - "One of the items is not allowed to be sent abroad and the learner has to decide what to do"
-  - "The clerk cannot read the learner's handwriting on the address and asks them to spell it aloud"
+  - "The clerk cannot read the learner's handwriting on the address and asks them to read it out slowly"
   - "The fastest option costs far more than expected and the learner has to compare choices"
   - "The post office in {{location}} is busy and the clerk hurries the conversation along"
 ---
@@ -44,5 +44,5 @@ are usual there. {{learner_name}} has to explain what they want in
 {{target_language}}, answer questions about contents and address, and
 understand cost and delivery time. Speak {{target_variant}} at a steady pace,
 and repeat or rephrase if asked. Success looks like describing the contents,
-choosing a shipping option, spelling the address clearly, and asking for a
+choosing a shipping option, reading the address out clearly, and asking for a
 receipt with a tracking number.

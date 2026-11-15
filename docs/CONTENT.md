@@ -156,7 +156,12 @@ twists:
     the dojo master to pick a real city where the variant is spoken and name it
     at the start. The export stays deterministic; the choice happens in session.
   - A scenario without `{{location}}` ignores `overrides.location`, and the
-    location never appears in the Learner block.
+    location never appears in the Learner block. A quick scenario never uses
+    it (the learner writes the place into their own text), and the location is
+    read from the pack only, not from `profile.yaml`. `{{location}}` anywhere
+    else (a unit, frame.md, a quick scenario) is left as-is with a warning.
+- Quote any list line containing `: ` (`- "Checkout: bags and payment"`);
+  unquoted, YAML reads it as a mapping. The loader recovers the line but warns.
 - Make no culture-specific assumptions (tipping, currency, haggling, names):
   defer to "whatever is customary in {{location}}". Kids scenarios don't use
   `{{location}}`; they ask for a light touch of a culture where the target

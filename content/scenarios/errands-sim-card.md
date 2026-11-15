@@ -30,7 +30,7 @@ phrases:
 twists:
   - "The learner's phone is locked to another carrier and the assistant explains the problem"
   - "The assistant pushes an expensive plan and the learner has to politely ask for something simpler"
-  - "Registering the line in {{location}} needs a document or step the learner was not expecting"
+  - "Registering the line needs a document or step the learner was not expecting"
   - "The SIM is inserted but there is no signal and the assistant starts troubleshooting"
   - "The assistant talks very fast and uses slang for data and plans"
 ---

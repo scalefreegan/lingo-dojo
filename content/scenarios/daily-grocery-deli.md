@@ -10,9 +10,9 @@ roles:
   learner: a newly arrived resident shopping for the week and still learning how things are sold
 beats:
   - Asking a staff member where something is
-  - At the deli counter: ordering by weight or number of slices
+  - "At the deli counter: ordering by weight or number of slices"
   - Asking about a product, such as what it is or how fresh
-  - Checkout: bags, loyalty card, and payment
+  - "Checkout: bags, loyalty card, and payment"
   - Small talk with the cashier
 phrases:
   - "Where can I find the bread?"
@@ -25,7 +25,7 @@ phrases:
   - "How much is it per kilo?"
   - "I'll take that"
   - "Do I need to pay for a bag?"
-  - "Do you have a loyalty card?"
+  - "I don't have a loyalty card"
   - "That's all, thank you"
 twists:
   - "The item {{learner_name}} wants is out of stock, and the worker suggests a substitute"
