@@ -8,9 +8,11 @@ or the loader.
 
 Personal data is moving to Postgres (logins, learners, packs, conversations,
 the phrase bank); `docs/DATA.md` is its contract. Built so far: the foundation
-(phase 0) and logins + learners (phase 1): users, sessions, learners (the
-profile the app uses), per-user voice settings, model and agent chat. Packs
-are still files shared by every account (phase 2 moves them).
+(phase 0), logins + learners (phase 1): users, sessions, learners (the
+profile the app uses), per-user voice settings, model and agent chat, and
+saved conversations (phase 3: every voice session's turns, the Library's
+History; `web/server/conversations.ts`). Packs are still files shared by
+every account (phase 2 moves them).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

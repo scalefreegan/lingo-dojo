@@ -19,6 +19,7 @@ import type {
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
+import { openConversation, saveTurn, takeTurnLock, turnLockKey } from "./conversations.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -27,7 +28,7 @@ import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 //   GET/PUT /api/voice/settings      provider, voices per speaker, turn-taking
 //   GET     /api/voice/voices        ?provider=&locale= → the provider's voices
 //   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
-//   POST    /api/voice/turn          {mode, pack, history, message} → {lines}
+//   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines}
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
 //   GET     /api/voice/library       ElevenLabs Voice Library search
 //   POST    /api/voice/library/add   add a library voice to the account (admin)
@@ -36,8 +37,9 @@ import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 // turn and cast act for the active learner, so api.ts mounts them with
 // wrap's `learner: true` (the page must name that learner).
 //
-// The server holds no session: the browser sends the history with every
-// turn. Provider keys come from the repo-root .env.local (scripts/voice.mjs
+// The browser holds the session: it sends the whole history with every
+// turn. A turn that names a saved conversation (conversations.ts) is stored
+// there once it succeeds, so the stored turns mirror that history. Provider keys come from the repo-root .env.local (scripts/voice.mjs
 // voiceKeys) and never appear in a reply — the browser only ever learns
 // whether a provider is configured.
 
@@ -49,6 +51,10 @@ const MAX_AUDIO_BYTES = 8 << 20;
 const MAX_SPEAK_CHARS = 2000;
 /** Exchanges replayed into a turn's prompt. */
 const HISTORY_WINDOW = 60;
+/** Entries of the history kept for the saved conversation, which mirrors all
+ *  of it (the prompt still gets only the last HISTORY_WINDOW). Far beyond a
+ *  session; the request's 1 MB body cap binds first. */
+const HISTORY_MAX = 2000;
 
 /* -------------------------------- settings -------------------------------- */
 
@@ -227,14 +233,10 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
 
 /* ---------------------------------- turn ---------------------------------- */
 
-// One turn at a time per login session: the history is the client's, so a
-// second turn racing the first would answer a conversation that is about to
-// change under it. Keyed by session, not user, so a parent and a child
-// logged in to one account on two devices don't block each other (DATA.md:
-// keyed by conversation once conversations are stored). Two tabs of one
-// browser share a session, and so share the lock.
-const turning = new Set<string>();
-
+// One turn at a time per conversation (conversations.ts takeTurnLock), or
+// per login session for a turn that isn't being saved: the history is the
+// client's, so a second turn racing the first would answer a conversation
+// that is about to change under it.
 
 function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   if (!Array.isArray(raw)) return [];
@@ -285,7 +287,7 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
       out.push({ role: "master", lines, ...(glosses.length ? { glosses } : {}), ...(choices.length ? { choices } : {}), ...(stage ? { stage } : {}), ...(castNotes.length ? { castNotes } : {}) });
     }
   }
-  return out.slice(-HISTORY_WINDOW);
+  return out.slice(-HISTORY_MAX);
 }
 
 /** POST /api/voice/turn, mounted on its own with wrap's `learner: true`. */
@@ -298,10 +300,14 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
   if (!body?.pack || typeof body.pack !== "object") throw new HttpError(400, "body must carry the pack");
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (message.length > 4000) throw new HttpError(413, "message too long");
-  const history = cleanHistory(body.history);
-  const who = ctx.sessionId;
-  if (turning.has(who)) throw new HttpError(409, "the dojo master is still answering the last turn");
-  turning.add(who);
+  const all = cleanHistory(body.history);
+  const history = all.slice(-HISTORY_WINDOW);
+  // A saved conversation must be this learner's and still open (else a 404
+  // or 409 whose code sends the Go tab to start a new one), checked before
+  // anything runs. Its part of the history starts at conversationStart.
+  const conversation = body.conversationId != null ? await openConversation(ctx.learner.id, body.conversationId) : null;
+  const from = Number.isInteger(body.conversationStart) ? Math.max(0, Math.min(all.length, body.conversationStart as number)) : 0;
+  const release = takeTurnLock(turnLockKey(conversation?.id ?? null, ctx.sessionId));
 
   // Cancel the run when the browser gives up (Stop, a page reload): listen
   // on `res`, as the chat route does — readJsonBody consumed the request.
@@ -350,9 +356,23 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
+    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings };
+    if (conversation) {
+      // Stored before the reply goes out, still under the lock. A failed
+      // write doesn't cost the learner a reply that's already paid for: the
+      // turn stands, unsaved, and the panel says so.
+      const master = {
+        role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
+        durationMs: run.durationMs, costUsd: run.costUsd,
+      };
+      reply.saved = await saveTurn(ctx.learner.id, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model }).catch((e) => {
+        console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
+        return false;
+      });
+    }
+    sendJson(res, 200, reply);
   } finally {
-    turning.delete(who);
+    release();
     res.off("close", onClose);
   }
 }

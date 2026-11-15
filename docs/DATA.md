@@ -1,7 +1,7 @@
 # Learners, memory and practice: the database design
 
-Status: **phase 0 (foundation) and phase 1 (logins and learners) built**;
-phases 2–11 are plan, not built (2026-11-15). Epic `ld-gf9`,
+Status: **phase 0 (foundation), phase 1 (logins and learners) and phase 3
+(conversations) built**; the other phases are plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -59,7 +59,8 @@ browser ──cookie──▶ Vite middleware (web/server/*)
                      ├─ seed.ts           the first admin's seed from the old files (built, phase 1)
                      ├─ store.ts          per-user settings and agent chat (built, phase 1)
                      ├─ content.ts        library (files, as now); packs → DB
-                     ├─ voice.ts          turns persist to conversations; retrieval; LOOKUP
+                     ├─ voice.ts          turns persist to conversations (built, phase 3); retrieval; LOOKUP
+                     ├─ conversations.ts  /api/conversations: create, list, get, end, delete; the turn lock (built, phase 3)
                      ├─ bank.ts           /api/phrases/*  bank CRUD, metrics
                      ├─ practice.ts       /api/practice/* queue, grade, review
                      └─ chat.ts           content agent (admin) + bank MCP (read-only)
@@ -73,6 +74,7 @@ scripts/
   db/setup.mjs        CLI: db:setup / db:migrate (built, phase 0)
   db/accounts.ts      users, sessions, learners, settings, agent messages (built, phase 1)
   auth.mjs            pure: scrypt, tokens, the cookie, the login throttle (built, phase 1)
+  conversations.mjs   pure: the turn write's reconciliation, titles, paging (built, phase 3)
   fsrs.mjs            pure: rating mapping, mastery bands (wraps ts-fsrs)
   match.mjs           pure: answer normalization and lenient match
   recall.mjs          pure: review-block selection and retrieval ranking
@@ -381,7 +383,7 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   defaults" or voice turn would act on Ana. So every call from the client
   carries the learner its page shows in an `X-Learner-Id` header (set in one
   place, `web/src/api.ts`), and a learner-scoped route (`wrap(fn, { learner:
-  true })`: profile, packs, folders, assemble, export, voice turn and cast)
+  true })`: profile, packs, folders, assemble, export, voice turn and cast, conversations)
   answers **409 with `code: "stale_learner"`** when that header is missing or
   isn't the session's active learner, or when no learner is picked. On that
   code the client re-reads `/api/auth/me`, which shows the right learner or
@@ -451,10 +453,10 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   into what is stored (`sessionMinutes` per mode too), done in one
   transaction that makes the row if missing and holds it `FOR UPDATE`
   (`updateVoiceSettings`), so two saves at once both land; the model is a
-  one-column upsert with no read. The voice turn lock is per login
-  session until conversations key it, so a parent and a child on two devices
-  under one account don't block each other (two tabs of one browser share a
-  session, and its lock).
+  one-column upsert with no read. The voice turn lock is per conversation
+  (Conversations), so a parent and a child on two devices under one account
+  don't block each other; a turn that isn't being saved falls back to its
+  login session (two tabs of one browser share a session, and its lock).
 - **Browser storage:** the remembered draft, tab, Scene filter and folder
   state are kept per learner (`<key>.learner.<id>`), so the next learner or
   account on the same browser never sees the last one's unsaved name, level,
@@ -477,23 +479,97 @@ Routes that took `?mode=` change as follows:
 
 ## Conversations
 
+Built in phase 3 (bead `ld-ioq`). Code: `web/server/conversations.ts`
+(routes, the turn lock, the end hook), `scripts/conversations.mjs` (pure:
+the turn write's reconciliation, titles, paging), the turn route in
+`web/server/voice.ts`, and in the browser `VoicePanel.tsx` (the session),
+`HistoryView.tsx` (History) and `Transcript.tsx` (the transcript both show).
+docs/VOICE.md §Saved conversations is the user's side.
+
 1. On the first turn of a session, the client calls `POST /api/conversations`
    with the pack. The server stores a conversation with the pack snapshot and
-   returns its `id`. Restart starts a new conversation.
+   returns its `id`. Restart starts a new conversation. As built: the row
+   also gets the scene's title, the scenario id, the mode, the target
+   variant (the pack's override, else the learner's), the voice model and
+   `planned_minutes` (the pack's minutes; null is no limit). If creating it
+   fails, the session goes on unsaved (and says so), and the next turn
+   tries again.
 2. `POST /api/voice/turn` carries `conversationId`. After a successful turn,
    the server appends the learner turn and the master turn in one transaction.
-   The client still sends the history (proposed for phase 1: VoicePanel's retry,
-   recast and "check what it heard" flows stay as they are). Reading the history
-   from the DB instead is a later simplification.
+   The client still sends the history (VoicePanel's retry, recast and "check
+   what it heard" flows stay as they are). Reading the history from the DB
+   instead is a later simplification. As built:
+   - The turn is refused before anything runs when the conversation is
+     another learner's or gone (404, `code: "no_conversation"`) or ended
+     (409, `conversation_ended`); the client then makes a new conversation
+     starting at that turn and sends it again.
+   - **The stored turns mirror the screen.** The write holds the
+     conversation row `FOR UPDATE`, reads its turns, and compares them with
+     the history the turn was sent with (`planTurnWrite`): the turns that
+     agree (same role and words) stay; from the first that doesn't, the
+     history wins (rows from that `idx` on are deleted and rewritten from
+     it); then the learner's message and the reply are appended. That
+     settles every way the two can part: a failed or stopped turn's message
+     (on screen, no reply) is stored reply-less by the next turn; a reply
+     stored but dropped by the browser (Stop racing the answer) is deleted
+     by the next turn; a turn sent twice keeps the second answer; an edited
+     "check what it heard" message only ever reaches the server as sent; a
+     recast changes no words. `idx` is the entry's place on screen counted
+     from the conversation's first entry (`conversationStart`: 0, unless the
+     conversation began mid-session after the one before ended), so it is
+     gap-free and ordered by construction, and `unique (conversation_id,
+     idx)` backs it.
+   - Rows rewritten from the history (not this turn's) have no duration or
+     cost; the history doesn't carry them. A write that fails leaves the
+     turn standing (the reply is paid for) with `saved: false`, and the
+     panel says the session isn't being saved.
+   - `turns` has no model column: `conversations.model` and
+     `planned_minutes` are updated by each saved turn (the model and length
+     as of the last turn, so +5 min and a mid-session pick show).
+     `turn_count` is the number of stored turns (learner and master each
+     count one).
 3. **End** (a new button, or closing or leaving the Go tab with a conversation
    open) sets `ended_at` and queues the extraction. A conversation left open for
-   2 hours is ended on the next server request (proposed).
+   2 hours is ended on the next server request. As built:
+   - `POST /api/conversations/:id/end` is idempotent: only a row whose
+     `ended_at` is null is updated. End, Restart, Close, leaving Go and
+     page unload all call it; unload uses a `keepalive` fetch (not
+     `sendBeacon`, which can't send the `X-Learner-Id` header `wrap` checks).
+   - It waits for the conversation's turn in flight, so a reply on its way
+     when the learner leaves Go is stored before the end.
+   - Leaving Go keeps the session on screen; a turn after coming back
+     starts a new conversation (from that turn on). Reload ends the
+     conversation and the session; it can't be resumed until the history is
+     read back from the database.
+   - The idle end is lazy: every conversation route and the voice turn first
+     end the learner's open conversations whose last turn (or start, with
+     none) is two hours old or more, with `ended_at` set to that last
+     activity rather than now, so History's length isn't two idle hours
+     longer.
+   - The extraction attaches to `onConversationEnded(conversation)` in
+     `web/server/conversations.ts`, called exactly once per conversation,
+     after the one write that set `ended_at` (whichever way it ended). It
+     does nothing yet.
+   - An End sent after the page switched learner is a `stale_learner` and
+     is ignored; that conversation ends by the idle rule.
 4. **One turn at a time per conversation.** Today a single global flag refuses
    a second voice turn while any turn is running. With more than one person
    practicing, that flag becomes a lock keyed by conversation id, so two
    learners never block each other and one conversation still can't race itself.
-5. A **History** view (Library tab, proposed) lists past conversations with
-   their summaries and opens one read-only in the transcript components.
+   As built: an in-memory lock keyed by conversation id (by login session for
+   a turn with no conversation); a second turn is a plain 409.
+5. A **History** view (Library tab) lists past conversations with
+   their summaries and opens one read-only in the transcript components. As
+   built: a second view of the Library tab beside Saved packs, newest first,
+   20 a page (`GET /api/conversations?offset=&limit=`), each with date,
+   length, turn count and summary (null until extraction); opening one pages
+   through its turns (`GET /api/conversations/:id?from=&limit=`) and shows
+   them with glosses tappable and no audio. Delete is a hard delete with a
+   confirm (`DELETE /api/conversations/:id`); the turns cascade.
+6. **Routes** (`wrap(…, { learner: true })`, every row through
+   `learnerRows(id)`): another learner's conversation, guessed id or not, is
+   the same 404 as a missing one, and an id that isn't a uuid never reaches
+   Postgres.
 
 ## Phrase capture
 
@@ -701,9 +777,15 @@ is proposed; none of it was asked in the interview.
   the current part. From about 80% used it says to start closing the scene. At
   100% it says to finish within this turn and the next: end the scene and give
   the short debrief. The session is never cut off; the learner can keep going.
-- **Timing source:** elapsed time since the first turn, sent by the client. Once
-  conversations are stored, the server uses `conversations.started_at` and
-  records `planned_minutes`.
+- **Timing source:** elapsed time since the first turn, sent by the client.
+  As built (phase 3), it stays the client's even with conversations stored,
+  and the conversation records `planned_minutes` as of each turn. The
+  clock's origin moves with every mid-session pick and the budget with +5
+  min, both state the browser alone sees, so a server clock would need the
+  pick time from the browser anyway (no more trustworthy than the elapsed
+  time it sends), plus a column for it; and a reload, which a server clock
+  could outlive, also loses the session itself, since the history isn't read
+  back yet. Revisit when it is.
 - **UI:** the timeline shows the time left, and a **+5 min** button extends the
   budget mid-session.
 
@@ -803,7 +885,13 @@ deletes cover undoing a single change.
   Secure rule, every access level, learner CRUD and picking, and a second
   user against the first's learners, settings and agent chat; the API and
   voice tests cover the stale-page 409 from a second tab and a second login
-  on the same browser, and overlapping voice-settings saves. PGlite runs one
+  on the same browser, and overlapping voice-settings saves.
+  `conversations.http.test.mjs` (phase 3, with a stand-in `claude` on PATH)
+  covers creation, the stored turn shapes, idx under retried, stopped and
+  dropped turns, the per-conversation lock, End (idempotent, waiting for a
+  turn, one hook call), the two-hour idle end, paging, delete,
+  `stale_learner`, and another learner or user against every route by id;
+  `conversations.test.mjs` the pure reconciliation. PGlite runs one
   transaction at a time, so the races themselves are in
   `first-run.pg.test.mjs`, which runs only with `LINGO_TEST_PG_URL` set: it
   makes a throwaway database on that server, races 12 first runs and 12
@@ -821,8 +909,8 @@ deletes cover undoing a single change.
 - `CLAUDE.md`: the no-database line; the `data/` description, the auth rule in
   `wrap()` and the test database rule (done in phase 1).
 - `CONTENT.md`: the `recall` slot, `{{phrase_review}}`, and packs living in the DB.
-- `VOICE.md`: "Nothing is saved", `LOOKUP:`, per-turn retrieval; per-user
-  settings (done in phase 1).
+- `VOICE.md`: "Nothing is saved" (done in phase 3), `LOOKUP:`, per-turn
+  retrieval; per-user settings (done in phase 1).
 
 ## Phases
 
@@ -831,7 +919,7 @@ deletes cover undoing a single change.
 | 0 | Postgres + Drizzle foundation: setup scripts, schema v1 (every table above), migrations, PGlite test harness, boot check. **Built** | none |
 | 1 | Auth + learners: login, sessions, `wrap` auth levels, user CLI, learner picker, profile on DB, admin-only agent, per-user settings, first-run screen. **Built** | 0 |
 | 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits | 1 |
-| 3 | Conversations: persist turns, End, the History view | 1 |
+| 3 | Conversations: persist turns, End, the History view. **Built** | 1 |
 | 4 | Phrase bank: tables, gloss capture, scenario lists, star/add, the bank UI with metrics | 3 |
 | 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |
 | 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |
@@ -852,6 +940,6 @@ These are proposals, made without asking:
 - Kids are left out of the practice modes in v1.
 - PGlite for tests (built and working; see Testing).
 - scrypt over argon2.
-- An auto-end after 2 hours.
+- An auto-end after 2 hours (built: lazy, at the last turn).
 - Daily limits of 20 new and 100 reviews.
 - Practice and History placement in the UI.

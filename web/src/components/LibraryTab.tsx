@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import HistoryView from "./HistoryView";
 import { slugify, splitPackId } from "../draft";
 import type { ContentReply, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
@@ -9,10 +10,37 @@ const small = "px-2 py-1 text-sm sm:text-xs";
 /** Meta text (folder headers, the date · scene · units line, the row menu). */
 const fine = "text-sm sm:text-xs";
 
-/* Library tab: every saved pack, grouped by folder ("No folder" first), with
- * a toolbar to make a folder. The one-line outcome of an action now lives on
- * the Go tab (that's where saving happens), not here. */
-export default function LibraryTab({
+type LibraryProps = PackActions & {
+  packs: Pack[];
+  folders: string[];
+  content: ContentReply;
+  currentId: string | null;
+};
+
+/* Library tab: two views. Saved packs, every one grouped by folder ("No
+ * folder" first), with a toolbar to make a folder (the one-line outcome of
+ * an action lives on the Go tab, where saving happens). And History, the
+ * learner's saved voice sessions (HistoryView). */
+export default function LibraryTab(props: LibraryProps) {
+  const [view, setView] = useState<"packs" | "history">("packs");
+  const tabClass = (on: boolean) =>
+    `rounded-lg px-3 py-1 text-sm font-medium transition-colors ${on ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-raised hover:text-fg"}`;
+  return (
+    <div className="flex flex-col gap-4">
+      <div role="tablist" aria-label="Library" className="flex gap-1 self-start rounded-xl border border-line bg-panel p-1">
+        <button type="button" role="tab" aria-selected={view === "packs"} className={tabClass(view === "packs")} onClick={() => setView("packs")}>
+          Saved packs
+        </button>
+        <button type="button" role="tab" aria-selected={view === "history"} className={tabClass(view === "history")} onClick={() => setView("history")} data-testid="library-history">
+          History
+        </button>
+      </div>
+      {view === "history" ? <HistoryView /> : <PacksView {...props} />}
+    </div>
+  );
+}
+
+function PacksView({
   packs,
   folders,
   content,
@@ -20,12 +48,7 @@ export default function LibraryTab({
   onCreateFolder,
   onDeleteFolder,
   ...row
-}: PackActions & {
-  packs: Pack[];
-  folders: string[];
-  content: ContentReply;
-  currentId: string | null;
-}) {
+}: LibraryProps) {
   // null = closed; otherwise the name being typed.
   const [newFolder, setNewFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

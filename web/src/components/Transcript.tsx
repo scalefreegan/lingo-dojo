@@ -1,0 +1,308 @@
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { Glossed } from "./Glossed";
+import { SpeakerCritter } from "./Mascots";
+import { haystack, layout, mightMatch } from "../gloss";
+import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
+import type { VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
+
+/* The transcript of a voice session: the live one on the Go tab
+ * (VoicePanel), and a saved one opened read-only from History, which has no
+ * audio (no ▶ replay: onReplay is left out). */
+
+/** The session's transcript. Memoised: the session re-renders for things
+ *  that don't touch it (the thinking counter, the composer). Each entry is
+ *  a memoised row too, given only what concerns it (its own playing line
+ *  and open definition, the glosses found in its text, its translations,
+ *  each kept the same object while unchanged), so a new turn re-renders
+ *  the new row, not every glossed line of the session again. (The
+ *  translations are kept per line in VoicePanel too, and only a line that
+ *  a new gloss lands in is laid out again.) It follows the
+ *  session while the learner lets it: a new turn and the line being spoken
+ *  are scrolled into view, until the learner scrolls away to reread.
+ *  Scrolling back to the bottom, sending something or tapping ▶ follows
+ *  again. Only the list's own scroll moves, never the page. */
+export const Transcript = memo(function Transcript({
+  entries,
+  plan,
+  playing,
+  picked,
+  translations,
+  glosses,
+  locale,
+  trLabel,
+  showTr,
+  onPick,
+  onClosePick,
+  onReplay,
+  className,
+  follow = true,
+}: {
+  entries: VoiceHistoryItem[];
+  plan: VoicePlanItem[];
+  playing: string | null;
+  picked: { at: string; gloss: VoiceGloss } | null;
+  translations: LineTranslation[][];
+  glosses: VoiceGloss[];
+  locale: string | null;
+  trLabel: string;
+  /** Whether any line has a translation: only then is there a column for
+   *  the translate buttons. */
+  showTr: boolean;
+  onPick: (at: string, gloss: VoiceGloss) => void;
+  onClosePick: (refocus?: boolean) => void;
+  /** ▶ on each line; left out for a saved conversation (no audio). */
+  onReplay?: (i: number, j: number, lines: VoiceLine[]) => void;
+  /** The list's height: the live session's (the default) or a page's. */
+  className?: string;
+  /** Keep the newest entry in view (a live session); false reads from the top. */
+  follow?: boolean;
+}) {
+  const olRef = useRef<HTMLOListElement | null>(null);
+  const following = useRef(follow);
+  // Where our own last scroll left the list: a scroll event landing there is
+  // ours, not the learner's, and must not stop the following.
+  const ownTop = useRef<number | null>(null);
+  const scrollTo = (el: HTMLElement, top: number) => {
+    el.scrollTop = top;
+    ownTop.current = el.scrollTop;
+  };
+  const onScroll = () => {
+    const el = olRef.current;
+    if (!el) return;
+    if (ownTop.current != null && Math.abs(el.scrollTop - ownTop.current) < 2) return;
+    ownTop.current = null;
+    following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+  };
+  const count = entries.length;
+  useLayoutEffect(() => {
+    const el = olRef.current;
+    if (!el) return;
+    // The learner's own message always comes into view: they just sent it.
+    if (follow && entries[count - 1]?.role === "learner") following.current = true;
+    if (following.current) scrollTo(el, el.scrollHeight);
+    // Only a new entry moves the list, not a re-render of the same ones.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [count]);
+  // A turn that landed while Go was hidden couldn't scroll a list with no
+  // size: when the list is shown again, catch up if following.
+  useEffect(() => {
+    const el = olRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let height = el.clientHeight;
+    const ro = new ResizeObserver(() => {
+      const was = height;
+      height = el.clientHeight;
+      if (was === 0 && height > 0 && following.current) {
+        el.scrollTop = el.scrollHeight;
+        ownTop.current = el.scrollTop;
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    const el = olRef.current;
+    if (!el || !playing || !following.current) return;
+    const row = el.querySelector<HTMLElement>(`[data-line="${playing}"]`);
+    if (!row) return;
+    const box = el.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    const pad = 8;
+    if (r.top < box.top + pad || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - pad);
+    else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
+  }, [playing]);
+
+  // Asking to hear a line is asking to follow it. Stable, for the rows' memo.
+  const replayRef = useRef(onReplay);
+  useEffect(() => {
+    replayRef.current = onReplay;
+  });
+  const replayLine = useCallback((i: number, j: number, lines: VoiceLine[]) => {
+    following.current = true;
+    replayRef.current?.(i, j, lines);
+  }, []);
+  const canReplay = !!onReplay;
+
+  // Per row, the glosses found in its target-language text. Glosses only
+  // grow during a session (the first wording of a term wins), so a row
+  // tests just the ones added since it last looked, and keeps its list (the
+  // same array) when none of them is in it. A new target locale starts over
+  // (case folding is locale-specific), as the translations cache does.
+  const glossCache = useRef(new Map<number, { m: VoiceHistoryItem; first: VoiceGloss | undefined; seen: number; list: VoiceGloss[]; locale: string | null }>());
+  const rowGlosses = (m: VoiceHistoryItem, i: number): VoiceGloss[] => {
+    if (m.role !== "master") return NO_GLOSSES;
+    let c = glossCache.current.get(i);
+    if (!c || c.m !== m || c.first !== glosses[0] || c.seen > glosses.length || c.locale !== locale) c = { m, first: glosses[0], seen: 0, list: NO_GLOSSES, locale };
+    if (c.seen < glosses.length) {
+      const texts = m.lines.flatMap((l) => (l.segments ?? []).filter((g) => g.lang === "target").map((g) => g.text.normalize("NFC")));
+      const hays = texts.map((t) => haystack(t, locale ?? undefined));
+      const found = glosses.slice(c.seen).filter((g) => texts.some((t, k) => mightMatch(hays[k], g, locale ?? undefined) && layout(t, [g], locale ?? undefined).length > 0));
+      c = { ...c, seen: glosses.length, list: found.length ? [...c.list, ...found] : c.list };
+    }
+    glossCache.current.set(i, c);
+    return c.list;
+  };
+  // Per row, its lines' translations, kept the same array while every
+  // line's translation reads the same.
+  const trCache = useRef(new Map<number, { key: string; row: LineTranslation[] }>());
+  const rowTranslations = (i: number): LineTranslation[] => {
+    const row = translations[i] ?? NO_TRANSLATIONS;
+    const key = row.map((t) => (t ? `${t.whole ? 1 : 0}\u0001${t.gloss.term}\u0001${t.gloss.meaning}` : "")).join("\u0002");
+    const c = trCache.current.get(i);
+    if (c && c.key === key) return c.row;
+    trCache.current.set(i, { key, row });
+    return row;
+  };
+
+  return (
+<ol ref={olRef} onScroll={onScroll} className={`flex min-w-0 flex-1 flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3 ${className ?? "max-h-[min(28rem,calc(100dvh-22rem))] min-h-48 lg:max-h-[max(28rem,calc(100dvh-26rem))]"}`} aria-label="Session transcript" data-testid="voice-transcript">
+  {entries.map((m, i) => {
+    const mine = (at: string | null | undefined) => !!at && at.startsWith(`${i}:`);
+    const jumpTo = m.role === "learner" ? jumpTarget(m.text) : null;
+    return (
+      <TranscriptRow
+        key={i}
+        m={m}
+        i={i}
+        jumpTitle={jumpTo != null ? planTitle(plan, jumpTo) : null}
+        playing={mine(playing) ? playing : null}
+        picked={mine(picked?.at) ? picked : null}
+        translations={rowTranslations(i)}
+        glosses={rowGlosses(m, i)}
+        locale={locale}
+        trLabel={trLabel}
+        showTr={showTr}
+        onPick={onPick}
+        onClosePick={onClosePick}
+        onReplay={canReplay ? replayLine : undefined}
+      />
+    );
+  })}
+</ol>
+  );
+});
+
+const NO_GLOSSES: VoiceGloss[] = [];
+const NO_TRANSLATIONS: LineTranslation[] = [];
+
+/** One entry of the transcript: the learner's message, or a turn of the
+ *  dojo master's lines. */
+const TranscriptRow = memo(function TranscriptRow({
+  m,
+  i,
+  jumpTitle,
+  playing,
+  picked,
+  translations,
+  glosses,
+  locale,
+  trLabel,
+  showTr,
+  onPick,
+  onClosePick,
+  onReplay,
+}: {
+  m: VoiceHistoryItem;
+  i: number;
+  /** The part a "[jump]" message went to, by its title. */
+  jumpTitle: string | null;
+  /** The line playing, when it's one of this entry's. */
+  playing: string | null;
+  /** The definition open, when it's under one of this entry's lines. */
+  picked: { at: string; gloss: VoiceGloss } | null;
+  translations: LineTranslation[];
+  glosses: VoiceGloss[];
+  locale: string | null;
+  trLabel: string;
+  showTr: boolean;
+  onPick: (at: string, gloss: VoiceGloss) => void;
+  onClosePick: (refocus?: boolean) => void;
+  onReplay?: (i: number, j: number, lines: VoiceLine[]) => void;
+}) {
+  if (m.role === "learner") {
+    return (
+      <li className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
+        {CONTROL_LABEL[m.text] ? (
+          <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
+        ) : jumpTitle != null ? (
+          <span className="text-fg-3 italic">Jumped to {jumpTitle}</span>
+        ) : directText(m.text) != null ? (
+          <>
+            <span className="text-fg-3 italic">To the dojo master: </span>
+            {directText(m.text)}
+          </>
+        ) : (
+          m.text
+        )}
+      </li>
+    );
+  }
+  return (
+      <li className="flex flex-col gap-1">
+        {m.lines.map((l, j) => (
+          <Fragment key={j}>
+          <div data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
+            <SpeakerCritter speaker={l.speaker} size={30} />
+            <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
+            <span className="min-w-0 max-w-[72ch] flex-1 text-fg break-words">
+              {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
+                <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
+                  {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
+                  {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
+                </span>
+              ))}
+            </span>
+            {/* A fixed slot for the translate button, so every line's ▶
+                sits in the same column whether it has one or not; none at
+                all while no line has a translation. */}
+            {showTr && (
+            <span className="flex w-7 shrink-0 justify-center">
+            {(() => {
+              // The line's translation: every glossed sentence (or
+              // phrase that isn't a button) in it, one tap, and the
+              // keyboard's way to them.
+              const tr = translations[j];
+              if (!tr) return null;
+              const { gloss, whole } = tr;
+              const what = whole ? "this line" : "this phrase";
+              return (
+                <button type="button" className="-my-0.5 grid min-h-6 min-w-6 place-items-center rounded px-0.5 text-xs text-fg-3 hover:text-fg" aria-label={`${trLabel}: translate ${what}`} title={`Translate ${what}`} aria-pressed={picked?.at === `${i}:${j}` && picked.gloss.term === gloss.term} onClick={() => onPick(`${i}:${j}`, gloss)}>
+                  {trLabel}
+                </button>
+              );
+            })()}
+            </span>
+            )}
+            {/* A 24px target (WCAG 2.5.8) around the small ▶. */}
+            {onReplay && (
+            <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:bg-raised hover:text-fg" aria-label="Replay line" title="Replay" onClick={() => onReplay(i, j, m.lines)}>
+              ▶
+            </button>
+            )}
+          </div>
+          {/* The definition under the line, the row's full width on a phone
+              (under the text column from sm up), and after the line's
+              controls in the DOM, so Tab goes opener → card. Escape or ×
+              from the keyboard closes it and puts focus back on its opener. */}
+          {picked?.at === `${i}:${j}` && (
+            <div
+              className="mx-2 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg sm:ml-[8.5rem] sm:max-w-[72ch]"
+              role="status"
+              data-testid="voice-gloss"
+            >
+              <span className="min-w-0 flex-1 break-words">
+                <span className="font-medium text-accent" lang={locale ?? undefined}>{picked.gloss.term}</span>
+                <span className="text-fg-3"> — </span>
+                {picked.gloss.meaning}
+              </span>
+              <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={(e) => onClosePick(e.detail === 0)}>
+                ×
+              </button>
+            </div>
+          )}
+          </Fragment>
+        ))}
+      </li>
+  );
+});
+

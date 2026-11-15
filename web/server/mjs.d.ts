@@ -280,4 +280,41 @@ declare module "*/scripts/db/migrations.mjs" {
 }
 
 // Everything else: untyped.
+declare module "*/scripts/plan.mjs" {
+  /** A pack's `overrides.minutes` as a budget: null is no limit. */
+  export function readMinutes(v: unknown): { minutes: number | null; invalid: boolean; rounded: boolean };
+}
+
+declare module "*/scripts/conversations.mjs" {
+  type VoiceHistoryItem = import("../shared/wire.ts").VoiceHistoryItem;
+  type PackInput = import("../shared/wire.ts").PackInput;
+  /** A turn row's transcript columns (scripts/db/schema.ts turns). */
+  export interface TurnColumns {
+    role: "learner" | "master";
+    text: string | null;
+    lines: import("../shared/wire.ts").VoiceLine[] | null;
+    glosses: import("../shared/wire.ts").VoiceGloss[] | null;
+    choices: string[] | null;
+    stage: string | null;
+    castNotes: import("../shared/wire.ts").VoiceCastNote[] | null;
+  }
+  export const IDLE_END_MS: number;
+  export const CONVERSATION_ID_RE: RegExp;
+  export const PAGE_SIZE: number;
+  export const MAX_PAGE: number;
+  export const TURN_PAGE: number;
+  export const MAX_TURN_PAGE: number;
+  export function turnKey(t: { role: string; text?: string | null; lines?: { text: string }[] | null }): string;
+  export function rowFromItem(item: VoiceHistoryItem): TurnColumns;
+  export function itemFromRow(row: TurnColumns): VoiceHistoryItem;
+  export function planTurnWrite(o: {
+    stored: { role: string; text?: string | null; lines?: { text: string }[] | null }[];
+    screen: VoiceHistoryItem[];
+    message: string;
+    master: VoiceHistoryItem & { durationMs?: number | null; costUsd?: number | null };
+  }): { keep: number; insert: (TurnColumns & { idx: number; durationMs?: number | null; costUsd?: number | null })[] };
+  export function conversationTitle(o: { title?: unknown; pack?: Partial<PackInput> | null; scenarioTitle?: string | null }): string;
+  export function readPage(params: URLSearchParams, o: { size: number; max: number; key?: string }): { limit: number; start: number };
+}
+
 declare module "*.mjs";
