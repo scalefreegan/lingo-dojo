@@ -262,14 +262,18 @@ export interface PackRevision {
   pack: Pack;
 }
 
-/** GET /api/pack-revisions?id=<pack id> — a live pack's revisions, newest
- *  first (renames and moves included: they are the same pack). */
+/** GET /api/pack-revisions?id=<pack id>[&offset=] (the live pack there,
+ *  else the most recently deleted one) or ?revision=<revision id> (the pack
+ *  that revision belongs to) — its revisions, newest first, 100 a page
+ *  (renames and moves included: they are the same pack). `next` is the
+ *  offset of the next page, null after the last. */
 export interface PackRevisionsReply {
   revisions: PackRevision[];
+  next: number | null;
 }
 
-/** A soft-deleted pack: `revision` is its delete, whose restore brings it
- *  back where it was. */
+/** A soft-deleted pack: `revision` is its delete, what
+ *  POST /api/pack-revisions/:revision/undelete takes. */
 export interface DeletedPack {
   revision: string;
   /** ISO timestamp. */
@@ -277,15 +281,19 @@ export interface DeletedPack {
   pack: Pack;
 }
 
-/** GET /api/pack-revisions/deleted — the most recently deleted first. */
+/** GET /api/pack-revisions/deleted[?offset=] — the most recently deleted
+ *  first, 50 a page; `next` as in PackRevisionsReply. */
 export interface DeletedPacksReply {
   packs: DeletedPack[];
+  next: number | null;
 }
 
-/** POST /api/pack-revisions/:revision/restore — the pack with that
- *  revision's content: a live pack keeps its id; a deleted one comes back at
- *  the id it had (409 when a live pack has taken it). The restore is itself
- *  a revision. */
+/** POST /api/pack-revisions/:revision/restore — a live pack takes that
+ *  revision's content and keeps its id (409 when the pack is deleted:
+ *  undelete it first). POST /api/pack-revisions/:revision/undelete — the
+ *  deleted pack that revision belongs to comes back as it was deleted, at
+ *  the id it had (409 when it is not deleted, or a live pack has taken the
+ *  id). Either is itself a `restore` revision. */
 export type PackRestoreReply = PackReply;
 
 /* ------------------------------- assembly -------------------------------- */

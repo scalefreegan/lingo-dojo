@@ -7,11 +7,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { loadPackFiles } from "../content.mjs";
 import { createFirstAdmin, createLearner, createUser, disableUser } from "../db/accounts.ts";
 import { formatImportReport, importFilePacks } from "../db/import.ts";
-import { deletePack, importPacks, listDeleted, listPacks } from "../db/packs.ts";
+import { deletePack, importPacks, listDeleted, listPacks, movePack, renamePack } from "../db/packs.ts";
 import { packRevisions, packs } from "../db/schema.ts";
 import { copyFixture, write } from "./helpers.mjs";
 import { ADULT, KID } from "./http-session.mjs";
@@ -54,6 +54,7 @@ test("import: both modes to the first admin's learners, keeping folder, slug, ti
     imported: ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"],
     present: [],
     invalid: ["Bad Name/2026-10-22-x"],
+    failed: [],
     folders: ["empty", "oaxaca"],
   });
   assert.equal(adult.unreadable.length, 1);
@@ -76,7 +77,7 @@ test("import: both modes to the first admin's learners, keeping folder, slug, ti
     "  + oaxaca/2026-10-20-mezcal",
     "  + folder empty",
     "  + folder oaxaca",
-    "  ! Bad Name/2026-10-22-x: not a valid pack id, or no title; skipped",
+    "  ! Bad Name/2026-10-22-x: not a valid pack id, no title, or a NUL character; skipped",
     `  ! ${adult.unreadable[0].file}: ${adult.unreadable[0].message}; skipped`,
     "kids (content/kids/packs/) → Pip: 1 imported, 0 already there, 0 folders added",
     "  + 2026-10-20-farm-first",
@@ -93,7 +94,7 @@ test("import: a re-run adds nothing, and a pack deleted in the app stays deleted
 
   const again = await importFilePacks(db, { files: library() });
   assert.deepEqual(again.modes[0].result, {
-    imported: [], present: ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"], invalid: ["Bad Name/2026-10-22-x"], folders: [],
+    imported: [], present: ["2026-10-19-market-gentle", "oaxaca/2026-10-20-mezcal"], invalid: ["Bad Name/2026-10-22-x"], failed: [], folders: [],
   });
   assert.deepEqual(again.modes[1].result.present, ["2026-10-20-farm-first"]);
   assert.deepEqual(await db.select().from(packs), rowsAfterFirst, "nothing changed");
@@ -104,9 +105,72 @@ test("import: a re-run adds nothing, and a pack deleted in the app stays deleted
   assert.ok(third.modes[0].result.present.includes("2026-10-19-market-gentle"));
   assert.deepEqual(third.modes[0].result.imported, []);
   assert.deepEqual((await listPacks(db, sam.id)).packs.map((p) => p.id), ["oaxaca/2026-10-20-mezcal"]);
-  assert.deepEqual((await listDeleted(db, sam.id)).map((d) => d.pack.id), ["2026-10-19-market-gentle"]);
+  assert.deepEqual((await listDeleted(db, sam.id)).items.map((d) => d.pack.id), ["2026-10-19-market-gentle"]);
   assert.match(formatImportReport(third, TREES)[1], /0 imported, 2 already there, 0 folders added/);
   assert.ok(formatImportReport(third, TREES).includes("  = 2026-10-19-market-gentle (already there)"));
+});
+
+test("import: a re-run after the app renamed, moved and deleted the imported packs adds nothing back", async (t) => {
+  const db = await setup(t);
+  const robin = await createUser(db, { username: "robin", passwordHash: "x", isAdmin: true });
+  const sam = await createLearner(db, robin.id, ADULT);
+  const files = {
+    packs: [
+      { id: "2026-10-01-one", folder: "", title: "One" },
+      { id: "2026-10-02-two", folder: "", title: "Two" },
+      { id: "2026-10-03-three", folder: "", title: "Three" },
+    ],
+    folders: [],
+  };
+  assert.equal((await importPacks(db, sam.id, files)).imported.length, 3);
+  await renamePack(db, sam.id, "2026-10-01-one", "Uno");
+  await movePack(db, sam.id, "2026-10-02-two", "kept");
+  await deletePack(db, sam.id, "2026-10-03-three");
+  const before = (await listPacks(db, sam.id)).packs.map((p) => p.id);
+  assert.deepEqual(before, ["2026-10-01-uno", "kept/2026-10-02-two"]);
+  const again = await importPacks(db, sam.id, files);
+  assert.deepEqual(again.imported, []);
+  assert.deepEqual(again.present, ["2026-10-01-one", "2026-10-02-two", "2026-10-03-three"]);
+  assert.deepEqual((await listPacks(db, sam.id)).packs.map((p) => p.id), before);
+  assert.equal((await db.select().from(packs)).length, 3, "no new row");
+});
+
+test("import: a pack with a NUL is invalid and one the database refuses is failed; the rest still import, and a first run still succeeds", async (t) => {
+  const db = await setup(t);
+  // A stand-in for any database refusal of one pack (a constraint the seed breaks).
+  await db.execute(sql`alter table packs add constraint test_no_boom check (title <> 'Boom')`);
+  const files = {
+    packs: [
+      { id: "2026-10-01-ok", folder: "", title: "Fine" },
+      { id: "2026-10-02-nul", folder: "", title: "Has a \u0000 in it" },
+      { id: "2026-10-03-nul-key", folder: "", title: "Key", overrides: { "a\u0000": "x" } },
+      { id: "boomed/2026-10-04-boom", folder: "boomed", title: "Boom" },
+      { id: "2026-10-05-after", folder: "", title: "After" },
+    ],
+    folders: [],
+  };
+  const errors = [];
+  t.mock.method(console, "error", (...args) => errors.push(args.join(" ")));
+  const user = await createFirstAdmin(db, { username: "robin", passwordHash: "x" }, {
+    learners: [{ ...ADULT }], voice: null, model: null, messages: [], packs: { adult: files },
+  });
+  assert.ok(user, "the admin was created");
+  const { listLearners } = await import("../db/accounts.ts");
+  const [sam] = await listLearners(db, user.id);
+  const listed = await listPacks(db, sam.id);
+  assert.deepEqual(listed.packs.map((p) => p.id), ["2026-10-01-ok", "2026-10-05-after"]);
+  assert.deepEqual(listed.folders, [], "the refused pack left no folder");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /boomed\/2026-10-04-boom skipped/);
+
+  const r = await importPacks(db, sam.id, files);
+  assert.deepEqual(r.invalid, ["2026-10-02-nul", "2026-10-03-nul-key"]);
+  assert.deepEqual(r.failed, ["boomed/2026-10-04-boom"]);
+  assert.deepEqual(r.present, ["2026-10-01-ok", "2026-10-05-after"]);
+  const report = { user: { id: user.id, username: "robin", isAdmin: true }, modes: [{ mode: "adult", learner: { id: sam.id, name: "Sam" }, result: r, unreadable: [] }] };
+  const lines = formatImportReport(report, TREES);
+  assert.match(lines[1], /2 invalid, 1 failed/);
+  assert.ok(lines.includes("  ! boomed/2026-10-04-boom: the database refused it (logged above); skipped"));
 });
 
 test("import: a mode with no live learner is skipped and said so; nothing is created", async (t) => {
@@ -131,6 +195,11 @@ test("import: --user picks the account (admin or not) and its first learner of e
   assert.equal(report.modes[0].learner.id, first.id);
   assert.equal(formatImportReport(report, TREES)[0], "packs → lee");
   await assert.rejects(importFilePacks(db, { username: "nobody", files: library() }), /no account named nobody/);
+  // A disabled account is refused by name, not silently filled.
+  await disableUser(db, "lee");
+  const rowsBefore = (await db.select().from(packs)).length;
+  await assert.rejects(importFilePacks(db, { username: "lee", files: library() }), /account lee is disabled; `npm run user -- enable lee` first/);
+  assert.equal((await db.select().from(packs)).length, rowsBefore);
 });
 
 test("importPacks into a learner that already has a live pack at an id skips it, leaving that pack as it is", async (t) => {

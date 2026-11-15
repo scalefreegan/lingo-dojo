@@ -63,7 +63,9 @@ deletes instead of git commits (`scripts/db/packs.ts`).
   their packs; the running app never reads or writes them after that.
   `npm run db:import` copies pack files added later (idempotent). Saved packs
   are per learner in the database: no pack route writes YAML or commits;
-  undo is `pack_revisions` (`/api/pack-revisions`). Exports go to `exports/`
+  undo is `pack_revisions` (`/api/pack-revisions`). `loadContent` no longer
+  reads pack files; `loadPackFiles` does (import, first run, export CLI).
+  Owner scoping for packs lives only in `scripts/db/packs.ts`. Exports go to `exports/`
   (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.

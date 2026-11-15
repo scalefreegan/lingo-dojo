@@ -8,7 +8,7 @@ import type {
 import { updateLearner, type Learner, type LearnerPatch } from "../../scripts/db/accounts.ts";
 import {
   PackError, createFolder, deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, parsePackId, renamePack,
-  restoreRevision, savePack,
+  restoreRevision, savePack, undeletePack,
 } from "../../scripts/db/packs.ts";
 import { STALE_LEARNER, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -94,7 +94,7 @@ const db = () => rawDb();
 
 /** PackError codes (scripts/db/packs.ts) → the status a client can act on.
  *  Anything else is a 500, like any thrown error. */
-const STATUS_BY_CODE: Record<PackError["code"], number> = { EINVAL: 400, ENOENT: 404, EEXIST: 409, ENOTEMPTY: 409 };
+const STATUS_BY_CODE: Record<PackError["code"], number> = { EINVAL: 400, ENOENT: 404, EEXIST: 409, ENOTEMPTY: 409, ESTATE: 409 };
 
 async function packOp<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -233,29 +233,35 @@ export async function handleFolders(req: IncomingMessage, res: ServerResponse, c
   sendJson(res, 200, { ok: true, folders } satisfies FolderDeleteReply);
 }
 
-/** The undo surface: a pack's revisions, the deleted packs, and restoring
- *  either (restoring a deleted pack's delete revision undeletes it). */
+/** The undo surface: a pack's revisions and the deleted packs (paged), a
+ *  revision's content restored onto its live pack, and a deleted pack
+ *  undeleted. Restore and undelete are separate actions, so a stale click
+ *  (the pack came back meanwhile) is a 409, never a silent content change. */
 export async function handlePackRevisions(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   learnerMode(req, ctx);
   const learnerId = ctx.learner.id;
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const id = new URL(req.url ?? "/", "http://localhost").searchParams.get("id");
-    if (!id) throw new HttpError(400, "name the pack: ?id=<pack id>");
-    const revisions = await packOp(() => listRevisions(db(), learnerId, id));
-    sendJson(res, 200, { revisions } satisfies PackRevisionsReply);
+    const q = new URL(req.url ?? "/", "http://localhost").searchParams;
+    const id = q.get("id") ?? undefined;
+    const revision = q.get("revision") ?? undefined;
+    if (!id === !revision) throw new HttpError(400, "name the pack: ?id=<pack id> or ?revision=<revision id>");
+    const page = await packOp(() => listRevisions(db(), learnerId, { id, revision }, { offset: q.get("offset") ?? undefined }));
+    sendJson(res, 200, { revisions: page.items, next: page.next } satisfies PackRevisionsReply);
     return;
   }
   if (seg === "deleted") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    sendJson(res, 200, { packs: await listDeleted(db(), learnerId) } satisfies DeletedPacksReply);
+    const offset = new URL(req.url ?? "/", "http://localhost").searchParams.get("offset") ?? undefined;
+    const page = await packOp(() => listDeleted(db(), learnerId, { offset }));
+    sendJson(res, 200, { packs: page.items, next: page.next } satisfies DeletedPacksReply);
     return;
   }
-  const m = /^([^/]+)\/restore$/.exec(seg);
+  const m = /^([^/]+)\/(restore|undelete)$/.exec(seg);
   if (!m) return sendJson(res, 404, { error: "no such route" });
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
-  const pack = await packOp(() => restoreRevision(db(), learnerId, m[1]));
+  const pack = await packOp(() => (m[2] === "undelete" ? undeletePack : restoreRevision)(db(), learnerId, m[1]));
   sendJson(res, 200, { pack } satisfies PackRestoreReply);
 }
 

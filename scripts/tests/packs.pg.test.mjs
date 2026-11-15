@@ -10,6 +10,8 @@
 //   - Renames of different packs to one title: one gets the id, the rest 409.
 //   - A folder delete against a save into that folder: the pack is never
 //     left in a folder that is gone.
+//   - Two undeletes of one pack, and an undelete against a restore: one
+//     wins, the other is ESTATE, and the pack is never changed twice.
 //
 //   LINGO_TEST_PG_URL=postgres://localhost/some_scratch_db node --test scripts/tests/packs.pg.test.mjs
 
@@ -21,7 +23,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { applyMigrations } from "../db/migrations.mjs";
 import * as schema from "../db/schema.ts";
 import { createLearner, createUser } from "../db/accounts.ts";
-import { deleteFolder, deletePack, listPacks, movePack, renamePack, savePack } from "../db/packs.ts";
+import { deleteFolder, deletePack, getPack, listDeleted, listPacks, listRevisions, movePack, renamePack, restoreRevision, savePack, undeletePack } from "../db/packs.ts";
 import { ADULT } from "./http-session.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
@@ -106,6 +108,45 @@ test("a folder delete and a save into it at once, repeated: the pack's folder al
       if (del.status === "rejected") assert.equal(del.reason.code, "ENOTEMPTY");
       const { rows } = await pool.query("select 1 from pack_folders where learner_id = $1 and name = $2", [learnerId, folder]);
       assert.equal(rows.length, 1, `round ${round}: the folder row is there for the pack in it`);
+    }
+  });
+});
+
+test("two undeletes of one pack at once, repeated: one brings it back, the other is ESTATE", { skip }, async () => {
+  await withLearner(async (pool, db, learnerId) => {
+    for (let round = 0; round < 10; round++) {
+      const id = `f${round}/2026-10-03-u${round}`;
+      await savePack(db, learnerId, id, { title: "U", notes: "as deleted" });
+      await deletePack(db, learnerId, id);
+      await deleteFolder(db, learnerId, `f${round}`);
+      const [d] = (await listDeleted(db, learnerId)).items.filter((x) => x.pack.id === id);
+      const results = await settle([undeletePack(db, learnerId, d.revision), undeletePack(db, learnerId, d.revision)]);
+      assert.equal(results.filter((r) => r.status === "fulfilled").length, 1, `round ${round}`);
+      assert.deepEqual(codes(results), ["ESTATE"]);
+      const { rows } = await pool.query("select count(*)::int as n from pack_revisions where action = 'restore' and snapshot->>'id' = $1", [id]);
+      assert.equal(rows[0].n, 1, "one restore recorded");
+      assert.ok((await listPacks(db, learnerId)).folders.includes(`f${round}`), "its folder is back");
+    }
+  });
+});
+
+test("an undelete and a restore of one pack at once, repeated: the restore never lands on a deleted pack", { skip }, async () => {
+  await withLearner(async (_pool, db, learnerId) => {
+    for (let round = 0; round < 10; round++) {
+      const id = `2026-10-04-v${round}`;
+      await savePack(db, learnerId, id, { title: "V", notes: "v1" });
+      const [v1] = (await listRevisions(db, learnerId, { id })).items;
+      await savePack(db, learnerId, id, { title: "V", notes: "v2" });
+      await deletePack(db, learnerId, id);
+      const [d] = (await listDeleted(db, learnerId)).items.filter((x) => x.pack.id === id);
+      const [un, re] = await settle([undeletePack(db, learnerId, d.revision), restoreRevision(db, learnerId, v1.revision)]);
+      assert.equal(un.status, "fulfilled", `round ${round}: the undelete always succeeds`);
+      const notes = (await getPack(db, learnerId, id)).notes;
+      if (re.status === "fulfilled") assert.equal(notes, "v1", "restore after the undelete");
+      else {
+        assert.equal(re.reason.code, "ESTATE", "restore before the undelete is refused");
+        assert.equal(notes, "v2");
+      }
     }
   });
 });

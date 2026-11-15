@@ -11,21 +11,29 @@
 // wire shape is unchanged: a pack's id is `<slug>` or `<folder>/<slug>`, the
 // path its file had, so the Library and Scene tabs did not change.
 //
-// Concurrency. Each write runs in one transaction and locks the live row it
+// Owner scoping lives here and only here: every query goes through
+// forLearner(tx, learnerId) (scripts/db/owned.ts), on the transaction it
+// runs in. Whatever comes to own packs later (a per-learner language
+// profile is planned), this file is the one place that changes.
+//
+// Concurrency. Each write runs in one transaction and locks the row it
 // changes (SELECT … FOR UPDATE), so two writes to one pack queue and the
 // second sees the first's result: a delete racing a move finds the pack
-// gone from its old id (404), never deletes it at the new one. The partial
-// unique index (learner, folder, slug) WHERE deleted_at IS NULL is the last
-// word on ids: two creates of one id end as a create and an update (PUT is
-// "write this pack", as the file was), and a move or rename into a taken id
-// is a 409 whether the clash was there before or arrived meanwhile.
-// Folders: a write into a folder takes that folder's row lock first (an
-// upsert), and a folder delete locks the row before it counts the packs in
-// it, so a pack can't land in a folder as it is deleted. The folder list is
-// also the union with the live packs' folders, so a pack is never hidden.
+// gone from its old id (404), never deletes it at the new one, and of two
+// undeletes of one pack the second finds it live (409). The partial unique
+// index (learner, folder, slug) WHERE deleted_at IS NULL is the last word on
+// ids: two creates of one id end as a create and an update (PUT is "write
+// this pack", as the file was), and a move or rename into a taken id is a
+// 409 whether the clash was there before or arrived meanwhile. Folders: a
+// write into a folder takes that folder's row lock first (an upsert), and a
+// folder delete locks the row before it counts the packs in it, so a pack
+// can't land in a folder as it is deleted. The folder list is also the union
+// with the live packs' folders, so a pack is never hidden.
 //
-// Errors carry an errno-style `code` (EINVAL, ENOENT, EEXIST, ENOTEMPTY), as
-// the file functions did, so the routes map them to 400/404/409.
+// Errors carry an errno-style `code` (EINVAL, ENOENT, EEXIST, ENOTEMPTY, and
+// ESTATE for "the pack is not in the state this action needs": undeleting a
+// live pack, restoring a revision onto a deleted one), so the routes map
+// them to 400/404/409.
 //
 // Erasable TypeScript only, like schema.ts: the CLI and the tests import it
 // as is.
@@ -43,7 +51,7 @@ type PackRow = typeof packs.$inferSelect;
 type Content = Pick<PackRow, "title" | "created" | "scenario" | "quickScenario" | "units" | "overrides" | "notes">;
 
 export class PackError extends Error {
-  code: "EINVAL" | "ENOENT" | "EEXIST" | "ENOTEMPTY";
+  code: "EINVAL" | "ENOENT" | "EEXIST" | "ENOTEMPTY" | "ESTATE";
   constructor(code: PackError["code"], message: string) {
     super(message);
     this.code = code;
@@ -85,6 +93,16 @@ function checkFolder(name: unknown, what = "folder name"): string {
   return name;
 }
 
+/** A NUL anywhere in a value, keys included. Postgres refuses it in text
+ *  (22021) and in jsonb strings, so it is a 400 here rather than a 500 there
+ *  (and an import skips that pack rather than failing a first run). */
+function hasNul(v: unknown): boolean {
+  if (typeof v === "string") return v.includes("\u0000");
+  if (Array.isArray(v)) return v.some(hasNul);
+  if (v && typeof v === "object") return Object.entries(v).some(([k, x]) => k.includes("\u0000") || hasNul(x));
+  return false;
+}
+
 /** A pack body (JSON from the UI, or a seed file) → the content columns. The
  *  title is required; everything else is coerced the way the loader always
  *  did (normalizePack). Keys outside the contract are not kept: a row has
@@ -93,13 +111,17 @@ function contentOf(raw: unknown): Content {
   const p = normalizePack(raw);
   const title = p.title.trim();
   if (!title) throw new PackError("EINVAL", "a pack needs a title");
-  return {
+  const content: Content = {
     title, created: p.created || new Date().toISOString(), scenario: p.scenario, quickScenario: p.quick_scenario, units: p.units,
     overrides: p.overrides as Record<string, unknown>, notes: p.notes,
   };
+  if (hasNul(content)) throw new PackError("EINVAL", "a pack can't contain a NUL character (\\u0000)");
+  return content;
 }
 
 const liveAt = (folder: string, slug: string): SQL => and(eq(packs.folder, folder), eq(packs.slug, slug), isNull(packs.deletedAt))!;
+/** The partial unique index: one live pack per (learner, folder, slug). */
+const LIVE_ID = { target: [packs.folder, packs.slug], targetWhere: sql`${packs.deletedAt} is null` };
 
 /** The live pack at an id, locked for the rest of the transaction. */
 async function lockLive(tx: Db, learnerId: string, folder: string, slug: string): Promise<PackRow | undefined> {
@@ -123,11 +145,36 @@ async function holdFolder(tx: Db, learnerId: string, name: string): Promise<void
  *  meanwhile) becomes an EEXIST with `clash` as the message. */
 async function inTx<T>(db: Db, clash: () => string, fn: (tx: Db) => Promise<T>): Promise<T> {
   try {
-    return await db.transaction((tx) => fn(tx as unknown as Db));
+    return await db.transaction((tx) => fn(tx));
   } catch (e) {
     if (isUniqueViolation(e)) throw new PackError("EEXIST", clash());
     throw e;
   }
+}
+
+async function revisionOf(tx: Db, learnerId: string, revisionId: unknown): Promise<typeof packRevisions.$inferSelect> {
+  if (typeof revisionId !== "string" || !UUID_RE.test(revisionId)) throw new PackError("ENOENT", "no such revision");
+  const rev = await forLearner(tx, learnerId).get(packRevisions, eq(packRevisions.id, revisionId));
+  if (!rev) throw new PackError("ENOENT", "no such revision");
+  return rev;
+}
+
+/** The pack a revision belongs to, not locked; ENOENT when the revision
+ *  isn't this learner's. */
+async function peekByRevision(tx: Db, learnerId: string, revisionId: unknown): Promise<PackRow> {
+  const rev = await revisionOf(tx, learnerId, revisionId);
+  const row = await forLearner(tx, learnerId).get(packs, eq(packs.id, rev.packId));
+  if (!row) throw new PackError("ENOENT", "no such revision");
+  return row;
+}
+
+/** The pack a revision belongs to, locked; ENOENT when the revision isn't
+ *  this learner's. */
+async function lockByRevision(tx: Db, learnerId: string, revisionId: unknown): Promise<{ rev: typeof packRevisions.$inferSelect; row: PackRow }> {
+  const rev = await revisionOf(tx, learnerId, revisionId);
+  const [row] = await tx.select().from(packs).where(forLearner(tx, learnerId).where(packs, eq(packs.id, rev.packId))).for("update");
+  if (!row) throw new PackError("ENOENT", "no such revision");
+  return { rev, row };
 }
 
 /* ---------------------------------- reads ---------------------------------- */
@@ -180,13 +227,7 @@ export async function savePack(db: Db, learnerId: string, id: string, body: unkn
         await record(tx, learnerId, updated, "update");
         return { pack: toPack(updated), created: false };
       }
-      // The owner is set by hand: the scope's insert can't say "nothing on
-      // conflict". It is the same learner id the scope uses.
-      const [inserted] = await tx
-        .insert(packs)
-        .values({ ...content, learnerId, folder, slug })
-        .onConflictDoNothing({ target: [packs.learnerId, packs.folder, packs.slug], where: sql`${packs.deletedAt} is null` })
-        .returning();
+      const [inserted] = await mine.insertOrIgnore(packs, { ...content, folder, slug }, LIVE_ID);
       if (inserted) {
         await record(tx, learnerId, inserted, "create");
         return { pack: toPack(inserted), created: true };
@@ -224,6 +265,7 @@ export async function movePack(db: Db, learnerId: string, id: string, folder: un
 export async function renamePack(db: Db, learnerId: string, id: string, title: unknown): Promise<Pack> {
   const from = parsePackId(id);
   if (typeof title !== "string" || !title.trim()) throw new PackError("EINVAL", "a pack needs a title");
+  if (hasNul(title)) throw new PackError("EINVAL", "a title can't contain a NUL character (\\u0000)");
   let target = id;
   return inTx(db, () => `a pack "${target}" already exists`, async (tx) => {
     const mine = forLearner(tx, learnerId);
@@ -238,18 +280,16 @@ export async function renamePack(db: Db, learnerId: string, id: string, title: u
   });
 }
 
-/** Soft delete: the row stays (listed by listDeleted, restorable) and its id
+/** Soft delete: the row stays (listed by listDeleted, undeletable) and its id
  *  is free for a new pack. False when there is no such live pack. */
 export async function deletePack(db: Db, learnerId: string, id: string): Promise<boolean> {
   const { folder, slug } = parsePackId(id);
   return db.transaction(async (tx) => {
-    const t = tx as unknown as Db;
-    const row = await lockLive(t, learnerId, folder, slug);
+    const row = await lockLive(tx, learnerId, folder, slug);
     if (!row) return false;
-    // The snapshot is the content that was deleted, so restoring the delete
-    // revision brings back exactly that.
-    const [gone] = await forLearner(t, learnerId).update(packs, { deletedAt: sql`now()`, updatedAt: sql`now()` }, eq(packs.id, row.id));
-    await record(t, learnerId, gone, "delete");
+    // The snapshot is the content that was deleted, which an undelete keeps.
+    const [gone] = await forLearner(tx, learnerId).update(packs, { deletedAt: sql`now()`, updatedAt: sql`now()` }, eq(packs.id, row.id));
+    await record(tx, learnerId, gone, "delete");
     return true;
   });
 }
@@ -260,11 +300,11 @@ export async function deletePack(db: Db, learnerId: string, id: string): Promise
 export async function createFolder(db: Db, learnerId: string, name: unknown): Promise<string[]> {
   const folder = checkFolder(name);
   await db.transaction(async (tx) => {
-    const t = tx as unknown as Db;
-    const [made] = await t.insert(packFolders).values({ learnerId, name: folder }).onConflictDoNothing().returning();
+    const mine = forLearner(tx, learnerId);
+    const [made] = await mine.insertOrIgnore(packFolders, { name: folder });
     if (!made) throw new PackError("EEXIST", `folder "${folder}" already exists`);
     // A folder that only existed through a pack in it already "existed".
-    if (await forLearner(t, learnerId).get(packs, and(eq(packs.folder, folder), isNull(packs.deletedAt))!)) {
+    if (await mine.get(packs, and(eq(packs.folder, folder), isNull(packs.deletedAt))!)) {
       throw new PackError("EEXIST", `folder "${folder}" already exists`);
     }
   });
@@ -273,18 +313,17 @@ export async function createFolder(db: Db, learnerId: string, name: unknown): Pr
 
 /** Delete a folder with no live packs in it (ENOTEMPTY otherwise: a pack is
  *  never deleted as a side effect). Deleted packs that were in it keep their
- *  folder; restoring one brings the folder back. False when there was no
+ *  folder; undeleting one brings the folder back. False when there was no
  *  such folder. */
 export async function deleteFolder(db: Db, learnerId: string, name: unknown): Promise<boolean> {
   const folder = checkFolder(name);
   return db.transaction(async (tx) => {
-    const t = tx as unknown as Db;
-    const mine = forLearner(t, learnerId);
+    const mine = forLearner(tx, learnerId);
     // Lock first, then count: a write into this folder holds the same lock
     // (holdFolder), so it either finished before (and is counted) or waits
     // and recreates the folder after.
-    const [row] = await t.select().from(packFolders).where(mine.where(packFolders, eq(packFolders.name, folder))).for("update");
-    const [{ n }] = await t
+    const [row] = await tx.select().from(packFolders).where(mine.where(packFolders, eq(packFolders.name, folder))).for("update");
+    const [{ n }] = await tx
       .select({ n: sql<number>`count(*)::int` })
       .from(packs)
       .where(mine.where(packs, and(eq(packs.folder, folder), isNull(packs.deletedAt))));
@@ -297,68 +336,135 @@ export async function deleteFolder(db: Db, learnerId: string, name: unknown): Pr
 
 /* ---------------------------------- undo ----------------------------------- */
 
-const REVISION_LIMIT = 100;
-const DELETED_LIMIT = 50;
+export const REVISION_PAGE = 100;
+export const DELETED_PAGE = 50;
+
+/** A page: the items and the offset of the next page (null after the last). */
+export interface Page<T> {
+  items: T[];
+  next: number | null;
+}
+
+function offsetOf(v: unknown): number {
+  const n = typeof v === "string" ? Number(v) : v ?? 0;
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 0) throw new PackError("EINVAL", "offset must be a whole number ≥ 0");
+  return n;
+}
 
 function toRevision(r: typeof packRevisions.$inferSelect): PackRevision {
   return { revision: r.id, action: r.action, at: r.at.toISOString(), pack: r.snapshot as unknown as Pack };
 }
 
-/** A live pack's revisions, newest first (the newest 100). ENOENT when there
- *  is no such pack. */
-export async function listRevisions(db: Db, learnerId: string, id: string): Promise<PackRevision[]> {
-  const { folder, slug } = parsePackId(id);
+/**
+ * A pack's revisions, newest first, a page at a time (renames and moves
+ * keep the history: they are the same row). The pack is named by `id` — the
+ * live pack there, else the most recently deleted one that had it — or by
+ * `revision`, any revision of it (which reaches an older deleted pack at an
+ * id that has been reused since). ENOENT when there is no such pack.
+ */
+export async function listRevisions(
+  db: Db,
+  learnerId: string,
+  which: { id?: string; revision?: string },
+  page: { offset?: unknown; limit?: number } = {},
+): Promise<Page<PackRevision>> {
   const mine = forLearner(db, learnerId);
-  const row = await mine.get(packs, liveAt(folder, slug));
-  if (!row) throw new PackError("ENOENT", `no pack "${id}"`);
-  const revs = await mine.list(packRevisions, eq(packRevisions.packId, row.id), { orderBy: desc(packRevisions.seq), limit: REVISION_LIMIT });
-  return revs.map(toRevision);
+  let packId: string | undefined;
+  if (which.revision !== undefined) {
+    if (!UUID_RE.test(which.revision)) throw new PackError("ENOENT", "no such revision");
+    packId = (await mine.get(packRevisions, eq(packRevisions.id, which.revision)))?.packId;
+    if (!packId) throw new PackError("ENOENT", "no such revision");
+  } else {
+    const { folder, slug } = parsePackId(which.id);
+    const [row] = await mine.list(packs, and(eq(packs.folder, folder), eq(packs.slug, slug)), {
+      // The live row first (deleted_at null sorts first descending), then the newest delete.
+      orderBy: [sql`${packs.deletedAt} desc nulls first`],
+      limit: 1,
+    });
+    if (!row) throw new PackError("ENOENT", `no pack "${which.id}"`);
+    packId = row.id;
+  }
+  const offset = offsetOf(page.offset);
+  const limit = page.limit ?? REVISION_PAGE;
+  const revs = await db
+    .select()
+    .from(packRevisions)
+    .where(mine.where(packRevisions, eq(packRevisions.packId, packId)))
+    .orderBy(desc(packRevisions.seq))
+    .limit(limit + 1)
+    .offset(offset);
+  return { items: revs.slice(0, limit).map(toRevision), next: revs.length > limit ? offset + limit : null };
 }
 
-/** The learner's soft-deleted packs, most recently deleted first (the newest
- *  50), each with the revision that deleted it. */
-export async function listDeleted(db: Db, learnerId: string): Promise<DeletedPack[]> {
+/** The learner's soft-deleted packs, most recently deleted first, a page at
+ *  a time, each with the revision that deleted it (what undeletePack takes). */
+export async function listDeleted(db: Db, learnerId: string, page: { offset?: unknown; limit?: number } = {}): Promise<Page<DeletedPack>> {
   const mine = forLearner(db, learnerId);
-  const rows = await mine.list(packs, isNotNull(packs.deletedAt), { orderBy: [desc(packs.deletedAt), asc(packs.slug)], limit: DELETED_LIMIT });
-  if (!rows.length) return [];
+  const offset = offsetOf(page.offset);
+  const limit = page.limit ?? DELETED_PAGE;
+  const rows = await db
+    .select()
+    .from(packs)
+    .where(mine.where(packs, isNotNull(packs.deletedAt)))
+    .orderBy(desc(packs.deletedAt), asc(packs.id))
+    .limit(limit + 1)
+    .offset(offset);
+  const next = rows.length > limit ? offset + limit : null;
+  const shown = rows.slice(0, limit);
+  if (!shown.length) return { items: [], next };
   const deletes = await mine.list(
     packRevisions,
-    and(inArray(packRevisions.packId, rows.map((r) => r.id)), eq(packRevisions.action, "delete")),
+    and(inArray(packRevisions.packId, shown.map((r) => r.id)), eq(packRevisions.action, "delete")),
     { orderBy: desc(packRevisions.seq) },
   );
   const latest = new Map<string, string>();
   for (const d of deletes) if (!latest.has(d.packId)) latest.set(d.packId, d.id);
-  // An imported row can't be deleted without a delete revision, so every
-  // row has one; a row without one is skipped rather than offered with no
-  // way to restore it.
-  return rows.filter((r) => latest.has(r.id)).map((r) => ({ revision: latest.get(r.id)!, deletedAt: r.deletedAt!.toISOString(), pack: toPack(r) }));
+  // Every deleted row has a delete revision (deletePack writes both); a row
+  // without one could not be undeleted, so it is not offered.
+  const items = shown.filter((r) => latest.has(r.id)).map((r) => ({ revision: latest.get(r.id)!, deletedAt: r.deletedAt!.toISOString(), pack: toPack(r) }));
+  return { items, next };
 }
 
 /**
- * Restore a revision: the pack takes that revision's content (title,
- * created, scenario, units, overrides, notes). A live pack keeps its id; a
- * deleted one comes back at the id it had, and its folder with it (EEXIST
- * when a live pack has taken that id since). The restore is a revision too,
- * so it can itself be undone. ENOENT for a revision that isn't this
- * learner's.
+ * Undelete: the deleted pack a revision belongs to comes back, as it was
+ * deleted, at the id it had, with its folder. ESTATE when it is not deleted
+ * (any more): a second click, or another device's stale list, must not
+ * touch a live pack. EEXIST when a live pack has taken the id since (move or
+ * rename it first). Recorded as a `restore` revision.
  */
-export async function restoreRevision(db: Db, learnerId: string, revisionId: unknown): Promise<Pack> {
-  if (typeof revisionId !== "string" || !UUID_RE.test(revisionId)) throw new PackError("ENOENT", "no such revision");
+export async function undeletePack(db: Db, learnerId: string, revisionId: unknown): Promise<Pack> {
   let target = "";
   return inTx(db, () => `a pack "${target}" already exists; rename or move it, then restore`, async (tx) => {
     const mine = forLearner(tx, learnerId);
-    const rev = await mine.get(packRevisions, eq(packRevisions.id, revisionId));
-    if (!rev) throw new PackError("ENOENT", "no such revision");
-    const [row] = await tx.select().from(packs).where(mine.where(packs, eq(packs.id, rev.packId))).for("update");
+    // The folder lock before the pack's, the order every write into a folder
+    // takes them in. A deleted row's folder can't change (only a live pack
+    // moves), so the unlocked peek names the right folder.
+    const peek = await peekByRevision(tx, learnerId, revisionId);
+    await holdFolder(tx, learnerId, peek.deletedAt ? peek.folder : "");
+    const { row } = await lockByRevision(tx, learnerId, revisionId);
     target = joinPackId(row.folder, row.slug);
-    const content = contentOf(rev.snapshot);
-    if (row.deletedAt) {
-      if (await mine.get(packs, liveAt(row.folder, row.slug))) {
-        throw new PackError("EEXIST", `a pack "${target}" already exists; rename or move it, then restore`);
-      }
-      await holdFolder(tx, learnerId, row.folder);
+    if (!row.deletedAt) throw new PackError("ESTATE", `"${target}" is not deleted (it was restored already)`);
+    if (await mine.get(packs, liveAt(row.folder, row.slug))) {
+      throw new PackError("EEXIST", `a pack "${target}" already exists; rename or move it, then restore`);
     }
-    const [restored] = await mine.update(packs, { ...content, deletedAt: null, updatedAt: sql`now()` }, eq(packs.id, row.id));
+    const [back] = await mine.update(packs, { deletedAt: null, updatedAt: sql`now()` }, eq(packs.id, row.id));
+    await record(tx, learnerId, back, "restore");
+    return toPack(back);
+  });
+}
+
+/**
+ * Restore a revision onto a live pack: it takes that revision's content
+ * (title, created, scenario, units, overrides, notes) and keeps its id. The
+ * restore is a revision too, so it can itself be undone. ESTATE when the
+ * pack is deleted (undeletePack is that action; this one never brings a
+ * pack back), ENOENT for a revision that isn't this learner's.
+ */
+export async function restoreRevision(db: Db, learnerId: string, revisionId: unknown): Promise<Pack> {
+  return db.transaction(async (tx) => {
+    const { rev, row } = await lockByRevision(tx, learnerId, revisionId);
+    if (row.deletedAt) throw new PackError("ESTATE", `"${joinPackId(row.folder, row.slug)}" is deleted; restore it from Recently deleted first`);
+    const [restored] = await forLearner(tx, learnerId).update(packs, { ...contentOf(rev.snapshot), updatedAt: sql`now()` }, eq(packs.id, row.id));
     await record(tx, learnerId, restored, "restore");
     return toPack(restored);
   });
@@ -376,11 +482,16 @@ export interface PackFiles {
 export interface ImportResult {
   /** Pack ids added. */
   imported: string[];
-  /** Pack ids skipped because the learner already has a pack there, live or
-   *  deleted (a deleted one is not brought back by a re-run). */
+  /** Pack ids skipped as imported before: the learner has a pack at that id
+   *  (live or deleted), or an `import` revision of it, wherever that pack
+   *  lives now (renamed, moved, deleted). */
   present: string[];
-  /** Ids that are not valid pack ids, or packs without a title: skipped. */
+  /** Ids that are not valid pack ids, or packs without a title or with a NUL
+   *  character: skipped. */
   invalid: string[];
+  /** Packs the database refused for another reason: skipped, the rest still
+   *  imported, the error logged. */
+  failed: string[];
   /** Folders added (folders that already existed are not listed). */
   folders: string[];
 }
@@ -388,23 +499,23 @@ export interface ImportResult {
 /**
  * Copy file packs into a learner's packs, keeping folder, slug, title and
  * created; every folder (an empty one included) becomes a folder row. Safe
- * to re-run: a pack is skipped when the learner has any row at its folder
- * and slug, deleted ones included, so a pack deleted in the app stays
- * deleted. An emptied folder deleted in the app does come back (a folder has
- * no deleted state); it is empty, so nothing else does. One transaction:
- * all or nothing. Each imported pack gets an `import` revision.
+ * to re-run: a pack is skipped when it was imported before (an `import`
+ * revision whose snapshot has its id, wherever the pack lives now) or the
+ * learner has any row at its folder and slug, deleted ones included, so a
+ * renamed, moved or deleted seed pack is never imported twice. An emptied
+ * folder deleted in the app does come back (a folder has no deleted state);
+ * it is empty, so nothing else does. Each pack is its own savepoint, so one
+ * bad pack is skipped (and logged) without undoing the others or poisoning
+ * the caller's transaction: a first run is never blocked by a seed file.
  */
 export async function importPacks(db: Db, learnerId: string, files: PackFiles): Promise<ImportResult> {
-  const result: ImportResult = { imported: [], present: [], invalid: [], folders: [] };
+  const result: ImportResult = { imported: [], present: [], invalid: [], failed: [], folders: [] };
   await db.transaction(async (tx) => {
-    const t = tx as unknown as Db;
-    const mine = forLearner(t, learnerId);
-    const addFolder = async (name: string) => {
-      const [made] = await t.insert(packFolders).values({ learnerId, name }).onConflictDoNothing().returning();
-      if (made) result.folders.push(name);
-    };
+    const mine = forLearner(tx, learnerId);
     for (const name of files.folders) {
-      if (ID_RE.test(name)) await addFolder(name);
+      if (!ID_RE.test(name) || result.folders.includes(name)) continue;
+      const [made] = await mine.insertOrIgnore(packFolders, { name });
+      if (made) result.folders.push(name);
     }
     for (const p of files.packs) {
       let at: { folder: string; slug: string };
@@ -416,22 +527,29 @@ export async function importPacks(db: Db, learnerId: string, files: PackFiles): 
         result.invalid.push(String(p.id));
         continue;
       }
-      if (await mine.get(packs, and(eq(packs.folder, at.folder), eq(packs.slug, at.slug))!)) {
+      const atId = await mine.get(packs, and(eq(packs.folder, at.folder), eq(packs.slug, at.slug))!);
+      const importedBefore = await mine.get(packRevisions, and(eq(packRevisions.action, "import"), sql`${packRevisions.snapshot}->>'id' = ${p.id}`)!);
+      if (atId || importedBefore) {
         result.present.push(p.id);
         continue;
       }
-      if (at.folder && !result.folders.includes(at.folder)) await addFolder(at.folder);
-      const [row] = await t
-        .insert(packs)
-        .values({ ...content, learnerId, folder: at.folder, slug: at.slug })
-        .onConflictDoNothing({ target: [packs.learnerId, packs.folder, packs.slug], where: sql`${packs.deletedAt} is null` })
-        .returning();
-      if (!row) {
-        result.present.push(p.id);
-        continue;
+      try {
+        // The pack's folder in the same savepoint, so a refused pack leaves
+        // no folder behind (and reports none).
+        const { row, folderMade } = await tx.transaction(async (sp) => {
+          const sm = forLearner(sp, learnerId);
+          const madeFolder = at.folder && !result.folders.includes(at.folder) ? (await sm.insertOrIgnore(packFolders, { name: at.folder })).length > 0 : false;
+          const [inserted] = await sm.insertOrIgnore(packs, { ...content, folder: at.folder, slug: at.slug }, LIVE_ID);
+          if (inserted) await record(sp, learnerId, inserted, "import");
+          return { row: inserted, folderMade: madeFolder };
+        });
+        if (folderMade) result.folders.push(at.folder);
+        if (row) result.imported.push(p.id);
+        else result.present.push(p.id);
+      } catch (e) {
+        console.error(`[lingo-dojo] import: pack ${p.id} skipped:`, (e as Error)?.message ?? e);
+        result.failed.push(p.id);
       }
-      await record(t, learnerId, row, "import");
-      result.imported.push(p.id);
     }
   });
   return result;

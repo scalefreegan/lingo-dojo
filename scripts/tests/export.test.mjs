@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadContent } from "../content.mjs";
+import { loadContent, loadPackFiles } from "../content.mjs";
 import { assemble } from "../assemble.mjs";
 import { FIXTURE, write } from "./helpers.mjs";
 
@@ -34,7 +34,7 @@ test("writes exports/<id>.md, prints the path and stats; output equals assemble(
   assert.equal(printedPath, file);
   assert.match(statsLine, /^\d+ words, ~\d+ tokens$/);
   const content = loadContent(FIXTURE);
-  assert.equal(fs.readFileSync(file, "utf8"), assemble(content, content.packs[0]).markdown);
+  assert.equal(fs.readFileSync(file, "utf8"), assemble(content, loadPackFiles(FIXTURE).packs[0]).markdown);
 });
 
 test("warnings go to stderr and do not fail the export; a bad pack exits 1", () => {

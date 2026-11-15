@@ -16,7 +16,7 @@ import { FIXTURE, copyFixture, write } from "./helpers.mjs";
 
 const problemFor = (content, suffix) => content.problems.filter((p) => p.file.endsWith(suffix));
 
-test("loads the fixture tree: schema order, units, scenarios, packs, profile, frame", () => {
+test("loads the fixture tree: schema order, units, scenarios, profile, frame; pack files are not the library's", () => {
   const c = loadContent(FIXTURE);
   assert.deepEqual(c.schema.slots.map((s) => s.id), ["intro", "warmup", "corrections", "debrief"]);
   assert.equal(c.schema.slots[0].required, true);
@@ -27,7 +27,8 @@ test("loads the fixture tree: schema order, units, scenarios, packs, profile, fr
     "orphan-unit", "warmup-odd", "warmup-vocab",
   ]);
   assert.deepEqual(c.scenarios.map((s) => s.id), ["market", "plaza"]);
-  assert.deepEqual(c.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
+  assert.equal(c.packs, undefined, "pack files are read by loadPackFiles only");
+  assert.deepEqual(loadPackFiles(FIXTURE).packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
   assert.equal(c.profile.learner_name, "Sam");
   assert.match(c.frame, /^You are the dojo master/);
   // languages.yaml: file order, variants [] when the key is absent
@@ -145,12 +146,17 @@ test("bad files are reported, never thrown: bad YAML, no frontmatter, id/filenam
   assert.match(msg("units/unclosed.md"), /^error: frontmatter is not closed/);
   assert.match(msg("units/renamed.md"), /^error: id "something-else" must equal the filename stem "renamed"/);
   assert.match(msg("scenarios/no-summary.md"), /^error: missing required key\(s\): summary/);
-  assert.match(msg("packs/2026-01-01-bad.yaml"), /^error: not valid YAML/);
-  assert.match(msg("packs/2026-01-02-untitled.yaml"), /^error: missing required key\(s\): title/);
+  // Broken pack files are no problem of the library's (the app never reads
+  // them); loadPackFiles reports them, for the import and the export CLI.
+  assert.equal(msg("packs/2026-01-01-bad.yaml"), "");
+  const files = loadPackFiles(root);
+  const fileMsg = (suffix) => files.problems.filter((p) => p.file.endsWith(suffix)).map((p) => `${p.level}: ${p.message}`).join(" | ");
+  assert.match(fileMsg("packs/2026-01-01-bad.yaml"), /^error: not valid YAML/);
+  assert.match(fileMsg("packs/2026-01-02-untitled.yaml"), /^error: missing required key\(s\): title/);
   // every rejected file is absent; the good ones still load
   for (const id of ["bad-yaml", "no-fm", "unclosed", "renamed"]) assert.ok(!c.units.some((u) => u.id === id), id);
   assert.ok(c.units.some((u) => u.id === "intro-native"));
-  assert.deepEqual(c.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
+  assert.deepEqual(files.packs.map((p) => p.id), ["2026-10-19-market-gentle"]);
 });
 
 test("missing files and a bad schema are problems, not crashes", () => {
@@ -181,7 +187,7 @@ test("an empty content root loads as an empty library with problems", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-empty-"));
   try {
     const c = loadContent(root);
-    assert.deepEqual([c.units, c.scenarios, c.packs, c.schema.slots, c.languages], [[], [], [], [], []]);
+    assert.deepEqual([c.units, c.scenarios, loadPackFiles(root).packs, c.schema.slots, c.languages], [[], [], [], [], []]);
     assert.ok(c.problems.some((p) => p.file.endsWith("schema.yaml") && p.level === "error"));
     assert.ok(c.problems.some((p) => p.file.endsWith("languages.yaml") && p.level === "warning"));
   } finally {
@@ -279,7 +285,7 @@ test("packs load one folder deep with folder ids; deeper and dot-directories are
   write(root, "packs/deep/deeper/2026-10-21-nope.yaml", "title: Nope\n");
   write(root, "packs/.hidden/2026-10-22-nope.yaml", "title: Nope\n");
   write(root, "packs/Bad Name/2026-10-23-x.yaml", "title: Bad\n");
-  const c = loadContent(root);
+  const c = loadPackFiles(root);
   assert.deepEqual(c.packs.map((p) => [p.id, p.folder]), [
     ["2026-10-19-market-gentle", ""],
     ["Bad Name/2026-10-23-x", "Bad Name"],
@@ -345,7 +351,7 @@ test("the kids tree loads on its own and shares the content root's languages.yam
     assert.deepEqual(kids.schema.slots.map((s) => s.id), ["intro", "story", "games"]);
     assert.deepEqual(kids.units.map((u) => u.id).sort(), ["game-echo", "intro-game", "story-quest"]);
     assert.deepEqual(kids.scenarios.map((s) => s.id), ["farm"]);
-    assert.deepEqual(kids.packs.map((p) => p.id), ["2026-10-20-farm-first"]);
+    assert.deepEqual(loadPackFiles(modeRoot("kids")).packs.map((p) => p.id), ["2026-10-20-farm-first"]);
     assert.equal(kids.profile.learner_name, "Pip");
     assert.match(kids.frame, /^You are the dojo master running a short play session/);
     // No languages.yaml of its own: the root's list, and no problem about it.
@@ -355,7 +361,7 @@ test("the kids tree loads on its own and shares the content root's languages.yam
     const adult = loadContent(modeRoot("adult"));
     assert.ok(!adult.units.some((u) => u.id === "intro-game"));
     assert.ok(!adult.scenarios.some((s) => s.id === "farm"));
-    assert.ok(!adult.packs.some((p) => p.id.includes("farm")));
+    assert.ok(!loadPackFiles(modeRoot("adult")).packs.some((p) => p.id.includes("farm")));
     assert.ok(!listFolders(root).includes("kids"));
     // Its own languages.yaml wins when present; neither file is a warning.
     write(root, "kids/languages.yaml", "version: 1\nlanguages:\n  - name: Klingon\n    variants: []\n");

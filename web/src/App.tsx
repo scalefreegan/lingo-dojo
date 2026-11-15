@@ -464,6 +464,7 @@ export default function App({
                 onDeleteFolder={removeFolder}
                 mode={mode}
                 onRestored={restored}
+                onStale={() => refreshPacks().catch(() => undefined)}
               />
             )}
           </div>

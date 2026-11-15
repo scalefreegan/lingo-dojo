@@ -259,10 +259,13 @@ with a `.keep` file so it survives git (the import makes it an empty folder).
 A saved pack has the same id (`<folder>/<slug>`, the slug following the same
 rule: renaming a pack re-slugs it, keeping its date), so the import keeps
 folder, slug, title and created. Only the keys above are kept: a saved pack
-has no place for others. Every pack write, move, rename, or delete made by the
-app is a revision in the database, and a delete is soft, so nothing is lost:
-the Library's **Recently deleted** restores a deleted pack, and
-`/api/pack-revisions` lists and restores any revision.
+has no place for others (they are dropped on import and on save). Every pack
+write, move, rename, or delete made by the app is a revision in the database,
+and a delete is soft: the Library's **Recently deleted** brings a deleted pack
+back, and `/api/pack-revisions` lists (a page at a time) and restores any
+revision of a pack's content. Folders are not revisioned: only an empty folder
+can be deleted, and undeleting a pack brings its folder back. The app itself
+reads no pack files; only the import, the first run and `npm run export` do.
 
 ## Modes: `content/` and `content/kids/`
 

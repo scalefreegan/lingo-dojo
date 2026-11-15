@@ -2,12 +2,14 @@
 // `npm run db:import` (scripts/import.mjs). Its own module, apart from the
 // CLI's argv and printing, so the tests run it on PGlite.
 //
-// Which account: the one named, else the first admin (oldest, not
-// disabled). Which learner: that account's first live learner of each mode
+// Which account: the one named (refused when it is disabled: its packs
+// would land where nobody can log in to see them), else the first admin
+// (oldest, not disabled). Which learner: that account's first live learner of each mode
 // (listLearners' order). Nothing is created: with no such account or
 // learner, that part is skipped and the report says why. The import itself
 // is packs.ts importPacks, which skips any pack the learner already has at
-// that id (deleted ones included), so a re-run adds only what is new.
+// that id (deleted ones included) or imported before (wherever it lives
+// now), so a re-run adds only what is new.
 //
 // Erasable TypeScript only: the CLI and the tests import it as is.
 
@@ -35,12 +37,14 @@ export interface ImportReport {
   modes: ModeReport[];
 }
 
-/** The account to import into: `username` (already normalized), else the
- *  oldest admin that is not disabled. Throws a sentence when there is none. */
+/** The account to import into: `username` (already normalized; not a
+ *  disabled one), else the oldest admin that is not disabled. Throws a
+ *  sentence when there is none. */
 async function targetUser(db: Db, username?: string): Promise<User> {
   if (username) {
     const u = await findUserByUsername(db, username);
     if (!u) throw new Error(`no account named ${username}`);
+    if (u.disabledAt) throw new Error(`account ${username} is disabled; \`npm run user -- enable ${username}\` first, or name another account`);
     return u;
   }
   const [admin] = await db.select().from(users).where(and(eq(users.isAdmin, true), isNull(users.disabledAt))).orderBy(asc(users.createdAt), asc(users.username)).limit(1);
@@ -88,12 +92,14 @@ export function formatImportReport(report: ImportReport, trees: Record<ImportMod
     const r = m.result;
     const parts = [`${r.imported.length} imported`, `${r.present.length} already there`, n(r.folders.length, "folder added", "folders added")];
     if (r.invalid.length) parts.push(`${r.invalid.length} invalid`);
+    if (r.failed.length) parts.push(`${r.failed.length} failed`);
     if (m.unreadable.length) parts.push(n(m.unreadable.length, "unreadable file"));
     out.push(`${m.mode} (${trees[m.mode]}) → ${m.learner.name}: ${parts.join(", ")}`);
     for (const id of r.imported) out.push(`  + ${id}`);
     for (const id of r.present) out.push(`  = ${id} (already there)`);
     for (const f of r.folders) out.push(`  + folder ${f}`);
-    for (const id of r.invalid) out.push(`  ! ${id}: not a valid pack id, or no title; skipped`);
+    for (const id of r.invalid) out.push(`  ! ${id}: not a valid pack id, no title, or a NUL character; skipped`);
+    for (const id of r.failed) out.push(`  ! ${id}: the database refused it (logged above); skipped`);
     for (const u of m.unreadable) out.push(`  ! ${u.file}: ${u.message}; skipped`);
   }
   return out;

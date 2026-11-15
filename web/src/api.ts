@@ -185,20 +185,25 @@ export function renamePack(mode: Mode, id: string, title: string): Promise<PackW
   return req<PackWriteReply>(packUrl(id, mode, "/rename"), json({ title } satisfies PackRenameRequest));
 }
 
-/** GET /api/pack-revisions?id= — a saved pack's revisions, newest first. */
-export function listPackRevisions(mode: Mode, id: string): Promise<PackRevisionsReply> {
-  return req<PackRevisionsReply>(`${inMode("/api/pack-revisions", mode)}&id=${encodeURIComponent(id)}`);
+/** GET /api/pack-revisions?id= — a saved pack's revisions, newest first, a page at a time. */
+export function listPackRevisions(mode: Mode, id: string, offset = 0): Promise<PackRevisionsReply> {
+  return req<PackRevisionsReply>(`${inMode("/api/pack-revisions", mode)}&id=${encodeURIComponent(id)}&offset=${offset}`);
 }
 
-/** GET /api/pack-revisions/deleted — the soft-deleted packs, newest first. */
-export function listDeletedPacks(mode: Mode): Promise<DeletedPacksReply> {
-  return req<DeletedPacksReply>(inMode("/api/pack-revisions/deleted", mode));
+/** GET /api/pack-revisions/deleted — the soft-deleted packs, newest first, a page at a time. */
+export function listDeletedPacks(mode: Mode, offset = 0): Promise<DeletedPacksReply> {
+  return req<DeletedPacksReply>(`${inMode("/api/pack-revisions/deleted", mode)}&offset=${offset}`);
 }
 
-/** POST /api/pack-revisions/:revision/restore — a deleted pack's delete
- *  revision undeletes it; any other revision puts its content back. */
+/** POST /api/pack-revisions/:revision/restore — a live pack takes that revision's content. */
 export function restorePackRevision(mode: Mode, revision: string): Promise<PackRestoreReply> {
   return req<PackRestoreReply>(inMode(`/api/pack-revisions/${encodeURIComponent(revision)}/restore`, mode), { method: "POST" });
+}
+
+/** POST /api/pack-revisions/:revision/undelete — the deleted pack comes back
+ *  (409 when it already has, or its id was taken). */
+export function undeletePack(mode: Mode, revision: string): Promise<PackRestoreReply> {
+  return req<PackRestoreReply>(inMode(`/api/pack-revisions/${encodeURIComponent(revision)}/undelete`, mode), { method: "POST" });
 }
 
 export function createFolder(mode: Mode, name: string): Promise<FolderReply> {

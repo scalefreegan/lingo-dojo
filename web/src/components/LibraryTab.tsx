@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { ApiError, listDeletedPacks, restorePackRevision } from "../api";
+import { ApiError, listDeletedPacks, undeletePack } from "../api";
 import { slugify, splitPackId } from "../draft";
 import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
@@ -23,6 +23,7 @@ export default function LibraryTab({
   onDeleteFolder,
   mode,
   onRestored,
+  onStale,
   ...row
 }: PackActions & {
   packs: Pack[];
@@ -32,6 +33,8 @@ export default function LibraryTab({
   mode: Mode;
   /** A deleted pack was restored: re-list the packs. */
   onRestored: (p: Pack) => Promise<void>;
+  /** A restore was refused as stale (409): re-list the packs. */
+  onStale: () => Promise<void>;
 }) {
   // null = closed; otherwise the name being typed.
   const [newFolder, setNewFolder] = useState<string | null>(null);
@@ -117,17 +120,30 @@ export default function LibraryTab({
           )}
         </div>
       )}
-      <RecentlyDeleted mode={mode} packs={packs} onRestored={onRestored} />
+      <RecentlyDeleted mode={mode} packs={packs} onRestored={onRestored} onStale={onStale} />
     </div>
   );
 }
 
-/** The soft-deleted packs (newest first), each with Restore, folded away
- *  until opened. The list is re-read whenever the saved packs change (a
- *  delete or a restore re-lists them), so it never needs its own refresh. A
- *  restore that fails (its id was taken by a new pack) says why in place. */
-function RecentlyDeleted({ mode, packs, onRestored }: { mode: Mode; packs: Pack[]; onRestored: (p: Pack) => Promise<void> }) {
+/** The soft-deleted packs (newest first, a page at a time with "More"), each
+ *  with Restore (an undelete), folded away until opened. The list is re-read
+ *  whenever the saved packs change (a delete or a restore re-lists them), so
+ *  it never needs its own refresh. A restore that fails says why in place;
+ *  a 409 also means this list was stale (the pack came back on another
+ *  device, or its id was taken), so the lists are re-read. */
+function RecentlyDeleted({
+  mode,
+  packs,
+  onRestored,
+  onStale,
+}: {
+  mode: Mode;
+  packs: Pack[];
+  onRestored: (p: Pack) => Promise<void>;
+  onStale: () => Promise<void>;
+}) {
   const [deleted, setDeleted] = useState<DeletedPack[]>([]);
+  const [next, setNext] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -135,22 +151,38 @@ function RecentlyDeleted({ mode, packs, onRestored }: { mode: Mode; packs: Pack[
   useEffect(() => {
     let live = true;
     listDeletedPacks(mode).then(
-      (r) => live && setDeleted(r.packs),
-      () => live && setDeleted([]),
+      (r) => {
+        if (!live) return;
+        setDeleted(r.packs);
+        setNext(r.next);
+      },
+      () => live && (setDeleted([]), setNext(null)),
     );
     return () => {
       live = false;
     };
   }, [mode, packs]);
 
+  async function more() {
+    if (next === null) return;
+    try {
+      const r = await listDeletedPacks(mode, next);
+      setDeleted((d) => [...d, ...r.packs.filter((p) => !d.some((x) => x.revision === p.revision))]);
+      setNext(r.next);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    }
+  }
+
   async function restore(d: DeletedPack) {
     setBusy(d.revision);
     setError(null);
     try {
-      const r = await restorePackRevision(mode, d.revision);
+      const r = await undeletePack(mode, d.revision);
       await onRestored(r.pack);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
+      if (e instanceof ApiError && e.status === 409) await onStale();
     } finally {
       setBusy(null);
     }
@@ -182,6 +214,11 @@ function RecentlyDeleted({ mode, packs, onRestored }: { mode: Mode; packs: Pack[
               </li>
             ))}
           </ul>
+          {next !== null && (
+            <Button variant="ghost" className={`${small} self-start`} onClick={() => void more()}>
+              More
+            </Button>
+          )}
         </>
       )}
     </section>

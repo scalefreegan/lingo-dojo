@@ -40,9 +40,7 @@ declare module "*/scripts/content.mjs" {
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
   /** Never throws; bad files land in `problems`. The mode and its levels are
    *  the route's to add (content.ts contentReply). */
-  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels"> & {
-    packs: import("../shared/wire.ts").Pack[];
-  };
+  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels">;
   /** A tree's pack files (seed content and the export CLI's input; the app's
    *  saved packs are in the database): the packs that load, every folder
    *  under packs/, and the problems of the pack files that did not load. */

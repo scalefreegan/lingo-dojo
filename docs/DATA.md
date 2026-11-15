@@ -175,7 +175,7 @@ catalog.
 
 **The owned-row helper** is `scripts/db/owned.ts`:
 `forLearner(db, learnerId)` and `forUser(db, userId)` return a scope with
-`list`, `get`, `insert`, `upsert`, `update`, `remove`, `removeAllOwned` and
+`list`, `get`, `insert`, `insertOrIgnore` (added in phase 2), `upsert`, `update`, `remove`, `removeAllOwned` and
 `where`. Each one adds `owner = id and (cond)`, or stamps the owner on insert.
 The caller's condition is always parenthesized, so a raw `a or b` can't
 escape the filter.
@@ -260,6 +260,9 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
   or replaces a live pack's content (as the file write did). `id`/`folder` in
   the body are ignored; keys outside the pack contract are dropped (a row has
   no column for them; the file write kept them). A missing `created` is now.
+  A NUL character (`\u0000`) anywhere in a pack, object keys included, or in
+  a new title is a 400: Postgres can't store it in text or jsonb, so it would
+  otherwise be a 500.
 - **Revisions.** Every pack write records a snapshot (the wire `Pack`) in the
   same transaction: `create`, `update`, `move`, `rename`, `delete` (the
   content that was deleted), `restore`, `import`. A move to the folder the
@@ -268,17 +271,26 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
   folder has no content of its own (only an empty folder can be deleted, and
   a restored pack brings its folder back), so there is nothing to snapshot
   without a schema change.
-- **Undo routes.** `GET /api/pack-revisions?id=<pack id>` lists a live
-  pack's revisions, newest first (100 at most; renames and moves keep the
-  history, being the same row). `GET /api/pack-revisions/deleted` lists the
-  deleted packs, newest first (50 at most), each with its delete revision.
-  `POST /api/pack-revisions/:revision/restore` restores a revision's content
-  (title, created, scenario, units, overrides, notes): a live pack keeps its
-  id; a deleted one comes back at the id it had, with its folder, and is a
-  409 when a live pack has taken that id since (move or rename it first). The
-  restore is a revision too. The Library shows **Recently deleted** with
-  Restore; listing and restoring older revisions of a live pack has no UI
-  yet.
+- **Undo routes.** `GET /api/pack-revisions?id=<pack id>` lists a pack's
+  revisions, newest first (renames and moves keep the history, being the same
+  row): the live pack at that id, else the most recently deleted one that
+  had it; `?revision=<revision id>` instead names the pack a revision belongs
+  to, which reaches an older deleted pack whose id has been reused. `GET
+  /api/pack-revisions/deleted` lists the deleted packs, newest first, each
+  with its delete revision. Both page: 100 revisions or 50 deleted packs a
+  page, `?offset=`, and the reply's `next` is the next page's offset (null
+  after the last), so nothing kept is out of reach. Two separate actions,
+  so a stale click can't do the other one: `POST
+  /api/pack-revisions/:revision/restore` puts a revision's content (title,
+  created, scenario, units, overrides, notes) onto its **live** pack, which
+  keeps its id (409 when the pack is deleted); `POST
+  /api/pack-revisions/:revision/undelete` brings a **deleted** pack back as
+  it was deleted, at the id it had, with its folder (409 when it is not
+  deleted, e.g. a second click or another device's stale list, which changes
+  nothing; 409 too when a live pack has taken the id since: move or rename it
+  first). Either is a `restore` revision. The Library shows **Recently
+  deleted** (paged with More) using undelete; on a 409 it re-reads its lists.
+  Listing and restoring older revisions of a live pack has no UI yet.
 - **Concurrency.** Each write is one transaction that locks the live row it
   changes (`SELECT … FOR UPDATE`), so a move and a delete of one pack at once
   do exactly one thing (the second finds nothing at the old id). Two creates
@@ -290,14 +302,25 @@ As built (phase 2; `scripts/db/packs.ts`, routes in `web/server/content.ts`):
   lock (an upsert) before the pack's, and a folder delete locks the folder
   row before it counts the live packs in it, so a pack never lands in a
   deleted folder; the folder list is also the union of folder rows and live
-  packs' folders. `scripts/tests/packs.pg.test.mjs` races each of these on a
-  real Postgres.
+  packs' folders. An undelete takes its folder's lock, then the pack row's;
+  of two undeletes at once the second finds the pack live (409), and a
+  restore racing an undelete either waits for it or is refused, never landing
+  on a deleted pack. `scripts/tests/packs.pg.test.mjs` races each of these on
+  a real Postgres.
+- **Owner scoping in one place.** Every query in `packs.ts` goes through
+  `forLearner(tx, learnerId)` (inserts that may conflict through its
+  `insertOrIgnore`, which puts the owner in the conflict target), and the
+  routes only pass the active learner's id. A later bead is to move packs
+  under a per-learner language profile; that changes the owner key in
+  `packs.ts` (and the schema), not the routes or the UI.
 - **No files, no commits.** No pack route reads or writes `content/**/packs`
   or calls git; `commitPacks` is gone (the agent's `content/` commit stays),
   and so are the file write functions in `scripts/content.mjs` (savePack,
-  movePack, renamePack, deletePack, createFolder, deleteFolder). The loader
-  still reads pack files (`loadPackFiles`) for the import, the first run and
-  the export CLI. The wire replies lost their `commit`/`error` fields
+  movePack, renamePack, deletePack, createFolder, deleteFolder). Only
+  `loadPackFiles` reads pack files, for the import, the first run and the
+  export CLI: `loadContent` (the app's library: units, scenarios, frame,
+  schema) no longer parses `packs/` at all, so a broken or large pack file
+  can't slow or clutter the app's content load or its problems list. The wire replies lost their `commit`/`error` fields
   (`Committed`): the Library's status line was their only reader.
 
 ### Conversations
@@ -887,12 +910,19 @@ npm run db:import -- --user <name>   # into that account's learners
 - `content/packs/**` goes to the adult learner and `content/kids/packs/**` to
   the kids learner, keeping folder, slug, title and created; every folder
   under `packs/` (an empty one with its `.keep` too) becomes a folder row.
-  Each imported pack gets an `import` revision. A file that doesn't load, or
-  an id that isn't a valid pack id, is skipped and listed.
+  Each imported pack gets an `import` revision. A file that doesn't load, an
+  id that isn't a valid pack id, or a pack with no title or with a NUL
+  character is skipped and listed (`invalid`). Each pack is its own savepoint:
+  one the database refuses for any other reason is rolled back alone, logged,
+  and listed (`failed`), and the rest import. That keeps a bad seed file from
+  failing the first run, which imports in the admin's transaction.
 - Re-runs: a pack is skipped when the learner has any row at that folder and
-  slug, a soft-deleted one included, so a pack deleted in the app stays
-  deleted. A folder deleted in the app does come back (folders have no
+  slug, a soft-deleted one included, or an `import` revision whose snapshot
+  has that id, so a pack renamed, moved or deleted in the app since is not
+  imported again. A folder deleted in the app does come back (folders have no
   deleted state; it comes back empty). One transaction per learner.
+- `--user` naming a disabled account is an error (enable it first, or name
+  another): its packs would land where nobody can log in to see them.
 - It reads `DATABASE_URL` like the other CLIs, and the pack files from
   `content/` (`LINGO_CONTENT_DIR` moves it). It prints one line per mode and
   one per pack:
@@ -951,14 +981,17 @@ deletes cover undoing a single change.
   makes a throwaway database on that server, races 12 first runs and 12
   voice-settings saves five times each, and drops it (each fails with its
   lock removed). Phase 2: `packs.http.test.mjs` covers the pack, folder and
-  revision routes (CRUD, move, rename, the folder rules, soft delete and
-  restore, a revision per write, id collisions, `stale_learner`, and a
+  revision routes (CRUD, move, rename, the folder rules, soft delete,
+  undelete and restore and their 409s, paging, NUL rejection, a revision per
+  write, id collisions, `stale_learner`, and a
   second learner of the same account and a second account that can't see or
   change the first's packs, even by id); `packs.test.mjs` the import (both
-  modes, a re-run, a missing learner, a soft-deleted pack, `--user`) and the
-  first run's seed packs; `packs.pg.test.mjs` (with `LINGO_TEST_PG_URL`)
-  races creates of one id, a move against a delete, renames to one title and
-  a folder delete against a save into it.
+  modes, a re-run, a re-run after rename/move/delete, a missing learner, a
+  soft-deleted pack, `--user` including a disabled one, NUL and
+  database-refused packs during a first run) and the first run's seed packs;
+  `packs.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races creates of one id, a
+  move against a delete, renames to one title, a folder delete against a
+  save into it, two undeletes, and an undelete against a restore.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).

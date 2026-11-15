@@ -63,6 +63,18 @@ async function history(id, c = robin) {
   return r.body.revisions.map((v) => [v.action, v.pack.title, v.pack.id]);
 }
 
+/** Every deleted pack, through all the pages. */
+async function allDeleted(c = robin) {
+  const out = [];
+  for (let offset = 0; offset !== null; ) {
+    const r = await c.call("GET", `/api/pack-revisions/deleted?offset=${offset}`);
+    assert.equal(r.status, 200, r.text);
+    out.push(...r.body.packs);
+    offset = r.body.next;
+  }
+  return out;
+}
+
 /** Delete every live pack and folder of the active learner, so a test starts empty. */
 async function clear(c = robin) {
   const { packs: list, folders } = (await c.call("GET", "/api/packs")).body;
@@ -232,6 +244,13 @@ test("revisions: listed newest first across renames and moves; restoring one put
   assert.deepEqual((await history(id))[0], ["restore", "Tacos", id]);
   // Refusals.
   assert.equal((await call("GET", "/api/pack-revisions")).status, 400, "no id");
+  assert.equal((await call("GET", `/api/pack-revisions?id=${id}&revision=${v1}`)).status, 400, "id or revision, not both");
+  assert.equal((await call("GET", `/api/pack-revisions?id=${id}&offset=-1`)).status, 400);
+  assert.equal((await call("GET", `/api/pack-revisions?id=${id}&offset=x`)).status, 400);
+  // ?revision= names the same pack.
+  const byRev = (await call("GET", `/api/pack-revisions?revision=${v1}`)).body;
+  assert.deepEqual([byRev.revisions.length, byRev.next], [5, null]);
+  assert.equal((await call("GET", "/api/pack-revisions?revision=00000000-0000-4000-8000-000000000000")).status, 404);
   assert.equal((await call("GET", "/api/pack-revisions?id=2026-01-01-nope")).status, 404);
   assert.equal((await call("GET", "/api/pack-revisions?id=..%2Fx")).status, 400);
   assert.equal((await call("POST", "/api/pack-revisions/not-a-uuid/restore")).status, 404);
@@ -239,6 +258,68 @@ test("revisions: listed newest first across renames and moves; restoring one put
   assert.equal((await call("GET", `/api/pack-revisions/${v1}/restore`)).status, 405);
   assert.equal((await call("POST", "/api/pack-revisions/x/y/z")).status, 404);
   assert.equal((await call("POST", "/api/pack-revisions/deleted")).status, 405);
+  // An undelete of a live pack: 409, nothing changes.
+  const live = await call("POST", `/api/pack-revisions/${v1}/undelete`);
+  assert.equal(live.status, 409);
+  assert.match(live.body.error, /is not deleted/);
+  assert.deepEqual((await history(id))[0], ["restore", "Tacos", id]);
+  await clear();
+});
+
+test("revisions and deleted packs are paged: `next` until the last page; a deleted pack's history by id or by revision", async () => {
+  const id = "2026-10-24-paged";
+  for (let i = 0; i < 101; i++) await call("PUT", `/api/packs/${id}`, { ...pack, title: "Paged", notes: String(i) });
+  const p1 = (await call("GET", `/api/pack-revisions?id=${id}`)).body;
+  assert.deepEqual([p1.revisions.length, p1.next], [100, 100]);
+  assert.equal(p1.revisions[0].pack.notes, "100");
+  const p2 = (await call("GET", `/api/pack-revisions?id=${id}&offset=${p1.next}`)).body;
+  assert.deepEqual([p2.revisions.length, p2.next, p2.revisions[0].action], [1, null, "create"]);
+
+  // Deleted: still listed by its id (no live pack there), and by revision
+  // once a new pack has taken the id.
+  await call("DELETE", `/api/packs/${id}`);
+  const gone = (await call("GET", `/api/pack-revisions?id=${id}`)).body;
+  assert.equal(gone.revisions[0].action, "delete");
+  const delRev = gone.revisions[0].revision;
+  await call("PUT", `/api/packs/${id}`, { ...pack, title: "New" });
+  assert.equal((await call("GET", `/api/pack-revisions?id=${id}`)).body.revisions.length, 1, "the id is the new pack's");
+  assert.equal((await call("GET", `/api/pack-revisions?revision=${delRev}`)).body.revisions[0].revision, delRev);
+  await clear();
+
+  // 51 more deleted packs: the deleted list pages at 50.
+  for (let i = 0; i < 51; i++) {
+    const pid = `2026-10-25-d${i}`;
+    await call("PUT", `/api/packs/${pid}`, { ...pack, title: `D${i}` });
+    await call("DELETE", `/api/packs/${pid}`);
+  }
+  const d1 = (await call("GET", "/api/pack-revisions/deleted")).body;
+  assert.deepEqual([d1.packs.length, d1.next], [50, 50]);
+  assert.equal(d1.packs[0].pack.id, "2026-10-25-d50", "newest first");
+  const d2 = (await call("GET", `/api/pack-revisions/deleted?offset=${d1.next}`)).body;
+  assert.ok(d2.packs.length >= 1);
+  assert.ok(!d2.packs.some((x) => d1.packs.some((y) => y.revision === x.revision)), "no overlap");
+  assert.equal((await call("GET", "/api/pack-revisions/deleted?offset=-3")).status, 400);
+});
+
+test("a NUL character anywhere in a pack is a 400, and nothing is written", async () => {
+  const id = "2026-10-26-nul";
+  for (const body of [
+    { ...pack, title: "A\u0000B" },
+    { ...pack, notes: "x\u0000" },
+    { ...pack, units: ["intro-target", "a\u0000"] },
+    { ...pack, overrides: { level: "B1\u0000" } },
+    { ...pack, overrides: { ["k\u0000"]: "v" } },
+    { ...pack, quick_scenario: "\u0000" },
+  ]) {
+    const r = await call("PUT", `/api/packs/${id}`, body);
+    assert.equal(r.status, 400, JSON.stringify(body));
+    assert.match(r.body.error, /NUL/);
+  }
+  assert.equal((await call("GET", `/api/packs/${id}`)).status, 404);
+  await call("PUT", `/api/packs/${id}`, { ...pack, title: "Fine" });
+  const renamed = await call("POST", `/api/packs/${id}/rename`, { title: "Bad\u0000" });
+  assert.equal(renamed.status, 400);
+  assert.equal((await call("GET", `/api/packs/${id}`)).body.pack.title, "Fine");
   await clear();
 });
 
@@ -249,13 +330,17 @@ test("soft delete and restore: listed under deleted, restored at its id with its
   const listed = await call("GET", "/api/pack-revisions/deleted");
   assert.equal(listed.status, 200);
   const sand = (r) => r.body.packs.filter((x) => x.pack.id === "beach/2026-10-22-sand");
-  const deletedBefore = listed.body.packs.length;
+  const deletedBefore = (await allDeleted()).length;
   const [d] = listed.body.packs;
   assert.equal(d.pack.id, "beach/2026-10-22-sand");
   assert.equal(d.pack.notes, "keep me");
   assert.match(d.deletedAt, /^\d{4}-\d{2}-\d{2}T/);
 
-  const back = await call("POST", `/api/pack-revisions/${d.revision}/restore`);
+  // Restore is for live packs: a deleted one is undeleted, never restored.
+  const wrong = await call("POST", `/api/pack-revisions/${d.revision}/restore`);
+  assert.equal(wrong.status, 409);
+  assert.match(wrong.body.error, /is deleted; restore it from Recently deleted first/);
+  const back = await call("POST", `/api/pack-revisions/${d.revision}/undelete`);
   assert.equal(back.status, 200, back.text);
   assert.deepEqual([back.body.pack.id, back.body.pack.notes], ["beach/2026-10-22-sand", "keep me"]);
   const after = (await call("GET", "/api/packs")).body;
@@ -263,6 +348,13 @@ test("soft delete and restore: listed under deleted, restored at its id with its
   assert.deepEqual(after.folders, ["beach"], "the folder came back with it");
   assert.deepEqual(sand(await call("GET", "/api/pack-revisions/deleted")), [], "no longer listed as deleted");
   assert.deepEqual((await history("beach/2026-10-22-sand")).map(([a]) => a), ["restore", "delete", "create"]);
+  // A second click (or another device's stale list) is a 409 that changes nothing.
+  await call("PUT", "/api/packs/beach/2026-10-22-sand", { ...pack, title: "Sand", notes: "edited since" });
+  const twice = await call("POST", `/api/pack-revisions/${d.revision}/undelete`);
+  assert.equal(twice.status, 409);
+  assert.match(twice.body.error, /is not deleted \(it was restored already\)/);
+  assert.equal((await call("GET", "/api/packs/beach/2026-10-22-sand")).body.pack.notes, "edited since", "content unchanged");
+  assert.deepEqual((await history("beach/2026-10-22-sand")).map(([a]) => a), ["update", "restore", "delete", "create"]);
 
   // Delete again, then a new pack takes the id (the unique rule ignores
   // deleted rows): a restore must not overwrite it.
@@ -271,19 +363,19 @@ test("soft delete and restore: listed under deleted, restored at its id with its
   assert.equal(fresh.status, 200, "a deleted pack's id is free");
   assert.deepEqual((await history("beach/2026-10-22-sand")).map(([a]) => a), ["create"], "a new pack, its own history");
   const [old] = sand(await call("GET", "/api/pack-revisions/deleted"));
-  const refused = await call("POST", `/api/pack-revisions/${old.revision}/restore`);
+  const refused = await call("POST", `/api/pack-revisions/${old.revision}/undelete`);
   assert.equal(refused.status, 409);
   assert.match(refused.body.error, /already exists; rename or move it, then restore/);
   assert.equal((await call("GET", "/api/packs/beach/2026-10-22-sand")).body.pack.title, "New sand", "untouched");
   // Moved out of the way, the old one comes back.
   await call("POST", "/api/packs/beach/2026-10-22-sand/move", { folder: "" });
-  assert.equal((await call("POST", `/api/pack-revisions/${old.revision}/restore`)).status, 200);
+  assert.equal((await call("POST", `/api/pack-revisions/${old.revision}/undelete`)).status, 200);
   assert.deepEqual((await call("GET", "/api/packs")).body.packs.map((p) => [p.id, p.title]), [
     ["2026-10-22-sand", "New sand"],
     ["beach/2026-10-22-sand", "Sand"],
   ]);
   await clear();
-  assert.equal((await call("GET", "/api/pack-revisions/deleted")).body.packs.length, deletedBefore + 1, "every deleted row is listed, newest first");
+  assert.equal((await allDeleted()).length, deletedBefore + 1, "every deleted row is listed, newest first");
 });
 
 test("every learner-scoped pack route answers 409 stale_learner for a stale page or with no learner picked, and writes nothing", async () => {

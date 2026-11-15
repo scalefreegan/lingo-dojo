@@ -213,8 +213,11 @@ function strList(v) {
 
 /**
  * Load and validate everything under the content root.
- * Returns `{ root, schema, frame, profile, languages, units, scenarios, packs, problems }`;
- * `problems` is `[{ file, level: "error"|"warning", message }]`.
+ * Returns `{ root, schema, frame, profile, languages, units, scenarios, problems }`;
+ * `problems` is `[{ file, level: "error"|"warning", message }]`. Pack files
+ * are not part of the library any more (saved packs live in the database):
+ * loadPackFiles reads them, for the import and the export CLI, so the
+ * running app never parses them or reports their problems.
  */
 export function loadContent(root = contentRoot()) {
   const problems = [];
@@ -258,25 +261,7 @@ export function loadContent(root = contentRoot()) {
     if (scenario) scenarios.push(scenario);
   }
 
-  // Packs sit at the top of content/packs or one folder down; anything
-  // deeper is ignored, like a dot-directory. Sorted by id so the list is
-  // stable whatever order the folders were read in.
-  const packs = [];
-  const dir = packsDir(root);
-  const loadPacksIn = (folder) => {
-    const sub = folder ? path.join(dir, folder) : dir;
-    for (const name of listDir(sub, ".yaml")) {
-      const stem = name.slice(0, -".yaml".length);
-      const { pack, problems: packProblems } = loadPackFile(path.join(sub, name), folder ? `${folder}/${stem}` : stem);
-      problems.push(...packProblems);
-      if (pack) packs.push(pack);
-    }
-  };
-  loadPacksIn("");
-  for (const folder of listFolders(root)) loadPacksIn(folder);
-  packs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-
-  return { root, schema, frame, profile, languages, units, scenarios, packs, problems };
+  return { root, schema, frame, profile, languages, units, scenarios, problems };
 }
 
 function loadYamlFile(abs, report) {
@@ -586,8 +571,26 @@ export function listFolders(root = contentRoot()) {
  * CLI's input (docs/DATA.md §Packs).
  */
 export function loadPackFiles(root = contentRoot()) {
-  const { packs, problems } = loadContent(root);
-  return { packs, folders: listFolders(root), problems: problems.filter((p) => /(^|[\\/])packs[\\/]/.test(p.file)) };
+  // Packs sit at the top of packs/ or one folder down; anything deeper is
+  // ignored, like a dot-directory. Sorted by id so the list is stable
+  // whatever order the folders were read in.
+  const packs = [];
+  const problems = [];
+  const dir = packsDir(root);
+  const folders = listFolders(root);
+  const loadPacksIn = (folder) => {
+    const sub = folder ? path.join(dir, folder) : dir;
+    for (const name of listDir(sub, ".yaml")) {
+      const stem = name.slice(0, -".yaml".length);
+      const { pack, problems: packProblems } = loadPackFile(path.join(sub, name), folder ? `${folder}/${stem}` : stem);
+      problems.push(...packProblems);
+      if (pack) packs.push(pack);
+    }
+  };
+  loadPacksIn("");
+  for (const folder of folders) loadPacksIn(folder);
+  packs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { packs, folders, problems };
 }
 
 /** Lowercase ASCII kebab-case, accents folded ("Café en Oaxaca" →
@@ -596,7 +599,7 @@ export function loadPackFiles(root = contentRoot()) {
 export function slugify(s) {
   const slug = s
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
