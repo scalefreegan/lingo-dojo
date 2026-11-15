@@ -1,15 +1,16 @@
 # Lingo Dojo — agent instructions
 
 Composable prompt-pack builder for language-practice sessions with a voice "dojo
-master". Single user, localhost, no auth (yet). The library is markdown and YAML
-under `content/`, tracked by git. Read `docs/PRD.md` first, then `docs/CONTENT.md`
-(the file-format contract) before touching content or the loader.
+master". A few people with logins on one Mac (localhost; the tailnet later). The
+library is markdown and YAML under `content/`, tracked by git. Read `docs/PRD.md`
+first, then `docs/CONTENT.md` (the file-format contract) before touching content
+or the loader.
 
-A Postgres database is being added for personal data (logins, learners, packs,
-conversations, the phrase bank); `docs/DATA.md` is its contract. Only the
-foundation exists so far (phase 0: schema, migrations, setup, boot check, test
-harness). No route reads or writes it yet, and every feature still runs on
-files as described below.
+Personal data is moving to Postgres (logins, learners, packs, conversations,
+the phrase bank); `docs/DATA.md` is its contract. Built so far: the foundation
+(phase 0) and logins + learners (phase 1): users, sessions, learners (the
+profile the app uses), per-user voice settings, model and agent chat. Packs
+are still files shared by every account (phase 2 moves them).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
@@ -17,7 +18,15 @@ files as described below.
   (`web/src/components/ChatPanel.tsx`, `web/.oxlintrc.json`).
 - Port **38400**, `strictPort`, `usePolling` watcher (FSEvents is unreliable on this
   machine). Atlas is 38300, Wine Guide 38200, Basecamp 38100.
-- Every API route goes through `wrap()` with the same-origin check. No exceptions.
+- Every API route goes through `wrap(fn, { auth })` (`web/server/api.ts`): the
+  same-origin check, then the session, then the access level. No exceptions.
+  `auth` is `"public"` (only `/api/auth/login`, `/me`, `/first-run` and the
+  `/api` 404), `"user"` (the default: no session → 401) or `"admin"` (the
+  content agent and its settings, anything that writes `content/`: non-admin
+  → 403). The handler gets `ctx = { user, learner, sessionId }`; take the
+  mode from `learnerMode(req, ctx)`, never from the request alone. Accounts
+  come from `npm run user -- add <name> [--admin] | passwd | list | disable`;
+  the app's only sign-up is the first-run screen while there are no users.
 - The embedded agent spawns headless `claude -p` with your Claude Code login (no
   API key). It may Read the repo and Write/Edit **only under `content/`**. After
   every agent turn the server commits any `content/` change (`agent: <summary>`)
@@ -34,24 +43,31 @@ files as described below.
   `web/server/db.ts` holds the one lazy pg Pool; `DATABASE_URL` comes from
   `.env.local`, default `postgres://localhost/lingo_dojo`. Personal rows go
   through `forLearner()` / `forUser()` (`scripts/db/owned.ts`), never a bare
-  query. The dev server refuses to start until `npm run db:setup` has run.
+  query; account queries live in `scripts/db/accounts.ts`. The dev server
+  refuses to start until `npm run db:setup` has run.
 - **Branches and worktrees never point at the real database.** Set
   `DATABASE_URL` to a scratch database (a linked worktree with none set
   refuses to start or migrate). Add new migrations one branch at a time, never
   in parallel branches. Migration SQL must run on PostgreSQL 17 (the app's
   Homebrew server) even though the tests run on PGlite (PostgreSQL 18).
-- Runtime state (chat history, model setting, voice settings) is JSON under `data/` (gitignored).
-  Exports go to `exports/` (gitignored).
+- Per-user state (agent chat history, model setting, voice settings) is in the
+  database (`user_settings`, `agent_messages`; `web/server/store.ts`). The old
+  `data/voice.json`, `data/settings.json` and `data/chat.jsonl` (gitignored)
+  only seed the first admin, once, as do `content/profile.yaml` and
+  `content/kids/profile.yaml` for their learners; the running app never reads
+  or writes them after that. Exports go to `exports/` (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.
 - Two content trees, same format: `content/` (adult mode) and `content/kids/`
   (kids mode: own `schema.yaml`, `frame.md`, `profile.yaml`, `units/`,
   `scenarios/`, `packs/`; shares `languages.yaml`). `modeRoot(mode)` in
-  `scripts/content.mjs` is the one place that maps a mode to a root. Every
-  content/pack/folder/assemble/export/profile route takes `?mode=adult|kids`
-  (adult when absent, 400 otherwise); kids pack writes commit as
-  `packs(kids): …` and kids exports go to `exports/kids/`. The adult loader
-  never descends into `kids/`.
+  `scripts/content.mjs` is the one place that maps a mode to a root. The mode
+  is the active learner's (a learner is adult or kids; switching learner
+  switches mode): the pack/folder/assemble/export/profile/voice routes use it
+  and answer 400 to a `?mode=` (or body `mode`) that disagrees, 409 with no
+  learner picked. `GET /api/content?mode=` still takes either (admins browse
+  both libraries). Kids pack writes commit as `packs(kids): …` and kids
+  exports go to `exports/kids/`. The adult loader never descends into `kids/`.
 
 ## Work tracking
 Beads: `bd ready` for unblocked work, `bd show <id>` for context, `bd close <id>`
@@ -69,11 +85,15 @@ npm --prefix web run lint      # oxlint
 (cd web && npx tsc -b)
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
+npm run user -- add <name> [--admin]   # a login (also passwd | list | disable); password prompted, or on stdin
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
 never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server.
+HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
+log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,
+`.pick()`); every route but the three public ones needs a session.
 
 ## Conventions
 - TypeScript strict; `oxlint` (config copied from wine-guide).

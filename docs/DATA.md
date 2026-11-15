@@ -1,7 +1,7 @@
 # Learners, memory and practice: the database design
 
-Status: **phase 0 (foundation) built**; phases 1–11 are plan, not built
-(2026-11-15). Epic `ld-gf9`,
+Status: **phase 0 (foundation) and phase 1 (logins and learners) built**;
+phases 2–11 are plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -53,8 +53,11 @@ overruled) are marked **(proposed)**.
 ```
 browser ──cookie──▶ Vite middleware (web/server/*)
                      ├─ wrap(fn, {auth})  same-origin check + session lookup
-                     ├─ db.ts             one pg Pool, Drizzle
-                     ├─ auth.ts           /api/auth/*  login, logout, me, learner pick
+                     ├─ db.ts             one pg Pool, Drizzle (setDb: the tests' PGlite)
+                     ├─ auth.ts           /api/auth/*  login, logout, me, first run, learner pick;
+                     │                    /api/learners  (built, phase 1)
+                     ├─ seed.ts           the first admin's seed from the old files (built, phase 1)
+                     ├─ store.ts          per-user settings and agent chat (built, phase 1)
                      ├─ content.ts        library (files, as now); packs → DB
                      ├─ voice.ts          turns persist to conversations; retrieval; LOOKUP
                      ├─ bank.ts           /api/phrases/*  bank CRUD, metrics
@@ -68,11 +71,13 @@ scripts/
   db/migrations.mjs   by-hash migrator and migration state (built, phase 0)
   db/hand-edits.mjs   the documented hand edits to 0000_init.sql (built, phase 0)
   db/setup.mjs        CLI: db:setup / db:migrate (built, phase 0)
+  db/accounts.ts      users, sessions, learners, settings, agent messages (built, phase 1)
+  auth.mjs            pure: scrypt, tokens, the cookie, the login throttle (built, phase 1)
   fsrs.mjs            pure: rating mapping, mastery bands (wraps ts-fsrs)
   match.mjs           pure: answer normalization and lenient match
   recall.mjs          pure: review-block selection and retrieval ranking
   bank-mcp.mjs        stdio MCP server for the content agent (read-only role)
-  user.mjs            CLI: add / passwd / list / admin
+  user.mjs            CLI: add [--admin] / passwd / list / disable (built, phase 1)
   import.mjs          CLI: one-time file → DB import (idempotent)
 ```
 
@@ -89,7 +94,9 @@ server checks on boot that the database answers and migrations are current,
 and refuses to start with a message naming `npm run db:setup` if not (a
 half-migrated schema fails in confusing ways later). The check only reads; it
 never migrates on its own. The HTTP tests mount the plugin with
-`apiPlugins({ checkDatabase: false })`, so they need no Postgres.
+`apiPlugins({ checkDatabase: false, db })`, `db` being a `freshDb()` PGlite
+that every route then uses (`setDb` in `web/server/db.ts`), so they run the
+real routes and need no Postgres.
 
 **Migrations are tracked by hash** (`scripts/db/migrations.mjs`), in
 drizzle's own `drizzle.__drizzle_migrations` table. We don't use drizzle's
@@ -182,7 +189,9 @@ escape the filter.
 - **`where(table, cond)`** is for joins and aggregates.
 
 The server's raw handle is `rawDb()` in `web/server/db.ts`, and it's only for
-owner-less lookups (a login by username, a session by token hash).
+owner-less lookups (a login by username, a session by token hash, the
+zero-users check of the first run). As built, every account query is in
+`scripts/db/accounts.ts`, so the raw uses are in one file.
 
 ### Accounts
 
@@ -203,7 +212,10 @@ agent_messages  id, user_id, seq (bigserial: order by it), role
 `learners` holds exactly the profile keys `profile.yaml` has today, so
 `assemble()` takes a learner row where it took `content.profile`. The
 `profile.yaml` files stay as seeds for a fresh install and for the offline
-`npm run export` CLI.
+`npm run export` CLI. As built, `assemble()`'s signature is unchanged: the
+server hands it the library with `profile` replaced by the learner as
+profile keys (`profileFromLearner`, blanks left out), so the export CLI and
+the app share one assembler.
 
 ### Packs
 
@@ -334,35 +346,88 @@ which is fine at the size of one learner's bank.
 
 ## Auth
 
+Built in phase 1 (bead `ld-b88`). Code: `scripts/auth.mjs` (pure helpers),
+`scripts/db/accounts.ts` (queries), `web/server/auth.ts` (routes and the
+session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
+
 - **Passwords:** `scrypt` from `node:crypto` (proposed: no native dependency; argon2
   would need `@node-rs/argon2`). Stored as `scrypt$N$r$p$salt$hash`; checked with
-  `timingSafeEqual`.
+  `timingSafeEqual`. As built: N = 2^15, r = 8, p = 1, a 16-byte salt and a
+  32-byte key, base64url; the password is NFC-normalized first, and the
+  parameters are read back from the hash, so they can be raised later.
+  At least 8 characters. A login for an unknown username still runs one scrypt,
+  so the reply time doesn't reveal which usernames exist.
 - **Sessions:** a random 32-byte token in an `httpOnly`, `SameSite=Lax` cookie
   `ld_session`. It is also `Secure` whenever the request came in over HTTPS
   (`X-Forwarded-Proto: https`, which `tailscale serve` sets), and plain on
   `http://localhost`. Only its SHA-256 is stored. They expire after 30 days,
-  sliding. Logout deletes the row.
+  sliding. Logout deletes the row. As built: the expiry slides at most once
+  a minute (`last_seen_at`), and the cookie is re-sent when it does; a cookie
+  whose session is gone is cleared; each login deletes that user's expired
+  rows; `passwd` and `disable` delete all of a user's sessions.
 - **`wrap()`:** it keeps the same-origin check and gains an access level:
   `wrap(fn, { auth: "public" | "user" | "admin" })`. The default is `"user"`, so a
-  new route is protected unless it says otherwise. Only `/api/auth/login` and
-  `/api/auth/me` are public. The handler receives `ctx = { user, learner }`.
-- **Admin-only routes:** the content agent (`/api/chat`), library reloads and
-  anything that writes `content/`.
+  new route is protected unless it says otherwise. Only `/api/auth/login`,
+  `/api/auth/me` and `/api/auth/first-run` are public (and the `/api` 404).
+  No session is a 401, a non-admin on an admin route a 403. The handler
+  receives `ctx = { user: { id, username, isAdmin }, learner, sessionId }`;
+  `learner` is the session's active learner row (null until picked, or once
+  archived), re-read on every request.
+- **Admin-only routes:** the content agent (`/api/chat`, its history) and its
+  model setting (`/api/settings`), which is everything that writes
+  `content/`. Library reloads are a plain `GET /api/content`, so any user may
+  do them. Pack writes (still files under `content/*/packs/`, shared by every
+  account until phase 2) stay at `"user"`. The UI hides the agent drawer from
+  non-admins.
 - **Login throttling:** after 5 failures per username in 15 minutes, logins for
   that username wait 30 seconds. This is in memory, which is enough for one Mac.
+  As built: the username is normalized first, unknown ones count the same,
+  a failure after the wait (still 5 in the window) starts another wait, a
+  success clears it, and the reply is a 429 with `Retry-After`.
 - **Accounts:** `npm run user -- add <name> [--admin]`, `passwd`, `list`,
-  `disable`. There is no sign-up page.
+  `disable`. The password is prompted for without echo, or read from stdin's
+  first line when it is piped. A user the CLI adds has no learners; the
+  picker opens on Add. There is no sign-up page, with one exception:
+- **First run:** while the `users` table is empty, `/api/auth/me` answers
+  `firstRun: true` and the UI shows **Create the first account** instead of
+  the login form. `POST /api/auth/first-run` creates that account as an admin
+  and logs it in. It works only while there are no users: the check and the
+  insert run in one transaction holding `LOCK TABLE users IN SHARE ROW
+  EXCLUSIVE MODE`, so of two at once one gets a 409. It seeds the admin from
+  the files that held the data before logins, each skipped quietly when
+  missing: `content/profile.yaml` → an adult learner,
+  `content/kids/profile.yaml` → a kids learner, `data/voice.json` →
+  `user_settings.voice` (normalized), `data/settings.json` → the model,
+  `data/chat.jsonl` → `agent_messages`. After that the running app reads and
+  writes none of those files; the profiles stay as seeds and for the export
+  CLI. This does the learner and settings half of the one-time import below.
 - **Learners:** after login, a "Who's practicing?" picker lists the account's
   learners (with Add). The choice is stored on the auth session (`learner_id`).
   The top bar shows the learner and switches between them. Switching to a kids
-  learner switches to kids mode, so the mode now comes from the learner.
+  learner switches to kids mode, so the mode now comes from the learner. As
+  built: the Profile popover lists the learners as the switch (and links to
+  the picker); its pickers and "Save as my defaults" write the active
+  learner's row. Routes: `GET/POST /api/learners`, `GET/PATCH
+  /api/learners/:id` (the mode can't change), `POST /api/learners/:id/archive`
+  (kept, out of the picker; sessions that had it go back to the picker) and
+  `PUT /api/auth/learner {learnerId}` (null clears it). Every learner id is
+  looked up through the user's own scope, so another account's id is a 404,
+  the same as a missing one.
+- **Per-user settings:** voice settings and casting (`user_settings.voice`),
+  the agent's model (`user_settings.model`) and its chat (`agent_messages`,
+  ordered by `seq`), all through `forUser`. The voice turn lock is per user
+  until conversations key it.
 
 Routes that took `?mode=` change as follows:
 
 - Pack, profile, assemble, export and voice routes use the active learner's
-  mode, and answer 400 if a `?mode` they're sent disagrees.
+  mode, and answer 400 if a `?mode` they're sent disagrees (for the voice
+  turn and cast, the body's `mode`). With no learner picked they answer 409,
+  which sends the UI to the picker.
 - `GET /api/content?mode=` keeps the parameter, because an admin browses and
-  edits both libraries.
+  edits both libraries. Its `profile` is the active learner's in that
+  learner's mode and `{}` in the other; `assemble()` gets the learner's
+  profile in place of `content.profile`.
 
 ## Conversations
 
@@ -626,6 +691,10 @@ regularly, or when the need shows up):
 
 ## Import (one time, idempotent)
 
+Phase 1's first-run screen (see Auth) already does steps 1, 2 and 4 for the
+first admin. What is left for phase 2 is step 3, the packs, and the
+"already imported" check for them.
+
 `npm run db:import` does the following:
 
 1. Creates the admin user if there's none, prompting for a password.
@@ -670,27 +739,33 @@ deletes cover undoing a single change.
   `SET NULL (col)` behaviour checked on a scratch PostgreSQL 17 database.
 - **Isolation:** routes are tested with a seeded user and learner, including a
   second user whose rows must never appear (a cross-tenant test for every
-  list route).
+  list route). As built (phase 1): the HTTP tests mount the real plugin on a
+  `freshDb()` (`serveApi(apiPlugins, { db })`) and log in through
+  `scripts/tests/http-session.mjs`; `auth.http.test.mjs` covers first run
+  (including two at once), login, logout, expiry and sliding, the throttle,
+  the Secure rule, every access level, learner CRUD and picking, and a
+  second user against the first's learners, settings and agent chat.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).
 
 ## Docs to update as phases land
 
-- `PRD.md`: the "no database" decision, the non-goals (feedback loop, multi-user)
+- `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user
+  done in phase 1)
   and the architecture tree.
-- `CLAUDE.md`: the no-database line, the `data/` description, the auth rule in
-  `wrap()`, and the test database rule.
+- `CLAUDE.md`: the no-database line; the `data/` description, the auth rule in
+  `wrap()` and the test database rule (done in phase 1).
 - `CONTENT.md`: the `recall` slot, `{{phrase_review}}`, and packs living in the DB.
-- `VOICE.md`: "Nothing is saved", `LOOKUP:`, per-turn retrieval, and per-user
-  settings.
+- `VOICE.md`: "Nothing is saved", `LOOKUP:`, per-turn retrieval; per-user
+  settings (done in phase 1).
 
 ## Phases
 
 | # | Phase | Needs |
 |---|---|---|
 | 0 | Postgres + Drizzle foundation: setup scripts, schema v1 (every table above), migrations, PGlite test harness, boot check. **Built** | none |
-| 1 | Auth + learners: login, sessions, `wrap` auth levels, user CLI, learner picker, profile on DB, admin-only agent, per-user settings | 0 |
+| 1 | Auth + learners: login, sessions, `wrap` auth levels, user CLI, learner picker, profile on DB, admin-only agent, per-user settings, first-run screen. **Built** | 0 |
 | 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits | 1 |
 | 3 | Conversations: persist turns, End, the History view | 1 |
 | 4 | Phrase bank: tables, gloss capture, scenario lists, star/add, the bank UI with metrics | 3 |
