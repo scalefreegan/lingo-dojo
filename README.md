@@ -21,31 +21,43 @@
 
 <table>
   <tr>
-    <td width="50%">
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/pack-assembly.png" alt="Composable prompt packs" width="100%">
+      <br><sub><i>Customize: one card per slot, units picked per slot.</i></sub>
       <h3>Composable prompt packs</h3>
       Choose lesson units per slot (opening, narrator, character, warm-up, style, corrections, closing) and get one markdown prompt. <code>content/schema.yaml</code> sets the slot order and whether each is pick-one or pick-any.
     </td>
-    <td width="50%">
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/dojo-session.png" alt="Spoken practice in the app" width="100%">
+      <br><sub><i>Practice: a live session, narrator speaking, typed answer.</i></sub>
       <h3>Spoken practice in the app</h3>
       The dojo master and each character speak in their own native voice. You answer with push-to-talk or by typing. Voices and speech-to-text use ElevenLabs or Azure keys (<a href="docs/VOICE.md">setup</a>).
     </td>
   </tr>
   <tr>
-    <td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/scenario-picker.png" alt="Scenario-driven" width="100%">
+      <br><sub><i>Scene: collections, category filters, search.</i></sub>
       <h3>Scenario-driven</h3>
       Pick a scenario ("tasting mezcal at a palenque outside Santiago Matatlán") or write a quick one. Search, category filters and collections help you find one. The seed library is Mexican Spanish with Oaxaca settings.
     </td>
-    <td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/assembled-prompt.png" alt="Bring your own voice agent" width="100%">
+      <br><sub><i>Go: the assembled prompt, ready to copy or export.</i></sub>
       <h3>Bring your own voice agent</h3>
       Copy the assembled prompt, export it to <code>exports/&lt;id&gt;.md</code>, or save the pack to <code>content/packs/</code> and render it from the CLI.
     </td>
   </tr>
   <tr>
-    <td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/kids-library.png" alt="Adult and kids libraries" width="100%">
+      <br><sub><i>Kids mode: its own scenes, slots and level scale.</i></sub>
       <h3>Adult and kids libraries</h3>
       Adult mode is CEFR-level conversation practice. Kids mode is story, play and short sessions for a child who does not read yet, with its own slots, frame, profile and packs.
     </td>
-    <td>
+    <td width="50%" valign="top">
+      <img src="docs/screenshots/agent-drawer.png" alt="An agent that edits the library" width="100%">
+      <br><sub><i>Agent drawer: a unit added, an out-of-scope write refused.</i></sub>
       <h3>An agent that edits the library</h3>
       The chat drawer runs a headless Claude that can read the repo but only write under <code>content/</code>. Every edit is a git commit, so you can revert. It uses your Claude Code login, no API key.
     </td>

@@ -15,6 +15,7 @@ web/dist/
 !web/public/*.png
 !macos/icon-1024.png
 !docs/hero.png
+!docs/screenshots/*.png
 
 # Beads / Dolt files (added by bd init)
 .dolt/
