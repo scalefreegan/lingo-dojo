@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "hanzi-writer": "3.7.3",
+    "hanzi-writer-data": "2.0.1",
+    "pinyin-pro": "3.29.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tailwindcss": "^4.3.3"

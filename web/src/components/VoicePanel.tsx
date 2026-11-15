@@ -6,6 +6,7 @@ import {
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
 import { SessionTimeline } from "./SessionTimeline";
+import { RubyToggle } from "./Ruby";
 import { Transcript } from "./Transcript";
 import {
   DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
@@ -1606,6 +1607,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         </div>
       )}
 
+      {/* Pinyin / zhuyin over the transcript's Chinese (nothing for other languages). */}
+      {started && <RubyToggle locale={locale} className="self-end" />}
       {started && (
         <Transcript
           entries={entries}

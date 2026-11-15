@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
+import { hanChars } from "../script/script.ts";
+import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
 
 /* Phrase bank, in the Library tab: the active language's phrases
@@ -150,6 +152,7 @@ export default function PhraseBankView() {
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h2 className="text-sm font-medium text-fg">Phrase bank{languageName ? ` · ${languageName}` : ""}</h2>
         {counts && <span className={`${fine} text-fg-3`}>{counts.all === 1 ? "1 phrase" : `${counts.all} phrases`}</span>}
+        <RubyToggle locale={lang?.locale} className="ml-auto" />
       </div>
       <AddForm
         onAdded={(created, p) => {
@@ -355,7 +358,7 @@ function PhraseRow({
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {p.text ? (
               <span className="font-medium text-accent" lang={locale}>
-                {p.text}
+                <RubyText text={p.text} locale={locale} />
               </span>
             ) : (
               <span className="text-fg-3 italic">no words yet</span>
@@ -474,6 +477,13 @@ function PhraseDetailView({
       ) : (
         <>
           {detail.note && <p className="whitespace-pre-wrap text-fg-2">{detail.note}</p>}
+          {/* Chinese: each character opens the character card. */}
+          {detail.text && hanChars(detail.text).length > 0 && (
+            <p className="flex flex-wrap items-baseline gap-x-2">
+              <span className={`${fine} text-fg-3`}>Characters</span>
+              <CharTerm text={detail.text} locale={locale} className="text-lg font-medium text-accent" />
+            </p>
+          )}
           <dl className={`grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 ${fine} text-fg-3`}>
             <dt>First met</dt>
             <dd>
@@ -501,7 +511,7 @@ function PhraseDetailView({
               <ul className="mt-0.5 flex flex-col gap-0.5">
                 {detail.examples.map((ex) => (
                   <li key={ex.id} className="text-fg" lang={locale}>
-                    “{ex.sentence}”<span className={`${fine} text-fg-3`}> · {ago(ex.createdAt)}</span>
+                    “<RubyText text={ex.sentence} locale={locale} />”<span className={`${fine} text-fg-3`}> · {ago(ex.createdAt)}</span>
                   </li>
                 ))}
               </ul>
