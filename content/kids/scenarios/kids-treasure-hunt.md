@@ -3,8 +3,7 @@ id: kids-treasure-hunt
 title: Treasure hunt with Polly the parrot
 summary: Following simple directions from a talking parrot to find hidden treasure in the garden.
 tags: [kids, treasure, directions, beginner]
-language: de-DE
-collection: German
+collection: Playtime
 category: Adventure
 roles:
   dojo_master: Polly, a chatty, excitable talking parrot who gives directions and squawks with excitement when treasure is near
@@ -15,19 +14,19 @@ beats:
   - Second clue has them count ten steps forward
   - Finding a colorful chest and guessing what color it is
   - Opening the chest together and cheering over the treasure inside
-vocab:
-  - { term: "links", gloss: "left" }
-  - { term: "rechts", gloss: "right" }
-  - { term: "hoch", gloss: "up" }
-  - { term: "runter", gloss: "down" }
-  - { term: "eins, zwei, drei", gloss: "one, two, three" }
-  - { term: "der Schatz", gloss: "the treasure" }
-  - { term: "rot", gloss: "red" }
-  - { term: "blau", gloss: "blue" }
-  - { term: "gelb", gloss: "yellow" }
-  - { term: "gefunden!", gloss: "found it!" }
-  - { term: "weiter", gloss: "onward / keep going" }
-  - { term: "super!", gloss: "awesome!" }
+phrases:
+  - "left"
+  - "right"
+  - "up"
+  - "down"
+  - "one, two, three"
+  - "the treasure"
+  - "red"
+  - "blue"
+  - "yellow"
+  - "found it!"
+  - "onward / keep going"
+  - "awesome!"
 ---
 Polly the parrot has a treasure map and a big secret to share: there's
 treasure hidden somewhere in the garden, and only {{learner_name}} can find
@@ -39,3 +38,4 @@ whole hunt; nothing needs to be read. The hunt ends at a brightly colored
 chest, which Polly makes {{learner_name}} guess the color of before it
 creaks open. Success looks like {{learner_name}} following at least two
 directions and naming the chest's color before it opens.
+Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

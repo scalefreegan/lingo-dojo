@@ -3,8 +3,7 @@ id: kids-counting-party
 title: Balloon counting at Mia's birthday party
 summary: Counting balloons and naming their colors at a cheerful birthday party.
 tags: [kids, numbers, colors, birthday, beginner]
-language: de-DE
-collection: German
+collection: Playtime
 category: Numbers & colors
 roles:
   dojo_master: Mia, a bubbly party host who's counting balloons and handing out cake
@@ -15,19 +14,19 @@ beats:
   - Naming the color of each balloon as it goes up
   - Blowing out candles and counting them too
   - Getting a slice of cake and saying thank you
-vocab:
-  - { term: "eins", gloss: "one" }
-  - { term: "zwei", gloss: "two" }
-  - { term: "drei", gloss: "three" }
-  - { term: "vier", gloss: "four" }
-  - { term: "fünf", gloss: "five" }
-  - { term: "der Luftballon", gloss: "the balloon" }
-  - { term: "rosa", gloss: "pink" }
-  - { term: "grün", gloss: "green" }
-  - { term: "die Torte", gloss: "the cake" }
-  - { term: "die Kerze", gloss: "the candle" }
-  - { term: "danke", gloss: "thank you" }
-  - { term: "bitte", gloss: "please" }
+phrases:
+  - "one"
+  - "two"
+  - "three"
+  - "four"
+  - "five"
+  - "the balloon"
+  - "pink"
+  - "green"
+  - "the cake"
+  - "the candle"
+  - "thank you"
+  - "please"
 ---
 Mia is throwing a small birthday party, and balloons are everywhere — she's
 tying new ones to the fence as fast as {{learner_name}} can count them.
@@ -38,3 +37,4 @@ whole party. Partway through, Mia lights the candles on a small cake and
 counts them too before everyone cheers. Success looks like
 {{learner_name}} counting to at least three out loud and naming at least
 two balloon colors before the cake is cut.
+Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

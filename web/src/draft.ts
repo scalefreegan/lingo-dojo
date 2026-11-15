@@ -3,7 +3,7 @@
  * live in one place and read like the contract they implement
  * (docs/CONTENT.md: "order within a slot follows the pack"). */
 
-import type { ContentReply, Language, Mode, Pack, PackInput, PickerKey, Profile, Slot, Unit } from "./types";
+import type { ContentReply, Language, Mode, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
 
 export type OverrideKey = PickerKey;
 /** The Profile popover's fields, in display order. The level picker's
@@ -34,6 +34,11 @@ export interface Draft {
   /** Unit ids, pack order. */
   units: string[];
   overrides: Record<OverrideKey, string>;
+  /** The Scene tab's Location: where a scenario that uses {{location}} is
+   *  set. "" = the dojo master picks a city. Saved as `overrides.location`;
+   *  kept apart from `overrides` because it describes the scene, not the
+   *  learner, so the Profile popover never shows it. */
+  location: string;
   notes: string;
   /** Overrides from a loaded pack that the form has no field for; written
    *  back untouched on save. */
@@ -116,6 +121,7 @@ export function newDraft(content: ContentReply): Draft {
     quickScenario: "",
     units,
     overrides: emptyOverrides(),
+    location: "",
     notes: "",
     extraOverrides: {},
   };
@@ -179,6 +185,9 @@ export function draftToPack(draft: Draft): PackInput {
     const v = draft.overrides[key].trim();
     if (v) overrides[key] = v;
   }
+  const location = draft.location.trim();
+  if (location) overrides.location = location;
+  else delete overrides.location;
   const quick = draft.scenarioMode === "quick";
   return {
     title: draft.title,
@@ -194,8 +203,10 @@ export function draftToPack(draft: Draft): PackInput {
 export function packToDraft(pack: Pack): Draft {
   const overrides = emptyOverrides();
   const extraOverrides: Record<string, unknown> = {};
+  let location = "";
   for (const [k, v] of Object.entries(pack.overrides ?? {})) {
     if (OVERRIDE_FIELDS.some((f) => f.key === k) && v != null) overrides[k as OverrideKey] = String(v);
+    else if (k === "location") location = v == null ? "" : String(v);
     else extraOverrides[k] = v;
   }
   const quick = !pack.scenario && !!pack.quick_scenario;
@@ -208,9 +219,32 @@ export function packToDraft(pack: Pack): Draft {
     quickScenario: pack.quick_scenario,
     units: [...pack.units],
     overrides,
+    location,
     notes: pack.notes,
     extraOverrides,
   };
+}
+
+/* ------------------------------ collections ------------------------------ */
+
+/** The language a collection was written for, when that isn't the session's
+ *  target: its scenarios all carry a `language` ("es-MX") whose prefix is
+ *  another language's code. A collection with any language-neutral
+ *  scenario, or a target with no code in languages.yaml, is never foreign —
+ *  dimming is a hint, so it errs toward not dimming. Returns the language's
+ *  name for the badge ("Spanish"), or the raw code when languages.yaml
+ *  doesn't list it. */
+export function foreignLanguage(items: Scenario[], languages: Language[], target: string): string | null {
+  const targetCode = languages.find((l) => l.name === target)?.code;
+  if (!targetCode || items.length === 0) return null;
+  const codes = new Set<string>();
+  for (const s of items) {
+    if (!s.language) return null;
+    codes.add(s.language.split(/[-_]/)[0].toLowerCase());
+  }
+  if (codes.has(targetCode)) return null;
+  const first = [...codes][0];
+  return languages.find((l) => l.code === first)?.name ?? first;
 }
 
 /* --------------------------------- ids ---------------------------------- */
@@ -314,6 +348,7 @@ function newDraftShape(): Draft {
     quickScenario: "",
     units: [],
     overrides: emptyOverrides(),
+    location: "",
     notes: "",
     extraOverrides: {},
   };

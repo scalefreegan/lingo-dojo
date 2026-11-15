@@ -103,7 +103,14 @@ export const PLACEHOLDERS = [
   "target_variant",
   "level",
   "scenario_title",
+  "location",
 ];
+
+/** A scenario that uses {{location}} anywhere is set wherever the session
+ *  says (the Scene tab's Location, `overrides.location`), or in a city the
+ *  dojo master picks when that is blank. One regex so the loader, the
+ *  assembler and the UI agree on what "uses it" means. */
+export const LOCATION_RE = /\{\{\s*location\s*\}\}/;
 
 /* ------------------------------ frontmatter ------------------------------ */
 
@@ -346,7 +353,13 @@ function loadLanguages(abs, report) {
       if (isStr(v)) variants.push(v.trim());
       else report(abs, "warning", `${where} (${name}): variants[${j}] is not a string; skipped`);
     });
-    languages.push({ name, variants });
+    // code: the language's ISO 639 code ("es"), matched against the prefix of
+    // a scenario's `language` ("es-MX") to tell which collections were
+    // written for another language. Optional; a language without one never
+    // dims anything.
+    const code = isStr(l.code) ? l.code.trim().toLowerCase() : null;
+    if (l.code != null && !code) report(abs, "warning", `${where} (${name}): \`code\` should be a string like "es"; ignored`);
+    languages.push({ name, variants, code });
   });
   return languages;
 }
@@ -406,6 +419,26 @@ function loadScenario(abs, report) {
   } else if (fm.vocab != null) {
     report(abs, "warning", "vocab should be a list of { term, gloss }; ignored");
   }
+  // phrases: English meanings for a scenario written for every language; the
+  // dojo master supplies the words in the learner's variant.
+  const phrases = [];
+  if (Array.isArray(fm.phrases)) {
+    fm.phrases.forEach((p, i) => {
+      if (isStr(p)) phrases.push(p.trim());
+      else report(abs, "warning", `phrases[${i}] should be a non-empty string; skipped`);
+    });
+  } else if (fm.phrases != null) {
+    report(abs, "warning", "phrases should be a list of strings; ignored");
+  }
+  const beats = strList(fm.beats);
+  const twists = strList(fm.twists);
+  // Title, summary and beats are shown as-is on the Scene tab and the voice
+  // timeline, where a raw {{location}} would leak; the assembler only fills
+  // roles, twists and the body.
+  for (const [field, text] of [["title", fm.title], ["summary", fm.summary], ...beats.map((b, i) => [`beats[${i}]`, b])]) {
+    if (LOCATION_RE.test(String(text))) report(abs, "warning", `${field} uses {{location}}, which is only filled in roles, twists and the body; it will show as-is`);
+  }
+  const usesLocation = [body, ...Object.values(roles), ...twists].some((t) => LOCATION_RE.test(t));
   return {
     ...fm,
     id: fm.id,
@@ -416,9 +449,11 @@ function loadScenario(abs, report) {
     collection: typeof fm.collection === "string" && fm.collection.trim() ? fm.collection.trim() : null,
     category: typeof fm.category === "string" && fm.category.trim() ? fm.category.trim() : null,
     roles,
-    beats: strList(fm.beats),
+    beats,
     vocab,
-    twists: strList(fm.twists),
+    phrases,
+    twists,
+    uses_location: usesLocation,
     body,
     path: displayPath(abs),
   };

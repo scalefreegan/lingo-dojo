@@ -11,7 +11,7 @@
 // markdown is still produced, with a visible placeholder where a required
 // piece is missing, so an export is never silently incomplete.
 
-import { PLACEHOLDERS, normalizePack } from "./content.mjs";
+import { LOCATION_RE, PLACEHOLDERS, normalizePack } from "./content.mjs";
 
 /** Profile keys rendered in the Learner block, in this order, with labels.
  *  Any other key in the effective profile follows in its own order. */
@@ -32,6 +32,18 @@ const NO_SCENARIO_TITLE = "No scenario";
 
 /** Shown under a required slot the pack left empty. */
 export const MISSING_UNIT_LINE = "_(No unit selected for this required slot. Choose one before using this prompt.)_";
+/** What {{location}} reads as when the session left the location blank. */
+export const CHOSEN_CITY = "the city you chose";
+
+/** The Setting paragraph for a scenario set wherever the session says. The
+ *  variant wins over the place (docs/CONTENT.md): the learner practises the
+ *  variant they picked, so the place never changes the accent. */
+function settingLine(location, variant) {
+  const speech = variant || "the target language";
+  if (location) return `**Setting:** ${location}. The place sets the scene; everyone still speaks ${speech}, as the voice rule says, even if people there usually speak another variety.`;
+  return `**Setting:** You choose the city. Pick a real city where ${speech} is spoken that suits this scene, a different one from session to session. Name it to the learner in your first narration and keep it for the whole session. Wherever this scenario says "${CHOSEN_CITY}", it means that city.`;
+}
+
 const MISSING_SCENARIO_LINE = "_(No scenario selected. Pick a scenario or write a quick scenario before using this prompt.)_";
 
 /**
@@ -68,6 +80,13 @@ export function assemble(content, rawPack) {
   // 2. Scenario: by id, or the quick-scenario text as an ad hoc one.
   const scenario = resolveScenario(content, pack, warn);
 
+  // The session's location is a setting for the scene, not a fact about the
+  // learner: it never shows in the Learner block, and only a scenario that
+  // uses {{location}} reads it (a stale value left over from another scene
+  // on a fixed-setting scenario like Oaxaca is ignored, not rendered).
+  const location = typeof profile.location === "string" ? profile.location.trim() : "";
+  delete profile.location;
+
   const values = {};
   for (const key of PLACEHOLDERS) {
     const v = key === "scenario_title" ? scenario.title : profile[key];
@@ -77,6 +96,11 @@ export function assemble(content, rawPack) {
   // "{{target_variant}}" read as the language name so frame.md and units can
   // use it unconditionally without printing a bare placeholder.
   if (!values.target_variant && values.target_language) values.target_variant = values.target_language;
+  // Blank location: the dojo master picks the city (the Setting line says
+  // how), and every {{location}} reads as a reference back to that choice.
+  // Deterministic on purpose: the randomness happens in the session, not here.
+  if (scenario.uses_location) values.location = location || CHOSEN_CITY;
+  else delete values.location;
   const fill = (text, source) => substitute(text, values, source, warn);
 
   // 3. Slots in schema order; each slot's units in pack order.
@@ -130,7 +154,7 @@ export function assemble(content, rawPack) {
   const frame = fill(content.frame ?? "", "frame.md").trim();
   if (frame) sections.push(frame);
   sections.push(renderLearner(profile));
-  sections.push(renderScenario(scenario, fill));
+  sections.push(renderScenario(scenario, fill, scenario.uses_location ? settingLine(location, values.target_variant) : ""));
   sections.push(...slotSections);
   const notes = pack.notes.trim();
   if (notes) sections.push(`## Notes from the learner\n\n${notes}`);
@@ -159,7 +183,9 @@ function resolveScenario(content, pack, warn) {
     }
     warn(`Unknown scenario "${pack.scenario}" (no content/scenarios/${pack.scenario}.md).`);
   }
-  if (quick) return { id: null, title: QUICK_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], twists: [], body: quick };
+  if (quick) {
+    return { id: null, title: QUICK_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], phrases: [], twists: [], body: quick, uses_location: LOCATION_RE.test(quick) };
+  }
   warn("No scenario selected.");
   return { id: null, title: NO_SCENARIO_TITLE, summary: "", roles: {}, beats: [], vocab: [], twists: [], body: "", missing: true };
 }
@@ -214,14 +240,16 @@ function cell(s) {
 
 /** `fill` substitutes placeholders in the body: scenarios are written to the
  *  learner by name ("{{learner_name}} arrives at the gate"), like units. */
-function renderScenario(s, fill) {
+function renderScenario(s, fill, setting) {
   if (s.missing) return `## Scenario\n\n${MISSING_SCENARIO_LINE}`;
+  const where = s.id ? `scenario "${s.id}"` : "the quick scenario";
   const parts = ["## Scenario", `### ${s.title}`];
   if (s.summary) parts.push(s.summary);
+  if (setting) parts.push(setting);
   const roles = Object.entries(s.roles ?? {});
   if (roles.length) {
     parts.push("**Roles**");
-    parts.push(roles.map(([k, v]) => `- **${ROLE_LABELS[k] ?? humanize(k)}:** ${v}`).join("\n"));
+    parts.push(roles.map(([k, v]) => `- **${ROLE_LABELS[k] ?? humanize(k)}:** ${fill(v, where)}`).join("\n"));
   }
   if (s.beats?.length) {
     parts.push("**Beats**");
@@ -231,13 +259,19 @@ function renderScenario(s, fill) {
     parts.push("**Vocabulary**");
     parts.push(["| Term | Gloss |", "| --- | --- |", ...s.vocab.map((v) => `| ${cell(v.term)} | ${cell(v.gloss)} |`)].join("\n"));
   }
+  // A scenario written for every language lists meanings, not words: the
+  // dojo master supplies the words in the learner's variant.
+  if (s.phrases?.length) {
+    parts.push(fill("**Phrases to work in** (English meanings; use the natural {{target_variant}} for each)", where));
+    parts.push(s.phrases.map((p) => `- ${p}`).join("\n"));
+  }
   // Twists are raw material for the Variation slot, not a script: the
   // dojo master must only reach for them when a variation unit says so.
   if (s.twists?.length) {
     parts.push("**Possible twists** (use only if a Variation unit below asks for one)");
-    parts.push(s.twists.map((t) => `- ${t}`).join("\n"));
+    parts.push(s.twists.map((t) => `- ${fill(t, where)}`).join("\n"));
   }
-  const body = fill(s.body ?? "", s.id ? `scenario "${s.id}"` : "the quick scenario").trimEnd();
+  const body = fill(s.body ?? "", where).trimEnd();
   if (body) parts.push(body);
   return parts.join("\n\n");
 }

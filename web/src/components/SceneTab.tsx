@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
-import type { ContentReply, Mode } from "../types";
-import { fold, modeKey, type Draft } from "../draft";
+import type { ContentReply, Mode, Scenario } from "../types";
+import { foreignLanguage, fold, modeKey, sessionValues, type Draft } from "../draft";
 import { Button, Chevron, inputClass } from "./ui";
 
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
 /** Chip order (the adult library's categories); any other category a
  *  scenario uses, the kids library's included, follows alphabetically. */
-const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help"];
+const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help", "People & social", "Work & admin"];
 const OTHER_SCENES = "Other scenes";
 const FOLDERS_KEY = "lingo-dojo.scene-folders.v1";
 
@@ -91,14 +91,20 @@ export default function SceneTab({
   const visible = category ? searched.filter((s) => s.category === category) : searched;
   // Every collection gets a folder, matches or not: a folder with nothing
   // under the current filter says so rather than vanishing.
+  // A collection written for another language than the session's target
+  // (the Oaxaca trip while practising Japanese) is dimmed and sorted after
+  // the rest; it stays selectable, since the dojo master would run the
+  // scene in the target language anyway.
+  const target = sessionValues(draft, content.profile).target_language;
   const groups = useMemo(() => {
-    const by = new Map<string, typeof visible>();
-    for (const s of scenarios) if (!by.has(s.collection ?? "")) by.set(s.collection ?? "", []);
+    const all = new Map<string, Scenario[]>();
+    for (const s of scenarios) all.set(s.collection ?? "", [...(all.get(s.collection ?? "") ?? []), s]);
+    const by = new Map<string, typeof visible>([...all.keys()].map((k) => [k, []]));
     for (const s of visible) by.get(s.collection ?? "")?.push(s);
     return [...by.entries()]
-      .sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)))
-      .map(([key, items]) => ({ key, name: key || OTHER_SCENES, items }));
-  }, [scenarios, visible]);
+      .map(([key, items]) => ({ key, name: key || OTHER_SCENES, items, foreign: foreignLanguage(all.get(key) ?? [], content.languages, target) }))
+      .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
+  }, [scenarios, visible, content.languages, target]);
 
   const filtering = needle !== "" || category !== "";
   const selected = quick ? undefined : scenarios.find((s) => s.id === draft.scenario);
@@ -206,7 +212,7 @@ export default function SceneTab({
                   aria-controls={bodyId}
                   disabled={empty}
                   onClick={() => toggle(g)}
-                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1.5 text-left hover:bg-raised disabled:cursor-default disabled:hover:bg-transparent"
+                  className={`flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1.5 text-left hover:bg-raised disabled:cursor-default disabled:hover:bg-transparent ${g.foreign ? "opacity-60" : ""}`}
                 >
                   <span className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}>
                     <Chevron open={false} />
@@ -214,6 +220,11 @@ export default function SceneTab({
                   <FolderGlyph open={open} />
                   <span className="min-w-0 truncate text-sm font-medium text-fg">{g.name}</span>
                   <span className="shrink-0 text-sm text-fg-3">· {filtering ? `${g.items.length} of ${scenarios.filter((s) => (s.collection ?? "") === g.key).length}` : g.items.length}</span>
+                  {g.foreign && (
+                    <span className="shrink-0 rounded-full border border-line px-2 text-xs text-fg-3" data-testid="folder-foreign">
+                      written for {g.foreign}
+                    </span>
+                  )}
                   {empty && <span className="shrink-0 text-sm text-fg-3">no matches</span>}
                   {!open && !empty && selected && selectedKey === g.key && (
                     <span className="min-w-0 truncate text-sm text-fg-3" data-testid="folder-selected">
@@ -222,7 +233,7 @@ export default function SceneTab({
                   )}
                 </button>
                 {open && !empty && (
-                  <div id={bodyId} className={GRID}>
+                  <div id={bodyId} className={`${GRID} ${g.foreign ? "opacity-75" : ""}`}>
                     {g.items.map((s) => (
                       <ScenarioCard
                         key={s.id}
@@ -239,6 +250,10 @@ export default function SceneTab({
             );
           })}
       </div>
+
+      {selected?.uses_location && (
+        <LocationField value={draft.location} variant={sessionValues(draft, content.profile).target_variant || target} onChange={(location) => onChange({ ...draft, location })} />
+      )}
 
       <div className="flex justify-end">
         <Button variant="primary" onClick={onNext}>
@@ -295,6 +310,33 @@ function ScenarioCard({
       <p className="w-full truncate text-sm text-fg-2 sm:text-xs">{summary}</p>
       {category && <span className="mt-0.5 text-sm text-fg-3 sm:text-[11px]">{category}</span>}
     </button>
+  );
+}
+
+/** Where the selected scene is set. Only shown for a scenario that uses
+ *  {{location}}; a fixed-setting one (the Oaxaca trip) has nowhere to put
+ *  it. Blank leaves the choice to the dojo master, who names the city at
+ *  the start of the session. */
+function LocationField({ value, variant, onChange }: { value: string; variant: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-panel p-3" data-testid="location-field">
+      <label htmlFor="scene-location" className="text-sm font-medium text-fg">
+        Location
+      </label>
+      <input
+        id="scene-location"
+        type="text"
+        className={`${inputClass} sm:max-w-sm`}
+        placeholder="Surprise me"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p className="text-sm text-fg-3 sm:text-xs">
+        {value.trim()
+          ? `The scene is set in ${value.trim()}. Voices stay in ${variant || "your target language"}.`
+          : `Leave blank and the dojo master picks a city where ${variant || "your target language"} is spoken.`}
+      </p>
+    </div>
   );
 }
 
