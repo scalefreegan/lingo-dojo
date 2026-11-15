@@ -103,7 +103,7 @@ npm --prefix web run lint      # oxlint
 npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
 npm run user -- add <name> [--admin]   # a login (also passwd | list | disable | enable); password prompted, or on stdin
-npm run db:backup                # pg_dump -Fc of DATABASE_URL → backups/ (gitignored, newest 14 kept; LINGO_BACKUPS_DIR overrides); restore: docs/DATA.md §Backups
+npm run db:backup                # pg_dump -Fc of DATABASE_URL → backups/ (gitignored, 0600, newest 14 kept; LINGO_BACKUPS_DIR overrides); restore and the optional launchd job (npm run db:backup:plist -- <path>): docs/DATA.md §Backups
 npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners' oldest language; safe to re-run
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;

@@ -61,6 +61,8 @@ export function redact(url) {
   try {
     const u = new URL(url);
     if (u.password) u.password = "***";
+    // libpq also takes the password as a query parameter.
+    if (u.searchParams.has("password")) u.searchParams.set("password", "***");
     return u.toString();
   } catch {
     return "(unparseable DATABASE_URL)";

@@ -608,6 +608,7 @@ test("DATABASE_URL: the shell, then .env.local, then the default", () => {
   assert.equal(databaseName("postgres://u:p@db.local:5433/other?sslmode=disable"), "other");
   assert.throws(() => databaseName("postgres://localhost/"), /names no database/);
   assert.equal(redact("postgres://u:secret@localhost/x"), "postgres://u:***@localhost/x");
+  assert.ok(!redact("postgres://u@localhost/x?password=hunter2&sslmode=prefer").includes("hunter2"));
 });
 
 test("a linked worktree never defaults to the real database", () => {

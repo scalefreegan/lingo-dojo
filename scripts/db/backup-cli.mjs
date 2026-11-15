@@ -1,35 +1,40 @@
 #!/usr/bin/env node
 // npm run db:backup   pg_dump -Fc of DATABASE_URL into backups/ (gitignored;
 //                     LINGO_BACKUPS_DIR overrides), keeping the newest 14.
+// npm run db:backup:plist -- <out.plist>
+//                     write the launchd template, filled in, to the path you
+//                     give and nowhere else (installing is up to you;
+//                     docs/DATA.md §Backups).
 //
-// The dump goes to a dot-prefixed .partial name and is renamed only when
-// pg_dump exits 0, so a failed dump never looks like a good backup. Pruning
-// touches only this database's own `<db>-<UTC stamp>.dump` files.
-// Restore: docs/DATA.md §Backups (pg_restore into an explicitly named database).
+// The dump goes to a private .partial file and is linked into place only when
+// pg_dump exits 0 (runBackup in backup.mjs), so a failed dump never looks like
+// a good backup. Restore: docs/DATA.md §Backups.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pg from "pg";
+import { REPO_ROOT } from "../content.mjs";
 import { databaseName, databaseUrl, redact } from "./config.mjs";
-import {
-  KEEP_BACKUPS,
-  backupFileName,
-  backupsDir,
-  backupsToPrune,
-  dumpToolIsNewEnough,
-  parseMajor,
-  partialName,
-  pgDumpCandidates,
-  serverMajor,
-} from "./backup.mjs";
+import { backupsDir, chooseDumpTool, parseMajor, pgDumpCandidates, renderPlist, runBackup, serverMajor } from "./backup.mjs";
 
 function fail(msg) {
   console.error(`db:backup: ${msg}`);
   process.exit(1);
 }
 
+function writePlist(out) {
+  if (!out) fail("usage: npm run db:backup:plist -- <output path>  (it writes there and nowhere else)");
+  const tpl = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../macos/com.lingodojo.db-backup.plist.template");
+  const text = renderPlist(fs.readFileSync(tpl, "utf8"), { node: process.execPath, repo: REPO_ROOT, home: os.homedir() });
+  fs.writeFileSync(out, text);
+  console.log(`wrote ${path.resolve(out)}`);
+}
+
 async function main() {
+  if (process.argv[2] === "--plist") return writePlist(process.argv[3]);
   const url = databaseUrl();
   const name = databaseName(url);
   console.log(`database: ${redact(url)}`);
@@ -49,36 +54,23 @@ async function main() {
   if (!candidates.length) {
     fail("pg_dump not found on PATH or in the Homebrew PostgreSQL locations (brew install postgresql@17).");
   }
-  // First candidate that is new enough for the server.
-  let tool = null;
-  const seen = [];
-  for (const c of candidates) {
-    const v = spawnSync(c, ["--version"], { encoding: "utf8" });
-    const major = v.status === 0 ? parseMajor(v.stdout) : null;
-    seen.push(`${c} (${major ?? "unusable"})`);
-    if (dumpToolIsNewEnough(major, serverMaj)) {
-      tool = c;
-      break;
-    }
+  const tools = candidates.map((p) => {
+    const v = spawnSync(p, ["--version"], { encoding: "utf8" });
+    return { path: p, major: v.status === 0 ? parseMajor(v.stdout) : null, text: (v.stdout ?? "").trim() };
+  });
+  const tool = chooseDumpTool(tools, serverMaj);
+  if (!tool) {
+    fail(`no pg_dump as new as the server (PostgreSQL ${serverMaj}). Found: ${tools.map((t) => `${t.path} (${t.major ?? "unusable"})`).join(", ")}.`);
   }
-  if (!tool) fail(`no pg_dump as new as the server (PostgreSQL ${serverMaj}). Found: ${seen.join(", ")}.`);
+  console.log(`using ${tool.path}: ${tool.text} (server major ${serverMaj})`);
 
-  const dir = backupsDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const finalName = backupFileName(name);
-  const tmp = path.join(dir, partialName(finalName));
-  const dest = path.join(dir, finalName);
-  const r = spawnSync(tool, ["-Fc", `--dbname=${url}`, "-f", tmp], { encoding: "utf8" });
-  if (r.error || r.status !== 0) {
-    fs.rmSync(tmp, { force: true });
-    fail(`pg_dump failed (${r.error?.message ?? `exit ${r.status}`}): ${(r.stderr ?? "").trim()}`);
-  }
-  fs.renameSync(tmp, dest);
-  console.log(`wrote ${dest} (${fs.statSync(dest).size} bytes, ${tool})`);
-
-  for (const old of backupsToPrune(fs.readdirSync(dir), name, KEEP_BACKUPS)) {
-    fs.rmSync(path.join(dir, old));
-    console.log(`pruned ${old}`);
+  try {
+    const { dest, pruned, warnings } = runBackup({ url, database: name, dir: backupsDir(), tool: tool.path });
+    console.log(`wrote ${dest} (${fs.statSync(dest).size} bytes)`);
+    for (const w of warnings) console.warn(`warning: ${w}`);
+    for (const p of pruned) console.log(`pruned ${p}`);
+  } catch (e) {
+    fail(e.message);
   }
 }
 
