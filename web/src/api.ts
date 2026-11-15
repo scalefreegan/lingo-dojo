@@ -118,7 +118,7 @@ function check401(res: Response): void {
   if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
 }
 
-async function req<T>(url: string, init?: RequestInit): Promise<T> {
+export async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await send(url, init);
   check401(res);
   const text = await res.text();
@@ -137,7 +137,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-function json(body: unknown, method = "POST"): RequestInit {
+export function json(body: unknown, method = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 

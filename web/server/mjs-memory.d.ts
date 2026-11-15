@@ -83,7 +83,7 @@ declare module "*/scripts/match.mjs" {
     targetVariant: string;
     kind?: "target" | "meaning";
   }): string;
-  export function parseGraderReply(text: unknown): { accepted: boolean; rating_hint: "good" | "hard"; note: string } | null;
+  export function parseGraderReply(text: unknown, opts?: { strict?: boolean }): { accepted: boolean; rating_hint: "good" | "hard"; note: string } | null;
 }
 
 declare module "*/scripts/extraction.mjs" {
@@ -157,6 +157,7 @@ declare module "*/scripts/phrases.mjs" {
   export const MAX_CAPTURE_WORDS: number;
   export const MAX_CAPTURE_CHARS: number;
   export function clean(s: unknown): string;
+  export function isUuid(v: unknown): v is string;
   export function unspaced(locale: unknown): boolean;
   export function charCount(text: unknown): number;
   export function tooLongToCapture(text: unknown, locale?: string | null): boolean;

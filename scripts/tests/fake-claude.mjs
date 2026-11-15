@@ -1,7 +1,8 @@
 // A stand-in `claude` for the HTTP tests of the voice turn: put first on
 // PATH, it answers with the text in `reply` after `delay` ms (both files,
 // read on every run, so a test can change them) and appends a mark to `ran`
-// per run. Nothing real is spawned and no provider is reachable. Not a test
+// per run. The last run's argv is kept too (`lastArgs()`), so a test can
+// read the prompt it was given. Nothing real is spawned and no provider is reachable. Not a test
 // itself (the npm glob is *.test.mjs).
 //
 // A post-session extraction call (its system prompt is the recap's) is
@@ -27,6 +28,7 @@ export function fakeClaude() {
     reply: path.join(bin, "reply.txt"),
     delay: path.join(bin, "delay.txt"),
     ran: path.join(bin, "ran"),
+    args: path.join(bin, "args.json"),
     recap: path.join(bin, "recap.txt"),
     recapDelay: path.join(bin, "recap-delay.txt"),
     recapRan: path.join(bin, "recap-ran"),
@@ -40,7 +42,7 @@ const files = ${JSON.stringify(files)};
 const args = process.argv.slice(2);
 const recap = args.some((a) => a.startsWith("You review one finished practice session"));
 fs.appendFileSync(recap ? files.recapRan : files.ran, "x");
-if (recap) fs.writeFileSync(files.recapArgs, JSON.stringify(args));
+fs.writeFileSync(recap ? files.recapArgs : files.args, JSON.stringify(args));
 const text = fs.readFileSync(recap ? files.recap : files.reply, "utf8");
 const delay = Number(fs.readFileSync(recap ? files.recapDelay : files.delay, "utf8")) || 0;
 setTimeout(() => {
@@ -69,6 +71,8 @@ setTimeout(() => {
     recapRuns: () => count(files.recapRan),
     /** The argv of the last extraction call. */
     recapArgs: () => (fs.existsSync(files.recapArgs) ? JSON.parse(fs.readFileSync(files.recapArgs, "utf8")) : null),
+    /** The argv of the last run that wasn't a recap (no "claude"), or null before any. */
+    lastArgs: () => (fs.existsSync(files.args) ? JSON.parse(fs.readFileSync(files.args, "utf8")) : null),
     install() {
       process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
     },

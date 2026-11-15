@@ -36,6 +36,11 @@ export const MAX_CAPTURE_CHARS = 12;
 /** Languages written without spaces between words (ISO 639-1). */
 const UNSPACED = new Set(["ja", "zh", "th", "lo", "km", "my", "bo"]);
 
+/** A canonical uuid (8-4-4-4-12 hex): an id from a request that isn't one
+ *  never reaches Postgres (whose uuid cast would fail as a 500). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid = (v) => typeof v === "string" && UUID_RE.test(v);
+
 /** Control characters a phrase never needs: C0 (but tab and newline, which
  *  oneLine folds or a note keeps), DEL, and the bidi embeddings, overrides
  *  and isolates, which can make text read differently from what it is. */
@@ -231,7 +236,7 @@ function badString(v, field, max, required) {
  * or `{ error }` for a 400. text and meaning are one line; a note keeps its
  * line breaks. Control characters (C0 but newlines, bidi overrides) are
  * dropped from all three, and the lengths are those of what is stored. An edit takes any of text, meaning, note, starred,
- * suspended; null or "" clears meaning and note. Unknown keys are ignored.
+ * suspended, alternates (to remove some); null or "" clears meaning and note. Unknown keys are ignored.
  */
 export function readPhraseInput(body, { create = false } = {}) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
@@ -251,12 +256,20 @@ export function readPhraseInput(body, { create = false } = {}) {
       value[key] = v || null;
     }
   }
+  // The alternates the grader accepted, as the learner wants to keep them:
+  // only removal is possible (the write keeps those already there).
+  if (body.alternates !== undefined) {
+    if (!Array.isArray(body.alternates) || body.alternates.length > 50 || body.alternates.some((a) => typeof a !== "string" || a.length > LIMITS.text)) {
+      return { error: `alternates must be a list of the phrase's alternates (at most ${LIMITS.text} characters each)` };
+    }
+    value.alternates = body.alternates;
+  }
   for (const key of ["starred", "suspended"]) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== "boolean") return { error: `${key} must be true or false` };
     value[key] = body[key];
   }
-  if (!create && !Object.keys(value).length) return { error: "nothing to change: send text, meaning, note, starred or suspended" };
+  if (!create && !Object.keys(value).length) return { error: "nothing to change: send text, meaning, note, alternates, starred or suspended" };
   return { value };
 }
 

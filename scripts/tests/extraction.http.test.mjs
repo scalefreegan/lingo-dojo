@@ -15,6 +15,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fromRow, review } from "../fsrs.mjs";
+import { cardVersion, phraseRevision } from "../practice.mjs";
 import { serveApi } from "./connect-stack.mjs";
 import { EMPTY_RECAP, fakeClaude } from "./fake-claude.mjs";
 import { copyFixture } from "./helpers.mjs";
@@ -279,6 +280,63 @@ test("a card practised after the session keeps that history: the old session rev
   assert.deepEqual(await q("select * from cards where id = $1", [card.id]), [after], "untouched");
   assert.deepEqual((await sessionReviews(c.id)).map((r) => [r.text, r.rating]), [["mercado", 3]], "the first run's review stays");
   assert.equal((await recapOf(sam, c.id)).events[0].reviewed, false);
+});
+
+test("Practice and the recap on one card: session reviews don't count toward Practice's day, an override and a re-run never clobber each other, a recap made after a practice review leaves that card alone", async () => {
+  const sam = await someone();
+  const stats = async () => (await sam.call("GET", "/api/practice?tz=0")).body.stats.done;
+  const before = await stats();
+  const c = await session(sam);
+  assert.equal((await q("select count(*)::int as n from reviews where conversation_id = $1 and mode <> 'session'", [c.id]))[0].n, 0, "the recap's reviews are mode 'session'");
+  assert.ok((await sessionReviews(c.id)).length > 0);
+  assert.deepEqual(await stats(), before, "not counted in Practice's daily limits");
+
+  // A practice answer on the card the session reviewed, then an override of it.
+  const card = await cardOf(c.id, "mercado", "produce");
+  const phraseId = card.phrase_id;
+  const revision = phraseRevision((await sam.call("GET", `/api/phrases/${phraseId}`)).body.phrase);
+  const a = await sam.call("POST", "/api/practice/answer", {
+    phraseId, skill: "produce", version: cardVersion(fromRow(card)), revision, submitId: crypto.randomUUID(), answer: "mercado", tz: 0,
+  });
+  assert.equal(a.status, 200, a.text);
+  const [practised] = await q("select * from reviews where id = $1", [a.body.review.id]);
+  assert.equal(practised.card_before.submit_id !== undefined, true, "practice keeps its extra keys in card_before");
+  assert.equal(fromRow(practised.card_before).reps, fromRow(card).reps, "graded from the state the session review left");
+  const o = await sam.call("POST", `/api/practice/reviews/${a.body.review.id}/override`, { rating: 1, tz: 0 });
+  assert.equal(o.status, 200, o.text);
+  const sessionRow = (await q("select * from reviews where conversation_id = $1 and card_id = $2", [c.id, card.id]))[0];
+  assert.ok(sessionRow, "the override leaves the session review alone");
+  assert.equal((await sam.call("POST", `/api/practice/reviews/${sessionRow.id}/override`, { rating: 4, tz: 0 })).status, 404, "a session review isn't Practice's to regrade");
+  const [overridden] = await q("select * from cards where id = $1", [card.id]);
+
+  // A re-run of the recap: that card's session review stays, the card keeps practice's state.
+  await retry(sam, c.id);
+  assert.equal((await recapOf(sam, c.id)).status, "done");
+  assert.deepEqual(await q("select * from cards where id = $1", [card.id]), [overridden], "the re-run doesn't undo over practice");
+  assert.equal((await q("select count(*)::int as n from reviews where id = $1", [sessionRow.id]))[0].n, 1);
+  // ...and practice can still regrade its own answer.
+  assert.equal((await sam.call("POST", `/api/practice/reviews/${a.body.review.id}/override`, { rating: 3, tz: 0 })).status, 200);
+
+  // A recap made only after a practice review of the card (it failed at
+  // End, the learner practised, then Retry): that card isn't reviewed at
+  // the session's earlier end.
+  fake.recap("!fail");
+  const c2 = await session(sam);
+  assert.equal((await recapOf(sam, c2.id)).status, "failed");
+  const card2 = (await q("select * from cards where id = $1", [(await cardOf(c2.id, "¿Qué le doy?", "produce")).id]))[0];
+  const p2 = await sam.call("POST", "/api/practice/answer", {
+    phraseId: card2.phrase_id, skill: "produce", version: cardVersion(fromRow(card2)),
+    revision: phraseRevision((await sam.call("GET", `/api/phrases/${card2.phrase_id}`)).body.phrase), submitId: crypto.randomUUID(), answer: "¿Qué le doy?", tz: 0,
+  });
+  assert.equal(p2.status, 200, p2.text);
+  const [afterPractice] = await q("select * from cards where id = $1", [card2.id]);
+  fake.recap(JSON.stringify(RECAP));
+  await retry(sam, c2.id);
+  assert.equal((await recapOf(sam, c2.id)).status, "done");
+  assert.deepEqual(await q("select * from cards where id = $1", [card2.id]), [afterPractice], "practised since the session: left alone");
+  assert.equal((await q("select count(*)::int as n from reviews where conversation_id = $1 and card_id = $2", [c2.id, card2.id]))[0].n, 0);
+  assert.equal((await recapOf(sam, c2.id)).events.find((e) => e.phrase === "¿Qué le doy?").reviewed, false);
+  assert.equal((await sam.call("POST", `/api/practice/reviews/${p2.body.review.id}/override`, { rating: 2, tz: 0 })).status, 200, "practice's answer is still the card's latest");
 });
 
 test("the model's output is untrusted: control characters stripped, sentences not kept, a learner's edits and suspensions respected, ids ignored", async () => {

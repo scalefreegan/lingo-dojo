@@ -28,7 +28,11 @@
 // later review of that card exists, and its sightings (source
 // 'extraction') deleted, before the new reply's are written. A card
 // reviewed again since (in practice) keeps that history: the old session
-// review stays and the new reply doesn't review that card. Phrases the
+// review stays and the new reply doesn't review that card; nor does a
+// recap made (or retried) after a card was reviewed later than the
+// session's end: FSRS reviews only go forward. Practice reads only the FSRS
+// fields of a session review's card_before and never regrades one (its
+// override takes mode 'flashcard' rows only). Phrases the
 // recap kept stay where they are; one only the last run had made, left
 // with no sighting, no reviewed card and nothing the learner set, goes.
 //
@@ -316,6 +320,10 @@ async function writeBank(
     await mine.insertOrIgnore(cards, { phraseId: row.id, skill: e.skill });
     const [card] = await tx.select().from(cards).where(mine.where(cards, and(eq(cards.phraseId, row.id), eq(cards.skill, e.skill)) as SQL)).for("update");
     if (!card || superseded.has(card.id)) continue;
+    // Reviewed since the session ended (Practice, or a later session's
+    // recap, before this one was made or retried): that review already
+    // grades what the learner knows now, and FSRS can't go back in time.
+    if (card.last_review && new Date(card.last_review) > at) continue;
     const before: CardState = fromRow(card);
     const { card: next } = review(before, e.rating, at, { utcOffsetMinutes });
     await mine.update(cards, toRow(next), eq(cards.id, card.id));
