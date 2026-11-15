@@ -48,13 +48,13 @@ declare module "*/scripts/fsrs.mjs" {
     stability: number | string;
     difficulty: number | string;
     scheduled_days: number | string;
-    learning_steps?: number | string | null;
+    learning_steps: number | string;
     reps: number | string;
     lapses: number | string;
     state: number | string;
     last_review?: Date | string | null;
   }): CardState;
-  export function review(card: CardState, rating: Rating, now?: Date | string | number): { card: CardState; log: ReviewLog };
+  export function review(card: CardState, rating: Rating, now?: Date | string | number, opts?: { utcOffsetMinutes?: number; rolloverHour?: number }): { card: CardState; log: ReviewLog };
   export function isDue(card: CardState, now?: Date | string | number): boolean;
   export function ratingForVerdict(verdict: string, hint?: string): Rating | null;
   export function ratingForSessionEvent(kind: string): { skill: Skill; rating: Rating } | null;

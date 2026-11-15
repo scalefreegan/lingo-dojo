@@ -61,14 +61,27 @@ export function toRow(card) {
   return { ...card, due: new Date(card.due), last_review: card.last_review == null ? null : new Date(card.last_review) };
 }
 
-/** A DB row (Date or string dates, extra columns ignored) back to card state. */
+/** learning_steps has no safe default: a card round-tripped without it loses
+ *  its place in the learning ladder and never graduates out of Learning, so a
+ *  missing column must fail loudly, not read as 0. */
+function requireNumber(row, key) {
+  const v = row[key];
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  if (typeof n !== "number" || !Number.isFinite(n)) {
+    throw new TypeError(`fromRow: ${key} is required and must be a number (got ${v === undefined ? "undefined" : JSON.stringify(v)})`);
+  }
+  return n;
+}
+
+/** A DB row (Date or string dates, extra columns ignored) back to card state.
+ *  Throws if learning_steps is missing or not a number. */
 export function fromRow(row) {
   return {
     due: iso(row.due),
     stability: Number(row.stability),
     difficulty: Number(row.difficulty),
     scheduled_days: Number(row.scheduled_days),
-    learning_steps: Number(row.learning_steps ?? 0),
+    learning_steps: requireNumber(row, "learning_steps"),
     reps: Number(row.reps),
     lapses: Number(row.lapses),
     state: Number(row.state),
@@ -79,26 +92,53 @@ export function fromRow(row) {
 /* -------------------------------- review --------------------------------- */
 
 /** Apply a 1-4 rating (Again, Hard, Good, Easy) at `now`. Returns the next card
- *  and a log entry (the review as ts-fsrs saw it, with ISO dates). Reviewing
- *  early or very late is fine: the library measures real elapsed time from
- *  `last_review`, so `due` is a suggestion, not a gate. */
-export function review(card, rating, now = new Date()) {
+ *  and a log entry (the review as ts-fsrs saw it, with ISO dates).
+ *
+ *  Days: ts-fsrs counts elapsed days between UTC midnights, not 24-hour spans,
+ *  so two reviews minutes apart across a midnight would count as a day apart
+ *  and inflate stability. To put the day boundary where the learner's day
+ *  really turns over, times are shifted before they reach ts-fsrs so its
+ *  midnight falls at `rolloverHour` local time (Anki's 4am rule), and shifted
+ *  back in the result, so stored dates are real instants. The module reads
+ *  neither the clock nor the machine's timezone: the caller passes
+ *  `utcOffsetMinutes` (local minus UTC, e.g. -420 for US Mountain daylight
+ *  time) and `now`. Within a day the review is still graded by how early or
+ *  late it is, so out-of-schedule reviews work; "due" is a suggestion.
+ *
+ *  If `now` is earlier than the card's `last_review` (a recap retried after a
+ *  later practice review), `now` is clamped up to `last_review`: ts-fsrs
+ *  rejects a negative interval, and the review still counts. */
+export function review(card, rating, now = new Date(), { utcOffsetMinutes = 0, rolloverHour = 4 } = {}) {
   if (!Number.isInteger(rating) || rating < 1 || rating > 4) {
     throw new RangeError(`rating must be 1-4, got ${rating}`);
   }
-  const out = scheduler.next(toLib(card), new Date(now), rating);
+  if (!Number.isFinite(utcOffsetMinutes) || !Number.isFinite(rolloverHour)) {
+    throw new RangeError("utcOffsetMinutes and rolloverHour must be numbers");
+  }
+  const shift = utcOffsetMinutes * 60_000 - rolloverHour * 3_600_000;
+  let at = new Date(now).getTime();
+  if (card.last_review) at = Math.max(at, new Date(card.last_review).getTime());
+  const fwd = (d) => new Date(new Date(d).getTime() + shift);
+  const back = (d) => iso(new Date(new Date(d).getTime() - shift));
+  const lib = toLib(card);
+  lib.due = fwd(lib.due);
+  if (lib.last_review) lib.last_review = fwd(lib.last_review);
+  const out = scheduler.next(lib, new Date(at + shift), rating);
   const l = out.log;
+  const next = fromLib(out.card);
+  next.due = back(next.due);
+  next.last_review = next.last_review && back(next.last_review);
   return {
-    card: fromLib(out.card),
+    card: next,
     log: {
       rating: l.rating,
       state: l.state,
-      due: iso(l.due),
+      due: back(l.due),
       stability: l.stability,
       difficulty: l.difficulty,
       scheduled_days: l.scheduled_days,
       learning_steps: l.learning_steps,
-      review: iso(l.review),
+      review: back(l.review),
     },
   };
 }

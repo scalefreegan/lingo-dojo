@@ -188,3 +188,63 @@ test("phraseMastery: weakest existing card wins; none is New", () => {
   assert.equal(phraseMastery([mastered, familiar, learning]), "Learning");
   assert.equal(phraseMastery([mastered, newCard(T0)]), "New");
 });
+
+test("fromRow: learning_steps is required", () => {
+  const row = toRow(review(newCard(T0), 3, T0).card);
+  for (const bad of [undefined, null, "", "abc", NaN]) {
+    assert.throws(() => fromRow({ ...row, learning_steps: bad }), /learning_steps/, String(bad));
+  }
+  const { learning_steps: _drop, ...without } = row;
+  assert.throws(() => fromRow(without), /learning_steps/);
+  assert.equal(fromRow({ ...row, learning_steps: "1" }).learning_steps, 1);
+  // with the column, a card round-trips and still graduates out of Learning
+  let c = newCard(T0);
+  let t = T0;
+  for (const r of [1, 3, 3]) {
+    c = fromRow(toRow(review(c, r, t).card));
+    t = new Date(c.due);
+  }
+  assert.notEqual(c.state, 1);
+});
+
+const MT = { utcOffsetMinutes: -420 };
+const goodTwice = (a, b, opts) => {
+  const first = review(newCard(new Date(a)), 3, new Date(a), opts).card;
+  return review(first, 3, new Date(b), opts);
+};
+const noDates = ({ card }) => ({ ...card, due: undefined, last_review: undefined });
+
+test("day boundary: reviews minutes apart agree wherever UTC midnight falls (US Mountain)", () => {
+  const acrossUtc = goodTwice("2026-03-01T23:55:00Z", "2026-03-02T00:05:00Z", MT);
+  const sameUtcDay = goodTwice("2026-03-01T21:45:00Z", "2026-03-01T21:55:00Z", MT);
+  assert.deepEqual(noDates(acrossUtc), noDates(sameUtcDay));
+  // with no offset and no rollover, that UTC midnight does count as a day
+  const naive = goodTwice("2026-03-01T23:55:00Z", "2026-03-02T00:05:00Z", { utcOffsetMinutes: 0, rolloverHour: 0 });
+  assert.ok(naive.card.stability > acrossUtc.card.stability * 1.5);
+});
+
+test("day boundary: crossing 4am local does count as a new day", () => {
+  // 03:55 and 04:05 local (UTC-7) = 10:55Z and 11:05Z
+  const across = goodTwice("2026-03-01T10:55:00Z", "2026-03-01T11:05:00Z", MT);
+  const same = goodTwice("2026-03-01T21:45:00Z", "2026-03-01T21:55:00Z", MT);
+  assert.ok(across.card.stability > same.card.stability * 1.5);
+});
+
+test("review: returned dates are real instants, not shifted", () => {
+  const now = new Date("2026-03-01T23:55:00Z");
+  const { card, log } = review(newCard(now), 3, now, MT);
+  assert.equal(card.last_review, now.toISOString());
+  assert.equal(log.review, now.toISOString());
+  assert.equal(new Date(card.due).getTime() - now.getTime(), 10 * 60_000);
+});
+
+test("review: a now earlier than last_review is clamped, not an error", () => {
+  const first = review(newCard(T0), 3, T0).card;
+  const r = review(first, 1, new Date(T0.getTime() - 3 * DAY));
+  assert.equal(r.card.reps, 2);
+  assert.equal(r.card.last_review, T0.toISOString());
+});
+
+test("review rejects non-numeric options", () => {
+  assert.throws(() => review(newCard(T0), 3, T0, { utcOffsetMinutes: "x" }), RangeError);
+});

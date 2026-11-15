@@ -8,7 +8,8 @@
 // capped before it can reach the database.
 
 import { extractJsonObject } from "./json-reply.mjs";
-import { SESSION_EVENT_KINDS } from "./fsrs.mjs";
+import { SESSION_EVENT_KINDS, ratingForSessionEvent } from "./fsrs.mjs";
+import { normKey, defang } from "./match.mjs";
 
 /** Caps, enforced by parseExtraction. Generous for a 20-minute session; they
  *  exist to bound a runaway reply, not to shape a normal one. */
@@ -61,7 +62,7 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
     "",
     '"keep": up to 10 phrases or useful chunks (not single common words) the learner met and should remember: new, repeated, or hard for them. Write each as the target-language form with its native-language meaning. Prefer whole usable phrases ("¿Me lo envuelve?") over fragments.',
     "",
-    '"events": one entry per phrase that the learner actually used or heard in a way that shows how well they know it, at most one per phrase. "phrase" is the target-language text; for a phrase from the DUE list use its text exactly. "kind" is exactly one of:',
+    '"events": one entry per phrase that the learner actually used or heard in a way that shows how well they know it, at most one per phrase per skill (a phrase may have both an understood and a produced event). "phrase" is the target-language text; for a phrase from the DUE list use its text exactly. "kind" is exactly one of:',
     "- produced: the learner said the phrase correctly on their own, without a hint, a repeat or a choice offered first.",
     "- produced_with_help: the learner said it correctly, but only after a hint, after the coach said it, or after being offered choices.",
     '- corrected: the learner tried to say it (or its meaning) and got it wrong, and the coach corrected them. Put what they said in "said".',
@@ -79,7 +80,7 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
     "",
     "TRANSCRIPT:",
     "<transcript>",
-    renderTranscript(transcript).replace(/<\/?transcript>/gi, ""),
+    defang(renderTranscript(transcript)),
     "</transcript>",
   ].join("\n");
   return { system, user };
@@ -127,20 +128,43 @@ function cleanCorrection(it) {
 /** Clean one list: each bad item is dropped, the list is cut at `cap`, and the
  *  number lost (bad items plus overflow) is added to `acc.dropped`. A field
  *  that is present but not an array loses the whole field. */
-function cleanList(raw, clean, cap, acc) {
+function cleanList(raw, clean, cap, acc, dedupe = (list) => list) {
   if (raw === undefined) return [];
   if (!Array.isArray(raw)) {
     acc.dropped++;
     return [];
   }
-  const good = [];
+  let good = [];
   for (const it of raw) {
     const c = clean(it);
     if (c) good.push(c);
     else acc.dropped++;
   }
+  const before = good.length;
+  good = dedupe(good);
+  acc.dropped += before - good.length;
   acc.dropped += Math.max(0, good.length - cap);
   return good.slice(0, cap);
+}
+
+/** One event per (phrase, skill): a repeated event would review the same card
+ *  twice in one session. The worst outcome for the learner survives (lowest
+ *  rating: Again beats Hard beats Good), at the position of the first. */
+function dedupeEvents(list) {
+  const seen = new Map();
+  const out = [];
+  for (const e of list) {
+    const r = ratingForSessionEvent(e.kind);
+    const key = `${normKey(e.phrase)}\u0000${r.skill}`;
+    const at = seen.get(key);
+    if (at === undefined) {
+      seen.set(key, out.length);
+      out.push(e);
+    } else if (r.rating < ratingForSessionEvent(out[at].kind).rating) {
+      out[at] = e;
+    }
+  }
+  return out;
 }
 
 /** Parse the model's reply. Returns `{ ok: false, error }` when there is no
@@ -157,7 +181,7 @@ export function parseExtraction(text) {
   const value = {
     summary: opt(raw.summary, LIMITS.summary),
     keep: cleanList(raw.keep, cleanKeep, LIMITS.keep, acc),
-    events: cleanList(raw.events, cleanEvent, LIMITS.events, acc),
+    events: cleanList(raw.events, cleanEvent, LIMITS.events, acc, dedupeEvents),
     corrections: cleanList(raw.corrections, cleanCorrection, LIMITS.corrections, acc),
   };
   return { ok: true, value, dropped: acc.dropped };
