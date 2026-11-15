@@ -74,10 +74,17 @@ export interface Scenario {
   roles: Record<string, string>;
   beats: string[];
   vocab: VocabItem[];
+  /** English meanings for a scenario written for every language; the dojo
+   *  master says them in the learner's variant. [] when absent. */
+  phrases: string[];
   /** Optional complications a variation unit may pick from. */
   twists: string[];
   body: string;
   path: string;
+  /** True when roles, twists or the body use {{location}}: the scene is set
+   *  wherever the session says (overrides.location), or in a city the dojo
+   *  master picks. False for a fixed setting like the Oaxaca trip. */
+  uses_location: boolean;
 }
 
 /** content/profile.yaml. The keys below are the contract's; any other key
@@ -98,6 +105,9 @@ export interface Profile {
 export interface Language {
   name: string;
   variants: string[];
+  /** ISO 639 code ("es"), matched against a scenario's `language` prefix
+   *  ("es-MX"); null when languages.yaml gives none. */
+  code: string | null;
 }
 
 /** A file the loader could not use (`error`: left out of the library) or

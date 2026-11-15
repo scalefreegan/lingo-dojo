@@ -15,7 +15,6 @@
 <p align="center">
   <img src="docs/hero.png" alt="Lingo Dojo: a scenario, lesson-unit cards, and an assembled practice prompt" width="800">
 </p>
-<!-- TODO: generate docs/hero.png from docs/hero-image-prompt.md -->
 <p align="center"><sub><i>Scenario in, lesson units stacked, one prompt out.</i></sub></p>
 
 ## Features

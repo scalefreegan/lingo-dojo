@@ -4,8 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { loadContent } from "../content.mjs";
-import { assemble, MISSING_UNIT_LINE, QUICK_SCENARIO_TITLE } from "../assemble.mjs";
-import { FIXTURE } from "./helpers.mjs";
+import { assemble, CHOSEN_CITY, MISSING_UNIT_LINE, QUICK_SCENARIO_TITLE } from "../assemble.mjs";
+import { FIXTURE, copyFixture, write } from "./helpers.mjs";
 
 const content = loadContent(FIXTURE);
 const base = {
@@ -221,4 +221,72 @@ test("scenario bodies get placeholders too; an unknown one is warned about namin
   const quick = run({ scenario: "", quick_scenario: "Help {{learner_name}} buy {{fruit}}." });
   assert.match(quick.markdown, /Help Sam buy \{\{fruit\}\}\./);
   assert.ok(quick.warnings.includes("Unknown placeholder {{fruit}} in the quick scenario; left as-is."), quick.warnings.join("\n"));
+});
+
+/* ------------------------------- location -------------------------------- */
+
+function anywhereContent() {
+  const root = copyFixture();
+  write(root, "scenarios/anywhere.md", [
+    "---",
+    "id: anywhere",
+    "title: Taxi across town",
+    "summary: A ride.",
+    "roles:",
+    "  dojo_master: a driver who knows {{location}} well",
+    "twists: ['Roadworks all over {{location}}']",
+    "phrases: [Take me downtown, How much is it?]",
+    "---",
+    "{{learner_name}} hails a taxi in {{location}}.",
+  ].join("\n"));
+  return loadContent(root);
+}
+
+test("location set: fills {{location}} in roles, twists and body; Setting line; never in the Learner block", () => {
+  const c = anywhereContent();
+  const { markdown, warnings } = run({ scenario: "anywhere", overrides: { location: " Lyon " } }, c);
+  assert.deepEqual(warnings, []);
+  assert.match(markdown, /\*\*Setting:\*\* Lyon\. The place sets the scene/);
+  assert.match(markdown, /- \*\*You \(dojo master\):\*\* a driver who knows Lyon well/);
+  assert.match(markdown, /- Roadworks all over Lyon/);
+  assert.match(markdown, /hails a taxi in Lyon\./);
+  const learner = markdown.slice(markdown.indexOf("## Learner"), markdown.indexOf("## Scenario"));
+  assert.doesNotMatch(learner, /Lyon|Location/);
+});
+
+test("location blank: the dojo master chooses, and {{location}} refers back to that choice", () => {
+  const c = anywhereContent();
+  const { markdown, warnings } = run({ scenario: "anywhere" }, c);
+  assert.deepEqual(warnings, []);
+  assert.match(markdown, /\*\*Setting:\*\* You choose the city\. Pick a real city where /);
+  assert.ok(markdown.includes(`hails a taxi in ${CHOSEN_CITY}.`));
+  assert.equal(run({ scenario: "anywhere" }, c).markdown, markdown, "deterministic");
+});
+
+test("phrases render as a list of meanings for the target variant", () => {
+  const { markdown } = run({ scenario: "anywhere" }, anywhereContent());
+  assert.match(markdown, /\*\*Phrases to work in\*\* \(English meanings; use the natural [^)]+ for each\)\n\n- Take me downtown\n- How much is it\?/);
+});
+
+test("a fixed-setting scenario ignores a leftover location", () => {
+  const { markdown, warnings } = run({ overrides: { location: "Lyon" } });
+  assert.deepEqual(warnings, []);
+  assert.doesNotMatch(markdown, /Lyon|Setting:/);
+});
+
+test("a quick scene never takes a leftover location; {{location}} there is left as-is with a specific warning", () => {
+  const { markdown, warnings } = run({ scenario: "", quick_scenario: "A cafe in {{location}}.", overrides: { location: "Lyon" } });
+  assert.doesNotMatch(markdown, /Lyon|Setting:/);
+  assert.match(markdown, /A cafe in \{\{location\}\}\./);
+  assert.deepEqual(warnings, [
+    "Placeholder {{location}} in the quick scenario is only filled when the scenario uses {{location}} (a fixed-setting or quick scenario doesn't); left as-is.",
+  ]);
+});
+
+test("location comes from the pack only, never from profile.yaml", () => {
+  const c = anywhereContent();
+  const withProfileLocation = { ...c, profile: { ...c.profile, location: "Lyon" } };
+  const { markdown } = run({ scenario: "anywhere" }, withProfileLocation);
+  assert.doesNotMatch(markdown, /Lyon/);
+  assert.match(markdown, /You choose the city/);
 });

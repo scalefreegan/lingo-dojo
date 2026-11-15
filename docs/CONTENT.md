@@ -62,7 +62,8 @@ grammar unless the learner asks.
   person ("you"). Keep each unit self-contained: no references to other units.
 - Body may use these placeholders, substituted at assembly time:
   `{{learner_name}}`, `{{native_language}}`, `{{target_language}}`,
-  `{{target_variant}}`, `{{level}}`, `{{scenario_title}}`. Unknown placeholders
+  `{{target_variant}}`, `{{level}}`, `{{scenario_title}}`, `{{location}}` (meant
+  for scenarios; see below). Unknown placeholders
   are left as-is and reported as a warning. When the effective profile has no
   `target_variant`, `{{target_variant}}` renders as the target language name.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
@@ -84,7 +85,9 @@ collection: Oaxaca trip       # optional; Scene tab groups cards under this head
 category: Food & drink        # optional; Scene tab filter chip. Use one of:
                               #   Food & drink · Getting around · Shopping ·
                               #   Outdoors & sport · Culture & guides ·
-                              #   Lodging & logistics · Health & help
+                              #   Lodging & logistics · Health & help ·
+                              #   Emergencies · People & social ·
+                              #   Errands & admin
 roles:
   dojo_master: the maestro mezcalero, Don Eulogio, 60s, warm, proud of his craft
   learner: a curious visitor on a first trip to Oaxaca
@@ -104,8 +107,66 @@ dojo master: setting, mood, what the learner is trying to accomplish, what
 success looks like.)
 ```
 
-Only `id`, `title`, `summary` are required. Everything else is optional. The body
-may use the same placeholders as units; they are substituted at assembly time.
+Only `id`, `title`, `summary` are required. Everything else is optional. The body,
+`roles` and `twists` may use the same placeholders as units; they are substituted
+at assembly time. `title`, `summary` and `beats` are shown as-is on the Scene tab
+and the voice timeline, so they must not use placeholders (the loader warns when
+they use `{{location}}`).
+
+### Scenarios for every language: `phrases` and `{{location}}`
+
+A trip collection (Oaxaca) is written for one language and one place. A generic
+collection (Travel essentials, Daily life, Social & small talk, Health &
+emergencies, Work & errands; kids: Playtime) works in any target language and city:
+
+```markdown
+---
+id: travel-taxi-rideshare
+title: Taxi or rideshare across town
+summary: Telling the driver where to go, small talk, and the fare.
+collection: Travel essentials
+category: Getting around
+roles:
+  dojo_master: a driver who has lived in {{location}} all their life
+  learner: a visitor heading across town
+beats: [Getting in, Small talk, Paying]
+phrases:                      # English meanings; no target-language words
+  - To this address, please
+  - How long will it take?
+twists:
+  - "A road is closed somewhere in {{location}}"
+---
+{{learner_name}} climbs into a taxi in {{location}}...
+```
+
+- **No `language:`.** Its absence marks the scenario as fitting every language. A
+  scenario with `language` ("es-MX") is written for that language; the Scene tab
+  dims a collection whose scenarios are all written for a language other than the
+  session's target (matched by the `code` in `languages.yaml`) and sorts it last.
+  It stays selectable.
+- **`phrases`** is a list of English meanings. The assembler renders them as
+  "Phrases to work in" and the dojo master says each in the learner's variant.
+  `vocab` (target-language term + gloss) remains for language-specific scenarios.
+- **`{{location}}`** in roles, twists or the body makes the scenario take its place
+  from the session (`uses_location: true` on the loaded scenario). The Scene tab
+  then shows a Location field, saved as the pack's `overrides.location`:
+  - set: `{{location}}` is that place, and a **Setting** line says so. The variant
+    still wins: the voices keep the learner's variant even when people in that
+    place speak another one.
+  - blank: `{{location}}` reads "the city you chose", and the Setting line tells
+    the dojo master to pick a real city where the variant is spoken and name it
+    at the start. The export stays deterministic; the choice happens in session.
+  - A scenario without `{{location}}` ignores `overrides.location`, and the
+    location never appears in the Learner block. A quick scenario never uses
+    it (the learner writes the place into their own text), and the location is
+    read from the pack only, not from `profile.yaml`. `{{location}}` anywhere
+    else (a unit, frame.md, a quick scenario) is left as-is with a warning.
+- Quote any list line containing `: ` (`- "Checkout: bags and payment"`);
+  unquoted, YAML reads it as a mapping. The loader recovers the line but warns.
+- Make no culture-specific assumptions (tipping, currency, haggling, names):
+  defer to "whatever is customary in {{location}}". Kids scenarios don't use
+  `{{location}}`; they ask for a light touch of a culture where the target
+  variant is spoken.
 
 ## `content/profile.yaml` — the learner
 
@@ -127,6 +188,7 @@ languages:
   - name: Spanish
     variants: [Mexican Spanish (Oaxaca), Castilian Spanish (Spain)]
   - name: Japanese
+    code: ja            # optional ISO 639; matched against scenario `language` prefixes
     variants: []
 ```
 
@@ -152,6 +214,7 @@ units:                           # unit ids; order within a slot follows the pac
   - debrief-top-three
 overrides:                       # optional, any profile key (native_language too)
   level: B1
+  location: Lyon                 # only read by a scenario that uses {{location}}
 notes: |
   Today I'd like extra practice with prices and numbers.
 ```

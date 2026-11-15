@@ -1,35 +1,52 @@
 # Languages offered in the native/target pickers. Add a language or a
 # variant here and it appears in the app on the next content reload. `name`
-# is what the prompt says; `variants` are optional regional flavors.
+# is what the prompt says; `variants` are optional regional flavors; `code`
+# (ISO 639) matches a scenario's `language` prefix (es-MX → es) so the Scene
+# tab can dim collections written for another language.
 version: 1
 languages:
   - name: English
+    code: en
     variants: [American English, British English, Australian English]
   - name: Spanish
+    code: es
     variants: [Mexican Spanish (Oaxaca), Mexican Spanish, Castilian Spanish (Spain), Argentine Spanish, Colombian Spanish]
   - name: French
+    code: fr
     variants: [Metropolitan French, Québécois French]
   - name: German
+    code: de
     variants: [Standard German (Germany), Austrian German, Swiss German]
   - name: Italian
+    code: it
     variants: []
   - name: Portuguese
+    code: pt
     variants: [Brazilian Portuguese, European Portuguese]
   - name: Japanese
+    code: ja
     variants: [Standard Japanese (Tokyo), Kansai dialect]
   - name: Mandarin Chinese
+    code: zh
     variants: [Mainland Mandarin (Putonghua), Taiwanese Mandarin]
   - name: Korean
+    code: ko
     variants: []
   - name: Dutch
+    code: nl
     variants: []
   - name: Russian
+    code: ru
     variants: []
   - name: Arabic
+    code: ar
     variants: [Modern Standard Arabic, Egyptian Arabic, Levantine Arabic, Moroccan Arabic]
   - name: Hindi
+    code: hi
     variants: []
   - name: Greek
+    code: el
     variants: []
   - name: Swedish
+    code: sv
     variants: []

@@ -33,7 +33,7 @@ test("loads the fixture tree: schema order, units, scenarios, packs, profile, fr
   // languages.yaml: file order, variants [] when the key is absent
   assert.deepEqual(c.languages.map((l) => l.name), ["English", "Spanish", "Japanese", "Italian", "Korean"]);
   assert.deepEqual(c.languages[2].variants, ["Standard Japanese (Tokyo)", "Kansai dialect"]);
-  assert.deepEqual(c.languages[4], { name: "Korean", variants: [] });
+  assert.deepEqual(c.languages[4], { name: "Korean", variants: [], code: null });
 });
 
 test("languages.yaml: missing is a warning and an empty list; off-contract is an error; bad entries are skipped", () => {
@@ -66,7 +66,7 @@ test("languages.yaml: missing is a warning and an empty list; off-contract is an
     "  - name: '  '",
   ].join("\n"));
   c = loadContent(root);
-  assert.deepEqual(c.languages, [{ name: "Ok", variants: ["A"] }]);
+  assert.deepEqual(c.languages, [{ name: "Ok", variants: ["A"], code: null }]);
   assert.deepEqual(problemFor(c, "languages.yaml").map((p) => `${p.level}: ${p.message}`), [
     "warning: languages[0] (Ok): variants[1] is not a string; skipped",
     "error: languages[1] needs a non-empty `name`; skipped",
@@ -461,4 +461,65 @@ test("the kids tree loads on its own and shares the content root's languages.yam
     if (was === undefined) delete process.env.LINGO_CONTENT_DIR;
     else process.env.LINGO_CONTENT_DIR = was;
   }
+});
+
+test("languages.yaml: an optional ISO code, lowercased", () => {
+  const root = copyFixture();
+  write(root, "languages.yaml", ["languages:", "  - name: Spanish", "    code: ES", "  - name: Odd", "    code: 3"].join("\n"));
+  const c = loadContent(root);
+  assert.deepEqual(c.languages, [{ name: "Spanish", variants: [], code: "es" }, { name: "Odd", variants: [], code: null }]);
+  assert.match(problemFor(c, "languages.yaml")[0].message, /`code` should be a string/);
+});
+
+test("scenarios: phrases, uses_location, and {{location}} where it can't be filled", () => {
+  const root = copyFixture();
+  write(root, "scenarios/anywhere.md", [
+    "---",
+    "id: anywhere",
+    "title: 'A taxi in {{location}}'",
+    "summary: Across town.",
+    "roles:",
+    "  dojo_master: a driver from {{location}}",
+    "beats: [Getting in, 'Paying in {{location}}']",
+    "phrases: [Take me downtown, '', 4]",
+    "---",
+    "Body without the placeholder.",
+  ].join("\n"));
+  const c = loadContent(root);
+  const s = c.scenarios.find((x) => x.id === "anywhere");
+  assert.deepEqual(s.phrases, ["Take me downtown"]);
+  assert.equal(s.uses_location, true);
+  assert.equal(c.scenarios.find((x) => x.id === "market").uses_location, false);
+  assert.deepEqual(problemFor(c, "anywhere.md").map((p) => p.message), [
+    "phrases[1] should be a non-empty string; skipped",
+    "phrases[2] should be a non-empty string; skipped",
+    "title uses {{location}}, which is only filled in roles, twists and the body; it will show as-is",
+    "beats[1] uses {{location}}, which is only filled in roles, twists and the body; it will show as-is",
+  ]);
+});
+
+test("scenarios: an unquoted ': ' line is read back with a warning; a non-string language is dropped", () => {
+  const root = copyFixture();
+  write(root, "scenarios/colon.md", [
+    "---",
+    "id: colon",
+    "title: Colon",
+    "summary: S.",
+    "language: [es]",
+    "beats:",
+    "  - Arriving",
+    "  - Checkout: bags and payment",
+    "phrases: ['In {{location}}']",
+    "---",
+    "Body.",
+  ].join("\n"));
+  const c = loadContent(root);
+  const s = c.scenarios.find((x) => x.id === "colon");
+  assert.deepEqual(s.beats, ["Arriving", "Checkout: bags and payment"]);
+  assert.equal(s.language, null);
+  assert.deepEqual(problemFor(c, "colon.md").map((p) => p.message), [
+    'beats[1] parsed as a mapping (an unquoted ": "); read as "Checkout: bags and payment" — quote the line',
+    "phrases[0] uses {{location}}, which is only filled in roles, twists and the body; it will show as-is",
+    'language should be a code like "es-MX"; ignored',
+  ]);
 });

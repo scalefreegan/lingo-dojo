@@ -103,7 +103,14 @@ export const PLACEHOLDERS = [
   "target_variant",
   "level",
   "scenario_title",
+  "location",
 ];
+
+/** A scenario that uses {{location}} anywhere is set wherever the session
+ *  says (the Scene tab's Location, `overrides.location`), or in a city the
+ *  dojo master picks when that is blank. One regex so the loader, the
+ *  assembler and the UI agree on what "uses it" means. */
+export const LOCATION_RE = /\{\{\s*location\s*\}\}/;
 
 /* ------------------------------ frontmatter ------------------------------ */
 
@@ -173,6 +180,31 @@ const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 
 /** A list of strings from a YAML value: an array of scalars, a lone scalar,
  *  or nothing. `level: B1` and `level: [B1]` mean the same thing. */
+/**
+ * A list of prose lines (beats, twists). An unquoted line with ": " in it
+ * ("Checkout: bags and payment") parses as a one-key mapping, which strList
+ * would drop without a word; read it back as the line it was meant to be and
+ * say so, so the author quotes it.
+ */
+function proseList(v, field, abs, report) {
+  if (v == null) return [];
+  const arr = Array.isArray(v) ? v : [v];
+  const out = [];
+  arr.forEach((x, i) => {
+    if (x == null) return;
+    if (isObj(x) && Object.keys(x).length === 1 && typeof Object.values(x)[0] !== "object") {
+      const [[k, val]] = Object.entries(x);
+      out.push(`${k}: ${val}`);
+      report(abs, "warning", `${field}[${i}] parsed as a mapping (an unquoted ": "); read as "${k}: ${val}" — quote the line`);
+    } else if (typeof x === "object") {
+      report(abs, "warning", `${field}[${i}] should be a string; skipped`);
+    } else {
+      out.push(String(x));
+    }
+  });
+  return out;
+}
+
 function strList(v) {
   if (v == null) return [];
   const arr = Array.isArray(v) ? v : [v];
@@ -346,7 +378,13 @@ function loadLanguages(abs, report) {
       if (isStr(v)) variants.push(v.trim());
       else report(abs, "warning", `${where} (${name}): variants[${j}] is not a string; skipped`);
     });
-    languages.push({ name, variants });
+    // code: the language's ISO 639 code ("es"), matched against the prefix of
+    // a scenario's `language` ("es-MX") to tell which collections were
+    // written for another language. Optional; a language without one never
+    // dims anything.
+    const code = isStr(l.code) ? l.code.trim().toLowerCase() : null;
+    if (l.code != null && !code) report(abs, "warning", `${where} (${name}): \`code\` should be a string like "es"; ignored`);
+    languages.push({ name, variants, code });
   });
   return languages;
 }
@@ -406,19 +444,51 @@ function loadScenario(abs, report) {
   } else if (fm.vocab != null) {
     report(abs, "warning", "vocab should be a list of { term, gloss }; ignored");
   }
+  // phrases: English meanings for a scenario written for every language; the
+  // dojo master supplies the words in the learner's variant.
+  const phrases = [];
+  if (Array.isArray(fm.phrases)) {
+    fm.phrases.forEach((p, i) => {
+      if (isStr(p)) phrases.push(p.trim());
+      else report(abs, "warning", `phrases[${i}] should be a non-empty string; skipped`);
+    });
+  } else if (fm.phrases != null) {
+    report(abs, "warning", "phrases should be a list of strings; ignored");
+  }
+  const beats = proseList(fm.beats, "beats", abs, report);
+  const twists = proseList(fm.twists, "twists", abs, report);
+  // Title, summary, beats and phrases are shown as-is (Scene tab, voice
+  // timeline, the phrase list), where a raw {{location}} would leak; the
+  // assembler only fills roles, twists and the body.
+  for (const [field, text] of [
+    ["title", fm.title],
+    ["summary", fm.summary],
+    ...beats.map((b, i) => [`beats[${i}]`, b]),
+    ...phrases.map((p, i) => [`phrases[${i}]`, p]),
+  ]) {
+    if (LOCATION_RE.test(String(text))) report(abs, "warning", `${field} uses {{location}}, which is only filled in roles, twists and the body; it will show as-is`);
+  }
+  // `language` drives the Scene tab's dimming (a string split on "-"), so
+  // anything else is dropped here rather than crashing the tab.
+  let language = null;
+  if (isStr(fm.language)) language = fm.language.trim();
+  else if (fm.language != null) report(abs, "warning", 'language should be a code like "es-MX"; ignored');
+  const usesLocation = [body, ...Object.values(roles), ...twists].some((t) => LOCATION_RE.test(t));
   return {
     ...fm,
     id: fm.id,
     title: fm.title.trim(),
     summary: fm.summary.trim(),
     tags: strList(fm.tags),
-    language: typeof fm.language === "string" ? fm.language : null,
+    language,
     collection: typeof fm.collection === "string" && fm.collection.trim() ? fm.collection.trim() : null,
     category: typeof fm.category === "string" && fm.category.trim() ? fm.category.trim() : null,
     roles,
-    beats: strList(fm.beats),
+    beats,
     vocab,
-    twists: strList(fm.twists),
+    phrases,
+    twists,
+    uses_location: usesLocation,
     body,
     path: displayPath(abs),
   };

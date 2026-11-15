@@ -11,7 +11,7 @@ roles:
   learner: a traveler feeling unwell, either an altitude headache or an upset stomach, who needs something simple and clear instructions
 beats:
   - Walking up to the counter and explaining what is wrong
-  - Gloria's questions: how long, how bad, allergies, other medicine
+  - "Gloria's questions: how long, how bad, allergies, other medicine"
   - She recommends something; the learner asks how and when to take it
   - Asking about side effects and when to see a doctor
   - Paying and getting a receipt
