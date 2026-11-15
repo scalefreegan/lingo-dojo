@@ -199,5 +199,24 @@ declare module "*/scripts/voice.mjs" {
   export function normalizeVoiceSettings(raw: unknown): import("../shared/wire.ts").VoiceSettings;
 }
 
+declare module "*/scripts/db/config.mjs" {
+  export const DEFAULT_DATABASE_URL: string;
+  export const MIGRATIONS_DIR: string;
+  /** The shell's DATABASE_URL, else .env.local's, else the default. */
+  export function databaseUrl(env?: Record<string, string | undefined>, file?: string): string;
+  /** Throws when the URL names no database. */
+  export function databaseName(url: string): string;
+  /** The URL with any password masked. */
+  export function redact(url: string): string;
+}
+
+declare module "*/scripts/db/migrations.mjs" {
+  /** Read-only: how far the database is behind the committed migrations. */
+  export function migrationState(
+    query: (text: string) => Promise<Record<string, unknown>[]>,
+    dir?: string,
+  ): Promise<{ latestApplied: number | null; total: number; pending: number }>;
+}
+
 // Everything else: untyped.
 declare module "*.mjs";

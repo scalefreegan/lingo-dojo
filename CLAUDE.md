@@ -1,9 +1,15 @@
 # Lingo Dojo — agent instructions
 
 Composable prompt-pack builder for language-practice sessions with a voice "dojo
-master". Single user, localhost, no auth, **no database**: all content is markdown
-and YAML under `content/`, tracked by git. Read `docs/PRD.md` first, then
-`docs/CONTENT.md` (the file-format contract) before touching content or the loader.
+master". Single user, localhost, no auth (yet). The library is markdown and YAML
+under `content/`, tracked by git. Read `docs/PRD.md` first, then `docs/CONTENT.md`
+(the file-format contract) before touching content or the loader.
+
+A Postgres database is being added for personal data (logins, learners, packs,
+conversations, the phrase bank); `docs/DATA.md` is its contract. Only the
+foundation exists so far (phase 0: schema, migrations, setup, boot check, test
+harness). No route reads or writes it yet, and every feature still runs on
+files as described below.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
@@ -20,6 +26,13 @@ and YAML under `content/`, tracked by git. Read `docs/PRD.md` first, then
   `web/server/voice.ts`, pure helpers in `scripts/voice.mjs`; see `docs/VOICE.md`.
   Provider keys live only in the gitignored repo-root `.env.local` and never
   reach the browser. Voice turns spawn `claude -p` with **no tools**.
+- Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated
+  SQL in `scripts/db/migrations/` (commit it; edit the schema, then
+  `npm run db:generate`, never hand-write a migration except the extension
+  lines). `web/server/db.ts` holds the one lazy pg Pool; `DATABASE_URL` comes
+  from `.env.local`, default `postgres://localhost/lingo_dojo`. Personal rows
+  go through `forLearner()` / `forUser()` (`scripts/db/owned.ts`), never a bare
+  query. The dev server refuses to start until `npm run db:setup` has run.
 - Runtime state (chat history, model setting, voice settings) is JSON under `data/` (gitignored).
   Exports go to `exports/` (gitignored).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
@@ -40,7 +53,10 @@ when done. Prefix `ld`. File new work as beads, not TODO comments.
 ## Build & test
 ```sh
 npm install && npm --prefix web install
-npm run dev                    # http://localhost:38400
+npm run db:setup               # create the database if missing, apply migrations (idempotent)
+npm run db:migrate             # apply pending migrations only
+npm run db:generate            # after editing scripts/db/schema.ts: write the next migration
+npm run dev                    # http://localhost:38400 (needs a current database)
 npm test                       # node --test scripts/tests/*.test.mjs
 npm --prefix web run lint      # oxlint
 (cd web && npx tsc -b)
@@ -48,7 +64,9 @@ npm run export -- content/packs/<id>.yaml
 npm run export -- content/kids/packs/<id>.yaml   # kids library → exports/kids/
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
-never write to the real `content/` or `exports/` from a test.
+never write to the real `content/` or `exports/` from a test. Database tests use
+`freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
+migrations); a test never connects to the dev database or any Postgres server.
 
 ## Conventions
 - TypeScript strict; `oxlint` (config copied from wine-guide).

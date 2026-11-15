@@ -11,7 +11,7 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 | Decision | Choice |
 |---|---|
-| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** |
+| Content store | Markdown + YAML frontmatter files under `content/`; git is the history; **no database** (v1). Superseded in part on 2026-11-15: personal data (logins, learners, packs, conversations, phrase bank) moves to Postgres per docs/DATA.md, while the library stays in files. So far only the foundation exists (schema, migrations, `npm run db:setup`, boot check); no feature uses it yet |
 | Embedded agent | Headless `claude -p` subprocess (sibling pattern) with Read on the repo and **Write/Edit scoped to `content/`**; every agent change is auto-committed so it can be reverted |
 | Export | One self-contained markdown prompt; Copy button and a file written to `exports/` |
 | Stack | Match Atlas (`../travel-guide`): React 19 + Vite + TS strict, Vite middleware API, Tailwind 4, oxlint, `node --test`; Dock app from `macos/`; **port 38400** |

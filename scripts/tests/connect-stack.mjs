@@ -43,8 +43,9 @@ export function connectStack() {
 export async function serveApi(apiPlugins) {
   const stack = connectStack();
   // The plugin's own configureServer: every mount in the order the app
-  // uses. Only `middlewares` is consulted.
-  apiPlugins().configureServer({ middlewares: stack });
+  // uses. Only `middlewares` is consulted. No database boot check: these
+  // tests must run without a Postgres server.
+  apiPlugins({ checkDatabase: false }).configureServer({ middlewares: stack });
   const server = http.createServer((req, res) => stack.handle(req, res));
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   return {
