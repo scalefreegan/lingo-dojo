@@ -1284,3 +1284,83 @@ test("normalizeVoiceSettings: the last session length per mode, only from that m
   assert.deepEqual(normalizeVoiceSettings({ sessionMinutes: 10 }).sessionMinutes, { adult: null, kids: null });
   assert.deepEqual(Object.keys(MINUTE_CHOICES), ["adult", "kids"]);
 });
+
+// ld-tvs: a Mandarin session was spoken by German and Spanish voices.
+import { elevenLibraryLocale } from "../voice.mjs";
+
+test("library locales: Mandarin goes by the library's cmn- codes, an unknown locale by language alone", () => {
+  assert.equal(elevenLibraryLocale("zh-TW"), "cmn-TW");
+  assert.equal(elevenLibraryLocale("zh-CN"), "cmn-CN");
+  assert.equal(elevenLibraryLocale("es-MX"), "es-MX");
+  assert.equal(elevenLibraryLocale("zh-HK"), "", "a locale the library rejects is never sent");
+  const tw = new URL(elevenLibraryRequest({ key: "K", locale: "zh-TW", gender: "male" }).url).searchParams;
+  assert.equal(tw.get("language"), "zh");
+  assert.equal(tw.get("locale"), "cmn-TW");
+  const any = new URL(elevenLibraryRequest({ key: "K", locale: "zh-TW", gender: "male", anyLocale: true }).url).searchParams;
+  assert.equal(any.get("language"), "zh", "the widened search is still the same language");
+  assert.equal(any.get("locale"), null);
+  assert.equal(new URL(elevenLibraryRequest({ key: "K", locale: "zh-HK" }).url).searchParams.get("locale"), null);
+});
+
+test("cast pools: with no native voice, only the learner's own language stands in, never a third", () => {
+  const account = {
+    voices: [
+      { voice_id: "de", name: "German man", labels: { language: "de", gender: "male" }, category: "professional" },
+      { voice_id: "es", name: "Spanish man", labels: { language: "es", gender: "male" }, category: "professional" },
+      { voice_id: "en", name: "English man", labels: { language: "en", gender: "male" }, category: "premade" },
+      { voice_id: "dew", name: "German woman", labels: { language: "de", gender: "female" }, category: "professional" },
+    ],
+  };
+  const own = elevenVoices(account, "zh-TW", "en-US");
+  assert.deepEqual(own.filter((v) => v.home).map((v) => v.id), ["en"]);
+  assert.deepEqual(poolFor(own, "male").map((v) => v.id), ["en"], "the English voice, not the German or Spanish one");
+  assert.deepEqual(poolFor(own, "female"), [], "no woman of either language: no voice, rather than a German one");
+  // The library failed for both genders: the pools still hold no third language.
+  const { pools } = castPools({ slots: ["narrator:male", "narrator:female"], library: { male: null, female: null }, own });
+  assert.deepEqual(pools.male.map((v) => v.id), ["en"]);
+  assert.deepEqual(pools.female, []);
+  const fb = castFallbacks(own, ["narrator:male", "narrator:female"]);
+  assert.equal(fb["narrator:male"], "en");
+  assert.equal(fb["narrator:female"], undefined, "no fallback in a third language either");
+  // A native voice still wins, and a list that marks no home voices (Azure,
+  // macOS, the settings picker) keeps its old order.
+  const withNative = elevenVoices({ voices: [...account.voices, { voice_id: "zh", name: "Mandarin man", labels: { language: "zh", gender: "male" } }] }, "zh-TW", "en-US");
+  assert.deepEqual(poolFor(withNative, "male").map((v) => v.id), ["zh"]);
+  assert.deepEqual(poolFor(elevenVoices(account, "zh-TW"), "male").length, 3, "without a native locale nothing is ruled out");
+});
+
+test("cast: exact-locale voices are drawn before the widened ones; premade voices are the last resort", () => {
+  // Two Taiwanese voices and many mainland ones: the first two slots take the Taiwanese.
+  const pool = [{ id: "tw1", name: "TW 1", exact: true }, { id: "tw2", name: "TW 2", exact: true }, ...Array.from({ length: 30 }, (_, i) => ({ id: `cn${i}`, name: `CN ${i}` }))];
+  for (let n = 0; n < 20; n++) {
+    const cast = pickCast({ slots: ["narrator:female", "sidekick:female", "character:female"], pools: { female: pool } });
+    assert.deepEqual([cast["narrator:female"].id, cast["sidekick:female"].id].sort(), ["tw1", "tw2"]);
+    assert.match(cast["character:female"].id, /^cn/, "then another Mandarin, not a repeat");
+  }
+  // A Swedish learner: the English premade voices aren't `home`, but they
+  // beat silence, and the German voice is still never drawn.
+  const account = {
+    voices: [
+      { voice_id: "de", name: "German man", labels: { language: "de", gender: "male" }, category: "professional" },
+      { voice_id: "pre", name: "Premade man", labels: { language: "en", gender: "male" }, category: "premade" },
+    ],
+  };
+  const own = elevenVoices(account, "zh-TW", "sv-SE");
+  assert.deepEqual(poolFor(own, "male").map((v) => v.id), ["pre"]);
+  assert.equal(castFallbacks(own, ["narrator:male"])["narrator:male"], "pre");
+});
+
+test("library locales: every app locale maps to a library one or is knowingly searched by language", async () => {
+  const { elevenLibrarySearchable } = await import("../voice.mjs");
+  // Locales the library doesn't list: searched by language alone (de-CH
+  // gets every German) or, for Cantonese, not at all.
+  const byLanguage = new Set(["de-CH"]);
+  for (const [language, variants] of [["German", ["", "Austrian", "Swiss"]], ["Mandarin Chinese", ["", "Taiwanese Mandarin"]], ["Spanish", ["", "Castilian", "Argentinian", "Colombian"]], ["French", ["", "Canadian"]], ["Portuguese", ["", "European"]], ["Dutch", ["", "Flemish"]], ["Arabic", ["", "Egyptian", "Levantine", "Moroccan"]], ["Japanese", [""]], ["Korean", [""]], ["Italian", [""]], ["Russian", [""]], ["Hindi", [""]], ["Greek", [""]], ["Swedish", [""]], ["English", ["", "British", "Australian"]]]) {
+    for (const v of variants) {
+      const locale = localeFor(language, v);
+      assert.ok(elevenLibraryLocale(locale) || byLanguage.has(locale), `${locale} (${language} ${v}) has no Voice Library locale`);
+    }
+  }
+  assert.equal(elevenLibrarySearchable("zh-HK"), false, "Cantonese is never searched as zh: that returns Mandarin");
+  assert.equal(elevenLibrarySearchable("zh-TW"), true);
+});

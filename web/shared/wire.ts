@@ -645,6 +645,8 @@ export interface VoiceChoice {
   gender: string;
   note: string;
   match: boolean;
+  /** Native to the learner's own language (ElevenLabs, when /cast knows it). */
+  home?: boolean;
   /** How old it sounds, when the provider labels it. */
   age?: VoiceAge | "";
   /** An ElevenLabs premade voice (usable on any plan). */
@@ -860,6 +862,9 @@ export interface VoiceSpeakRequest {
 export interface VoiceCastRequest {
   mode: Mode;
   locale: string;
+  /** The learner's own language. Where no voice is native to `locale`,
+   *  only a speaker of this one may stand in, never a third language's. */
+  nativeLocale?: string;
   /** The pack's unit ids: a narrator-female/-male unit fixes the gender. */
   units: string[];
   /** Slot → the age wanted; a slot without one takes any age. */
