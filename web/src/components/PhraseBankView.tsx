@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
-import { hanChars } from "../script/script.ts";
+import { hanChars, scriptFor } from "../script/script.ts";
 import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
 
@@ -386,6 +386,9 @@ function PhraseRow({
   );
 }
 
+// How long a removed alternate can be put back before it is removed.
+const ALT_UNDO_MS = 5000;
+
 function PhraseDetailView({
   id,
   locale,
@@ -404,6 +407,56 @@ function PhraseDetailView({
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ text: "", meaning: "", note: "" });
+
+  // An alternate the learner tapped × on: hidden at once, removed when the
+  // Undo window closes (or another is removed, or the panel closes).
+  const [removingAlt, setRemovingAlt] = useState<string | null>(null);
+  const pendingAlt = useRef<{ alt: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+
+  async function commitAlt() {
+    const p = pendingAlt.current;
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingAlt.current = null;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await updatePhrase(id, { removeAlternates: [p.alt] });
+      setDetail(r.phrase);
+      onChanged();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+      setRemovingAlt((cur) => (cur === p.alt ? null : cur));
+    }
+  }
+
+  function removeAlt(alt: string) {
+    void commitAlt();
+    pendingAlt.current = { alt, timer: setTimeout(() => void commitAlt(), ALT_UNDO_MS) };
+    setRemovingAlt(alt);
+  }
+
+  function undoRemoveAlt() {
+    if (pendingAlt.current) clearTimeout(pendingAlt.current.timer);
+    pendingAlt.current = null;
+    setRemovingAlt(null);
+  }
+
+  // Closing the panel inside the Undo window still removes it, as shown.
+  // Nothing is left to report to then: if it fails, the alternate stays,
+  // which only means it is still accepted.
+  useEffect(
+    () => () => {
+      const p = pendingAlt.current;
+      if (!p) return;
+      clearTimeout(p.timer);
+      pendingAlt.current = null;
+      updatePhrase(id, { removeAlternates: [p.alt] }).catch(() => {});
+    },
+    [id],
+  );
 
   // Re-read whenever the list row changes (an edit, a star).
   useEffect(() => {
@@ -477,8 +530,8 @@ function PhraseDetailView({
       ) : (
         <>
           {detail.note && <p className="whitespace-pre-wrap text-fg-2">{detail.note}</p>}
-          {/* Chinese: each character opens the character card. */}
-          {detail.text && hanChars(detail.text).length > 0 && (
+          {/* Mandarin: each character opens the character card (not for Japanese or Cantonese, where CharTerm draws no tiles). */}
+          {detail.text && scriptFor(locale) && hanChars(detail.text).length > 0 && (
             <p className="flex flex-wrap items-baseline gap-x-2">
               <span className={`${fine} text-fg-3`}>Characters</span>
               <CharTerm text={detail.text} locale={locale} className="text-lg font-medium text-accent" />
@@ -498,31 +551,44 @@ function PhraseDetailView({
                 <dd>{detail.lapses} in the last 30 days</dd>
               </>
             )}
-            {detail.alternates.length > 0 && (
+            {(detail.alternates.length > 0 || removingAlt) && (
               <>
                 <dt>Also accepted</dt>
-                <dd>
+                <dd className="flex flex-col gap-1">
                   {/* Other wordings the practice grader accepted and saved.
-                      Removal only: the PATCH keeps the ones it names, so a
-                      wrong one can go, and a right one comes back the next
-                      time the grader accepts it. */}
+                      Removal only: × hides one, and only after a few
+                      seconds without Undo is it removed (by name, so one
+                      the grader saved meanwhile stays). A right one comes
+                      back the next time the grader accepts it. */}
                   <ul className="flex flex-wrap gap-1.5" aria-label="Also accepted">
-                    {detail.alternates.map((alt) => (
-                      <li key={alt} className="inline-flex items-center gap-0.5 rounded-full bg-raised py-0.5 pr-0.5 pl-2.5">
-                        <RubyText text={alt} locale={locale} />
-                        <button
-                          type="button"
-                          className="min-h-0 rounded-full px-1.5 text-fg-3 hover:bg-line hover:text-fg disabled:opacity-50"
-                          aria-label={`Remove “${alt}” from also accepted`}
-                          title="Remove"
-                          disabled={busy}
-                          onClick={() => void run(() => updatePhrase(id, { alternates: detail.alternates.filter((a) => a !== alt) }), onChanged)}
-                        >
-                          ×
-                        </button>
-                      </li>
-                    ))}
+                    {detail.alternates
+                      .filter((a) => a !== removingAlt)
+                      .map((alt) => (
+                        <li key={alt} className="inline-flex items-center gap-0.5 rounded-full bg-raised py-0.5 pr-0.5 pl-2.5">
+                          <RubyText text={alt} locale={locale} />
+                          <button
+                            type="button"
+                            className="inline-grid min-w-10 place-items-center rounded-full text-base text-fg-3 hover:bg-line hover:text-fg disabled:opacity-50 sm:min-h-7 sm:min-w-7"
+                            aria-label={`Remove “${alt}” from also accepted`}
+                            title="Remove"
+                            disabled={busy}
+                            onClick={() => removeAlt(alt)}
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
                   </ul>
+                  {removingAlt && (
+                    <p role="status" className="flex flex-wrap items-center gap-2">
+                      <span>
+                        Removed “<RubyText text={removingAlt} locale={locale} />”.
+                      </span>
+                      <Button variant="ghost" className={small} onClick={undoRemoveAlt}>
+                        Undo
+                      </Button>
+                    </p>
+                  )}
                 </dd>
               </>
             )}

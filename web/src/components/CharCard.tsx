@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type HanziWriterType from "hanzi-writer";
 import { listPhrases, speakLine } from "../api";
 import { loadZh, useScript } from "../script/ruby.tsx";
-import { parseRadical, pinyinToZhuyin } from "../script/script.ts";
+import { ARPHIC_LICENSE_URL, parseRadical, pinyinToZhuyin } from "../script/script.ts";
 import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
 import type { PhraseSummary } from "../types";
 import { CharTerm } from "./Ruby";
@@ -38,6 +38,11 @@ function loadChars(): Promise<Chars> {
   return charsLoad;
 }
 
+// The bank's phrases with the character: how many the card shows, and how
+// many pages of search results it reads for them (per form) at most.
+const BANK_SHOWN = 12;
+const BANK_PAGES = 6;
+
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || null;
 // The first sense: up to the first ; or a comma outside parentheses ("silver (element 47, Ag)").
 const firstSense = (s: string) => s.split(/;|,(?![^(]*\))/)[0].trim();
@@ -46,6 +51,7 @@ const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(pre
 export default function CharCard({ ch, locale, onClose }: { ch: string; locale: string; onClose: () => void }) {
   const { kids, openChar } = useScript();
   const dialog = useRef<HTMLDialogElement>(null);
+  const pressedBackdrop = useRef(false);
   // Each result says which character it is for, and is only set from its
   // reply: a card that moved on to another character shows "loading" for
   // it rather than the last one's data.
@@ -102,16 +108,28 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
     if (lookFor == null) return;
     const ctrl = new AbortController();
     const forms = [...lookFor];
-    Promise.all(forms.map((f) => listPhrases({ q: f, limit: 50 }, ctrl.signal))).then(
+    // The search also matches meanings and notes, so a page of 50 can hold
+    // none with the character in its words: read on, page by page, until
+    // there are enough to show or the results end, at most BANK_PAGES pages
+    // a form.
+    async function search(f: string): Promise<PhraseSummary[]> {
+      const found: PhraseSummary[] = [];
+      let offset: number | null = 0;
+      for (let page = 0; offset != null && page < BANK_PAGES && found.length < BANK_SHOWN; page++) {
+        const r = await listPhrases({ q: f, limit: 50, offset }, ctrl.signal);
+        found.push(...r.phrases.filter((p) => p.text?.includes(f)));
+        offset = r.nextOffset;
+      }
+      return found;
+    }
+    Promise.all(forms.map(search)).then(
       (replies) => {
         const seen = new Set<string>();
         const hits: PhraseSummary[] = [];
-        for (const r of replies) {
-          for (const p of r.phrases) {
-            if (!p.text || seen.has(p.id) || !forms.some((f) => p.text!.includes(f))) continue;
-            seen.add(p.id);
-            hits.push(p);
-          }
+        for (const p of replies.flat()) {
+          if (seen.has(p.id)) continue;
+          seen.add(p.id);
+          hits.push(p);
         }
         setBank({ key: lookFor, list: hits });
       },
@@ -144,9 +162,15 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
           onClose();
         }
       }}
+      onPointerDown={(e) => {
+        pressedBackdrop.current = e.target === dialog.current;
+      }}
       onClick={(e) => {
-        // A tap on the backdrop (the dialog element itself, outside its box) closes it.
-        if (e.target === dialog.current) onClose();
+        // A tap on the backdrop (the dialog element itself, outside its box)
+        // closes it: pressed and released there. A drag that starts inside
+        // (a traced stroke that overshoots) and lets go outside does not.
+        if (e.target === dialog.current && pressedBackdrop.current) onClose();
+        pressedBackdrop.current = false;
       }}
       data-testid="char-card"
     >
@@ -239,7 +263,7 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
           {phrases && phrases.length === 0 && <p className="text-sm text-fg-3">{kids ? "None yet!" : "No phrases with it yet."}</p>}
           {phrases && phrases.length > 0 && (
             <ul className="flex flex-col gap-1">
-              {phrases.slice(0, 12).map((p) => (
+              {phrases.slice(0, BANK_SHOWN).map((p) => (
                 <li key={p.id} className="flex flex-wrap items-baseline gap-x-2">
                   <CharTerm text={p.text!} locale={locale} className={`font-medium text-accent ${kids ? "text-xl" : "text-base"}`} />
                   {p.meaning && <span className="text-sm text-fg-2">{p.meaning}</span>}
@@ -250,7 +274,11 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
         </section>
 
         <p className="text-sm text-fg-3 sm:text-xs">
-          Stroke order: Make Me a Hanzi data (Arphic Public License) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro.
+          Readings are worked out by a program, not checked by a teacher, and can occasionally be wrong. Stroke order: Make Me a Hanzi data (
+          <a className="underline" href={ARPHIC_LICENSE_URL} target="_blank" rel="noreferrer">
+            Arphic Public License
+          </a>
+          ) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro.
         </p>
       </div>
     </dialog>
@@ -357,7 +385,11 @@ function Strokes({ ch, locale, kids }: { ch: string; locale: string; kids: boole
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.onended = () => URL.revokeObjectURL(url);
-      await audio.play();
+      // A play() refused (autoplay rules, no audio device) never ends: let go of the blob here.
+      await audio.play().catch((e: unknown) => {
+        URL.revokeObjectURL(url);
+        throw e;
+      });
     } catch (e) {
       setNote(`Couldn't say it: ${String((e as Error)?.message || e)}`);
     } finally {

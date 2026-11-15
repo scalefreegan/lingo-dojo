@@ -32,6 +32,10 @@ submit id (a resend replays, anything else stale is a 409).
   machine). Atlas is 38300, Wine Guide 38200, Basecamp 38100.
 - Every API route goes through `wrap(fn, { auth })` (`web/server/api.ts`): the
   same-origin check, then the session, then the access level. No exceptions.
+  (`/hanzi-data/` in `web/server/hanzi.ts` is not an API route: it serves
+  one stroke-data file of the public hanzi-writer-data package per
+  character, and its licence text, with nothing about any user in it,
+  like the JS bundle Vite serves.)
   `auth` is `"public"` (only `/api/auth/login`, `/me`, `/first-run` and the
   `/api` 404), `"user"` (the default: no session → 401) or `"admin"` (the
   content agent and its settings, and adding a Voice Library voice to the

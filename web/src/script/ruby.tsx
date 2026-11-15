@@ -93,9 +93,18 @@ export function rubyPieces(text: string, start: number, end: number, ruby: Ruby)
   const out: ReactNode[] = [];
   let plain = "";
   for (let i = start; i < end; ) {
-    const ch = String.fromCodePoint(text.codePointAt(i)!);
+    let ch = String.fromCodePoint(text.codePointAt(i)!);
     const r = readings[i];
     if (r) {
+      // A variation selector after the character (U+FE00–FE0F, an IVS at
+      // U+E0100–E01EF) picks its glyph: it stays with it, inside the ruby.
+      for (let j = i + ch.length; j < end; ) {
+        const cp = text.codePointAt(j)!;
+        if (!((cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0xe0100 && cp <= 0xe01ef))) break;
+        const vs = String.fromCodePoint(cp);
+        ch += vs;
+        j += vs.length;
+      }
       if (plain) out.push(plain);
       plain = "";
       out.push(

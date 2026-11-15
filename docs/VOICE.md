@@ -206,8 +206,16 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   háng, 長大 zhǎng dà) over the text spelled in simplified characters one
   for one (its word list is simplified; the table is Unihan's), then
   applies Taiwan's standard readings for a zh-TW profile (星期 xīng qí,
-  垃圾 lè sè) and a few particle fixes (慢慢地 de, 跑得快 de). Tone marks are
-  each character's own tone (no sandhi), as dictionaries print them. The
+  垃圾 lè sè). A traditional character that shares its simplified form
+  with another keeps a reading of its own (髮 fà, never 發's fā; 幹 gàn,
+  not 乾's gān). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
+  開心地) and never where it starts a word (看看地圖); 得 is de only after
+  a listed verb and before a degree word (跑得很快), never after a pronoun
+  (我得走 děi, 他得滿分 dé); 儿 / 兒 is the r of erhua closing listed words
+  (這兒, 一點兒, 小孩兒) and stays ér in 兒子, 女兒, 兒童. Anything the rules
+  don't list keeps the library's reading. Tone marks are each character's
+  own tone (no sandhi), as dictionaries print them. The
   reading is drawn by CSS from the `rt`'s attribute and the `rt` is
   aria-hidden, so copying a line copies its characters only and a screen
   reader reads them once. The reader is its own chunk, fetched only for a
@@ -240,7 +248,20 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `web/src/script/UNICODE-LICENSE.txt`. Unihan's meanings are terse
   dictionary glosses ("love, be fond of, like"), not lessons; the card
   puts the learner's own bank meaning first when the character is a phrase
-  there.
+  there. The licence text itself is served at `/hanzi-data/ARPHICPL.txt`
+  (one fixed path, not a file route) and linked from the card's footer.
+- **Readings can be wrong.** They are generated, not checked by a teacher,
+  and the card's footer says so (and the switch's tooltip). Known gaps:
+  readings follow the library's (mainland) norms apart from the small
+  Taiwan table, so a zh-TW text can show a neutral tone where Taiwan says a
+  full one (頭髮 is fixed; most such words are not); a word the library
+  doesn't know is read character by character, each with its usual
+  reading; 得 meaning "must" (děi) or "get" (dé) is left
+  to the library, which reads dé for both; erhua is only fixed for the
+  listed words; 著 reads zhe or zháo by context and 著名 zhù only for the
+  listed neighbours. The fix for one is a test in
+  `scripts/tests/script.test.mjs` and an entry in the tables in
+  `web/src/script/script.ts`.
 
 ## Saved conversations
 

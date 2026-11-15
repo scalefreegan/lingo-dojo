@@ -1296,9 +1296,12 @@ cards are left alone by this queue.
   forms, and a meaning there would grade as the words (keeping accepted
   meanings would need a column: not done). Editing a phrase's words or
   meaning (to a different value) clears its alternates: every one was
-  accepted against the old question. `PATCH /api/phrases/:id {alternates}`
-  keeps only the named ones (removal only, nothing added by hand); the
-  bank's per-alternate remove button is bead `ld-gf9.4` (Phrase bank view).
+  accepted against the old question. `PATCH /api/phrases/:id {removeAlternates}`
+  removes the ones it names (the bank's ×, so one saved meanwhile stays);
+  `PATCH /api/phrases/:id {alternates}`
+  keeps only the named ones (removal only, nothing added by hand). The
+  phrase detail's × hides one with an Undo for a few seconds, then sends
+  `removeAlternates`.
 - **What a review keeps besides the card.** A flashcard review's
   `card_before` jsonb carries, beside the FSRS fields (`fromRow`,
   `cardVersion` and the trouble query read only those), `submit_id` (the

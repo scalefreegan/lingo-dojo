@@ -72,6 +72,10 @@ export function resolveMode(stored: string | null | undefined, locale: string | 
   return s.modes.some((m) => m.mode === stored) ? (stored as RubyMode) : s.defaultMode;
 }
 
+/** Where the stroke data's licence text is served (server/hanzi.ts
+ *  ARPHIC_LICENSE_PATH; a test checks they agree). */
+export const ARPHIC_LICENSE_URL = "/hanzi-data/ARPHICPL.txt";
+
 /* ------------------------------- characters ------------------------------ */
 
 const HAN = /\p{Script=Han}/u;
@@ -182,36 +186,68 @@ export function taiwanize(text: string, readings: (string | null)[]): (string | 
   return readings;
 }
 
-/** The particles the word dictionary misreads, fixed by their
- *  neighbours, over `readings` in place:
- *  - the adverbial 地 (慢慢地走, 開心地笑) is de, not dì (ground), after a
- *    doubled character or one of a few common adjectives;
- *  - the complement 得 (跑得很快, 長得很高) is de, not dé (get), before a
- *    degree word;
- *  - 長 / 长 before 得 is zhǎng (grow: 長得像媽媽), not cháng (long). */
-const DE_AFTER = ["高興", "高兴", "開心", "开心", "快樂", "快乐", "大聲", "大声", "小聲", "小声", "認真", "认真", "小心", "努力", "安靜", "安静", "慢", "輕輕", "轻轻", "好好", "靜靜", "静静", "偷偷", "悄悄", "不停"];
-const DEGREE = "很太真好非挺多更越不最蠻蛮滿满特有這这那";
-// …but not where 得 is the verb with what comes before it: 不得不, 獲得,
-// 取得, 贏得, 難得, 心得, 所得.
-const DE_WORDS = "不獲获取贏赢難难心所";
+/** The particles the word dictionary misreads (it reads every 地 dì, every
+ *  得 dé and every 儿 ér), fixed by their neighbours, over `readings` in
+ *  place. Deliberately narrow: a wrong reading teaches a wrong sound, so
+ *  each rule fires only on listed words and anything else keeps the
+ *  library's reading.
+ *  - the adverbial 地 (慢慢地走, 開心地笑) is de, not dì (ground), after one
+ *    of the listed adverbs and adjectives, or an AABB double (高高興興地),
+ *    and never where 地 starts the next word (看看地圖, 安靜地方);
+ *  - the complement 得 (跑得很快, 說得太快) is de, not dé (get) or děi
+ *    (must), only after a listed verb or adjective and before a degree
+ *    word: never after a pronoun (我得很早起 děi, 他得滿分 dé) or before
+ *    到 / 不到 (他得不到);
+ *  - 長 / 长 before 得 is zhǎng (grow: 長得像媽媽), not cháng (long);
+ *  - 儿 / 兒 closing a listed erhua word (這兒, 一點兒, 小孩兒) is the r
+ *    of erhua, not the syllable ér, which stays in 兒子, 女兒, 兒童. */
+const DE_ADVERBS = [
+  "慢慢", "好好", "輕輕", "轻轻", "靜靜", "静静", "悄悄", "偷偷", "漸漸", "渐渐", "默默", "緊緊", "紧紧", "遠遠", "远远",
+  "早早", "狠狠", "深深", "乖乖", "穩穩", "稳稳", "牢牢", "暗暗", "匆匆", "微微", "快快", "大大",
+  "高興", "高兴", "開心", "开心", "快樂", "快乐", "大聲", "大声", "小聲", "小声", "認真", "认真", "小心", "努力", "安靜", "安静", "不停", "耐心", "仔細", "仔细",
+];
+// What 地 begins as a word: 地圖 map, 地址 address, 地鐵 subway, 地方 place, 地上, 地點, 地下, 地區, 地球, …
+const DI_WORD_NEXT = "圖图址鐵铁方上點点下區区球板毯面震理位主道帶带盤盘基獄狱步段價价勢势形域";
+// Verbs and adjectives a degree complement follows (跑得很快, 累得不行).
+const DE_HEADS = "跑說说唱寫写做吃睡走來来玩學学講讲洗打看聽听畫画跳飛飞笑哭開开幹干弄搞變变過过活住穿辦办賣卖買买演彈弹踢游遊考念讀读累忙熱热冷餓饿急氣气病醉跳洗修";
+const DEGREE = "很太真好非挺多更越不最蠻蛮特有這这那";
+const PRONOUN = "我你他她它您們们倆俩咱";
+const ERHUA_PREV = "這这那哪點点會会玩塊块事味空畫画字門门份片邊边頭头勁劲準准個个圈伴";
+const ER_WORD_NEXT = "子童歌科女媳時时孫孙戲戏";
 export function particleDe(text: string, readings: (string | null)[]): (string | null)[] {
   const cps = [...text];
   for (let i = 1; i < cps.length; i++) {
     const prev = cps[i - 1];
-    if (cps[i] === "地" && readings[i] === "dì") {
+    const next = cps[i + 1] ?? "\0";
+    if (cps[i] === "地" && readings[i] === "dì" && !DI_WORD_NEXT.includes(next)) {
       const before = cps.slice(0, i).join("");
-      const doubled = i >= 2 && prev === cps[i - 2] && isHan(prev);
-      if (doubled || DE_AFTER.some((w) => before.endsWith(w))) readings[i] = "de";
-    } else if (cps[i] === "得" && readings[i] === "dé" && isHan(prev) && !DE_WORDS.includes(prev) && DEGREE.includes(cps[i + 1] ?? "\0")) {
-      readings[i] = "de";
-    }
-    if (cps[i] === "得" && (prev === "長" || prev === "长") && readings[i - 1] === "cháng") {
+      const aabb = i >= 4 && cps[i - 4] === cps[i - 3] && cps[i - 2] === cps[i - 1] && cps[i - 3] !== cps[i - 2] && isHan(cps[i - 1]);
+      if (aabb || DE_ADVERBS.some((w) => before.endsWith(w))) readings[i] = "de";
+    } else if (cps[i] === "得" && (prev === "長" || prev === "长") && readings[i - 1] === "cháng" && next !== "到") {
       readings[i - 1] = "zhǎng";
       readings[i] = "de";
+    } else if (
+      cps[i] === "得" &&
+      readings[i] === "dé" &&
+      // A pronoun before 得 makes it the verb (我得走 děi, 他得到 dé); DE_HEADS
+      // has none, and this says so should the list grow.
+      !PRONOUN.includes(prev) &&
+      DE_HEADS.includes(prev) &&
+      DEGREE.includes(next) &&
+      !(next === "不" && "到了".includes(cps[i + 2] ?? "\0"))
+    ) {
+      readings[i] = "de";
+    } else if ((cps[i] === "儿" || cps[i] === "兒") && (readings[i] === "ér" || readings[i] === "er") && !ER_WORD_NEXT.includes(next)) {
+      const smallChild = (prev === "孩") && (cps[i - 2] === "小");
+      if (ERHUA_PREV.includes(prev) || smallChild) readings[i] = "r";
     }
   }
   return readings;
 }
+
+/** A tone-marked pinyin syllable (or the r of erhua), so a character the
+ *  library has no reading for shows none rather than itself. */
+export const isPinyin = (s: string | null | undefined): s is string => !!s && /^[a-zêüāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜńňǹḿếề]+$/.test(s.normalize("NFC"));
 
 /* --------------------------------- zhuyin --------------------------------- */
 
@@ -227,6 +263,11 @@ for (const [base, marks] of [
 ] as const) {
   [...marks].forEach((m, k) => (TONE_MARKS[m] = [base, base === "n" ? [2, 3, 4][k] : k + 1]));
 }
+// The precomposed ones the interjections use (ḿ, ế, ề); the rest are
+// combining marks, which lose their tone below.
+TONE_MARKS["ḿ"] = ["m", 2];
+TONE_MARKS["ế"] = ["ê", 2];
+TONE_MARKS["ề"] = ["ê", 4];
 
 const INITIALS: [string, string][] = [
   ["zh", "ㄓ"], ["ch", "ㄔ"], ["sh", "ㄕ"], ["b", "ㄅ"], ["p", "ㄆ"], ["m", "ㄇ"], ["f", "ㄈ"], ["d", "ㄉ"], ["t", "ㄊ"], ["n", "ㄋ"], ["l", "ㄌ"],
@@ -259,7 +300,11 @@ export function pinyinToZhuyin(syllable: string): string | null {
   }
   base = base.replace(/̄|́|̌|̀/g, "");
   if (!/^[a-zêü]+$/.test(base)) return null;
-  if (base === "m" || base === "n" || base === "ng" || base === "hm" || base === "hng") return null;
+  // The r of erhua (這兒 zhè r) is ㄦ with no tone of its own; the nasal
+  // interjections (嗯 ńg, 呣 ḿ, 哼 hng) are spelt as the MOE dictionary does.
+  if (base === "r") return "ㄦ";
+  const nasal: Record<string, string> = { m: "ㄇ", n: "ㄣ", ng: "ㄫ", hm: "ㄏㄇ", hng: "ㄏㄫ" };
+  if (nasal[base]) return tone === 5 ? `˙${nasal[base]}` : nasal[base] + TONE_SIGN[tone];
   let initial = "";
   let rest = base;
   for (const [py, zy] of INITIALS) {

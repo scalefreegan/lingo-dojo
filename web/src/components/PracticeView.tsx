@@ -146,6 +146,7 @@ export default function PracticeView() {
     return (
       <Summary
         done={done}
+        locale={locale}
         onAgain={() => void start()}
         onClose={() => {
           setItems(null);
@@ -476,7 +477,7 @@ function RatingRow({ current, busy, onPick, focusFirst = false }: { current: Pra
   );
 }
 
-function Summary({ done, onAgain, onClose, busy, error }: { done: Done[]; onAgain: () => void; onClose: () => void; busy: boolean; error: string | null }) {
+function Summary({ done, locale, onAgain, onClose, busy, error }: { done: Done[]; locale: string | null; onAgain: () => void; onClose: () => void; busy: boolean; error: string | null }) {
   const by = (n: PracticeRating) => done.filter((d) => d.rating === n).length;
   const missed = done.filter((d) => d.rating === 1);
   return (
@@ -493,7 +494,7 @@ function Summary({ done, onAgain, onClose, busy, error }: { done: Done[]; onAgai
               {missed.map((d) => (
                 <li key={`${d.item.phraseId}:${d.item.skill}`}>
                   <span className="font-medium text-fg" lang={d.item.lang || undefined}>
-                    {d.item.text}
+                    <RubyText text={d.item.text} locale={locale} />
                   </span>{" "}
                   <span className="text-fg-2">· {d.item.meaning}</span>
                 </li>

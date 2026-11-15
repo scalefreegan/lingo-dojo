@@ -387,6 +387,12 @@ test("alternates: an edit of the words or meaning drops them; the learner can re
   assert.equal(kept.status, 200, kept.text);
   assert.deepEqual(kept.body.phrase.alternates, ["tragar"], "removal only: nothing added by hand");
   assert.equal((await sam.call("PATCH", `/api/phrases/${id}`, { alternates: "tragar" })).status, 400);
+  // Removing by name leaves the rest, one saved since the page loaded included.
+  await q("update phrases set alternates = '[\"tragar\", \"engullir\"]'::jsonb where id = $1", [id]);
+  const removed = await sam.call("PATCH", `/api/phrases/${id}`, { removeAlternates: ["engullir", "never one of them"] });
+  assert.equal(removed.status, 200, removed.text);
+  assert.deepEqual(removed.body.phrase.alternates, ["tragar"]);
+  assert.equal((await sam.call("PATCH", `/api/phrases/${id}`, { removeAlternates: "tragar" })).status, 400);
   assert.deepEqual((await sam.call("PATCH", `/api/phrases/${id}`, { note: "a note" })).body.phrase.alternates, ["tragar"], "other edits keep them");
   assert.deepEqual((await sam.call("PATCH", `/api/phrases/${id}`, { meaning: "to eat" })).body.phrase.alternates, ["tragar"], "the same meaning isn't a change");
   assert.deepEqual((await sam.call("PATCH", `/api/phrases/${id}`, { meaning: "to have lunch" })).body.phrase.alternates, [], "a new meaning is a new question");
