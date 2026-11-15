@@ -149,7 +149,7 @@ declare module "*/scripts/voice.mjs" {
   export const REPLAY_MAX_CHARS: number;
   export function replayLine(s: string): string;
   export function replayStage(v: unknown): string;
-  export function poolFor(list: { id: string; name: string; gender: string; match: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
+  export function poolFor(list: { id: string; name: string; gender: string; match: boolean; home?: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
   export function retryInOtherVoice(status: number): boolean;
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
   export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
@@ -179,7 +179,8 @@ declare module "*/scripts/voice.mjs" {
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
   export function voiceFor(set: Record<string, string> | undefined, speaker: VoiceSpeaker, gender: import("../shared/wire.ts").VoiceGender | null | undefined): string;
   export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];
-  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; age?: string; search?: string; sort?: string; page?: number; pageSize?: number }): Req;
+  export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; age?: string; search?: string; sort?: string; page?: number; pageSize?: number; anyLocale?: boolean }): Req;
+  export function elevenLibraryLocale(locale: string): string;
   export function pinnedNarratorGender(units: unknown): import("../shared/wire.ts").VoiceGender | null;
   export function narratorDirective(gender: unknown): string;
   export function pickCast(o: {
@@ -202,7 +203,7 @@ declare module "*/scripts/voice.mjs" {
   export function azureSpeechRequest(o: { key: string; region: string; voice: string; text: string; locale?: string }): Req;
   export function azureVoicesRequest(o: { key: string; region: string }): Req;
   export function azureTranscribeRequest(o: { key: string; region: string; audio: Uint8Array; locales: string[]; mime?: string }): Req;
-  export function elevenVoices(json: unknown, locale: string): VoiceChoice[];
+  export function elevenVoices(json: unknown, locale: string, nativeLocale?: string): VoiceChoice[];
   export function azureVoices(json: unknown, locale: string): VoiceChoice[];
   export function systemVoices(text: string, locale: string): VoiceChoice[];
   export function transcriptText(provider: SttProvider, json: unknown): string;
