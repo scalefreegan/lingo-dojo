@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { PGlite } from "@electric-sql/pglite";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { applyMigrations } from "../db/migrations.mjs";
-import { BANK_TABLES, migrateEmptyAndCheck, migrationsBefore0003, refuseAndCheck, seedBankRow, seedBefore0003 } from "./migration-0003.mjs";
+import { BANK_TABLES, migrateEmptyAndCheck, migrationsBefore0003, migrationsThrough0003, refuseAndCheck, seedBankRow, seedBefore0003 } from "./migration-0003.mjs";
 
 const fresh = async (t) => {
   const pg = await PGlite.create({ extensions: { pg_trgm } });
@@ -16,12 +16,12 @@ const fresh = async (t) => {
   return async (text, params) => (await pg.query(text, params)).rows;
 };
 
-test("0003 on a 0002 database with data and an empty bank: applies, rows untouched, schema as a fresh build", async (t) => {
+test("0003 on a 0002 database with data and an empty bank: applies, rows untouched, schema as a fresh build to 0003", async (t) => {
   const query = await fresh(t);
   await applyMigrations(query, migrationsBefore0003());
   await seedBefore0003(query);
   const built = await fresh(t);
-  await applyMigrations(built);
+  await applyMigrations(built, migrationsThrough0003());
   await migrateEmptyAndCheck(query, built);
 });
 

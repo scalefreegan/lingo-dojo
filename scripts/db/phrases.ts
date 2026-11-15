@@ -45,8 +45,9 @@
 // (> extraction). A gloss phrase is one that exists only because replies
 // glossed it; a scene's list or an add of the same words, or absorbing a
 // pending scene phrase, lifts it. Undoing a dropped reply deletes only a
-// gloss phrase. Reviews come from practice and the post-session extraction (later
-// phases); last_practiced_at is theirs to set.
+// gloss phrase. Reviews come from practice (a later phase) and the
+// post-session extraction (scripts/db/extraction.ts, which reuses the
+// exported helpers here); last_practiced_at is theirs to set.
 //
 // Erasable TypeScript only, like schema.ts: the tests import it as is.
 
@@ -82,7 +83,7 @@ const isUniqueViolation = (e: unknown) => sqlState(e) === "23505";
 /** `run` (a whole transaction or savepoint), once more if two writers of
  *  one bank collided: a unique violation (both inserting one phrase's
  *  words) or a deadlock. The second run sees the first one's winner. */
-async function retrying<T>(run: () => Promise<T>): Promise<T> {
+export async function retrying<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (e) {
@@ -91,16 +92,16 @@ async function retrying<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-const COMPLETE = sql`${phrases.text} is not null`;
+export const COMPLETE = sql`${phrases.text} is not null`;
 const PENDING = sql`${phrases.text} is null`;
 /** The meaning an automatic write (a gloss, a scene's list) leaves on a
  *  phrase already there: its own, whoever set it; the incoming one only
  *  fills a blank (a phrase added by hand with no meaning, say). */
-const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
+export const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
 /** Provenance, strongest first: what a phrase keeps when two sources meet
  *  (an upsert of words already here, an absorbed pending row). */
 const STRENGTH = sql`array['manual', 'scenario', 'gloss', 'extraction']`;
-const stronger = (a: SQL | string, b: SQL | string) =>
+export const stronger = (a: SQL | string, b: SQL | string) =>
   sql`(${STRENGTH})[least(array_position(${STRENGTH}, ${a}::text), array_position(${STRENGTH}, ${b}::text))]`;
 
 /** The phrase's note with `other` (a row being folded into it) kept too:
@@ -110,7 +111,7 @@ const withNote = (other: string | null) =>
     ? sql`${phrases.note}`
     : sql`case when ${phrases.note} is null then ${other}::text when ${phrases.note} = ${other}::text then ${phrases.note} else ${phrases.note} || ${"\n\n" + other}::text end`;
 /** The partial unique indexes the upserts target (the scope adds the profile). */
-const IDENTITY = { target: [phrases.norm], targetWhere: COMPLETE };
+export const IDENTITY = { target: [phrases.norm], targetWhere: COMPLETE };
 const PENDING_IDENTITY = { target: [phrases.meaningNorm], targetWhere: PENDING };
 
 /** A phrase id from a request, or ENOENT (a malformed id is no phrase of
@@ -138,7 +139,7 @@ async function lockPhrase(tx: Db, profile: LanguageProfileRef, id: string): Prom
  * meaning, in the learner's words). In meaning order, after every complete
  * row the write takes (the lock order above).
  */
-async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: string; meaningNorm: string | null }[]): Promise<void> {
+export async function absorbPending(tx: Db, profile: LanguageProfileRef, found: { id: string; meaningNorm: string | null }[]): Promise<void> {
   const mine = forLanguageProfile(tx, profile);
   const todo = found.filter((f): f is { id: string; meaningNorm: string } => !!f.meaningNorm).sort((x, y) => (x.meaningNorm < y.meaningNorm ? -1 : x.meaningNorm > y.meaningNorm ? 1 : 0));
   for (const f of todo) {
@@ -246,7 +247,7 @@ export async function recordGlosses(
 
 /** seen_count and first/last seen of `ids` from their sightings: the one
  *  place those three are written, so they always agree with the rows. */
-async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
+export async function recount(tx: Db, profile: LanguageProfileRef, ids: string[]): Promise<void> {
   if (!ids.length) return;
   const mine = forLanguageProfile(tx, profile);
   const s = phraseSightings;

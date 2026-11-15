@@ -103,6 +103,17 @@ export function sameLanguage(profileLanguage, session) {
   return langKey(p) === langKey(s, session?.variant ?? "");
 }
 
+/** The session's target locale (es-MX), as the conversation saved it
+ *  (`targetLanguage`, `targetVariant`), when it practises the language of
+ *  the profile whose bank it would write to; null when a pack moved it to
+ *  another (nothing goes into that bank then). "" for a language with no
+ *  known locale. The turn's capture, the scene lists and the post-session
+ *  extraction all ask this. */
+export function bankLocale(profileLanguage, conv) {
+  if (!sameLanguage(profileLanguage, { language: conv?.targetLanguage, variant: conv?.targetVariant })) return null;
+  return localeFor(conv?.targetLanguage, conv?.targetVariant) ?? "";
+}
+
 /* --------------------------------- capture --------------------------------- */
 
 /** A gloss term's letters, for finding the line it came from. */

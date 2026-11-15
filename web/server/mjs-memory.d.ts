@@ -98,8 +98,41 @@ declare module "*/scripts/extraction.mjs" {
     nativeLanguage: string;
     targetVariant: string;
     duePhrases?: (string | { text: string; meaning?: string })[];
+    kids?: boolean;
   }): { system: string; user: string };
   export function parseExtraction(text: unknown): { ok: true; value: Extraction; dropped: number } | { ok: false; error: string };
+  /** A stored turn as the extraction helpers read it. */
+  export interface StoredTurn {
+    id?: string;
+    role: "learner" | "master";
+    text?: string | null;
+    lines?: { text?: string; segments?: unknown[]; speaker?: string }[] | null;
+    fromClient?: boolean;
+  }
+  export const MAX_TRANSCRIPT_CHARS: number;
+  export const MAX_KEEP_WORDS: number;
+  export const MAX_KEEP_CHARS: number;
+  export function learnerSpoke(turns: StoredTurn[] | null | undefined): boolean;
+  export function sessionTranscript(turns: StoredTurn[] | null | undefined, max?: number): string;
+  export interface PlannedKeep { text: string; norm: string; meaning: string; meaningNorm: string | null; why: string }
+  export interface PlannedEvent {
+    norm: string;
+    phrase: string;
+    kind: EventKind;
+    skill: import("*/scripts/fsrs.mjs").Skill;
+    rating: import("*/scripts/fsrs.mjs").Rating;
+    said: string | null;
+    note: string | null;
+  }
+  export function planExtraction(
+    value: Extraction,
+    opts: { known: Set<string>; locale?: string | null },
+  ): { keep: PlannedKeep[]; events: PlannedEvent[]; dropped: number };
+  export function keepExample(
+    text: string,
+    turns: StoredTurn[] | null | undefined,
+    locale?: string | null,
+  ): { sentence: string; speaker: string | null; turnId: string | undefined } | null;
 }
 
 declare module "*/scripts/phrases.mjs" {
@@ -131,6 +164,7 @@ declare module "*/scripts/phrases.mjs" {
   export const SORTS: import("../shared/wire.ts").PhraseSort[];
   export function wordCount(text: unknown, locale?: string | null): number;
   export function sameLanguage(profileLanguage: unknown, session: { language?: unknown; variant?: unknown } | null | undefined): boolean;
+  export function bankLocale(profileLanguage: unknown, conv: { targetLanguage?: string | null; targetVariant?: string | null }): string | null;
   export function exampleFor(term: unknown, lines: unknown[] | null | undefined, locale?: string | null): Example | null;
   export function glossCaptures(
     glosses: { term?: unknown; meaning?: unknown }[] | null | undefined,

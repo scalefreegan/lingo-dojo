@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyMigrations } from "../db/migrations.mjs";
-import { migrateEmptyAndCheck, migrationsBefore0003, refuseAndCheck, seedBankRow, seedBefore0003 } from "./migration-0003.mjs";
+import { migrateEmptyAndCheck, migrationsBefore0003, migrationsThrough0003, refuseAndCheck, seedBankRow, seedBefore0003 } from "./migration-0003.mjs";
 import { scratchDatabase } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
@@ -33,7 +33,7 @@ test("0003 on a 0002 database with data and an empty bank, on real Postgres: app
   await applyMigrations(query, migrationsBefore0003());
   await seedBefore0003(query);
   const built = await scratch(t);
-  await applyMigrations(built);
+  await applyMigrations(built, migrationsThrough0003());
   await migrateEmptyAndCheck(query, built);
 });
 

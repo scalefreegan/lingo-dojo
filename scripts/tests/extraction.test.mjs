@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractionPrompt, parseExtraction, LIMITS } from "../extraction.mjs";
+import { extractionPrompt, keepExample, learnerSpoke, parseExtraction, planExtraction, sessionTranscript, LIMITS } from "../extraction.mjs";
 import { extractJsonObject } from "../json-reply.mjs";
 import { SESSION_EVENT_KINDS } from "../fsrs.mjs";
 
@@ -166,4 +166,88 @@ test("extractJsonObject: braces inside strings, escaped quotes, and the next can
   assert.deepEqual(extractJsonObject('x {"a": "}{ \\" }"} y'), { a: '}{ " }' });
   assert.deepEqual(extractJsonObject('{oops} then {"ok": 1}'), { ok: 1 });
   assert.equal(extractJsonObject("{{{"), null);
+});
+
+/* ----------------------- from stored turns, to the bank ---------------------- */
+
+test("extractionPrompt: kids asks for a child's recap; adults don't get that line", () => {
+  const base = { transcript: "x", nativeLanguage: "English", targetVariant: "German" };
+  assert.match(extractionPrompt({ ...base, kids: true }).system, /young child/);
+  assert.doesNotMatch(extractionPrompt(base).system, /young child/);
+});
+
+test("parseExtraction strips control characters and bidi overrides from every string, dropping what is left empty", () => {
+  const r = parseExtraction(
+    JSON.stringify({
+      summary: "Bien\u0000 hecho‮.",
+      keep: [{ text: "\u0007", meaning: "nothing" }, { text: "mer\u0008cado", meaning: "mar⁦ket" }],
+      events: [{ phrase: "mer\u001bcado", kind: "produced", note: "‭ok" }],
+      corrections: [{ said: "a\u007fb", better: "c" }],
+    }),
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.value.summary, "Bien hecho.");
+  assert.deepEqual(r.value.keep.map((k) => [k.text, k.meaning]), [["mercado", "market"]]);
+  assert.deepEqual(r.value.events, [{ phrase: "mercado", kind: "produced", note: "ok" }]);
+  assert.deepEqual(r.value.corrections, [{ said: "ab", better: "c", note: "" }]);
+  assert.equal(r.dropped, 1);
+});
+
+const TURNS = [
+  { id: "t0", role: "master", lines: [{ speaker: "character", text: "¿Qué le doy, joven? Quédese con la vuelta.", segments: [] }] },
+  { id: "t1", role: "learner", text: "  Unos   mangos. " },
+  { id: "t2", role: "master", fromClient: true, lines: [{ speaker: "narrator", text: "Ella sonríe: ¿algo más?", segments: [] }] },
+  { id: "t3", role: "learner", text: "" },
+];
+
+test("sessionTranscript: a line per turn with words, oldest turns left out past the cap, and said so", () => {
+  assert.equal(sessionTranscript(TURNS), "Dojo master: ¿Qué le doy, joven? Quédese con la vuelta.\nLearner: Unos mangos.\nDojo master: Ella sonríe: ¿algo más?");
+  const cut = sessionTranscript(TURNS, 60);
+  assert.equal(cut, "(1 earlier turn left out)\nLearner: Unos mangos.\nDojo master: Ella sonríe: ¿algo más?");
+  assert.equal(sessionTranscript([]), "");
+});
+
+test("learnerSpoke: only a learner turn with words counts", () => {
+  assert.equal(learnerSpoke(TURNS), true);
+  assert.equal(learnerSpoke([TURNS[0], TURNS[3]]), false);
+  assert.equal(learnerSpoke(undefined), false);
+});
+
+test("planExtraction: keep by norm (sentences left out), events only for known or kept phrases, worst rating per phrase and skill, sorted by norm", () => {
+  const value = {
+    summary: "",
+    keep: [
+      { text: "¿Qué le doy?", meaning: "What can I get you?", why: "w" },
+      { text: "qué le doy", meaning: "dup", why: "" },
+      { text: "una frase demasiado larga para ser una frase útil", meaning: "a sentence", why: "" },
+    ],
+    events: [
+      { phrase: "Mercado", kind: "produced" },
+      { phrase: "mercado.", kind: "corrected", said: "marcado" },
+      { phrase: "mercado", kind: "understood" },
+      { phrase: "¿qué le doy?", kind: "produced_with_help" },
+      { phrase: "nunca", kind: "produced" },
+    ],
+    corrections: [],
+  };
+  const plan = planExtraction(value, { known: new Set(["mercado"]), locale: "es-MX" });
+  assert.deepEqual(plan.keep, [{ text: "¿Qué le doy?", norm: "qué le doy", meaning: "What can I get you?", meaningNorm: "what can i get you", why: "w" }]);
+  assert.deepEqual(
+    plan.events.map((e) => [e.norm, e.kind, e.skill, e.rating, e.said]),
+    [["mercado", "corrected", "produce", 1, "marcado"], ["mercado", "understood", "listen", 3, null], ["qué le doy", "produced_with_help", "produce", 2, null]],
+  );
+  // dup keep, the sentence, the better "produced" for mercado, and "nunca".
+  assert.equal(plan.dropped, 4);
+});
+
+test("planExtraction: in a language without spaces the keep limit is in characters", () => {
+  const keep = (text) => ({ text, meaning: "m", why: "" });
+  const plan = planExtraction({ summary: "", keep: [keep("请再说一遍"), keep("我想买一公斤芒果但是它们太贵了所以我还要再想一想")], events: [], corrections: [] }, { known: new Set(), locale: "zh-CN" });
+  assert.deepEqual(plan.keep.map((k) => k.text), ["请再说一遍"]);
+});
+
+test("keepExample: the dojo master's own line holding the phrase, never a from_client copy or the learner's", () => {
+  assert.deepEqual(keepExample("¿Qué le doy?", TURNS, "es-MX"), { sentence: "¿Qué le doy, joven? Quédese con la vuelta.", speaker: "character", turnId: "t0" });
+  assert.equal(keepExample("algo más", TURNS, "es-MX"), null, "only in a from_client turn");
+  assert.equal(keepExample("mangos", TURNS, "es-MX"), null, "only the learner said it");
 });

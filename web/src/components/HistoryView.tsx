@@ -3,6 +3,7 @@ import { ApiError, deleteConversation, getConversation, listConversations } from
 import { sessionGlosses, useLineTranslations } from "../transcript";
 import type { ConversationSummary, ConversationTurnsReply, VoiceGloss, VoiceHistoryItem } from "../types";
 import { inBankLanguage } from "./shared";
+import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
 import { Badge, Button } from "./ui";
 
@@ -119,6 +120,7 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm text-fg">{c.title}</span>
                   {!c.endedAt && <Badge tone="accent" title="Still open: it ends with End, leaving Go, or two hours after its last turn">open</Badge>}
+                  {c.recapStatus === "failed" && <Badge tone="warn" title="Open it to retry the recap">no recap</Badge>}
                 </div>
                 <div className={`truncate ${fine} text-fg-3`}>
                   {when(c.startedAt)} · {length(c)} · {turnsLabel(c.turnCount)}
@@ -204,7 +206,6 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
               {(c.targetVariant || c.targetLanguage) && ` · ${c.targetVariant || c.targetLanguage}`}
               {!c.endedAt && " · still open"}
             </p>
-            {c.summary && <p className="mt-1 text-sm text-fg-2">{c.summary}</p>}
           </div>
           {entries.length === 0 ? (
             <p className="text-sm text-fg-3">No turns were saved in this one.</p>
@@ -227,6 +228,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
             />
           )}
           {glosses.length > 0 && <p className="text-xs text-fg-3">Tap an underlined word for its meaning.</p>}
+          {c.endedAt && <SessionRecap id={c.id} />}
         </>
       )}
     </div>

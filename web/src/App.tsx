@@ -14,6 +14,7 @@ import SceneTab from "./components/SceneTab";
 import CustomizeTab from "./components/CustomizeTab";
 import GoTab from "./components/GoTab";
 import LibraryTab from "./components/LibraryTab";
+import { onOpenBank } from "./bankLink";
 import AgentDrawer from "./components/AgentDrawer";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
 import { IsAdmin } from "./viewer";
@@ -111,6 +112,10 @@ export default function App({
     },
     [language.id],
   );
+
+  // "In the bank" from a session recap on the Go tab (bankLink.ts): the
+  // Library tab, whose Phrase bank view takes the search.
+  useEffect(() => onOpenBank(() => setTab("library")), [setTab]);
 
   // The mode on <html>, for the stylesheet's kids accent.
   useEffect(() => {

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, listDeletedPacks, undeletePack } from "../api";
 import HistoryView from "./HistoryView";
 import PhraseBankView from "./PhraseBankView";
+import { clearBankRequest, onOpenBank, peekBankRequest } from "../bankLink";
 import { slugify, splitPackId } from "../draft";
 import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
@@ -31,7 +32,22 @@ type LibraryProps = PackActions & {
  * sessions (HistoryView). And the phrase bank (PhraseBankView): the
  * active language's phrases with how well each is known. */
 export default function LibraryTab(props: LibraryProps) {
-  const [view, setView] = useState<"packs" | "history" | "bank">("packs");
+  // A search for the bank asked from elsewhere (bankLink.ts: a session
+  // recap's "In the bank") opens it there; `bankAsk` remounts the bank
+  // view with the words.
+  const [view, setView] = useState<"packs" | "history" | "bank">(() => (peekBankRequest() != null ? "bank" : "packs"));
+  const [bankAsk, setBankAsk] = useState<{ q: string; n: number }>(() => ({ q: peekBankRequest() ?? "", n: 0 }));
+  useEffect(() => {
+    const take = () => {
+      const q = peekBankRequest();
+      if (q == null) return;
+      clearBankRequest();
+      setBankAsk((was) => ({ q, n: was.n + 1 }));
+      setView("bank");
+    };
+    take();
+    return onOpenBank(take);
+  }, []);
   const tabClass = (on: boolean) =>
     `rounded-lg px-3 py-1 text-sm font-medium transition-colors ${on ? "bg-accent-soft text-accent" : "text-fg-2 hover:bg-raised hover:text-fg"}`;
   return (
@@ -50,7 +66,7 @@ export default function LibraryTab(props: LibraryProps) {
       {view === "history" ? (
         <HistoryView bankLanguage={props.content.profile?.target_language} />
       ) : view === "bank" ? (
-        <PhraseBankView />
+        <PhraseBankView key={bankAsk.n} initialQuery={bankAsk.q} />
       ) : (
         <PacksView {...props} />
       )}

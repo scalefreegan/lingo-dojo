@@ -6,6 +6,7 @@ import {
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
 import { SessionTimeline } from "./SessionTimeline";
+import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
 import {
   DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
@@ -311,6 +312,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // End was pressed: the session is over on screen (the transcript stays to
   // read and copy), until Restart.
   const [ended, setEnded] = useState(false);
+  // The conversation End closed, for its recap under the transcript.
+  const [recapId, setRecapId] = useState<string | null>(null);
 
   // Mutable session plumbing the async flows read without stale closures.
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
@@ -1425,6 +1428,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     unsavedFrom.current = null;
     setSaving(null);
     setEnded(false);
+    setRecapId(null);
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});
     urls.current.clear();
     // "Characters spoken" is per session; keys start from 0 again.
@@ -1460,6 +1464,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   function endSession() {
     stopAll();
     sessionEpoch.current += 1;
+    setRecapId(convRef.current?.id ?? null);
     closeConversation();
     setHeldRequest(null);
     setComposer("");
@@ -1703,6 +1708,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
           </Button>
         </div>
       )}
+      {started && ended && recapId && <SessionRecap id={recapId} justEnded />}
 
       {started && !ended && (
         <div className="flex flex-col gap-2">

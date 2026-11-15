@@ -67,9 +67,10 @@ function dueLabel(p: PhraseSummary): string {
   return days <= 1 ? "due within a day" : `due in ${days} days`;
 }
 
-export default function PhraseBankView() {
-  const [q, setQ] = useState("");
-  const [query, setQuery] = useState<Required<Pick<PhraseQuery, "q" | "show" | "band" | "sort">>>({ q: "", show: "all", band: "", sort: "recent" });
+/** `initialQuery`: a search to open with (a session recap's "In the bank"). */
+export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: string } = {}) {
+  const [q, setQ] = useState(initialQuery);
+  const [query, setQuery] = useState<Required<Pick<PhraseQuery, "q" | "show" | "band" | "sort">>>({ q: initialQuery.trim(), show: "all", band: "", sort: "recent" });
   const [data, setData] = useState<PhrasesReply | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

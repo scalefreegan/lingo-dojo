@@ -16,7 +16,12 @@ conversations (phase 3: every voice session's turns, the Library's
 History; `web/server/conversations.ts`); and the phrase bank (phase 4: one
 per language profile, filled by each turn's glosses, the scene's lists and
 ☆ Star, shown in the Library's Phrase bank; `scripts/db/phrases.ts`,
-`web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`).
+`web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`); and the
+post-session recap (phase 5: after End one tool-less `claude -p` reads the
+transcript; its summary, kept phrases, corrections and FSRS session reviews
+are stored once per conversation by a claim on `conversations.extraction_status`,
+re-runs replace; `web/server/extraction.ts`, `scripts/db/extraction.ts`,
+pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.tsx`).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

@@ -796,8 +796,54 @@ export interface ConversationSummary {
   lastTurnAt: string | null;
   /** Stored turns: the learner's and the dojo master's, each one. */
   turnCount: number;
-  /** The post-session recap's summary; null until that phase exists. */
+  /** The post-session recap's summary; null until one is made. */
   summary: string | null;
+  /** Where its recap is (SessionRecap.status). */
+  recapStatus: RecapStatus;
+}
+
+/** A conversation's post-session recap (docs/DATA.md §Post-session
+ *  extraction): "open" (not ended yet), "none" (never made: it ended
+ *  before recaps existed), "pending" (being written), "done", "failed"
+ *  (both tries failed: Retry recap), "skipped" (the learner said nothing
+ *  to recap). */
+export type RecapStatus = "open" | "none" | "pending" | "done" | "failed" | "skipped";
+
+/** What the session did to one phrase, as the recap shows it. */
+export interface RecapEvent {
+  phrase: string;
+  kind: "produced" | "produced_with_help" | "corrected" | "understood" | "confused";
+  said: string | null;
+  note: string | null;
+  /** The bank phrase it was matched to; null when the session wasn't in
+   *  the bank's language. */
+  phraseId: string | null;
+  /** Whether it was recorded as a review (not when the phrase is
+   *  suspended, or a practice review came after this session's). */
+  reviewed: boolean;
+}
+
+/** GET /api/conversations/:id/recap, and POST it to make it again. */
+export interface SessionRecap {
+  conversationId: string;
+  status: RecapStatus;
+  /** A kids learner's session: the card says it more simply. */
+  kids: boolean;
+  summary: string | null;
+  /** Phrases worth keeping, with how they stand in the bank now. */
+  kept: { text: string; meaning: string; why: string; phraseId: string | null; starred: boolean; mastery: MasteryBand | null }[];
+  events: RecapEvent[];
+  corrections: { said: string; better: string; note: string }[];
+  /** Whether the session's phrases went into the bank (it was in the
+   *  bank's language). */
+  inBank: boolean;
+  /** Why the last try failed (status "failed"). */
+  error: string | null;
+  extractedAt: string | null;
+}
+
+export interface RecapReply {
+  recap: SessionRecap;
 }
 
 export interface ConversationReply {
