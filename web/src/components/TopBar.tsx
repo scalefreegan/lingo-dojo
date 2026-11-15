@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Mochi } from "./Mascots";
-import type { ContentReply, Mode, ProfileRequest } from "../types";
+import type { AuthUser, ContentReply, LearnerInfo, Mode, ProfileRequest } from "../types";
 import type { Draft } from "../draft";
 import { Button } from "./ui";
 import ProfileControl from "./ProfileControl";
@@ -22,7 +22,12 @@ export default function TopBar({
   reloading,
   ready,
   mode,
-  onMode,
+  user,
+  learner,
+  learners,
+  onSwitchLearner,
+  onManageLearners,
+  onLogout,
   content,
   draft,
   onChange,
@@ -35,7 +40,12 @@ export default function TopBar({
   reloading: boolean;
   ready: boolean;
   mode: Mode;
-  onMode: (m: Mode) => void;
+  user: AuthUser;
+  learner: LearnerInfo;
+  learners: LearnerInfo[];
+  onSwitchLearner: (id: string) => void;
+  onManageLearners: () => void;
+  onLogout: () => void;
   /** Null until the first load; the Profile pill appears with them. */
   content: ContentReply | null;
   draft: Draft | null;
@@ -66,10 +76,10 @@ export default function TopBar({
       </nav>
       <div className="ml-auto flex h-full shrink-0 items-center gap-1">
         {content && draft && (
-          <ProfileControl content={content} draft={draft} mode={mode} onMode={onMode} onChange={onChange} onSaveDefaults={onSaveDefaults} />
+          <ProfileControl content={content} draft={draft} mode={mode} learner={learner} learners={learners} onSwitchLearner={onSwitchLearner} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} />
         )}
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
-        <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} />
+        <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
     </header>
   );
@@ -95,7 +105,8 @@ const menuItemClass = "px-3 py-2 text-left text-sm text-fg-2 hover:bg-raised dis
 /** New pack and Reload content: whole-draft actions, not part of the Scene →
  *  Customize → Go flow, so they live behind an overflow toggle instead of
  *  sitting next to the tabs. Library joins them below `md`, where the bar
- *  has no room for its tab. */
+ *  has no room for its tab. The account's two actions (Who's practicing?,
+ *  Log out) close the menu, under the username. */
 function OverflowMenu({
   onNewPack,
   onReload,
@@ -103,6 +114,9 @@ function OverflowMenu({
   ready,
   libraryActive,
   onLibrary,
+  username,
+  onManageLearners,
+  onLogout,
 }: {
   onNewPack: () => void;
   onReload: () => void;
@@ -110,6 +124,9 @@ function OverflowMenu({
   ready: boolean;
   libraryActive: boolean;
   onLibrary: () => void;
+  username: string;
+  onManageLearners: () => void;
+  onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -157,6 +174,31 @@ function OverflowMenu({
               }}
             >
               {reloading ? "Reloading…" : "Reload content"}
+            </button>
+            <p className="mt-1 truncate border-t border-line px-3 pt-2 pb-1 text-sm text-fg-3 sm:text-xs" data-testid="account-name">
+              Logged in as {username}
+            </p>
+            <button
+              type="button"
+              role="menuitem"
+              className={menuItemClass}
+              onClick={() => {
+                onManageLearners();
+                setOpen(false);
+              }}
+            >
+              Who's practicing?
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className={menuItemClass}
+              onClick={() => {
+                onLogout();
+                setOpen(false);
+              }}
+            >
+              Log out
             </button>
           </div>
         </>

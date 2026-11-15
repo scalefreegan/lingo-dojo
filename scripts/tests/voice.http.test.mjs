@@ -3,7 +3,8 @@
 // the key variables are cleared, so nothing here can reach ElevenLabs or
 // Azure. What it pins is the part that must hold with or without keys — the
 // settings file, locale resolution, input validation, the setup hints, and
-// that no reply ever carries a key.
+// that no reply ever carries a key. Logged in (an in-process PGlite), since
+// every voice route is behind a session and the settings are per user.
 //   node --test scripts/tests/voice.http.test.mjs
 
 import { test, before, after } from "node:test";
@@ -13,6 +14,8 @@ import os from "node:os";
 import path from "node:path";
 import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
+import { ADULT, KID, addUser, client } from "./http-session.mjs";
+import { freshDb } from "./testdb.mjs";
 
 const root = copyFixture();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
@@ -23,25 +26,21 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 
-let base, close;
-before(async () => ({ base, close } = await serveApi(apiPlugins)));
-after(() => close());
+const testDb = await freshDb();
+let base, close, session;
+before(async () => {
+  ({ base, close } = await serveApi(apiPlugins, { db: testDb.db }));
+  await addUser(testDb.db, "robin", undefined, { learners: [ADULT, KID] });
+  session = client(base);
+  await session.login("robin");
+  await session.pick("Sam");
+});
+after(async () => {
+  await close();
+  await testDb.close();
+});
 
-const call = async (method, url, body, headers = {}) => {
-  const res = await fetch(base + url, {
-    method,
-    headers: { "Content-Type": "application/json", ...headers },
-    body: body === undefined ? undefined : typeof body === "string" || body instanceof Uint8Array ? body : JSON.stringify(body),
-  });
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    /* audio or empty */
-  }
-  return { status: res.status, body: json, text };
-};
+const call = (...args) => session.call(...args);
 
 test("GET settings: defaults, nothing configured, locales from the query", async () => {
   const r = await call("GET", "/api/voice/settings?target=Mandarin+Chinese&variant=Taiwanese+Mandarin&native=English");
@@ -57,7 +56,7 @@ test("GET settings: defaults, nothing configured, locales from the query", async
   assert.deepEqual(bare.body.locales, { target: null, native: null });
 });
 
-test("PUT settings: merges, normalizes, and lands in data/voice.json", async () => {
+test("PUT settings: merges, normalizes, and lands in the user's settings row, not data/voice.json", async () => {
   const r = await call("PUT", "/api/voice/settings", {
     turn: "pause",
     silenceMs: 50,
@@ -67,8 +66,9 @@ test("PUT settings: merges, normalizes, and lands in data/voice.json", async () 
   assert.equal(r.body.settings.turn, "pause");
   assert.equal(r.body.settings.silenceMs, r.body.silence.min, "clamped");
   assert.deepEqual(r.body.settings.voices, { elevenlabs: { "es-MX": { "narrator:female": "abc" } } });
-  const disk = JSON.parse(fs.readFileSync(path.join(dataDir, "voice.json"), "utf8"));
-  assert.equal(disk.turn, "pause");
+  const [row] = await testDb.query("select s.voice from user_settings s join users u on u.id = s.user_id where u.username = 'robin'");
+  assert.equal(row.voice.turn, "pause");
+  assert.ok(!fs.existsSync(path.join(dataDir, "voice.json")), "nothing written under data/");
   const again = await call("PUT", "/api/voice/settings", { review: false });
   assert.equal(again.body.settings.turn, "pause", "a partial PUT keeps the rest");
   assert.equal(again.body.settings.review, false);
@@ -106,6 +106,14 @@ test("input validation", async () => {
   assert.equal((await call("GET", "/api/voice/cast")).status, 405);
   assert.equal((await call("POST", "/api/voice/cast", { mode: "adult", locale: "spanish", units: [] })).status, 400);
   assert.equal((await call("POST", "/api/voice/cast", { mode: "teen", locale: "es-MX", units: [] })).status, 400);
+  // The mode is the active learner's (Sam, adult): a body naming kids is a
+  // 400 before anything runs.
+  const turnKids = await call("POST", "/api/voice/turn", { mode: "kids", pack: {}, history: [], message: "" });
+  assert.equal(turnKids.status, 400);
+  assert.match(turnKids.body.error, /adult mode, not kids/);
+  const castKids = await call("POST", "/api/voice/cast", { mode: "kids", locale: "es-MX", units: [] });
+  assert.equal(castKids.status, 400);
+  assert.match(castKids.body.error, /adult mode, not kids/);
 });
 
 test("speak with the saved provider unconfigured says so; cross-origin is refused", async () => {
@@ -115,4 +123,21 @@ test("speak with the saved provider unconfigured says so; cross-origin is refuse
   assert.match(r.body.error, /ElevenLabs is not set up/);
   const x = await call("GET", "/api/voice/settings", undefined, { Origin: "https://evil.example" });
   assert.equal(x.status, 403);
+});
+
+test("voice settings are per user: a second account starts from the defaults and never sees or changes the first's", async () => {
+  await addUser(testDb.db, "lee", undefined, { learners: [KID] });
+  const lee = client(base);
+  await lee.login("lee");
+  await call("PUT", "/api/voice/settings", { turn: "pause", voices: { system: { "es-MX": { "narrator:female": "Paulina" } } } });
+  const fresh = await lee.call("GET", "/api/voice/settings");
+  assert.equal(fresh.status, 200, "no learner needed for settings");
+  assert.equal(fresh.body.settings.turn, "tap", "the default, not robin's");
+  assert.deepEqual(fresh.body.settings.voices, {});
+  await lee.call("PUT", "/api/voice/settings", { turn: "tap", review: true, voices: {} });
+  const mine = await call("GET", "/api/voice/settings");
+  assert.equal(mine.body.settings.turn, "pause", "lee's PUT left robin's alone");
+  assert.deepEqual(mine.body.settings.voices, { system: { "es-MX": { "narrator:female": "Paulina" } } });
+  // Logged out, there are no settings to read.
+  assert.equal((await client(base).call("GET", "/api/voice/settings")).status, 401);
 });

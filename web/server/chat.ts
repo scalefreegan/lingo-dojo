@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { AGENT_MODELS, failureHint, startClaude } from "../../scripts/claude.mjs";
 import { MODES, REPO_ROOT, isMode } from "../../scripts/content.mjs";
+import type { Ctx } from "./auth.ts";
 import { contentReply } from "./content.ts";
 import type {
   ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatMessage, ChatReply, ChatRequest, ChatStart,
@@ -19,6 +20,10 @@ import { appendHistory, clearHistory, getModel, readHistory, setModel } from "./
 //   DELETE /api/chat/history    {ok}
 //   GET    /api/settings        {model, models}
 //   PUT    /api/settings        {model} → {model, models}
+//
+// Admins only (api.ts): the agent writes the library everyone shares. The
+// transcript and the model are the admin's own (store.ts: agent_messages and
+// user_settings), and the agent sees the active learner's profile.
 //
 // The CLI buffers the whole turn in --output-format json, so there is nothing
 // to stream until it finishes: the heartbeats are what keep the connection
@@ -50,7 +55,7 @@ The content library is the product. It lives under content/ in this repository (
 - ${tree}schema.yaml: the slots, in prompt order (id, title, pick: one|any, required, description).
 - ${tree}units/<id>.md: one unit. Frontmatter: id (MUST equal the filename stem), slot (a slot id), title, summary, tags (list), default (true/false, preselected in a new pack), level (list of levels, optional: ${c.levels.join(", ")}). The body is instructions to the dojo master, in English, second person ("you"), self-contained — no references to other units. Placeholders {{learner_name}}, {{native_language}}, {{target_language}}, {{target_variant}}, {{level}}, {{scenario_title}} are substituted at assembly time.
 - ${tree}scenarios/<id>.md: the setting and story. Frontmatter: id, title, summary (required); tags, language, collection, category, roles (mapping), beats (list), twists (list), vocab (list of {term, gloss}), phrases (list of English meanings) optional. The body is free prose for the dojo master. A scenario for one language and place (the Oaxaca trip) sets language and uses vocab; a generic one that works in any language omits language, lists phrases instead of vocab, and may use {{location}} in roles, twists and the body (never in title, summary or beats) so the session's Location — or a city the dojo master picks — sets the scene.
-- ${tree}profile.yaml: the learner. ${tree}frame.md: the fixed preamble. ${tree}packs/*.yaml: saved packs — the app writes these; leave them alone unless asked.
+- ${tree}profile.yaml: only a seed for a fresh install and the offline export CLI; the app's learners live in its database, and the Profile below is the active learner's. ${tree}frame.md: the fixed preamble. ${tree}packs/*.yaml: saved packs — the app writes these; leave them alone unless asked.
 
 The ${c.mode} library right now:
 Slots:
@@ -82,10 +87,11 @@ export function historyPrompt(prior: ChatMessage[], message: string): string {
 /* -------------------------------- the run -------------------------------- */
 
 // One agent at a time: two runs editing content/ concurrently would race
-// each other's commits, and the user has one chat anyway.
+// each other's commits. It is one flag for every admin, not one per user,
+// for the same reason: there is one content/.
 let running = false;
 
-async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleChatPost(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   const body = await readJsonBody<Partial<ChatRequest>>(req);
   const message = typeof body?.message === "string" ? body.message.trim() : "";
   if (!message) throw new HttpError(400, "message is required");
@@ -113,10 +119,10 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
   // Everything after openSse() stays inside the try: headers are out, so an
   // exception here can only be reported as an SSE error, never as a status.
   try {
-    const prior = readHistory().slice(-HISTORY_WINDOW);
-    const model = getModel();
-    const system = systemPrompt(contentReply(mode));
-    appendHistory({ role: "user", text: message, ts: now() });
+    const prior = await readHistory(ctx.user.id, HISTORY_WINDOW);
+    const model = await getModel(ctx.user.id);
+    const system = systemPrompt(contentReply(mode, ctx.learner));
+    await appendHistory(ctx.user.id, { role: "user", text: message, ts: now() });
     send("start", { model } satisfies ChatStart);
 
     const { result } = startClaude({
@@ -129,14 +135,14 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
     const run = await result;
     const text = run.text.trim();
     const reply: ChatMessage = { role: "assistant", text, ts: now() };
-    appendHistory(reply);
+    await appendHistory(ctx.user.id, reply);
     send("message", { ...reply, role: "assistant", costUsd: run.costUsd, numTurns: run.numTurns, denied: run.permissionDenials.length } satisfies ChatReply);
     if (run.permissionDenials.length) {
       console.warn(`[lingo-dojo] agent: ${run.permissionDenials.length} tool call(s) denied by the sandbox`, run.permissionDenials);
     }
 
     const commit: ChatCommit = await commitContent(text);
-    if ("hash" in commit) appendHistory({ role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
+    if ("hash" in commit) await appendHistory(ctx.user.id, { role: "commit", text: `${commit.hash}: ${commit.summary}`, ts: now() });
     else if ("error" in commit) console.error(`[lingo-dojo] agent: commit failed: ${commit.error}`);
     send("commit", commit);
     send("done", { ok: true } satisfies ChatDone);
@@ -154,17 +160,17 @@ async function handleChatPost(req: IncomingMessage, res: ServerResponse): Promis
 
 /* -------------------------------- routes --------------------------------- */
 
-export async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleChat(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   const seg = subPath(req);
   if (!seg) {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
-    return handleChatPost(req, res);
+    return handleChatPost(req, res, ctx);
   }
   if (seg === "history") {
-    if (req.method === "GET") return sendJson(res, 200, { messages: readHistory() } satisfies ChatHistoryReply);
+    if (req.method === "GET") return sendJson(res, 200, { messages: await readHistory(ctx.user.id) } satisfies ChatHistoryReply);
     if (req.method === "DELETE") {
       if (running) throw new HttpError(409, "the agent is working; clear the history when it finishes");
-      clearHistory();
+      await clearHistory(ctx.user.id);
       return sendJson(res, 200, { ok: true });
     }
     return methodNotAllowed(res, "GET, DELETE");
@@ -172,18 +178,18 @@ export async function handleChat(req: IncomingMessage, res: ServerResponse): Pro
   sendJson(res, 404, { error: "no such route" });
 }
 
-export async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleSettings(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
-  const reply = (): SettingsReply => ({ model: getModel(), models: AGENT_MODELS });
-  if (req.method === "GET") return sendJson(res, 200, reply());
+  const reply = async (): Promise<SettingsReply> => ({ model: await getModel(ctx.user.id), models: AGENT_MODELS });
+  if (req.method === "GET") return sendJson(res, 200, await reply());
   if (req.method === "PUT") {
     const body = await readJsonBody<Partial<SettingsRequest>>(req);
     const model = body?.model;
     if (typeof model !== "string" || !AGENT_MODELS.some((m) => m.id === model)) {
       throw new HttpError(400, `model must be one of ${AGENT_MODELS.map((m) => m.id).join(", ")}`);
     }
-    setModel(model);
-    return sendJson(res, 200, reply());
+    await setModel(ctx.user.id, model);
+    return sendJson(res, 200, await reply());
   }
   methodNotAllowed(res, "GET, PUT");
 }

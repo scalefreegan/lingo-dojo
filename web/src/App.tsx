@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, listPacks, movePack, renamePack, savePack, saveProfile,
 } from "./api";
-import type { AssembleResult, Committed, ContentReply, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
+import type { AssembleResult, AuthUser, Committed, ContentReply, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
   draftToPack, emptyOverrides, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
@@ -20,26 +20,10 @@ import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
  *  notes box, short enough that a checkbox feels immediate. */
 const ASSEMBLE_DELAY_MS = 200;
 
-const MODE_KEY = "lingo-dojo.mode.v1";
 const TAB_KEY = "lingo-dojo.tab.v1";
 
 function isTab(v: string | null): v is Tab {
   return v === "scene" || v === "customize" || v === "go" || v === "library";
-}
-
-function isMode(v: string | null): v is Mode {
-  return v === "adult" || v === "kids";
-}
-
-/** The library this browser was last in — adult the first time, or if
- *  storage is blocked or holds something unrecognized. */
-function loadRememberedMode(): Mode {
-  try {
-    const raw = localStorage.getItem(MODE_KEY);
-    return isMode(raw) ? raw : "adult";
-  } catch {
-    return "adult";
-  }
 }
 
 /** The last tab this browser was on in a mode — "Scene" the first time, or
@@ -53,11 +37,30 @@ function loadRememberedTab(mode: Mode): Tab {
   }
 }
 
-export default function App() {
-  // Which library is open. Everything below — content, packs, draft, tab —
-  // belongs to this mode; switching it reloads the lot and swaps in that
+export default function App({
+  user,
+  learner,
+  learners,
+  onSwitchLearner,
+  onManageLearners,
+  onLogout,
+  onLearnerSaved,
+}: {
+  user: AuthUser;
+  /** Who's practising: the session's active learner. */
+  learner: LearnerInfo;
+  learners: LearnerInfo[];
+  onSwitchLearner: (id: string) => void;
+  onManageLearners: () => void;
+  onLogout: () => void;
+  /** The learner row changed (Save as my defaults): refresh what the gate holds. */
+  onLearnerSaved: () => Promise<void> | void;
+}) {
+  // Which library is open: the active learner's. Everything below — content,
+  // packs, draft, tab — belongs to this mode. Switching learner remounts App
+  // (AuthGate keys it by learner), which reloads the lot and swaps in that
   // mode's own remembered draft, so the two never bleed into each other.
-  const [mode, setModeState] = useState<Mode>(loadRememberedMode);
+  const mode: Mode = learner.mode;
   const [content, setContent] = useState<ContentReply | null>(null);
   const [packs, setPacks] = useState<Pack[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
@@ -113,8 +116,8 @@ export default function App() {
     setDraft((d) => (fresh || !d ? (loadRememberedDraft(m) ?? newDraft(c)) : d));
   }, []);
 
-  // Load (and, on a mode switch, reload) the library. The effect's own
-  // `live` flag drops a reply that lands after the mode changed again.
+  // Load the library. The effect's own `live` flag drops a reply that lands
+  // after the component is gone (a learner switch).
   useEffect(() => {
     let live = true;
     Promise.all([getContent(mode), listPacks(mode)]).then(
@@ -125,27 +128,6 @@ export default function App() {
       live = false;
     };
   }, [mode, applyLoad]);
-
-  function switchMode(m: Mode) {
-    if (m === mode) return;
-    // The outgoing draft is already remembered under its own key (the effect
-    // below runs on every change); nothing to flush. Drop the stale preview
-    // and status so nothing from the old library lingers while the new one
-    // loads, and start on that mode's last tab.
-    setDraft(null);
-    setResult(null);
-    setSettled(null);
-    setAssembleError(null);
-    setPackStatus(null);
-    setSaveRequest(null);
-    setTabState(loadRememberedTab(m));
-    setModeState(m);
-    try {
-      localStorage.setItem(MODE_KEY, m);
-    } catch {
-      /* blocked storage: the next visit just opens in adult mode */
-    }
-  }
 
   async function reloadContent() {
     setReloading(true);
@@ -288,10 +270,10 @@ export default function App() {
     return act(async () => report(`Deleted folder ${name}`, await deleteFolder(mode, name)));
   }
 
-  /** "Save as my defaults": write the shown values to this mode's
-   *  profile.yaml, reload so content.profile is the new file, then clear the
-   *  overrides — they are the defaults now, so neither the draft nor a pack
-   *  saved from it should repeat them. Resolves to an error sentence, or null. */
+  /** "Save as my defaults": write the shown values to the active learner's
+   *  row, reload so content.profile is the new row, then clear the overrides
+   *  — they are the defaults now, so neither the draft nor a pack saved from
+   *  it should repeat them. Resolves to an error sentence, or null. */
   async function saveDefaults(values: ProfileRequest): Promise<string | null> {
     try {
       await saveProfile(mode, values);
@@ -300,6 +282,8 @@ export default function App() {
     }
     await reloadContent();
     setDraft((d) => (d ? { ...d, overrides: emptyOverrides() } : d));
+    // The learner switcher shows the name: let the gate re-read it.
+    await onLearnerSaved();
     return null;
   }
 
@@ -348,7 +332,12 @@ export default function App() {
         reloading={reloading}
         ready={!!ready}
         mode={mode}
-        onMode={switchMode}
+        user={user}
+        learner={learner}
+        learners={learners}
+        onSwitchLearner={onSwitchLearner}
+        onManageLearners={onManageLearners}
+        onLogout={onLogout}
         content={ready}
         draft={draft}
         onChange={setDraft}
@@ -425,10 +414,14 @@ export default function App() {
 
       {/* The content agent writes units and packs; on the Go tab it would only
           sit over the practice session, so it shows on the building tabs. */}
-      {/* Hidden, not unmounted: a turn in progress keeps streaming. */}
-      <div hidden={tab === "go"}>
-        <AgentDrawer mode={mode} onContentChanged={reloadContent} />
-      </div>
+      {/* Hidden, not unmounted: a turn in progress keeps streaming. Admins
+          only: it edits the library everyone shares (the server says 403 to
+          anyone else, so this is the courtesy, not the guard). */}
+      {user.isAdmin && (
+        <div hidden={tab === "go"}>
+          <AgentDrawer mode={mode} onContentChanged={reloadContent} />
+        </div>
+      )}
     </div>
   );
 }

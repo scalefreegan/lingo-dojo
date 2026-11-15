@@ -10,7 +10,8 @@
     "export": "node scripts/export.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/db/setup.mjs --migrate-only",
-    "db:setup": "node scripts/db/setup.mjs"
+    "db:setup": "node scripts/db/setup.mjs",
+    "user": "node scripts/user.mjs"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.4",

@@ -1,83 +1,54 @@
-import fs from "node:fs";
-import path from "node:path";
 import { DEFAULT_MODEL, isAgentModel } from "../../scripts/claude.mjs";
-import { REPO_ROOT } from "../../scripts/content.mjs";
-import type { ChatMessage } from "../shared/wire.ts";
+import { normalizeVoiceSettings } from "../../scripts/voice.mjs";
+import {
+  appendAgentMessage, clearAgentMessages, getSettings, listAgentMessages, saveModel, saveVoiceSettings,
+} from "../../scripts/db/accounts.ts";
+import type { ChatMessage, VoiceSettings } from "../shared/wire.ts";
+import { rawDb } from "./db.ts";
 
-// Runtime state that is not content: the chat transcript and the model
-// setting. Plain files under data/ (gitignored, created on demand), read on
-// every call — the app is single-user and these are tiny, so a cache would
-// only add a way for the file and the process to disagree.
-//
-//   data/chat.jsonl      one {role, text, ts} per line, appended per message
-//   data/settings.json   {model}
+// Per-user state that is not content: the content agent's chat transcript,
+// its model, and the voice settings and casting. One row of user_settings
+// and the user's agent_messages (docs/DATA.md §Accounts), read on every call:
+// they are tiny, and a cache would only add a way for two tabs to disagree.
+// Before logins these were data/chat.jsonl, data/settings.json and
+// data/voice.json; the first admin is seeded from them once (seed.ts), and
+// nothing reads them after that.
 
-/** LINGO_DATA_DIR when set (resolved against the repo root, like the content
- *  and exports overrides), else <repo>/data. Per call, so a test can point it
- *  at a temp dir. */
-export function dataDir(): string {
-  const override = process.env.LINGO_DATA_DIR;
-  return override ? path.resolve(REPO_ROOT, override) : path.join(REPO_ROOT, "data");
+export async function readHistory(userId: string, last?: number): Promise<ChatMessage[]> {
+  return listAgentMessages(rawDb(), userId, last);
 }
 
-const historyPath = () => path.join(dataDir(), "chat.jsonl");
-const settingsPath = () => path.join(dataDir(), "settings.json");
-
-const ROLES = new Set(["user", "assistant", "commit"]);
-
-export function readHistory(): ChatMessage[] {
-  let text: string;
-  try {
-    text = fs.readFileSync(historyPath(), "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw e;
-  }
-  const out: ChatMessage[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    // A torn last line (the server died mid-append) is dropped, not fatal:
-    // the transcript is a convenience, the content is the product.
-    try {
-      const m = JSON.parse(line) as Partial<ChatMessage>;
-      if (typeof m.role === "string" && ROLES.has(m.role) && typeof m.text === "string") {
-        out.push({ role: m.role, text: m.text, ts: typeof m.ts === "string" ? m.ts : "" });
-      }
-    } catch {
-      /* skip */
-    }
-  }
-  return out;
+export async function appendHistory(userId: string, message: ChatMessage): Promise<void> {
+  await appendAgentMessage(rawDb(), userId, message);
 }
 
-export function appendHistory(message: ChatMessage): void {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  fs.appendFileSync(historyPath(), `${JSON.stringify(message)}\n`);
+export async function clearHistory(userId: string): Promise<void> {
+  await clearAgentMessages(rawDb(), userId);
 }
 
-export function clearHistory(): void {
-  try {
-    fs.unlinkSync(historyPath());
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
+/** The model this user's agent runs use. Anything outside the offered list
+ *  falls back to the default, so a stale row can never spawn a model the UI
+ *  doesn't offer. */
+export async function getModel(userId: string): Promise<string> {
+  const model = (await getSettings(rawDb(), userId))?.model;
+  return isAgentModel(model) ? model : DEFAULT_MODEL;
 }
 
-/** The model agent runs use. Anything unreadable or outside the offered list
- *  falls back to the default, so a stale settings file can never spawn a
- *  model the UI doesn't offer. */
-export function getModel(): string {
-  try {
-    const raw = JSON.parse(fs.readFileSync(settingsPath(), "utf8")) as { model?: unknown };
-    return isAgentModel(raw.model) ? raw.model : DEFAULT_MODEL;
-  } catch {
-    return DEFAULT_MODEL;
-  }
-}
-
-export function setModel(model: string): string {
+export async function setModel(userId: string, model: string): Promise<string> {
   if (!isAgentModel(model)) throw new Error(`unknown model: ${model}`);
-  fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(settingsPath(), `${JSON.stringify({ model }, null, 2)}\n`);
+  await saveModel(rawDb(), userId, model);
   return model;
+}
+
+/** This user's voice settings, always complete: normalizeVoiceSettings fills
+ *  what was never saved (a new user gets the defaults). */
+export async function readVoiceSettings(userId: string): Promise<VoiceSettings> {
+  return normalizeVoiceSettings((await getSettings(rawDb(), userId))?.voice ?? null);
+}
+
+/** Normalize and store; returns what was stored. */
+export async function writeVoiceSettings(userId: string, s: VoiceSettings): Promise<VoiceSettings> {
+  const clean = normalizeVoiceSettings(s);
+  await saveVoiceSettings(rawDb(), userId, clean as unknown as Record<string, unknown>);
+  return clean;
 }

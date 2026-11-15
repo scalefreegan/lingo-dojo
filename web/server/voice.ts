@@ -5,19 +5,20 @@ import os from "node:os";
 import path from "node:path";
 import { assemble } from "../../scripts/assemble.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/content.mjs";
+import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, Mode, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
-import { dataDir } from "./store.ts";
+import { activeLearner, learnerMode, learnerProfile, type Ctx } from "./auth.ts";
+import { readVoiceSettings, writeVoiceSettings } from "./store.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -47,33 +48,19 @@ const HISTORY_WINDOW = 60;
 
 /* -------------------------------- settings -------------------------------- */
 
-const settingsPath = () => path.join(dataDir(), "voice.json");
-
-export function readVoiceSettings(): VoiceSettings {
-  try {
-    return normalizeVoiceSettings(JSON.parse(fs.readFileSync(settingsPath(), "utf8")));
-  } catch {
-    return normalizeVoiceSettings(null);
-  }
-}
-
-function writeVoiceSettings(s: VoiceSettings): VoiceSettings {
-  const clean = normalizeVoiceSettings(s);
-  fs.mkdirSync(dataDir(), { recursive: true });
-  fs.writeFileSync(settingsPath(), `${JSON.stringify(clean, null, 2)}\n`);
-  return clean;
-}
+// The settings are the logged-in user's (store.ts: user_settings.voice), so
+// two people sharing the app keep their own voices and turn-taking.
 
 /** The reply, with the session's locales resolved from the query
  *  (?target=Spanish&variant=Mexican+Spanish&native=English): the language
  *  table lives in scripts/voice.mjs, so the browser asks rather than keeping
  *  a copy. */
-function settingsReply(req: IncomingMessage): VoiceSettingsReply {
+function settingsReply(req: IncomingMessage, settings: VoiceSettings): VoiceSettingsReply {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   const target = q.get("target");
   const native = q.get("native");
   return {
-    settings: readVoiceSettings(),
+    settings,
     configured: configuredProviders(voiceKeys()),
     models: VOICE_MODELS,
     elevenModels: ELEVEN_MODELS,
@@ -88,13 +75,13 @@ function settingsReply(req: IncomingMessage): VoiceSettingsReply {
   };
 }
 
-async function handleSettings(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  if (req.method === "GET") return sendJson(res, 200, settingsReply(req));
+async function handleSettings(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  if (req.method === "GET") return sendJson(res, 200, settingsReply(req, await readVoiceSettings(ctx.user.id)));
   if (req.method === "PUT") {
     const body = await readJsonBody<VoiceSettingsRequest>(req);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a settings object");
-    writeVoiceSettings({ ...readVoiceSettings(), ...body });
-    return sendJson(res, 200, settingsReply(req));
+    const saved = await writeVoiceSettings(ctx.user.id, { ...(await readVoiceSettings(ctx.user.id)), ...body });
+    return sendJson(res, 200, settingsReply(req, saved));
   }
   methodNotAllowed(res, "GET, PUT");
 }
@@ -194,7 +181,7 @@ async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const params = new URL(req.url ?? "/", "http://localhost").searchParams;
   // The first locale is the target: speech goes in as that language (English
@@ -206,7 +193,7 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
     .map((s) => s.trim())
     .filter((s) => LOCALE_RE.test(s));
   const audio = await readAudio(req);
-  const provider = readVoiceSettings().stt;
+  const provider = (await readVoiceSettings(ctx.user.id)).stt;
   const keys = keysFor(provider);
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
   const request = provider === "elevenlabs"
@@ -228,9 +215,11 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse): Prom
 
 /* ---------------------------------- turn ---------------------------------- */
 
-// One turn at a time: the history is the client's, so a second turn racing
-// the first would answer a conversation that is about to change under it.
-let turning = false;
+// One turn at a time per user: the history is the client's, so a second turn
+// racing the first would answer a conversation that is about to change under
+// it. Keyed by user so two people practising never block each other (DATA.md
+// keys it by conversation once conversations are stored).
+const turning = new Set<string>();
 
 
 function cleanHistory(raw: unknown): VoiceHistoryItem[] {
@@ -285,17 +274,18 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
   return out.slice(-HISTORY_WINDOW);
 }
 
-async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleTurn(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceTurnRequest>>(req);
-  const mode: Mode = body?.mode == null ? "adult" : (body.mode as Mode);
-  if (!isMode(mode)) throw new HttpError(400, `unknown mode ${JSON.stringify(body?.mode)} (one of ${MODES.join(", ")})`);
+  // The active learner's mode; a body naming the other one is a 400.
+  const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!body?.pack || typeof body.pack !== "object") throw new HttpError(400, "body must carry the pack");
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (message.length > 4000) throw new HttpError(413, "message too long");
   const history = cleanHistory(body.history);
-  if (turning) throw new HttpError(409, "the dojo master is still answering the last turn");
-  turning = true;
+  const who = ctx.user.id;
+  if (turning.has(who)) throw new HttpError(409, "the dojo master is still answering the last turn");
+  turning.add(who);
 
   // Cancel the run when the browser gives up (Stop, a page reload): listen
   // on `res`, as the chat route does — readJsonBody consumed the request.
@@ -305,12 +295,13 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
   };
   res.on("close", onClose);
   try {
-    const content = loadContent(modeRoot(mode));
+    // The active learner is the profile (content.profile is the file's).
+    const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(activeLearner(ctx)) };
     const { markdown, warnings } = assemble(content, body.pack);
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
     const plan = sessionPlan(content, body.pack, mode);
-    const settings = readVoiceSettings();
+    const settings = await readVoiceSettings(ctx.user.id);
     const { result } = startClaude({
       prompt: voiceTurnPrompt(history, message),
       // The session's narrator gender, drawn by the client at session start,
@@ -339,7 +330,7 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
     sendJson(res, 200, { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings } satisfies VoiceTurnReply);
   } finally {
-    turning = false;
+    turning.delete(who);
     res.off("close", onClose);
   }
 }
@@ -375,7 +366,7 @@ function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buf
   }).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
 
-async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceSpeakRequest>>(req);
   const text = typeof body?.text === "string" ? body.text.trim() : "";
@@ -392,7 +383,7 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse): Promise<v
   if (typeof speaker !== "string" || !["narrator", "character", "sidekick"].includes(speaker)) {
     throw new HttpError(400, "speaker must be narrator, character or sidekick");
   }
-  const settings = readVoiceSettings();
+  const settings = await readVoiceSettings(ctx.user.id);
   const provider = settings.tts;
   const keys = keysFor(provider);
   // The speaker's own voice; a speaker without one borrows the narrator's,
@@ -509,11 +500,10 @@ type LibVoice = { id: string; name: string; age?: string };
  *  to the account), else the provider's own list for the locale. With
  *  `slots` only those are drawn (a recast mid-session), avoiding `avoid`;
  *  the client then keeps its narrator gender. */
-async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleCast(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceCastRequest>>(req);
-  const mode: Mode = body?.mode == null ? "adult" : (body.mode as Mode);
-  if (!isMode(mode)) throw new HttpError(400, `unknown mode ${JSON.stringify(body?.mode)}`);
+  const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");
   const all: string[] = voiceSlots(mode);
@@ -525,7 +515,7 @@ async function handleCast(req: IncomingMessage, res: ServerResponse): Promise<vo
       if (all.includes(slot) && age) ages[slot] = age;
     }
   }
-  const settings = readVoiceSettings();
+  const settings = await readVoiceSettings(ctx.user.id);
   const provider = settings.tts;
   const keys = keysFor(provider);
   const avoid = Array.isArray(body?.avoid) ? (body.avoid as unknown[]).slice(0, 20).map((v) => castVoice(provider, v)).filter((v): v is string => !!v) : [];
@@ -598,15 +588,15 @@ async function handleLibraryAdd(req: IncomingMessage, res: ServerResponse): Prom
 
 /* --------------------------------- routes --------------------------------- */
 
-export async function handleVoice(req: IncomingMessage, res: ServerResponse): Promise<void> {
+export async function handleVoice(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   const seg = subPath(req);
-  if (seg === "settings") return handleSettings(req, res);
+  if (seg === "settings") return handleSettings(req, res, ctx);
   if (seg === "voices") return handleVoices(req, res);
-  if (seg === "transcribe") return handleTranscribe(req, res);
-  if (seg === "turn") return handleTurn(req, res);
-  if (seg === "speak") return handleSpeak(req, res);
+  if (seg === "transcribe") return handleTranscribe(req, res, ctx);
+  if (seg === "turn") return handleTurn(req, res, ctx);
+  if (seg === "speak") return handleSpeak(req, res, ctx);
   if (seg === "library") return handleLibrary(req, res);
-  if (seg === "cast") return handleCast(req, res);
+  if (seg === "cast") return handleCast(req, res, ctx);
   if (seg === "library/add") return handleLibraryAdd(req, res);
   sendJson(res, 404, { error: "no such route" });
 }
