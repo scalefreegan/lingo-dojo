@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, listPacks, movePack, renamePack, savePack, saveProfile,
+  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
 } from "./api";
 import type { AssembleResult, Committed, ContentReply, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, emptyOverrides, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, loadRememberedDraft, localTimestamp, modeKey, newDraft, packId, packToDraft,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -159,7 +159,46 @@ export default function App() {
     }
   }
 
-  const pack = useMemo(() => (draft ? draftToPack(draft) : null), [draft]);
+  // The Go tab's "How long do you have?": the draft's own choice, else the
+  // last one, which lives in the voice settings (data/voice.json) per mode.
+  // Until (or unless) they load, the picker offers no lengths and the pack
+  // goes without one, which is No limit: today's behavior.
+  const [lastMinutes, setLastMinutes] = useState<Record<Mode, number | null> | null>(null);
+  const [minuteChoices, setMinuteChoices] = useState<Record<Mode, number[]> | null>(null);
+  useEffect(() => {
+    let live = true;
+    getVoiceSettings().then(
+      (r) => {
+        if (!live) return;
+        setLastMinutes(r.settings.sessionMinutes);
+        setMinuteChoices(r.minuteChoices);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const minutes = draft ? effectiveMinutes(draft, lastMinutes?.[mode] ?? null) : null;
+
+  /** A picked length goes into the draft (and so the pack) and becomes the
+   *  remembered one for the next pack that has none. */
+  function chooseMinutes(m: number | null) {
+    setDraft((d) => (d ? { ...d, minutes: m } : d));
+    setLastMinutes((s) => ({ adult: null, kids: null, ...s, [mode]: m }));
+    saveVoiceSettings({ sessionMinutes: { [mode]: m } }).catch(() => {
+      /* only the default for next time is lost; this session has its length */
+    });
+  }
+
+  const pack = useMemo(() => (draft ? draftToPack(draft, minutes) : null), [draft, minutes]);
+  // A bad `minutes` in the pack is hidden from the assembler while the
+  // remembered length stands in, so its warning is added here.
+  const extraWarning = draft ? minutesWarning(draft, minutes) : null;
+  const shownResult = useMemo(
+    () => (result && extraWarning && !result.warnings.includes(extraWarning) ? { ...result, warnings: [extraWarning, ...result.warnings] } : result),
+    [result, extraWarning],
+  );
   const assembling = !!pack && (settled?.pack !== pack || settled.version !== contentVersion);
 
   // Live preview. Each change aborts the request before it, so a slow reply
@@ -244,7 +283,9 @@ export default function App() {
     if (!overwrite && id !== src && packs.some((p) => p.id === id)) return { ok: false, conflict: id };
     const created = id === src && draft.created ? draft.created : localTimestamp();
     try {
-      const r = await savePack(mode, id, { ...pack, title, created });
+      // The pack's own minutes only (draftToPack's default): a remembered
+      // length the picker merely inherited is never written into a pack.
+      const r = await savePack(mode, id, { ...draftToPack(draft), title, created });
       setDraft((d) => (d ? { ...d, title: r.pack.title, sourceId: r.pack.id, created: r.pack.created } : d));
       await refreshPacks();
       setPackStatus(report(`Saved ${r.pack.id}`, r));
@@ -355,7 +396,7 @@ export default function App() {
         onSaveDefaults={saveDefaults}
       />
       {ready && draft && pack && (
-        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={result} pending={assembling} onTab={setTab}
+        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={shownResult} pending={assembling} onTab={setTab}
           onPractice={() => {
             setPracticeRequest(true);
             setTab("go");
@@ -387,9 +428,12 @@ export default function App() {
                 sceneTitle={scenarioTitle}
                 learnerLine={learnerLine}
                 notes={draft.notes}
+                minutes={validMinutes(minutes)}
+                minuteChoices={minuteChoices?.[mode] ?? []}
+                onMinutes={chooseMinutes}
                 onNotes={(notes) => setDraft({ ...draft, notes })}
                 exportId={draft.sourceId ? splitPackId(draft.sourceId).stem : packId(draft.title || scenarioTitle || "session")}
-                result={result}
+                result={shownResult}
                 pending={assembling}
                 error={assembleError}
                 folders={folders}

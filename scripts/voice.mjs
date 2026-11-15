@@ -15,6 +15,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "./content.mjs";
+// The session's parts live in plan.mjs (no imports) so the assembler can
+// read them for the Time budget without pulling in this module.
+export { sessionPlan, MINUTE_CHOICES } from "./plan.mjs";
+import { MINUTE_CHOICES, budgetSplit, plannedRow, readMinutes } from "./plan.mjs";
 
 /* ------------------------------- providers -------------------------------- */
 
@@ -231,14 +235,16 @@ export const JUMP = "[jump]";
 
 /** The transcript replayed as the prompt (the chat agent's pattern): the
  *  learner's lines as heard, the dojo master's as the tagged lines spoken —
- *  with their <t> marks put back, so the model keeps seeing the format. */
-export function voiceTurnPrompt(history, message) {
+ *  with their <t> marks put back, so the model keeps seeing the format.
+ *  `clock` (clockLine) goes after the learner's words, last before the
+ *  reply, where the model weighs it most; "" adds nothing. */
+export function voiceTurnPrompt(history, message, clock = "") {
   const render = (m) => m.role === "learner"
     ? `[LEARNER]\n${m.text}`
     : `[DOJO MASTER]\n${castLines(m.castNotes)}${(m.lines ?? []).map((l) => `${timingFor(l)}${tagFor(l)}: ${markedText(l)}`).join("\n")}${glossLine(m.glosses)}${Array.isArray(m.choices) && m.choices.length ? `\nCHOICES: ${m.choices.join(" | ")}` : ""}${typeof m.stage === "string" && m.stage ? `\nSTAGE: ${m.stage}` : ""}`;
   const prior = history.length ? `Session so far:\n\n${history.map(render).join("\n\n")}\n\n---\n\n` : "";
   const said = String(message ?? "").trim() || SESSION_START;
-  return `${prior}[LEARNER]\n${said}\n\n[DOJO MASTER]\nReply as the dojo master: tagged lines first (a CAST line just before anyone's first line), then any GLOSS, CHOICES and STAGE lines, in that order.`;
+  return `${prior}[LEARNER]\n${said}\n\n${clock ? `${clock}\n\n` : ""}[DOJO MASTER]\nReply as the dojo master: tagged lines first (a CAST line just before anyone's first line), then any GLOSS, CHOICES and STAGE lines, in that order.`;
 }
 
 /* ------------------------------ the reply side ----------------------------- */
@@ -625,60 +631,79 @@ export function parseStage(text, ids) {
   return out;
 }
 
-/** The slots that make up a session's parts, around the scene, by mode. */
-// Kids games mostly run during the story, whenever a word needs repeating,
-// so they sit at its start; one tagged "opener" (the echo game) runs before
-// the story, so it sits before the scene.
-const PLAN_SLOTS = {
-  adult: { intro: "intro", before: ["warmup"], after: ["debrief"] },
-  kids: { intro: "intro", before: [], during: ["games"], after: ["ending"], openerTag: "opener" },
-};
-const BEAT_CHARS = 70;
-
-/** The session's parts in order, for the timeline and the adapter: the
- *  introduction, each warm-up, the scene and its beats (the scenario's
- *  beats list), then the debrief. `content` is loadContent's result and
- *  `pack` the pack being practised; ids are stable within a session. */
-export function sessionPlan(content, pack, mode = "adult") {
-  const cfg = PLAN_SLOTS[mode] ?? PLAN_SLOTS.adult;
-  const byId = new Map((content?.units ?? []).map((u) => [u.id, u]));
-  // Each unit once, as assemble does: a pack listing one twice must not
-  // show (or run) it twice, and ids must stay unique.
-  const ids = [...new Set(Array.isArray(pack?.units) ? pack.units : [])];
-  const units = ids.map((id) => byId.get(id)).filter(Boolean);
-  const inSlot = (slot) => units.filter((u) => u.slot === slot);
-  const opener = (u) => !!cfg.openerTag && Array.isArray(u.tags) && u.tags.includes(cfg.openerTag);
-  const part = (slot, u) => ({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
-  const plan = [];
-  if (inSlot(cfg.intro).length) plan.push({ id: "intro", title: "Introduction", kind: "intro" });
-  for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u));
-  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter(opener)) plan.push(part(slot, u));
-  const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
-  const title = scenario?.title || (pack?.quick_scenario ? "Quick scene" : "The scene");
-  plan.push({ id: "scene", title, kind: "scene" });
-  // Games played during the story sit at its start: they begin with it and
-  // come back whenever a word needs repeating.
-  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter((u) => !opener(u))) plan.push(part(slot, u));
-  const beats = Array.isArray(scenario?.beats) ? scenario.beats : [];
-  beats.forEach((b, i) => {
-    // One line: a beat written over several lines would break the
-    // adapter's list of parts.
-    const text = String(b).replace(/\s+/g, " ").trim();
-    // The beat's first clause is its name: "Arriving at the stall; Doña
-    // Carmen calling out…" → "Arriving at the stall". Leading punctuation
-    // is not a clause.
-    const short = text.replace(/^[\s;:—–-]+/, "").split(/[;:—]/)[0].trim() || text;
-    plan.push({ id: `beat:${i + 1}`, title: short.length > BEAT_CHARS ? `${short.slice(0, BEAT_CHARS - 1)}…` : short, kind: "beat", detail: text });
-  });
-  for (const slot of cfg.after) for (const u of inSlot(slot)) plan.push(part(slot, u));
-  return plan;
-}
-
 /** The adapter's section naming this session's parts (none without a plan). */
 export function planDirective(plan) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
   return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.`;
+}
+
+/** From this share of the budget on, the clock says to start closing. */
+export const CLOSING_AT = 0.8;
+/** The longest elapsed time the clock believes: a day. Anything past it is
+ *  a clock gone wrong (a sleeping laptop), not a session. */
+const MAX_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The clock line added to each turn's prompt when the session has a time
+ * budget: the model has no sense of time, so the app tells it, every turn,
+ * how much is used and left and which part it is in, and from CLOSING_AT on
+ * what to do about it. "" without a budget (No limit), so a session without
+ * one is exactly as before. The app never cuts the session off; the line
+ * only steers the dojo master.
+ * @param {{ minutes: unknown, elapsedMs: unknown, plan: {id: string, title: string, kind: string}[], stage: string | null | undefined, mode?: "adult"|"kids" }} o
+ *   minutes: the session's budget (the pack's overrides.minutes, plus any
+ *   +5 min); elapsedMs: time since the first turn, from the browser;
+ *   stage: the part the last turn ended in.
+ */
+export function clockLine({ minutes, elapsedMs, plan, stage, mode = "adult" }) {
+  const budget = readMinutes(minutes).minutes;
+  if (budget == null) return "";
+  const ms = typeof elapsedMs === "number" && Number.isFinite(elapsedMs) ? Math.min(MAX_ELAPSED_MS, Math.max(0, elapsedMs)) : 0;
+  const used = ms / 60000;
+  const parts = Array.isArray(plan) ? plan : [];
+  const here = parts.find((p) => p.id === stage);
+  const closing = [...parts].reverse().find((p) => p.kind === "debrief" || p.kind === "ending");
+  const closingName = closing ? `the closing part (${closing.id})` : "a short closing";
+  // Kids wording matches the kids Time budget section: the story and the
+  // goodbye, not the scene and a debrief of points.
+  const kids = mode === "kids";
+  const goodbye = closing ? `the goodbye (${closing.id})` : "a short goodbye";
+  const whole = (m) => `${m} minute${m === 1 ? "" : "s"}`;
+  const at = here ? `current part: ${here.id} (${here.title})` : "current part: not named yet";
+  let line;
+  if (used < budget) {
+    // Whole minutes: used rounds down and left rounds up, so "0 left" is
+    // never said while there is time.
+    line = `CLOCK (from the app, not the learner): ${Math.floor(used)} of ${whole(budget)} used, ${Math.ceil(budget - used)} left; ${at}.`;
+  } else {
+    line = `CLOCK (from the app, not the learner): ${Math.floor(used)} minutes used of ${budget}, the time is up${used - budget >= 1 ? ` (${whole(Math.floor(used - budget))} over)` : ""}; ${at}.`;
+  }
+  if (used >= budget) {
+    if (kids) return `${line} Finish within this turn and the next: end the story happily and say ${goodbye}, with a word of praise and one word to remember. Don't start anything new. If the child wants to keep playing, go along with it.`;
+    return `${line} Finish within this turn and the next: end the scene and give ${closingName}, one or two points. Don't start anything new. If the learner asks to keep going, go along with it.`;
+  }
+  if (used >= budget * CLOSING_AT) {
+    if (kids) return `${line} Start bringing the story to its end now: finish this bit of it, skip what's left, and move on to ${goodbye} within a turn or two.`;
+    return `${line} Start closing the scene now: finish the current beat, skip the beats left, and move on to ${closingName} within a turn or two.`;
+  }
+  // Before that, say only whether the session is behind its plan: ahead of
+  // it is fine (the split is rough), behind it is worth a nudge.
+  const rows = budgetSplit(parts, budget);
+  const rowOf = (id) => {
+    const i = parts.findIndex((p) => p.id === id);
+    if (i < 0) return -1;
+    const sceneAt = parts.findIndex((p) => p.kind === "scene");
+    // A beat, or a game played during the scene, is the scene's time.
+    const p = parts[i];
+    const inScene = sceneAt >= 0 && i > sceneAt && p.kind !== "debrief" && p.kind !== "ending";
+    return rows.findIndex((r) => r.id === (inScene ? parts[sceneAt].id : p.id));
+  };
+  const planned = plannedRow(rows, used);
+  const plannedAt = planned ? rows.indexOf(planned) : -1;
+  const hereAt = here ? rowOf(here.id) : -1;
+  if (hereAt >= 0 && plannedAt > hereAt) return `${line} Behind the plan: by now it has you in ${planned.title}, so keep this part brief and move on.`;
+  return `${line} On pace.`;
 }
 
 /** Replayed text from the browser, on one line: glosses and choices go back
@@ -1330,6 +1355,14 @@ export function normalizeVoiceSettings(raw) {
     }
   }
   const ms = Number(r.silenceMs);
+  // The Go tab's last "How long do you have?" choice, per mode (the two
+  // pickers offer different lengths); null is No limit, and so is anything
+  // that isn't one of that mode's choices.
+  const sessionMinutes = {};
+  for (const [m, choices] of Object.entries(MINUTE_CHOICES)) {
+    const v = r.sessionMinutes?.[m];
+    sessionMinutes[m] = choices.includes(v) ? v : null;
+  }
   return {
     tts: pick(r.tts, TTS_PROVIDERS, "elevenlabs"),
     stt: pick(r.stt, STT_PROVIDERS, "elevenlabs"),
@@ -1339,6 +1372,7 @@ export function normalizeVoiceSettings(raw) {
     silenceMs: Number.isFinite(ms) ? Math.min(SILENCE_MS.max, Math.max(SILENCE_MS.min, Math.round(ms))) : SILENCE_MS.default,
     review: typeof r.review === "boolean" ? r.review : false,
     handsFree: typeof r.handsFree === "boolean" ? r.handsFree : false,
+    sessionMinutes,
     voices,
   };
 }

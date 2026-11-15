@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { VoicePlanItem } from "../../shared/wire";
+import { MAX_MINUTES } from "../draft";
 
 /* The session's parts beside the transcript: where the session is, what's
  * done, what's ahead, and a jump to any part. The dojo master names the
@@ -27,6 +28,8 @@ export function SessionTimeline({
   onToggle,
   onJump,
   disabled,
+  clock = null,
+  onExtend,
 }: {
   plan: VoicePlanItem[];
   /** The part the latest turn ended in; null before the dojo master says. */
@@ -36,6 +39,11 @@ export function SessionTimeline({
   onJump: (item: VoicePlanItem) => void;
   /** While a turn is on its way, a jump would have to wait: no jumping. */
   disabled: boolean;
+  /** The session's time budget and when its first turn went out; null with
+   *  No limit (nothing about time is shown then). */
+  clock?: { minutes: number; startedAt: number } | null;
+  /** +5 min: more time for this session only. */
+  onExtend?: () => void;
 }) {
   const here = stage ? plan.findIndex((p) => p.id === stage) : -1;
   const state = (i: number) => (i === here ? "here" : here >= 0 && i < here ? "done" : "ahead");
@@ -72,12 +80,19 @@ export function SessionTimeline({
     return () => ro?.disconnect();
   }, [here, open]);
 
+  const left = useTimeLeft(clock);
+
   if (!open) {
     return (
       <nav aria-label="Session parts" className="flex min-h-0 flex-row items-center gap-0.5 lg:flex-col lg:pt-1" data-testid="voice-timeline">
         <button type="button" className="rounded-md px-1 text-fg-3 hover:bg-raised hover:text-fg" onClick={onToggle} aria-expanded={false} aria-label="Show the session's parts" title="Show the session's parts">
           ☰
         </button>
+        {left && (
+          <span className={`px-0.5 text-xs tabular-nums ${left.over ? "text-warn" : "text-fg-3"}`} title={left.text} data-testid="voice-time-left">
+            {left.short}
+          </span>
+        )}
         <ol ref={listRef} className="relative flex min-h-0 flex-row flex-wrap items-center lg:flex-col lg:flex-nowrap lg:overflow-y-auto">
           {plan.map((p, i) => (
             <li key={`${i}:${p.id}`}>
@@ -131,7 +146,50 @@ export function SessionTimeline({
           );
         })}
       </ol>
+      {left && clock && (
+        <div className="flex items-center gap-2 border-t border-line px-1 pt-1.5">
+          <span className={`flex-1 text-sm tabular-nums ${left.over ? "font-medium text-warn" : "text-fg-2"}`} role="timer" aria-live="off" data-testid="voice-time-left">
+            ⏱ {left.text}
+          </span>
+          <button
+            type="button"
+            className="rounded-md border border-line px-2 py-0.5 text-sm text-fg-2 hover:border-line-strong hover:text-fg disabled:opacity-40 sm:text-xs"
+            onClick={onExtend}
+            disabled={!onExtend || clock.minutes + EXTEND > MAX_MINUTES}
+            title="Five more minutes for this session (the pack keeps its length)"
+            data-testid="voice-extend"
+          >
+            +{EXTEND} min
+          </button>
+        </div>
+      )}
       <p className="px-1 text-xs text-fg-3">Tap a part to jump there.</p>
     </nav>
   );
+}
+
+const EXTEND = 5;
+
+/** Time left in the session, refreshed every few seconds: whole minutes,
+ *  rounded up, so "0 min left" is never shown while there is time. Past
+ *  the budget it counts the minutes over; the app never ends the session. */
+function useTimeLeft(clock: { minutes: number; startedAt: number } | null | undefined): { text: string; short: string; over: boolean } | null {
+  const [now, setNow] = useState(() => Date.now());
+  // Keyed on whether there is a clock, not on the object (a new one every
+  // render of the session), so the tick isn't reset before it fires.
+  const running = !!clock;
+  useEffect(() => {
+    if (!running) return;
+    const t = window.setInterval(() => setNow(Date.now()), 5000);
+    return () => window.clearInterval(t);
+  }, [running]);
+  if (!clock) return null;
+  // A +5 min or a fresh start shows at once, not at the next tick.
+  const ms = clock.minutes * 60_000 - (Math.max(now, clock.startedAt) - clock.startedAt);
+  if (ms > 0) {
+    const m = Math.ceil(ms / 60_000);
+    return { text: `${m} min left of ${clock.minutes}`, short: `${m}′`, over: false };
+  }
+  const over = Math.floor(-ms / 60_000);
+  return { text: over ? `Time's up, ${over} min over` : "Time's up", short: over ? `+${over}′` : "0′", over: true };
 }

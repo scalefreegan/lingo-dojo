@@ -7,9 +7,9 @@ import { assemble } from "../../scripts/assemble.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { MODES, REPO_ROOT, isMode, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
-  ELEVEN_MODELS, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
+  ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  normalizeVoiceSettings, ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  normalizeVoiceSettings, ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -80,6 +80,7 @@ function settingsReply(req: IncomingMessage): VoiceSettingsReply {
     silence: SILENCE_MS,
     speakers: SPEAKERS_BY_MODE,
     slots: { adult: voiceSlots("adult"), kids: voiceSlots("kids") },
+    minuteChoices: MINUTE_CHOICES,
     envFile: path.relative(REPO_ROOT, envFile()) || envFile(),
     locales: {
       target: target ? localeFor(target, q.get("variant") ?? "") : null,
@@ -93,7 +94,11 @@ async function handleSettings(req: IncomingMessage, res: ServerResponse): Promis
   if (req.method === "PUT") {
     const body = await readJsonBody<VoiceSettingsRequest>(req);
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new HttpError(400, "body must be a settings object");
-    writeVoiceSettings({ ...readVoiceSettings(), ...body });
+    const cur = readVoiceSettings();
+    // sessionMinutes merges per mode: the Go tab only knows (and sends) its
+    // own mode's choice, and must not reset the other mode's.
+    const minutes = body.sessionMinutes && typeof body.sessionMinutes === "object" ? { ...cur.sessionMinutes, ...body.sessionMinutes } : cur.sessionMinutes;
+    writeVoiceSettings({ ...cur, ...body, sessionMinutes: minutes } as VoiceSettings);
     return sendJson(res, 200, settingsReply(req));
   }
   methodNotAllowed(res, "GET, PUT");
@@ -306,13 +311,19 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
   res.on("close", onClose);
   try {
     const content = loadContent(modeRoot(mode));
-    const { markdown, warnings } = assemble(content, body.pack);
+    const { markdown, warnings } = assemble(content, body.pack, mode);
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
     const plan = sessionPlan(content, body.pack, mode);
     const settings = readVoiceSettings();
+    // With a time budget (the pack's minutes, plus any +5 min the browser
+    // added), one clock line: the browser's elapsed time since the first
+    // turn, and the part the last turn ended in. No budget, no line.
+    let lastStage: string | null = null;
+    for (const m of history) if (m.role === "master" && m.stage) lastStage = m.stage;
+    const clock = clockLine({ minutes: body.pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
     const { result } = startClaude({
-      prompt: voiceTurnPrompt(history, message),
+      prompt: voiceTurnPrompt(history, message, clock),
       // The session's narrator gender, drawn by the client at session start,
       // unless the pack's own narrator unit fixes it.
       systemPrompt:

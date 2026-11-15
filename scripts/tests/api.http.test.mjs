@@ -317,6 +317,20 @@ test("POST /api/assemble returns markdown, warnings and stats", async () => {
   assert.equal((await call("GET", "/api/assemble")).status, 405);
 });
 
+test("POST /api/assemble?mode=kids paces a kids pack with minutes by the kids plan", async () => {
+  const kidsPack = { title: "k", created: "", scenario: "farm", quick_scenario: "", units: ["intro-game", "story-quest", "game-echo"], overrides: { minutes: 5 }, notes: "" };
+  const r = await call("POST", "/api/assemble?mode=kids", { pack: kidsPack });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.warnings, []);
+  const section = r.body.markdown.split("## Time budget\n\n")[1];
+  assert.match(section, /^The learner has \*\*5 minutes\*\*/);
+  // The kids plan: the story, the echo game (a games unit only kids mode
+  // plans), the goodbye wording.
+  assert.match(section, /- Story: /);
+  assert.match(section, /Echo game/);
+  assert.match(section, /the goodbye/);
+});
+
 test("POST /api/export writes exports/<id>.md and refuses a bad id", async () => {
   const r = await call("POST", "/api/export", { pack, id: "2026-10-20-plaza-chat" });
   assert.equal(r.status, 200);
