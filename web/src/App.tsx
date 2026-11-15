@@ -14,6 +14,7 @@ import SceneTab from "./components/SceneTab";
 import CustomizeTab from "./components/CustomizeTab";
 import GoTab from "./components/GoTab";
 import LibraryTab from "./components/LibraryTab";
+import PracticeView from "./components/PracticeView";
 import AgentDrawer from "./components/AgentDrawer";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
 import { IsAdmin } from "./viewer";
@@ -25,15 +26,16 @@ const ASSEMBLE_DELAY_MS = 200;
 const TAB_KEY = "lingo-dojo.tab.v1";
 
 function isTab(v: string | null): v is Tab {
-  return v === "scene" || v === "customize" || v === "go" || v === "library";
+  return v === "scene" || v === "customize" || v === "go" || v === "library" || v === "practice";
 }
 
 /** The last tab this language profile was on in this browser — "Scene" the
- *  first time, or if storage is blocked or holds something unrecognized. */
-function loadRememberedTab(languageId: string): Tab {
+ *  first time, or if storage is blocked or holds something unrecognized.
+ *  Practice isn't a kids tab (docs/DATA.md §Kids learners). */
+function loadRememberedTab(languageId: string, mode: Mode): Tab {
   try {
     const raw = localStorage.getItem(languageKey(TAB_KEY, languageId));
-    return isTab(raw) ? raw : "scene";
+    return isTab(raw) && !(raw === "practice" && mode === "kids") ? raw : "scene";
   } catch {
     return "scene";
   }
@@ -98,7 +100,7 @@ export default function App({
   // The sticky bar's Practice: go to the Go tab with the voice session open.
   // Cleared once the panel has opened, so a later visit to Go doesn't reopen it.
   const [practiceRequest, setPracticeRequest] = useState(false);
-  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(language.id));
+  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(language.id, learner.mode));
 
   const setTab = useCallback(
     (t: Tab) => {
@@ -486,6 +488,7 @@ export default function App({
                 onPracticeOpened={() => setPracticeRequest(false)}
               />
             </div>
+            {tab === "practice" && mode === "adult" && <PracticeView />}
             {tab === "library" && (
               <LibraryTab
                 key={mode}

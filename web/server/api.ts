@@ -7,6 +7,7 @@ import {
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
 import { handlePhrases } from "./phrases.ts";
+import { handlePractice } from "./practice.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
@@ -158,6 +159,8 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // The phrase bank (phrases.ts): the active language's own, like its
       // packs and History.
       server.middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
+      // Practice (practice.ts): flashcards over that same bank.
+      server.middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));

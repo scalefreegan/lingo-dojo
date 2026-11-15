@@ -1,0 +1,349 @@
+// Practice: the pure half (docs/DATA.md §Practice modes, §Grading). What a
+// flashcard session's queue holds, the learner's day and its limits, the
+// card version a client answers against, and how a typed answer is graded
+// before and after the model check. No I/O and no clock reads (every
+// function that needs the time takes `now`), so `node --test` pins it
+// directly; scripts/db/practice.ts reads and writes the rows and
+// web/server/practice.ts runs the grader.
+
+import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
+import { matchAnswer, normalizeAnswer } from "./match.mjs";
+import { LIMITS, clean } from "./phrases.mjs";
+
+/** The skills a flashcard exercises: recognize (see the words, give the
+ *  meaning) and produce (see the meaning, give the words). `listen` is the
+ *  listening drill's (a later phase), so the queue leaves its cards alone. */
+export const PRACTICE_SKILLS = ["recognize", "produce"];
+/** The queue's skill filter: both, or one direction only. */
+export const DIRECTIONS = ["mixed", "recognize", "produce"];
+/** Cards a session asks, at most. */
+export const SESSION_LENGTHS = [5, 10, 20];
+export const DEFAULT_LENGTH = 10;
+/** Per learner's day (DATA.md, proposed): cards seen for the first time, and
+ *  reviews of cards seen before. Anki's defaults are the same pair. */
+export const DAILY_LIMITS = { new: 20, reviews: 100 };
+/** The hour the learner's day turns over (Anki's 4 a.m.), as fsrs.mjs
+ *  review() counts days. */
+export const ROLLOVER_HOUR = 4;
+/** What one answer, and an alternate the grader accepted, may be. */
+export const MAX_ANSWER = 300;
+/** Alternates a phrase keeps at most: enough for the common other ways to
+ *  say it, not a list that grows with every creative answer. */
+export const MAX_ALTERNATES = 20;
+/** A UTC offset the browser may name, in minutes (UTC-14 to UTC+14). */
+export const MAX_UTC_OFFSET = 14 * 60;
+
+const DAY = 86_400_000;
+const ms = (d) => (d == null ? null : new Date(d).getTime());
+const iso = (d) => (d == null ? null : new Date(d).toISOString());
+
+/* ---------------------------------- the day --------------------------------- */
+
+/**
+ * When the learner's practice day began: the last ROLLOVER_HOUR o'clock
+ * local time at or before `now`. `utcOffsetMinutes` is local minus UTC
+ * (what the browser's -getTimezoneOffset() gives), so a learner at UTC-7
+ * practising at 3 a.m. is still on yesterday's limits. The same shift
+ * fsrs.mjs review() uses, so a "day" means one thing to both.
+ */
+export function dayStart(now, utcOffsetMinutes = 0, rolloverHour = ROLLOVER_HOUR) {
+  const shift = utcOffsetMinutes * 60_000 - rolloverHour * 3_600_000;
+  const local = ms(now) + shift;
+  return new Date(Math.floor(local / DAY) * DAY - shift);
+}
+
+/** A UTC offset from a request (`?tz=` or a body's `tz`): an integer number
+ *  of minutes within ±14 h, else 0 (UTC). */
+export function readUtcOffset(v) {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  return Number.isInteger(n) && Math.abs(n) <= MAX_UTC_OFFSET ? n : 0;
+}
+
+/* -------------------------------- card version ------------------------------ */
+
+/**
+ * The version of a card a client answers against: its review count and the
+ * time of its last review. Every review changes both, so two submits of one
+ * answer (a double click, a retried fetch, a second tab) name the same
+ * version and only the first can apply; the second finds the review the
+ * first wrote (its `card_before` has this version) and is answered with
+ * it. A card not made yet is version "0:", the same as one never reviewed.
+ */
+export function cardVersion(card) {
+  if (!card) return "0:";
+  return `${Number(card.reps) || 0}:${card.last_review ? iso(card.last_review) : ""}`;
+}
+
+/** "0:" (never reviewed), or a review count with the last review's time. */
+const VERSION_RE = /^(0:|[1-9]\d{0,8}:\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,3})?Z)$/;
+export const isVersion = (v) => typeof v === "string" && VERSION_RE.test(v);
+
+/* ---------------------------------- the queue -------------------------------- */
+
+/** A phrase a flashcard can ask: it has words and a meaning (a card shows
+ *  one and asks for the other), and it isn't suspended. Pending phrases (a
+ *  scene's meaning with no words yet) have no words. */
+export const practisable = (p) => p.text != null && p.text !== "" && !!p.meaning && !p.suspended;
+
+const reviewed = (c) => !!c && Number(c.reps) > 0 && Number(c.state) !== 0;
+
+/** New phrases first by what the learner chose (starred), then what they
+ *  met most recently, then the oldest added. */
+const newOrder = (a, b) =>
+  Number(!!b.phrase.starred) - Number(!!a.phrase.starred) ||
+  (ms(b.phrase.lastSeenAt) ?? -Infinity) - (ms(a.phrase.lastSeenAt) ?? -Infinity) ||
+  (ms(a.phrase.createdAt) ?? 0) - (ms(b.phrase.createdAt) ?? 0) ||
+  (a.phrase.id < b.phrase.id ? -1 : a.phrase.id > b.phrase.id ? 1 : 0);
+
+/**
+ * What a session could ask now, per phrase at most one card (the two
+ * directions of one phrase in one session would show each other's answer):
+ *  - review: a card that has been reviewed and is due (`due` ≤ now), the
+ *    most overdue of the phrase's when both are;
+ *  - new: a card never reviewed, or not made yet (cards are made lazily,
+ *    on the first answer). In "mixed", produce is new only once the
+ *    phrase's recognize card has been reviewed: a phrase is read before
+ *    it is asked for. A one-direction session drops that rule (the
+ *    learner chose it).
+ * A phrase with a review due offers no new card. Reviews come most overdue
+ * first, new ones in newOrder.
+ */
+export function candidates(phrases, { now, direction = "mixed" }) {
+  const skills = direction === "recognize" || direction === "produce" ? [direction] : PRACTICE_SKILLS;
+  const reviews = [];
+  const fresh = [];
+  const t = ms(now);
+  for (const phrase of phrases ?? []) {
+    if (!practisable(phrase)) continue;
+    const bySkill = Object.fromEntries((phrase.cards ?? []).map((c) => [c.skill, c]));
+    const due = skills
+      .map((skill) => bySkill[skill])
+      .filter((c) => reviewed(c) && ms(c.due) <= t)
+      .sort((a, b) => ms(a.due) - ms(b.due));
+    if (due.length) {
+      reviews.push({ phrase, skill: due[0].skill, card: due[0], kind: "review" });
+      continue;
+    }
+    for (const skill of skills) {
+      const card = bySkill[skill];
+      if (reviewed(card)) continue;
+      if (skill === "produce" && direction === "mixed" && !reviewed(bySkill.recognize)) continue;
+      fresh.push({ phrase, skill, card: card ?? null, kind: "new" });
+      break;
+    }
+  }
+  reviews.sort((a, b) => ms(a.card.due) - ms(b.card.due) || newOrder(a, b));
+  fresh.sort(newOrder);
+  return { reviews, fresh };
+}
+
+/** How much of today's limits is left, given what today's practice has
+ *  done (`done.new`: first reviews of cards; `done.reviews`: the rest). */
+export function remaining(done, limits = DAILY_LIMITS) {
+  return {
+    new: Math.max(0, limits.new - (Number(done?.new) || 0)),
+    reviews: Math.max(0, limits.reviews - (Number(done?.reviews) || 0)),
+  };
+}
+
+/** A session length from a request: one of SESSION_LENGTHS, else the default. */
+export function readLength(v) {
+  const n = Number(v);
+  return SESSION_LENGTHS.includes(n) ? n : DEFAULT_LENGTH;
+}
+
+/** A direction from a request: one of DIRECTIONS, else mixed. */
+export const readDirection = (v) => (DIRECTIONS.includes(v) ? v : "mixed");
+
+/**
+ * One session's queue: due reviews first claim the room (owed work), up to
+ * today's review limit; new cards fill what is left, up to today's new
+ * limit. The new ones are spread evenly among the reviews rather than
+ * bunched at the end, so a short session with both shows both. Also the
+ * counts the tab shows before a session (what is due and new right now,
+ * and today's progress against the limits).
+ */
+export function buildQueue(phrases, { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", limits = DAILY_LIMITS }) {
+  const { reviews, fresh } = candidates(phrases, { now, direction });
+  const left = remaining(done, limits);
+  const nReviews = Math.min(reviews.length, left.reviews, length);
+  const nNew = Math.min(fresh.length, left.new, length - nReviews);
+  const total = nReviews + nNew;
+  const items = [];
+  let r = 0;
+  let f = 0;
+  for (let i = 0; i < total; i++) {
+    const takeNew = Math.floor(((i + 1) * nNew) / total) > Math.floor((i * nNew) / total);
+    items.push(takeNew ? fresh[f++] : reviews[r++]);
+  }
+  return {
+    items: items.map(queueItem),
+    stats: {
+      due: reviews.length,
+      new: fresh.length,
+      done: { new: Number(done.new) || 0, reviews: Number(done.reviews) || 0 },
+      limits: { ...limits },
+      left,
+      // What a session started now would ask: capped by the limits.
+      ready: Math.min(reviews.length, left.reviews) + Math.min(fresh.length, left.new),
+    },
+  };
+}
+
+/** A queue entry as the wire carries it: both sides of the card (the page
+ *  shows one and hides the other until it is answered; it is the learner's
+ *  own bank, which the Library shows anyway), and the version to answer. */
+function queueItem({ phrase, skill, card, kind }) {
+  return {
+    phraseId: phrase.id,
+    skill,
+    kind,
+    text: phrase.text,
+    meaning: phrase.meaning,
+    lang: phrase.lang ?? "",
+    starred: !!phrase.starred,
+    version: cardVersion(card),
+  };
+}
+
+/* ---------------------------------- answers ---------------------------------- */
+
+const CONTROLS_OR_BREAKS = /\s+/g;
+
+/**
+ * An answer body, checked: `{ value }` or `{ error }` for a 400.
+ *   { phraseId, skill, version, answer?, reveal?, rating?, durationMs?, tz? }
+ * `reveal: true` (Reveal on a recognize card, then the learner's own
+ * grade) takes a `rating` 1-4 and no grading; otherwise the typed `answer`
+ * is graded and `rating` is refused (an override comes after, by review
+ * id). The answer is one line, control characters dropped, at most
+ * MAX_ANSWER characters as stored; a NUL is refused outright.
+ */
+export function readAnswerInput(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
+  const { phraseId, skill, version, answer, reveal, rating, durationMs, tz } = body;
+  if (typeof phraseId !== "string" || !/^[0-9a-f-]{36}$/i.test(phraseId)) return { error: "phraseId must be a phrase id" };
+  if (!PRACTICE_SKILLS.includes(skill)) return { error: `skill must be one of ${PRACTICE_SKILLS.join(", ")}` };
+  if (!isVersion(version)) return { error: "version must be the card version the queue gave" };
+  if (reveal !== undefined && typeof reveal !== "boolean") return { error: "reveal must be true or false" };
+  let text = "";
+  if (answer !== undefined && answer !== null) {
+    if (typeof answer !== "string") return { error: "answer must be a string" };
+    if (answer.includes("\u0000")) return { error: "answer can't contain a NUL character" };
+    text = clean(answer).replace(CONTROLS_OR_BREAKS, " ").trim();
+    if (text.length > MAX_ANSWER) return { error: `answer is longer than ${MAX_ANSWER} characters` };
+  }
+  let r = null;
+  if (reveal) {
+    if (!Number.isInteger(rating) || rating < 1 || rating > 4) return { error: "a revealed card needs your rating: 1 (Again) to 4 (Easy)" };
+    r = rating;
+  } else if (rating !== undefined) {
+    return { error: "rating goes with reveal; to change a graded answer, override its review" };
+  }
+  const d = Number.isInteger(durationMs) && durationMs >= 0 ? Math.min(durationMs, 3_600_000) : null;
+  return { value: { phraseId: phraseId.toLowerCase(), skill, version, answer: text, reveal: !!reveal, rating: r, durationMs: d, utcOffsetMinutes: readUtcOffset(tz) } };
+}
+
+/** An override body: `{ rating: 1-4, tz? }`. */
+export function readOverrideInput(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
+  if (!Number.isInteger(body.rating) || body.rating < 1 || body.rating > 4) return { error: "rating must be 1 (Again), 2 (Hard), 3 (Good) or 4 (Easy)" };
+  return { value: { rating: body.rating, utcOffsetMinutes: readUtcOffset(body.tz) } };
+}
+
+/* ---------------------------------- grading ---------------------------------- */
+
+/** English meanings often come with a leading article or "to" ("the
+ *  change", "to eat") that an answer leaves off, or the other way round:
+ *  not worth a model call. Only for an English native language. */
+const EN_LEAD = /^(the|a|an|to)\s+/i;
+const isEnglish = (locale) => /^en(?![a-z])/i.test(String(locale ?? ""));
+
+/** A meaning's own alternatives: "change; the turn" and "kilo / half" list
+ *  several, any of which is right. Not commas: "Keep the change, please"
+ *  is one meaning, and "please" alone is not it. */
+const meaningParts = (meaning) =>
+  String(meaning ?? "")
+    .split(/\s*[;|/]\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+/**
+ * The local check, before any model (DATA.md §Grading, match.mjs):
+ *  - produce: the typed words against the phrase's words and the
+ *    alternates the grader accepted before (accents and CJK spacing as
+ *    matchAnswer has them);
+ *  - recognize: the typed meaning against the phrase's meaning, each of
+ *    the alternatives it lists, and (English) without a leading article
+ *    or "to". Meanings vary too much to match strictly: a miss here is
+ *    what the model check is for.
+ * Returns matchAnswer's `{ verdict: exact|close|miss, note? }`.
+ */
+export function localMatch({ skill, answer, text, meaning, alternates = [], targetLocale = "", nativeLocale = "" }) {
+  if (skill === "produce") return matchAnswer({ answer, expected: text, alternates, lang: targetLocale });
+  const parts = meaningParts(meaning);
+  const expected = String(meaning ?? "");
+  const first = matchAnswer({ answer, expected, alternates: parts, lang: nativeLocale });
+  if (first.verdict !== "miss" || !isEnglish(nativeLocale)) return first;
+  const bare = (s) => String(s).trim().replace(EN_LEAD, "");
+  return matchAnswer({ answer: bare(answer ?? ""), expected: bare(expected), alternates: parts.map(bare), lang: nativeLocale });
+}
+
+/** What the model check is asked (match.mjs graderPrompt's inputs) for a
+ *  card: the side shown, the side expected, and which way it is graded. */
+export function graderQuestion({ skill, text, meaning }) {
+  return skill === "produce"
+    ? { question: meaning, expected: text, kind: "target" }
+    : { question: text, expected: meaning, kind: "meaning" };
+}
+
+const NOTE_MAX = 200;
+const cleanNote = (s) => clean(s).replace(CONTROLS_OR_BREAKS, " ").trim().slice(0, NOTE_MAX) || null;
+
+/**
+ * The verdict, rating and note an answer is recorded with:
+ *  - Reveal: `self` with the learner's rating;
+ *  - the local match's exact (Good) or close (Hard, with its note);
+ *  - a miss: the grader's reply (match.mjs parseGraderReply's shape):
+ *    accepted is Good, or Hard when its hint says so; not accepted is
+ *    `wrong` (Again). `grader` null (the check failed, or wasn't run for
+ *    an empty answer) is `wrong` too, with a note that says why.
+ * The grader's note is model output: one line, control characters gone,
+ * at most NOTE_MAX characters.
+ */
+export function gradeOutcome({ reveal = false, rating = null, match, grader = null, graderFailed = false, answer = "" }) {
+  if (reveal) return { verdict: "self", rating, note: null };
+  if (match?.verdict === "exact") return { verdict: "exact", rating: ratingForVerdict("exact"), note: null };
+  if (match?.verdict === "close") return { verdict: "close", rating: ratingForVerdict("close"), note: cleanNote(match.note ?? "") };
+  if (grader?.accepted) return { verdict: "accepted", rating: ratingForVerdict("accepted", grader.rating_hint), note: cleanNote(grader.note) };
+  if (grader) return { verdict: "wrong", rating: RATINGS.again, note: cleanNote(grader.note) };
+  const why = !String(answer).trim() ? null : graderFailed ? "The answer couldn't be checked just now; if you were right, mark it Good." : null;
+  return { verdict: "wrong", rating: RATINGS.again, note: why };
+}
+
+/** Whether a miss is worth the model check: something was typed. */
+export const needsGrader = (match, answer) => match?.verdict === "miss" && String(answer ?? "").trim() !== "";
+
+/**
+ * `alternates` with `answer` added (an answer the grader accepted for a
+ * produce card: the same answer is exact next time). Unchanged when it is
+ * already there (as matchAnswer compares), too long to keep, or the list
+ * is full. Recognize answers aren't kept: `phrases.alternates` holds other
+ * target forms, and a meaning there would grade as the words.
+ */
+export function withAlternate(alternates, answer, { text = "", lang = "" } = {}) {
+  const list = Array.isArray(alternates) ? alternates.filter((a) => typeof a === "string") : [];
+  const a = clean(answer).replace(CONTROLS_OR_BREAKS, " ").trim();
+  if (!a || a.length > LIMITS.text || list.length >= MAX_ALTERNATES) return list;
+  const key = normalizeAnswer(a, lang);
+  if (!key || key === normalizeAnswer(text, lang) || list.some((x) => normalizeAnswer(x, lang) === key)) return list;
+  return [...list, a];
+}
+
+/** `alternates` without `answer` (an Again override of an answer the grader
+ *  had accepted: the learner says it wasn't right after all). */
+export function withoutAlternate(alternates, answer, lang = "") {
+  const list = Array.isArray(alternates) ? alternates.filter((a) => typeof a === "string") : [];
+  const key = normalizeAnswer(answer, lang);
+  return key ? list.filter((x) => normalizeAnswer(x, lang) !== key) : list;
+}
