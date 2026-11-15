@@ -878,7 +878,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
       if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts || castRef.current.locale !== locale)) {
         const wanted = latestCast(before);
         const ages = Object.fromEntries(Object.values(wanted).map((n) => [n.slot, n.age]));
-        const next = await getCast({ mode, locale, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
+        const next = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
@@ -1141,7 +1141,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, onClose }
         // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
         // in use stays and the next turn retries (within drawFails).
         const ages = Object.fromEntries(slotsToDraw.map((x) => [x, draw[x]]));
-        const r = await getCast({ mode, locale, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
+        const r = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
