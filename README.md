@@ -94,6 +94,27 @@ The embedded agent uses your Claude Code login. No Anthropic API key is involved
 Spoken practice needs an ElevenLabs or Azure Speech key in a gitignored `.env.local`
 (see [`docs/VOICE.md`](docs/VOICE.md)); the prompt builder works without one.
 
+### Serving on your tailnet
+
+To use the app from your phone or another computer, serve it to your private
+tailnet with Tailscale. The dev server still listens on localhost only;
+`tailscale serve` terminates HTTPS and proxies to it.
+
+1. Put your machine's tailnet name in the gitignored `.env.local` (or the shell
+   that starts the server), then restart `npm run dev`:
+   `LINGO_PUBLIC_HOST=<mac>.<tailnet>.ts.net`. A comma-separated list works;
+   anything that isn't a plain hostname is ignored with a warning at startup.
+   Unset, only localhost is accepted.
+2. Run `tailscale serve --bg 38400` once. It prints the `https://` URL (check
+   with `tailscale serve status`; `tailscale serve reset` turns it off).
+3. Open that URL from another device on the tailnet and log in.
+
+Notes: the microphone only works on the HTTPS name, not on a plain IP or `http`.
+Do not use `tailscale funnel`: it would put the app on the public internet. The
+Mac must stay awake, with the server running. The login cookie is not port-scoped,
+so any other app served on the same hostname sees it; give Lingo Dojo its own
+hostname or keep the others off it. Details: [`docs/DATA.md`](docs/DATA.md#hosting-on-tailscale).
+
 ## Usage
 
 - **Scene** tab: pick a scenario (search, category filters, collapsible collections)
