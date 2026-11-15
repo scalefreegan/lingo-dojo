@@ -66,7 +66,7 @@
 
 ## How it works
 
-The library is text files: units, scenarios and seed packs are markdown and YAML under `content/`, with git as the history. Personal data (logins, learners, each learner's saved packs, settings) is in Postgres: see docs/DATA.md. The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
+The library is text files: units, scenarios and seed packs are markdown and YAML under `content/`, with git as the history. Personal data (logins, learners, each learner's saved packs, session history and phrase bank, settings) is in Postgres: see docs/DATA.md. The UI is one card per slot from `content/schema.yaml`; units marked `default: true` start selected. `scripts/assemble.mjs` turns a pack into the final prompt, filling placeholders such as `{{learner_name}}` and `{{target_language}}`.  Authoring details are below.
 
 ## Get started
 
@@ -137,6 +137,12 @@ hostname or keep the others off it. Details: [`docs/DATA.md`](docs/DATA.md#hosti
   **Save pack** stores it in the Library of the active learner's current language (the database), named
   `<date>-<slug>`; saved packs can be loaded, cloned, moved into folders, renamed
   and deleted there, and **Recently deleted** brings a deleted one back.
+- **Phrase bank** (in the Library): every word the dojo master explains in a
+  session lands in the current language's bank, with the line it came from, as
+  do the scene's vocabulary lists and anything you star (☆ under a tapped word)
+  or add by hand. Each phrase shows how often and when you last met it, its
+  mastery, and whether it is due or giving you trouble; search, filter, edit,
+  suspend or delete it there. Each language has its own bank.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
   language ("add a corrections unit that only flags gender agreement"). New files
   appear in the slots as soon as the commit lands.

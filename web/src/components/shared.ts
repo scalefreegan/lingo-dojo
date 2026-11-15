@@ -21,3 +21,15 @@ export interface PackActions {
   onCreateFolder: (name: string) => Promise<boolean>;
   onDeleteFolder: (name: string) => Promise<boolean>;
 }
+
+/** Whether a session in `session`'s target language (after the pack's
+ *  overrides) is in the active language profile's (`profile`): only then
+ *  does ☆ Star in its transcript belong in this language's phrase bank (a
+ *  pack can move the target language). A blank side can't disagree. The
+ *  server makes the same check, by ISO language, for what a turn captures
+ *  (scripts/phrases.mjs sameLanguage). */
+export function inBankLanguage(profile: unknown, session: unknown): boolean {
+  const p = String(profile ?? "").trim().toLowerCase();
+  const s = String(session ?? "").trim().toLowerCase();
+  return !p || !s || p === s;
+}

@@ -176,7 +176,7 @@ test("masteryBand follows real scheduling: repeated Good climbs out of Learning"
   assert.notEqual(masteryBand(card), "Learning");
 });
 
-test("phraseMastery: weakest existing card wins; none is New", () => {
+test("phraseMastery: weakest existing card wins; New only when none has been reviewed", () => {
   const reviewed = review(newCard(T0), 3, T0).card;
   const mastered = { ...reviewed, stability: 40 };
   const familiar = { ...reviewed, stability: 10 };
@@ -186,7 +186,10 @@ test("phraseMastery: weakest existing card wins; none is New", () => {
   assert.equal(phraseMastery([mastered]), "Mastered");
   assert.equal(phraseMastery([mastered, familiar]), "Familiar");
   assert.equal(phraseMastery([mastered, familiar, learning]), "Learning");
-  assert.equal(phraseMastery([mastered, newCard(T0)]), "New");
+  assert.equal(phraseMastery([newCard(T0)]), "New", "never practised");
+  assert.equal(phraseMastery([newCard(T0), newCard(T0)]), "New");
+  assert.equal(phraseMastery([mastered, newCard(T0)]), "Learning", "practised once: a card not yet reviewed is Learning, not New");
+  assert.equal(phraseMastery([learning, newCard(T0)]), "Learning");
 });
 
 test("fromRow: learning_steps is required", () => {

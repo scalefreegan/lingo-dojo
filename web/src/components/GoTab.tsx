@@ -4,7 +4,7 @@ import { splitPackId } from "../draft";
 import type { AssembleResult, ContentReply, ExportResult, PackInput } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
-import type { PackStatus, SaveOutcome } from "./shared";
+import { inBankLanguage, type PackStatus, type SaveOutcome } from "./shared";
 import VoicePanel from "./VoicePanel";
 
 /* Go tab: the calm, final screen. Practising here in the dojo is the main
@@ -140,7 +140,7 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || sceneTitle} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || sceneTitle} canStar={inBankLanguage(content.profile?.target_language, langs.target)} />
 
       <div className={narrow}>
 

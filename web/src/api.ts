@@ -19,7 +19,7 @@ import type {
   ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LanguageHeader, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, SettingsReply, SettingsRequest,
-  VoiceCastReply, VoiceCastRequest,
+  VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
@@ -424,6 +424,49 @@ export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal,
 
 export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise<VoiceTurnReply> {
   return req<VoiceTurnReply>("/api/voice/turn", { ...json(body), signal });
+}
+
+/* -------------------------------- phrase bank ------------------------------- */
+// The active language's phrase bank (Library → Phrase bank, and the
+// transcript's ☆ Star).
+
+export interface PhraseQuery {
+  q?: string;
+  show?: PhraseShow;
+  band?: MasteryBand | "";
+  sort?: PhraseSort;
+  offset?: number;
+  limit?: number;
+}
+
+/** GET /api/phrases: one page of the bank, searched, filtered and sorted. */
+export function listPhrases(query: PhraseQuery = {}, signal?: AbortSignal): Promise<PhrasesReply> {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== "") q.set(k, String(v));
+  return req<PhrasesReply>(`/api/phrases?${q}`, { signal });
+}
+
+/** POST /api/phrases: add words, or star them when they are already there. */
+export function addPhrase(body: PhraseInput & { text: string }): Promise<PhraseReply> {
+  return req<PhraseReply>("/api/phrases", json(body));
+}
+
+/** GET /api/phrases/lookup: the phrase with these words, or null. */
+export function lookupPhrase(text: string, signal?: AbortSignal): Promise<PhraseLookupReply> {
+  return req<PhraseLookupReply>(`/api/phrases/lookup?text=${encodeURIComponent(text)}`, { signal });
+}
+
+/** GET /api/phrases/:id: one phrase with its examples. */
+export function getPhrase(id: string, signal?: AbortSignal): Promise<PhraseReply> {
+  return req<PhraseReply>(`/api/phrases/${encodeURIComponent(id)}`, { signal });
+}
+
+export function updatePhrase(id: string, body: PhraseInput): Promise<PhraseReply> {
+  return req<PhraseReply>(`/api/phrases/${encodeURIComponent(id)}`, json(body, "PATCH"));
+}
+
+export function deletePhrase(id: string): Promise<{ deleted: true }> {
+  return req<{ deleted: true }>(`/api/phrases/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 /* ------------------------------ conversations ----------------------------- */

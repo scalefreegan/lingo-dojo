@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ApiError, deleteConversation, getConversation, listConversations } from "../api";
 import { sessionGlosses, useLineTranslations } from "../transcript";
 import type { ConversationSummary, ConversationTurnsReply, VoiceGloss, VoiceHistoryItem } from "../types";
+import { inBankLanguage } from "./shared";
 import { Transcript } from "./Transcript";
 import { Badge, Button } from "./ui";
 
@@ -31,7 +32,9 @@ function length(c: ConversationSummary): string {
 
 const turnsLabel = (n: number) => `${n} turn${n === 1 ? "" : "s"}`;
 
-export default function HistoryView() {
+/** `bankLanguage`: the active language's target language, so a saved
+ *  session's ☆ Star is offered only when it was in that language. */
+export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown } = {}) {
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,6 +96,7 @@ export default function HistoryView() {
     return (
       <ConversationView
         id={openId}
+        bankLanguage={bankLanguage}
         onBack={() => setOpenId(null)}
         onDelete={async () => {
           if (opened && (await remove(opened))) setOpenId(null);
@@ -145,7 +149,7 @@ export default function HistoryView() {
 
 /** One saved conversation, read-only: every page of its turns, then the
  *  transcript as the session showed it. */
-function ConversationView({ id, onBack, onDelete }: { id: string; onBack: () => void; onDelete: () => void }) {
+function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; bankLanguage?: unknown; onBack: () => void; onDelete: () => void }) {
   const [data, setData] = useState<{ head: ConversationTurnsReply; entries: VoiceHistoryItem[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<{ at: string; gloss: VoiceGloss } | null>(null);
@@ -219,6 +223,7 @@ function ConversationView({ id, onBack, onDelete }: { id: string; onBack: () => 
               onClosePick={closePick}
               className="max-h-[70dvh] min-h-48"
               follow={false}
+              canStar={inBankLanguage(bankLanguage, c.targetLanguage)}
             />
           )}
           {glosses.length > 0 && <p className="text-xs text-fg-3">Tap an underlined word for its meaning.</p>}

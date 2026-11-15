@@ -11,9 +11,12 @@ the phrase bank); `docs/DATA.md` is its contract. Built so far: the foundation
 (phase 0), logins + learners (phase 1): users, sessions, learners (the
 profile the app uses), per-user voice settings, model and agent chat;
 saved packs (phase 2): each learner's own rows, with revisions and soft
-deletes instead of git commits (`scripts/db/packs.ts`); and saved
+deletes instead of git commits (`scripts/db/packs.ts`); saved
 conversations (phase 3: every voice session's turns, the Library's
-History; `web/server/conversations.ts`).
+History; `web/server/conversations.ts`); and the phrase bank (phase 4: one
+per language profile, filled by each turn's glosses, the scene's lists and
+☆ Star, shown in the Library's Phrase bank; `scripts/db/phrases.ts`,
+`web/server/phrases.ts`, pure rules in `scripts/phrases.mjs`).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
@@ -51,8 +54,9 @@ History; `web/server/conversations.ts`).
   Migrations are applied and checked by hash (`scripts/db/migrations.mjs`).
   `web/server/db.ts` holds the one lazy pg Pool; `DATABASE_URL` comes from
   `.env.local`, default `postgres://localhost/lingo_dojo`. Personal rows go
-  through `forLearner()` / `forUser()` (`scripts/db/owned.ts`), never a bare
-  query; account queries live in `scripts/db/accounts.ts`. The dev server
+  through `forLearner()` / `forUser()` / `forLanguageProfile()`
+  (`scripts/db/owned.ts`), never a bare query; account queries live in
+  `scripts/db/accounts.ts`. The dev server
   refuses to start until `npm run db:setup` has run.
 - **Branches and worktrees never point at the real database.** Set
   `DATABASE_URL` to a scratch database (a linked worktree with none set
@@ -73,7 +77,9 @@ History; `web/server/conversations.ts`).
   reads pack files; `loadPackFiles` does (import, first run, export CLI).
   Owner scoping for packs lives only in `scripts/db/packs.ts`, through
   `forLanguageProfile` (`forLearner` refuses tables with `language_profile_id`). Exports go to `exports/`
-  (gitignored).
+  (gitignored). The phrase bank is per language profile too; its queries
+  live only in `scripts/db/phrases.ts` (migration 0003, docs/DATA.md
+  §Phrase bank).
 - Loader and assembler (`scripts/content.mjs`, `scripts/assemble.mjs`) are pure ESM
   with no server imports, so `node --test` covers them directly.
 - Two content trees, same format: `content/` (adult mode) and `content/kids/`
@@ -111,7 +117,9 @@ never write to the real `content/` or `exports/` from a test. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
 except the `*.pg.test.mjs` files when `LINGO_TEST_PG_URL` is set (each makes and
-drops a throwaway database on that server; point it at a scratch one).
+drops a throwaway database on that server; point it at a scratch one). A new
+one makes it with `scripts/tests/pg-scratch.mjs` (the process id in the
+name) and closes its pools before the drop, which is `WITH (FORCE)`.
 HTTP tests mount the real plugin on one: `serveApi(apiPlugins, { db })`, then
 log in with `scripts/tests/http-session.mjs` (`addUser`, `client().login()`,
 `.pick()`); every route but the three public ones needs a session.

@@ -1,5 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { Glossed } from "./Glossed";
+import { GlossStar } from "./GlossStar";
 import { SpeakerCritter } from "./Mascots";
 import { haystack, layout, mightMatch } from "../gloss";
 import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
@@ -36,6 +37,7 @@ export const Transcript = memo(function Transcript({
   onReplay,
   className,
   follow = true,
+  canStar = false,
 }: {
   entries: VoiceHistoryItem[];
   plan: VoicePlanItem[];
@@ -56,6 +58,9 @@ export const Transcript = memo(function Transcript({
   className?: string;
   /** Keep the newest entry in view (a live session); false reads from the top. */
   follow?: boolean;
+  /** ☆ Star in the definition card (the active language's phrase bank):
+   *  only where the transcript is in that language. */
+  canStar?: boolean;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
   const following = useRef(follow);
@@ -175,6 +180,7 @@ export const Transcript = memo(function Transcript({
         onPick={onPick}
         onClosePick={onClosePick}
         onReplay={canReplay ? replayLine : undefined}
+        canStar={canStar}
       />
     );
   })}
@@ -201,6 +207,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onPick,
   onClosePick,
   onReplay,
+  canStar,
 }: {
   m: VoiceHistoryItem;
   i: number;
@@ -218,6 +225,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onPick: (at: string, gloss: VoiceGloss) => void;
   onClosePick: (refocus?: boolean) => void;
   onReplay?: (i: number, j: number, lines: VoiceLine[]) => void;
+  canStar?: boolean;
 }) {
   if (m.role === "learner") {
     return (
@@ -295,6 +303,7 @@ const TranscriptRow = memo(function TranscriptRow({
                 <span className="text-fg-3"> — </span>
                 {picked.gloss.meaning}
               </span>
+              {canStar && <GlossStar key={picked.gloss.term} gloss={picked.gloss} />}
               <button type="button" className="-my-0.5 grid size-6 min-h-6 shrink-0 place-items-center rounded text-fg-3 hover:text-fg" aria-label="Close definition" onClick={(e) => onClosePick(e.detail === 0)}>
                 ×
               </button>

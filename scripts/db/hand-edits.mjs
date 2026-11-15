@@ -30,6 +30,21 @@
 //  4. auth_sessions_language_profile_fk deletes with SET NULL
 //     ("language_profile_id"), as in 0000.
 //
+// 0003_phrase_bank_per_language (the phrase bank moves under language
+// profiles, docs/DATA.md §Phrase bank):
+//  1. A guard first (GUARD_0003): it refuses, with a clear message, to run on
+//     a database whose bank tables hold any row. No code wrote them before
+//     this migration, so none should; and a learner's phrases can't be put
+//     under one of its languages without knowing which (`lang` is a variant,
+//     a profile a language, and a learner may have none or several), so a
+//     database that does have rows needs a decision, not a guess. The
+//     migration runs in one transaction: a refusal leaves 0002 as it was.
+//  2. Reordered (ORDER_0003): drizzle-kit adds the foreign keys before the
+//     unique keys they reference.
+//  3. The keys that keep an example's conversation and turn, and a review's
+//     conversation, in the row's language delete with SET NULL (col), as in
+//     0000.
+//
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
 //                                          regenerating it (idempotent)
@@ -64,7 +79,17 @@ const PROFILE_SET_NULL = { auth_sessions_language_profile_fk: "language_profile_
 
 /** Every SET NULL (col) key in the schema, constraint name → column (the
  *  catalog test checks the migrated database has exactly these). */
-export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL };
+/** 0003's: an example's conversation and turn, a review's conversation, in
+ *  the row's own language. */
+const BANK_SET_NULL = {
+  phrase_examples_conversation_profile_fk: "conversation_id",
+  phrase_examples_turn_profile_fk: "turn_id",
+  reviews_conversation_profile_fk: "conversation_id",
+  phrase_sightings_conversation_profile_fk: "conversation_id",
+  phrase_sightings_turn_profile_fk: "turn_id",
+};
+
+export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL, ...BANK_SET_NULL };
 
 function setNull(sql, keys) {
   let out = sql;
@@ -122,20 +147,66 @@ const ORDER = [
 const statements = (sql) => sql.split(BREAK).map((s) => s.trim()).filter(Boolean);
 const joinStatements = (list) => list.map((s) => `${s}\n`).join(`${BREAK}\n`);
 
+/** The generated statements sorted into `order`'s buckets (the first rule
+ *  a statement matches places it; a "new columns" one loses its NOT NULL,
+ *  which the backfill sets), with each `insert` bucket's hand-written
+ *  statements in place. Every generated statement must land somewhere and
+ *  every rule must catch one, or this throws: a regenerated migration with
+ *  a statement it doesn't know is a schema change to look at, not to paper
+ *  over. */
+function reorder(generated, order, tag) {
+  const buckets = order.map(() => []);
+  for (const stmt of statements(generated)) {
+    const i = order.findIndex((o) => o.re?.test(stmt));
+    if (i < 0) throw new Error(`hand-edits ${tag}: a generated statement no rule places:\n${stmt}`);
+    // Added nullable; the backfill fills it and sets NOT NULL.
+    buckets[i].push(order[i].name === "new columns" ? stmt.replace(/ NOT NULL;$/, ";") : stmt);
+  }
+  order.forEach((o, i) => {
+    if (o.insert) buckets[i].push(...o.insert);
+    else if (!buckets[i].length) throw new Error(`hand-edits ${tag}: the generated SQL has nothing for "${o.name}"`);
+  });
+  return joinStatements(buckets.flat());
+}
+
 function languageProfileEdits(generated) {
   if (generated.includes(MARK)) return generated; // already applied
-  const buckets = ORDER.map(() => []);
-  for (const stmt of statements(generated)) {
-    const i = ORDER.findIndex((o) => o.re?.test(stmt));
-    if (i < 0) throw new Error(`hand-edits 0002: a generated statement no rule places:\n${stmt}`);
-    // Added nullable; the backfill fills it and sets NOT NULL.
-    buckets[i].push(ORDER[i].name === "new columns" ? stmt.replace(/ NOT NULL;$/, ";") : stmt);
-  }
-  ORDER.forEach((o, i) => {
-    if (o.insert) buckets[i].push(...o.insert);
-    else if (!buckets[i].length) throw new Error(`hand-edits 0002: the generated SQL has nothing for "${o.name}"`);
-  });
-  return setNull(joinStatements(buckets.flat()), PROFILE_SET_NULL);
+  return setNull(reorder(generated, ORDER, "0002"), PROFILE_SET_NULL);
+}
+
+/* ---------------------- 0003_phrase_bank_per_language ---------------------- */
+
+/** The bank's tables, which must be empty for 0003 to run. */
+const BANK_TABLES = ["phrases", "phrase_examples", "cards", "cloze_items", "reviews"];
+
+const MARK_0003 = "-- Hand-written (scripts/db/hand-edits.mjs, 0003 edit 1):";
+
+export const GUARD_0003_MESSAGE =
+  "0003_phrase_bank_per_language: the phrase bank tables already hold rows. This migration moves the bank under language profiles and does not guess which language an existing phrase belongs to; empty phrases, phrase_examples, cards, cloze_items and reviews (or assign them by hand) and run it again.";
+
+const GUARD_0003 = `${MARK_0003} refuse to run on a bank that has rows
+-- (see the header of hand-edits.mjs); nothing is changed.
+DO $$
+BEGIN
+  IF ${BANK_TABLES.map((t) => `EXISTS (SELECT 1 FROM "${t}")`).join("\n    OR ")} THEN
+    RAISE EXCEPTION '${GUARD_0003_MESSAGE.replace(/'/g, "''")}';
+  END IF;
+END $$;`;
+
+const ORDER_0003 = [
+  { name: "guard", insert: [GUARD_0003] },
+  { name: "new tables", re: /^CREATE TABLE "/ },
+  { name: "old learner indexes out", re: /^DROP INDEX "(cards_learner_due_idx|phrases_identity|phrases_pending_identity|reviews_learner_at_idx)";$/ },
+  { name: "profile columns", re: /^ALTER TABLE "\w+" ADD COLUMN "language_profile_id" uuid NOT NULL;$/ },
+  { name: "edit marker", re: /^ALTER TABLE "phrases" ADD COLUMN "edited_at" timestamp with time zone;$/ },
+  { name: "new unique keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" UNIQUE\(/ },
+  { name: "foreign keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" FOREIGN KEY / },
+  { name: "indexes", re: /^CREATE (UNIQUE )?INDEX "/ },
+];
+
+function phraseBankEdits(generated) {
+  if (generated.includes(MARK_0003)) return generated; // already applied
+  return setNull(reorder(generated, ORDER_0003, "0003"), BANK_SET_NULL);
 }
 
 /* ---------------------------------- all ------------------------------------ */
@@ -143,6 +214,7 @@ function languageProfileEdits(generated) {
 const EDITS = {
   "0000_init": initEdits,
   "0002_language_profiles": languageProfileEdits,
+  "0003_phrase_bank_per_language": phraseBankEdits,
 };
 
 /** The migration `tag` as committed, from drizzle-kit's output for it. */

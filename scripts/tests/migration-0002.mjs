@@ -34,6 +34,15 @@ const P = {
 };
 const C = { sam: "00000000-0000-4000-8000-0000000000d1", ana: "00000000-0000-4000-8000-0000000000d2" };
 
+/** The migrations up to and including 0002 (later ones, 0003 on, have
+ *  their own tests). */
+export function migrationsThrough0002() {
+  const disk = migrationsOnDisk();
+  const i = disk.findIndex((m) => m.sql.some((s) => s.includes('CREATE TABLE "language_profiles"')));
+  assert.ok(i >= 0, "0002 is on disk");
+  return disk.slice(0, i + 1);
+}
+
 /** Fill a database at 0001 with what the code before 0002 wrote: accounts,
  *  learners with their languages on the row, sessions, packs (one deleted)
  *  with folders and revisions, conversations with turns, and phrase-bank
@@ -113,9 +122,9 @@ export async function migrateAndCheck(query) {
   const before = await contents(query);
   const learnerCols = (await query(`select column_name from information_schema.columns where table_name = 'learners'`)).map((r) => r.column_name);
   assert.ok(learnerCols.includes("target_language"), "at 0001 the learner holds its language");
-  const { applied } = await applyMigrations(query);
+  const { applied } = await applyMigrations(query, migrationsThrough0002());
   assert.equal(applied.length, 1, "only 0002 was missing");
-  assert.equal((await migrationState(query)).status, "current");
+  assert.equal((await migrationState(query, migrationsThrough0002())).status, "current");
 
   // Nothing lost or changed besides the moved columns.
   assert.deepEqual(await contents(query), before);

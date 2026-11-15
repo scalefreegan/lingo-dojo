@@ -6,6 +6,7 @@ import {
 } from "./auth.ts";
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
+import { handlePhrases } from "./phrases.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
@@ -154,6 +155,9 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // comes from a page-unload keepalive fetch too, which carries the
       // same header and cookie, so it passes the same checks.
       server.middlewares.use("/api/conversations", wrap(handleConversations, { learner: true }));
+      // The phrase bank (phrases.ts): the active language's own, like its
+      // packs and History.
+      server.middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));

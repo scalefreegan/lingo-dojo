@@ -5,19 +5,20 @@
 // call it offers adds `owner = id` to the WHERE (or sets it on insert), and a
 // table without that owner column does not type-check as an argument:
 //
-//   const mine = forLearner(db, learnerId);
-//   await mine.list(phrases, eq(phrases.lang, "es-MX"));   // learner's rows only
-//   await mine.insert(phrases, { lang, norm, source });    // learner_id filled in
-//   forLearner(db, id).list(users);                        // does not compile
+//   const mine = forLanguageProfile(db, { id, learnerId });
+//   await mine.list(phrases, eq(phrases.starred, true));  // that language's rows only
+//   await mine.insert(phrases, { lang, text, norm, source }); // both owners filled in
+//   forLearner(db, id).list(users);                       // does not compile
 //
 // Three scopes, one per level of ownership:
 //
 //   forUser(db, userId)                 account rows (learners, sessions, settings)
-//   forLearner(db, learnerId)           a learner's rows (its language profiles,
-//                                       the phrase bank)
+//   forLearner(db, learnerId)           a learner's rows (its language profiles)
 //   forLanguageProfile(db, { id, learnerId })
 //                                       one language's rows (packs, folders,
-//                                       pack revisions, conversations, turns)
+//                                       pack revisions, conversations, turns,
+//                                       and since 0003 the phrase bank: phrases,
+//                                       examples, cards, reviews, cloze items)
 //
 // A language profile's rows carry both owners, and its scope filters on and
 // stamps both (`language_profile_id = p and learner_id = l`); the schema's
@@ -212,9 +213,8 @@ function scope<K extends OwnerKey, X extends OwnerKey>(db: Db, owners: Record<K,
 }
 
 /** Rows a learner owns that belong to no single language: its language
- *  profiles, the phrase bank (phrases, cards, reviews, …). A table with a
- *  language_profile_id (packs, conversations, …) is refused: use
- *  forLanguageProfile. */
+ *  profiles. A table with a language_profile_id (packs, conversations, the
+ *  phrase bank, …) is refused: use forLanguageProfile. */
 export const forLearner = (db: Db, learnerId: string): OwnedScope<"learnerId", "languageProfileId"> =>
   scope(db, { learnerId }, "learnerId", ["languageProfileId"]);
 
@@ -228,7 +228,8 @@ export interface LanguageProfileRef {
 }
 
 /** Rows one of a learner's languages owns: packs, pack folders, pack
- *  revisions, conversations, turns. Filters on and stamps both the profile
- *  and its learner. */
+ *  revisions, conversations, turns, and the phrase bank (phrases, examples,
+ *  cards, reviews, cloze items). Filters on and stamps both the profile and
+ *  its learner. */
 export const forLanguageProfile = (db: Db, profile: LanguageProfileRef): OwnedScope<"languageProfileId" | "learnerId"> =>
   scope<"languageProfileId" | "learnerId", never>(db, { languageProfileId: profile?.id, learnerId: profile?.learnerId }, "languageProfileId", []);

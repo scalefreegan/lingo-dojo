@@ -180,3 +180,26 @@ test("the hand-edited keys null only their link column (PGlite catalog)", async 
     order by 1`);
   assert.deepEqual(Object.fromEntries(rows.map((r) => [r.conname, r.attname])), SET_NULL_COLUMNS);
 });
+
+test("0003's hand edits only add the empty-bank guard first, reorder drizzle-kit's statements and SET NULL (col)", () => {
+  // Pinned on the committed file, as 0002's is.
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, "0003_phrase_bank_per_language.sql"), "utf8");
+  const stmts = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+  const at = (re) => stmts.findIndex((s) => re.test(s));
+  // The guard, first and the only hand-written statement: nothing moves a
+  // bank row.
+  assert.match(stmts[0], /^-- Hand-written[\s\S]*RAISE EXCEPTION/);
+  assert.equal(stmts.filter((s) => s.startsWith("-- Hand-written")).length, 1);
+  assert.doesNotMatch(sql, /UPDATE "|INSERT INTO "|DELETE FROM "|TEMPORARY TABLE/);
+  for (const t of ["phrases", "phrase_examples", "cards", "cloze_items", "reviews"]) assert.match(stmts[0], new RegExp(`EXISTS \\(SELECT 1 FROM "${t}"\\)`));
+  assert.equal(stmts.filter((s) => /ADD COLUMN "language_profile_id" uuid NOT NULL;$/.test(s)).length, 5);
+  // The unique keys before the foreign keys that reference them.
+  assert.ok(at(/"phrases_id_profile" UNIQUE/) < at(/"cards_phrase_profile_fk" FOREIGN KEY/));
+  assert.ok(at(/"cards_id_profile" UNIQUE/) < at(/"reviews_card_profile_fk" FOREIGN KEY/));
+  assert.ok(at(/"turns_id_profile" UNIQUE/) < at(/"phrase_examples_turn_profile_fk" FOREIGN KEY/));
+  assert.ok(at(/DROP INDEX "phrases_identity"/) < at(/CREATE UNIQUE INDEX "phrases_profile_identity"/));
+  for (const [name, col] of [["phrase_examples_conversation_profile_fk", "conversation_id"], ["phrase_examples_turn_profile_fk", "turn_id"], ["reviews_conversation_profile_fk", "conversation_id"]])
+    assert.match(sql, new RegExp(`"${name}" FOREIGN KEY [^\\n]*ON DELETE SET NULL \\("${col}"\\)`));
+  // Past the guard, every statement is one drizzle-kit wrote.
+  assert.ok(stmts.slice(1).every((s) => /^(CREATE TABLE "|ALTER TABLE "\w+" ADD (COLUMN|CONSTRAINT)|DROP INDEX|CREATE (UNIQUE )?INDEX)/.test(s)));
+});

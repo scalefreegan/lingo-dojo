@@ -1,9 +1,10 @@
 # Learners, memory and practice: the database design
 
 Status: **phase 0 (foundation), phase 1 (logins and learners), phase 2
-(packs in the database, and their import), phase 3 (conversations) and
-language profiles (bead `ld-gf9.2`: one learner, several languages)
-built**; phases 4–11 are plan, not built (2026-11-15). Epic `ld-gf9`,
+(packs in the database, and their import), phase 3 (conversations),
+language profiles (bead `ld-gf9.2`: one learner, several languages) and
+phase 4 (the phrase bank, bead `ld-5p2`) built**; phases 5–11 are plan,
+not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -139,7 +140,8 @@ missing file by hash in one transaction (which repairs *skipped*), and refuse
 All ids are `uuid` (`gen_random_uuid()`), timestamps `timestamptz` (two
 exceptions below: `packs.created` and `reviews.id`). Every personal table
 carries `learner_id` (or `user_id` for account-level rows), the tables that
-belong to one language (packs, folders, revisions, conversations, turns)
+belong to one language (packs, folders, revisions, conversations, turns,
+and the phrase bank: phrases, examples, cards, reviews, cloze items)
 `language_profile_id` too, and every query goes through a helper that
 requires them, so a forgotten `where` is a type error, not a leak.
 
@@ -157,9 +159,9 @@ another owner's row:
 
 | Link | References |
 |---|---|
-| `reviews.conversation_id` | `conversations (id, learner_id)` |
-| `phrase_examples.conversation_id` | `conversations (id, learner_id)` |
-| `phrase_examples.turn_id` | `turns (id, learner_id)` |
+| `reviews.conversation_id` | `conversations (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
+| `phrase_examples.conversation_id` | `conversations (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
+| `phrase_examples.turn_id` | `turns (id, learner_id)`, and `(id, language_profile_id)` (migration 0003) |
 | `auth_sessions.learner_id` | `learners (id, user_id)` |
 | `auth_sessions.language_profile_id` | `language_profiles (id, learner_id)` (migration 0002) |
 
@@ -202,10 +204,9 @@ escape the filter.
   on and stamps both `language_profile_id` and `learner_id` (an upsert's
   conflict target gets both), so a row can't be written under one learner's
   language and another learner. A table with `language_profile_id` (packs,
-  pack folders, revisions, conversations, turns) is refused by `forLearner`,
-  as a type error and at runtime: a learner scope would see every language's
-  rows. The phrase bank has no `language_profile_id` and stays the learner's
-  (its rows are keyed by `lang`).
+  pack folders, revisions, conversations, turns, and since migration 0003
+  the phrase bank's five tables) is refused by `forLearner`, as a type error
+  and at runtime: a learner scope would see every language's rows.
 
 The server's raw handle is `rawDb()` in `web/server/db.ts`, and it's only for
 owner-less lookups (a login by username, a session by token hash, the
@@ -248,7 +249,7 @@ Built with bead `ld-gf9.2`, migration `0002_language_profiles`. A learner
 (the person: name, native language, mode) practises one or more languages,
 each a **language profile** with its own target language and variant,
 level, goals and notes, and its own packs, folders, pack history and
-conversations. The phrase bank stays the learner's (keyed by `lang`).
+conversations, and (phase 4, migration 0003) its own phrase bank.
 
 - **One per language.** A profile's target language is its identity: its
   packs and History are in that language. So a learner has at most one live
@@ -494,31 +495,40 @@ make differ from its profile's.
 ### Phrase bank
 
 ```
-phrases         id, learner_id, lang (BCP-47 of the target variant, e.g. es-MX),
+phrases         id, learner_id, language_profile_id, lang (BCP-47 of the
+                variant it was first met in, e.g. es-MX; provenance only),
                 text (target form; null while pending), norm (match key of
                 text; null while pending), meaning (native language),
                 meaning_norm (a pending row's key), note, source
                 (gloss|extraction|manual|scenario), alternates jsonb
                 (accepted other forms, default []), starred, suspended,
                 first_seen_at, last_seen_at, seen_count,
-                last_practiced_at, created_at
-                unique (learner_id, lang, norm) where text is not null
-                unique (learner_id, lang, meaning_norm) where text is null
+                last_practiced_at, edited_at (the learner's last change
+                by hand; null if never), created_at
+                unique (language_profile_id, norm) where text is not null
+                unique (language_profile_id, meaning_norm) where text is null
                 trigram GIN indexes on text and meaning
-phrase_examples id, phrase_id, learner_id, conversation_id, turn_id,
-                sentence, speaker, created_at
-cards           id, phrase_id, learner_id, skill (recognize|listen|produce),
+phrase_examples id, phrase_id, learner_id, language_profile_id,
+                conversation_id, turn_id, sentence, speaker, created_at
+phrase_sightings id, phrase_id, learner_id, language_profile_id,
+                conversation_id, turn_id (both SET NULL on delete),
+                seen_at; unique (turn_id, phrase_id): one row per reply
+                that saw the phrase; seen_count, first_seen_at and
+                last_seen_at are always its count, min and max
+cards           id, phrase_id, learner_id, language_profile_id,
+                skill (recognize|listen|produce),
                 fsrs state: due, stability, stability_fast, difficulty,
                 scheduled_days, learning_steps, reps, lapses, state,
                 last_review
-                unique (phrase_id, skill); index (learner_id, due)
-reviews         id (bigserial), card_id, learner_id, mode
+                unique (phrase_id, skill); index (language_profile_id, due)
+reviews         id (bigserial), card_id, learner_id, language_profile_id, mode
                 (flashcard|cloze|listening|speak|session), rating (1-4),
                 answer, verdict (exact|close|accepted|wrong|self),
                 grader_note, duration_ms, reviewed_at, conversation_id,
                 card_before jsonb (the card's FSRS state before this review)
                 unique (card_id, conversation_id) where mode = 'session'
-cloze_items     id, phrase_id, learner_id, sentence, blank_start, blank_end,
+cloze_items     id, phrase_id, learner_id, language_profile_id, sentence,
+                blank_start, blank_end,
                 hint, origin (example|generated), created_at
 ```
 
@@ -542,29 +552,32 @@ which is fine at the size of one learner's bank.
 
 - **Identity.** `norm` is NFC, case-folded, outer punctuation (including ¿ ¡ 「 」)
   and repeated spaces removed. Accents are kept: *papa* and *papá* are different
-  phrases. Same `(learner, lang, norm)` means the same complete phrase, so a gloss
-  of "¿A cómo?" in two sessions bumps one row. The gloss write is the scope's
-  `upsert` on that partial index (`target: [lang, norm]`, `targetWhere: text is
-  not null`).
+  phrases. Same `(language profile, norm)` means the same complete phrase, so a
+  gloss of "¿A cómo?" in two sessions bumps one row, whichever variant each
+  session was in. The gloss write is the profile scope's `upsert` on that
+  partial index (`target: [norm]`, `targetWhere: text is not null`).
 - **Pending phrases.** A scenario's `phrases:` list is English meanings. Those
   enter as rows with `meaning` and `meaning_norm` set and `text`/`norm` null
   (a check enforces complete-or-pending). They have their own identity,
-  `(learner, lang, meaning_norm)`, so a pending "taxi" (English) never
+  `(language profile, meaning_norm)`, so a pending "taxi" (English) never
   captures the later gloss of the target word "taxi". **Merge rule:** when a
   gloss or extraction pairs a target form with a pending row's meaning, the
-  pending row is filled in (text, norm, `meaning_norm` cleared) if no complete
-  phrase has that norm. Otherwise the pending row is deleted and the complete
-  one kept. Scenario `vocab:` entries (target term + gloss) enter complete.
-- **Language.** A phrase belongs to the variant it was learned in (`es-MX`).
-  Recall and practice use the learner's current variant's language prefix, so
-  switching to Castilian still shows the Mexican Spanish bank, while Japanese
-  never does.
+  pending row is folded into the complete phrase for that form (made if
+  there is none) and deleted. (The plan filled the pending row in instead;
+  as built it is folded, for one lock order: see "As built (phase 4)".) Scenario `vocab:` entries (target term + gloss) enter complete.
+- **Language.** A phrase belongs to a language profile (built in phase 4,
+  migration 0003; before it, the plan keyed the bank by learner and `lang`).
+  A profile is one target language, so changing its variant from Mexican to
+  Castilian Spanish keeps the bank, and a Japanese profile has its own.
+  `lang` records the variant a phrase was first met in, for display only.
 - **Three cards per phrase (proposed).** Recognize (read → meaning), listen
   (hear → meaning), produce (meaning → target, typed or spoken). These are
   separate memories, as in Anki's two-sided cards. Cards are created lazily: a
   phrase gets `recognize` when first seen, and `listen`/`produce` the first time a
   mode or session exercises them. The phrase's shown **mastery** is the weakest of
   its cards that exist, so a phrase you understand but can't say is not "mastered".
+  It is **New** only while none of its cards has been reviewed; once one has, a
+  card not yet reviewed counts as Learning.
 
 ### Metrics the bank shows
 
@@ -573,9 +586,147 @@ which is fine at the size of one learner's bank.
 | Last seen | `last_seen_at`: glossed or used in a session, or a card shown in practice |
 | Times seen | `seen_count` |
 | Last practiced | `last_practiced_at`: any review, practice or session |
-| Mastery | band from the weakest card: **New** (no reviews), **Learning** (stability < 3 days), **Familiar** (< 21 days), **Mastered** (≥ 21 days, Anki's "mature" line) |
+| Mastery | band from the weakest card: **New** (no card reviewed: never practised), **Learning** (stability < 3 days), **Familiar** (< 21 days), **Mastered** (≥ 21 days, Anki's "mature" line) |
 | Due | earliest `cards.due` |
 | Trouble | lapses in the last 30 days |
+
+### As built (phase 4)
+
+Bead `ld-5p2`, migration `0003_phrase_bank_per_language`. The phase 0
+tables were keyed by learner and `lang`; the language profiles of
+`ld-gf9.2` made a learner's languages separate, so the bank now is too.
+
+- **Migration 0003.** Adds `language_profile_id` (not null) to the five
+  tables, with composite keys: `phrases (language_profile_id, learner_id)` →
+  `language_profiles`, cascading, and each child to its parent's
+  `(id, language_profile_id)`. The identity indexes move to
+  `(language_profile_id, norm)` and `(language_profile_id, meaning_norm)`,
+  the due and review indexes to the profile. Provenance stays in the row's
+  language too: `phrase_examples (conversation_id, language_profile_id)` and
+  `(turn_id, language_profile_id)`, and `reviews (conversation_id,
+  language_profile_id)`, reference the conversation's or turn's
+  `(id, language_profile_id)` (a new unique key on `turns`), with `ON DELETE
+  SET NULL (col)` like the learner-level keys beside them, so deleting a
+  conversation keeps the example or review and clears only the link. It also
+  adds `phrase_dismissals` (below).
+  **It moves no bank row.** Nothing wrote the bank before this phase (the
+  real database had none), and no rule can say which of a learner's
+  languages an old phrase belongs to (`lang` is a variant; a learner may
+  have several profiles, or none). So the migration starts with a guard that
+  refuses to run, with a message saying so, while any of `phrases`,
+  `phrase_examples`, `cards`, `cloze_items` or `reviews` has a row; the
+  migration is one transaction, so a refusal leaves the 0002 schema and
+  every row as they were. The SQL is drizzle-kit's plus the hand edits in
+  `scripts/db/hand-edits.mjs` (the guard, the order, SET NULL (col)).
+  `db-migration-0003.test.mjs` (PGlite) and `migration-0003.pg.test.mjs`
+  (PostgreSQL 17) check both cases on a 0002 database with accounts,
+  learners, languages, conversations and turns: an empty bank migrates,
+  those rows unchanged and the schema identical to a fresh build; a row in
+  any bank table is refused with nothing changed.
+- **Dismissed.** Deleting a phrase records its words (`kind` text, its
+  norm) and its meaning (`kind` meaning) in `phrase_dismissals`
+  (`language_profile_id, kind, key`), and a scene's lists skip those at the
+  scene's next start: a deleted phrase stays deleted. A session that glosses
+  it again brings it back (that is meeting it again), and adding it by hand
+  clears the mark.
+- **Owner scoping** is `forLanguageProfile` (`scripts/db/owned.ts`); every bank
+  query is in `scripts/db/phrases.ts`, the routes in `web/server/phrases.ts`,
+  and the pure rules (capture lists, input checks, metrics, the list page) in
+  `scripts/phrases.mjs`.
+- **Routes** (all `learner: true`, the active language's bank):
+  `GET /api/phrases?q=&show=&band=&sort=&offset=&limit=` (a page, the total,
+  and the count behind each filter), `POST /api/phrases` (add or star:
+  201 new, 200 already there, starred either way), `GET
+  /api/phrases/lookup?text=` (the ☆'s state), `GET`, `PATCH` (text,
+  meaning, note, starred, suspended) and `DELETE /api/phrases/:id`. Another
+  language's phrase, of the same learner or not, is a 404.
+- **New and due.** A phrase is **new** when it has never been practised: no
+  card of it reviewed, whether its recognize card is waiting (met in a
+  session) or it has no card yet (from a scene's list, or added by hand).
+  That is the same thing as mastery band New, so the "new" filter, its count,
+  the Mastery list's New and the row's "new, ready to learn" always give the
+  same number. A card never reviewed (FSRS state New, no reps) is not due:
+  `due` is the earliest due of the cards that have been reviewed, so the
+  bank isn't all due at once. Due stays a reviewed card whose time has come.
+- **Filters and sorts.** Show: all, starred, new, due, trouble, pending (no
+  words yet), suspended (new and due leave out pending and suspended
+  phrases). Band: one
+  mastery band, also leaving out pending and suspended phrases (so New
+  matches the new filter; a suspended phrase is found under Suspended). Sort: recently seen, due first, weakest first, A to Z,
+  newest added. The page is filtered and sorted in memory after one read of
+  the profile's rows, fine at one learner's bank size; a large bank would
+  move it into SQL.
+- **Trouble** is 2 or more lapses in 30 days, a lapse being an Again
+  (rating 1) given to a card that was in review (`card_before.state` 2).
+- **Pending pairing.** A gloss pairs a pending phrase only by the meaning
+  the dojo master gave (normalised). The complete phrase for the words is
+  made or found first, then the pending row is folded into it and deleted,
+  keeping what the learner set on either (starred or suspended if either
+  was, both notes joined when they differ, the later `edited_at`, and the
+  pending row's meaning when it was edited and the complete one's wasn't,
+  or the complete one has none): a change
+  from the merge rule above, which filled the pending row in, so that every
+  write takes its rows in one order (complete rows by norm, then pending
+  rows by meaning) and two conversations capturing at once wait for each
+  other instead of deadlocking or colliding on the words. A write that still
+  collides (an edit giving a pending phrase words while a capture adds
+  them) is retried once (unique violation or deadlock), then reported:
+  `phrases.pg.test.mjs` races captures, an add and crossing meanings on
+  PostgreSQL 17. A pending phrase is not created when a complete phrase
+  already has that meaning. Giving a pending phrase words in the bank's
+  Edit completes it (or is 409 if those words are already a phrase).
+- **Capture limits.** A gloss of more than 3 words is a sentence's
+  translation and isn't captured; in a language written without spaces
+  (Japanese, Chinese, Thai, Lao, Khmer, Burmese, Tibetan) the limit is 12
+  characters (letters and digits) instead, since a word segmenter splits
+  particles and endings off as words. The example is a line holding the
+  term as whole words (as text in those languages), never a line that is
+  only the term. Control characters (C0 but a note's line breaks, DEL, the
+  bidi overrides and isolates) are dropped from words, meanings, notes and
+  gloss terms, and lengths are those of what is stored.
+- **Sightings.** A capture writes one `phrase_sightings` row per phrase
+  it saw, in its own savepoint with everything else it writes (so a
+  capture that failed, or was retried, leaves exactly what succeeded).
+  `seen_count`, `first_seen_at` and `last_seen_at` are recounted from those
+  rows whenever they change, never incremented, so they always agree.
+- **A dropped reply.** When a turn's write deletes stored turns the browser
+  no longer shows, what those turns' captures recorded is undone in the
+  same transaction, by their sighting rows alone (never by re-reading the
+  reply's glosses): the rows and the turns' examples go, and each phrase
+  they named is recounted, its first and last seen from the sightings
+  left. A turn with no rows (a capture that failed, a copy from the
+  browser) changes nothing. A phrase left with no sighting at all is
+  deleted only if it existed for those replies alone: provenance gloss, no
+  `edited_at`, not starred, suspended or noted, no card reviewed. Any other
+  stays, unseen, without its unreviewed cards. Deleting a conversation in
+  History keeps its sightings (turn and conversation set null): the phrases
+  were still met. If the undo itself fails it is logged and the turns
+  still go; their sightings stay, counted, with no turn.
+- **Provenance only strengthens**: manual > scenario > gloss (> extraction).
+  A scene's list naming words a reply glossed, an add of them, or a
+  complete phrase absorbing a scene's pending one keeps the stronger
+  `source`, so a scene's phrase that a gloss gave words to stays in the
+  bank when that reply is dropped (with the words: the pending row isn't
+  brought back, the words are what the learner met).
+- **Learner edits.** Every change by hand (any `PATCH`, even one that
+  changes only the meaning, and an add or ☆ Star of words already in the
+  bank) sets `phrases.edited_at`. That is the one marker the automatic
+  paths respect: undoing a dropped reply never deletes such a phrase, and
+  no gloss, scene list, pending absorption or retry overwrites a meaning,
+  note, star or suspension the learner set. A gloss or a scene's list only
+  fills a meaning that is blank (they never replace one, whoever set it);
+  scene lists skip dismissed keys and never delete; a retried write reruns
+  from the start on fresh rows, so it writes nothing stale. A phrase still
+  seen elsewhere keeps its last-seen time (sightings aren't stored one by
+  one, so the one before can't be known).
+- **UI.** The Library tab's third view, **Phrase bank**: add (starred),
+  search, the show chips with counts (a Show more page that arrives after
+  the filters changed is dropped), band and sort, a row per phrase with
+  its band, ★, the pending, suspended and trouble badges, seen / last seen
+  / last practiced / due, and, opened, its examples, Edit, Suspend and
+  Delete. The transcript's definition card (Go tab and History) has ☆ Star
+  when the session is in the active language. Practice (phase 7) can move
+  or reuse it.
 
 ## Auth
 
@@ -882,7 +1033,18 @@ docs/VOICE.md §Saved conversations is the user's side.
 |---|---|---|
 | Glosses | each turn, in the turn transaction | upsert phrase (`source=gloss`); `seen_count`+1; `last_seen_at`; example = the line holding the term; `recognize` card if none. No FSRS review: seeing is not recalling |
 | Scenario lists | conversation start | `vocab:` → complete phrases; `phrases:` → pending phrases (meaning only) |
-| Manual | tapping a glossed word → ☆ Star; Add in the bank | upsert, `starred=true` |
+| Manual | tapping a glossed word → ☆ Star; Add in the bank | upsert, `starred=true`; no card (practice makes one) |
+
+As built (phase 4): a turn captures the glosses of the server's own reply
+(not a `from_client` one), only those of at most 3 words (a sentence's
+translation is not a phrase), and only when the session's target language is
+the profile's (a pack can override it; then nothing is captured). An example
+is the line that holds the term, at most 10 per phrase, deduped by sentence.
+The capture runs in a savepoint of the turn's transaction: if it fails, the
+turn is saved without it and the server logs it. A scenario's `vocab:` is
+taken only when the scenario's `language:` is the profile's (or it has
+none); its `phrases:` always. Scenario phrases are unseen (seen count 0, no
+card) until a session glosses them.
 | Extraction | after End | see below |
 
 ### Post-session extraction
@@ -1003,8 +1165,8 @@ unchanged.
 
 ## Practice modes
 
-There is a new top-level **Practice** tab and a **Phrase bank** view (inside
-Practice, proposed). Practice builds a queue from due cards, mixed by default
+There is a new top-level **Practice** tab and a **Phrase bank** view (built
+in phase 4 as the Library tab's third view; Practice may reuse it). Practice builds a queue from due cards, mixed by default
 and filterable by mode, with daily limits (20 new and 100 reviews, proposed) and
 a session length picker (5 / 10 / 20 items).
 
@@ -1395,7 +1557,26 @@ Access in System Settings, or keep the checkout elsewhere.
   language inside the transaction); `packs.test.mjs` the import into the
   oldest language and its per-learner idempotence; `draft.test.mjs` the
   browser-key adoption; `db.test.mjs` the scopes and keys; and the
-  migration tests above every existing row.
+  migration tests above every existing row. Phase 4: `phrases.test.mjs`
+  covers the pure rules (capture lists, the limits with and without spaces,
+  whole-word examples, control characters, the language match, scenario
+  entries, input checks, metrics with new and due, the list page);
+  `phrases.http.test.mjs` the scenario lists at a conversation's start, a
+  turn's capture (counts, example, card, no review), pending absorption, a
+  dropped reply's sightings undone, a deleted scene phrase not coming back,
+  a session in another language, a failing capture that keeps the turn,
+  add/star/lookup (a NUL too)/edit/suspend/delete, two languages' separate
+  banks and the `stale_learner` 409, another learner and account by id, and
+  the metrics and filters; `db-migration-0003.test.mjs` (PGlite) and
+  `migration-0003.pg.test.mjs` (with `LINGO_TEST_PG_URL`, PostgreSQL 17)
+  migrate a 0002 database with data and an empty bank, and refuse one with
+  a bank row; `phrases.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races
+  captures of one phrase with an add and crossing pending meanings (both
+  fail on the code before the lock order); `db.test.mjs` the profile scope
+  on the bank tables and the language-level provenance keys. The `.pg`
+  tests make their throwaway databases through `scripts/tests/pg-scratch.mjs`
+  or with the process id in the name, and close their pools before dropping
+  them.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).
@@ -1421,7 +1602,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 2 | Packs in the DB + import: packs, revisions, folders, import script, drop the pack git commits. **Built** | 1 |
 | 3 | Conversations: persist turns, End, the History view. **Built** | 1 |
 | 3.5 | Language profiles (`ld-gf9.2`): several languages per learner, each with its own packs and History. **Built** | 2, 3 |
-| 4 | Phrase bank: tables, gloss capture, scenario lists, star/add, the bank UI with metrics | 3 |
+| 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
 | 5 | Session extraction: claude pass, FSRS from sessions, the recap card | 4 |
 | 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |
 | 7 | Practice: tab and queue, the FSRS service, grader, flashcards, cloze, listening, speak-it, audio cache | 4 |

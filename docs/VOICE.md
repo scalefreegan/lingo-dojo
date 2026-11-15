@@ -188,7 +188,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   underlined, and a whole line opens its translation. A word glossed in an
   earlier turn stays tappable later, because the dojo master doesn't gloss
   it twice. Glosses go back in the replay, so the model keeps the format,
-  and Copy transcript includes them.
+  and Copy transcript includes them. The turn also puts its glosses of up
+  to three words in the language's phrase bank, and a tapped word's card
+  has ☆ Star to keep it there starred (docs/DATA.md §Phrase capture).
 
 ## Saved conversations
 

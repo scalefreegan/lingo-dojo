@@ -32,6 +32,7 @@ import {
   LanguageTakenError, archiveLanguageProfile, createLanguageProfile, createLearner, createSession, createUser, setSessionLearner, updateLanguageProfile,
 } from "../db/accounts.ts";
 import { ADULT } from "./http-session.mjs";
+import { createDatabase, dropDatabase, scratchName } from "./pg-scratch.mjs";
 
 const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
@@ -41,12 +42,8 @@ const ROUNDS = 20;
  *  learner (Spanish), for `fn`; dropped after. The pool has room for every
  *  racer to hold its own connection. */
 async function withLearner(fn) {
-  const name = `lingo_dojo_test_${crypto.randomBytes(6).toString("hex")}`;
-  const admin = new pg.Client({ connectionString: url });
-  await admin.connect();
-  await admin.query(`create database ${name}`);
-  const target = new URL(url);
-  target.pathname = `/${name}`;
+  const name = scratchName("lang");
+  const target = new URL(await createDatabase(url, name));
   const pool = new pg.Pool({ connectionString: target.toString(), max: 8 });
   try {
     await applyMigrations(async (text, params) => (await pool.query(text, params)).rows);
@@ -56,8 +53,8 @@ async function withLearner(fn) {
     await fn(pool, db, { userId: user.id, learnerId: learner.id });
   } finally {
     await pool.end();
-    await admin.query(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    // After every pool and client on it has ended (pg-scratch.mjs).
+    await dropDatabase(url, name);
   }
 }
 
