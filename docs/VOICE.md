@@ -300,12 +300,23 @@ leaves the session's two languages. The library search is for the target
 language, narrowed to the locale in the library's own spelling
 (`elevenLibraryLocale`: Mandarin is `cmn-TW` / `cmn-CN` there, not `zh-TW` /
 `zh-CN`, and a locale it doesn't know is a 400). With fewer than four voices
-for the exact locale, or a failed search, it widens to every voice of the
-language (another Mandarin for Taiwanese Mandarin). With no library voice at
-all, the account's voices native to the target are used, then those native
-to the learner's own language (`nativeLocale` in the `/cast` body; the
-premade English voices, for an English speaker). The fallbacks follow the
-same rule. A failed library search is logged (`[voice] library search …`).
+for the exact locale, or a locale the library refuses, the search widens to
+every voice of the language (another Mandarin for Taiwanese Mandarin); the
+exact-locale voices are still drawn first (`exact`, in `pickCast`), so the
+others only fill the parts left over. A locale the library doesn't list
+(de-CH) is searched by language from the start. Cantonese (`zh-HK`) is not
+searched at all: the library files it under `zh`, which returns Mandarin. A
+timeout, rate limit or bad key is not retried wider, and every failed search
+is logged (`[voice] library search …`).
+
+With no library voice, the account's voices native to the target are used,
+then those native to the learner's own language (from the learner on the
+session; `nativeLocale` in the `/cast` body only when the learner has none),
+then ElevenLabs' premade voices, which any plan can speak with: an accent
+beats silence, and that is the one case a voice of another language speaks.
+The fallbacks follow the same rule. Gender gives way before language: an
+account whose only English voices are women's has a woman read a man's
+part rather than hand it to a German man.
 
 **Ages.** The dojo master writes a `CAST:` line (shown, never spoken;
 `parseCast`) whenever someone speaks for the first time or a different

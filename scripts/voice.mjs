@@ -1115,6 +1115,15 @@ export function elevenLibraryLocale(locale) {
   return LIBRARY_LOCALES.has(l) ? l : "";
 }
 
+// A language code two spoken languages share: the library files Cantonese
+// under zh with no locale of its own, so a zh search for zh-HK would hand a
+// Cantonese session Mandarin voices. No search at all is the honest answer.
+const LIBRARY_UNSEARCHABLE = new Set(["zh-HK"]);
+/** Whether the Voice Library can be searched for this locale's speakers. */
+export function elevenLibrarySearchable(locale) {
+  return !!locale && !LIBRARY_UNSEARCHABLE.has(locale);
+}
+
 /** A Voice Library search. `locale` is the session's (es-MX, zh-TW): the
  *  search is for that language, narrowed to the locale when the library
  *  knows it. `anyLocale` drops the narrowing: every voice of the language
@@ -1180,10 +1189,10 @@ export function elevenAddRequest({ key, ownerId, voiceId, name }) {
  *  (`list` is the picker's shape: {id, name, gender, match, home?}): native
  *  voices labelled with that gender, then native voices with no label (which
  *  may be either); failing those, speakers of the learner's own language
- *  (`home`), the session's other language. A voice native to a third
- *  language is drawn only from a list that marks no `home` voices at all
- *  (Azure and macOS, whose lists are already for the locale): on ElevenLabs
- *  it would read the target words in its own language. "novelty" and other
+ *  (`home`), the session's other language, then ElevenLabs' premade voices.
+ *  A voice native to a third language is drawn only from a list that marks
+ *  no `home` voices at all (Azure and macOS, whose lists are already for the
+ *  locale): on ElevenLabs it would read the target words in its own language. "novelty" and other
  *  labels never count. `skip` holds ids to leave out. */
 export function poolFor(list, gender, skip = new Set(), age = "") {
   const all = Array.isArray(list) ? list : [];
@@ -1196,7 +1205,10 @@ export function poolFor(list, gender, skip = new Set(), age = "") {
     unlabelled.filter((v) => v.match),
     labelled.filter((v) => v.home),
     unlabelled.filter((v) => v.home),
-    ...(knowsHome ? [] : [labelled, unlabelled]),
+    // Nobody of either language: the premade voices (any plan can speak
+    // with them, and they are the multilingual models' stock voices) rather
+    // than no voice at all. Never a voice native to a third language.
+    ...(knowsHome ? [labelled.filter((v) => v.premade), unlabelled.filter((v) => v.premade)] : [labelled, unlabelled]),
   ];
   let pool = tiers.find((t) => t.length) ?? [];
   // An age asked for: within that tier, the voices nearest it (a voice with
@@ -1246,11 +1258,14 @@ export function castFallbacks(own, slots, set = {}, { all = slots, ages = {}, ta
     const gender = slot.split(":")[1];
     const age = AGE_RANK.hasOwnProperty(ages[slot]) ? ages[slot] : "";
     const dist = (v) => (!age ? 0 : AGE_RANK.hasOwnProperty(v.age) ? Math.abs(AGE_RANK[v.age] - AGE_RANK[age]) : 1.5);
-    const rank = (v) => (v.premade ? 0 : 10) + dist(v) * 2 + (v.match ? 0 : 1);
+    const rank = (v) => (v.premade ? 0 : 10) + dist(v) * 2 + (v.match ? 0 : v.home ? 0.5 : 1);
     // Voices of the session's two languages only, while the account has any:
     // a fallback native to a third language would speak in it.
     // (A list that marks no `home` voices keeps every voice, as before.)
-    const usable = list.some((v) => v.home !== undefined) ? list.filter((v) => v.match || v.home) : list;
+    // Premade voices stay in whatever their language: a fallback speaks only
+    // after a refusal, when the alternative is silence, and they are the
+    // voices any plan can use.
+    const usable = list.some((v) => v.home !== undefined) ? list.filter((v) => v.match || v.home || v.premade) : list;
     const labelled = usable.filter((v) => String(v.gender).toLowerCase() === gender);
     const from = (labelled.length ? labelled : usable.filter((v) => !v.gender)).slice().sort((x, y) => rank(x) - rank(y));
     const pick = from.find((v) => !taken.has(v.id)) ?? from[0];
@@ -1366,7 +1381,11 @@ export function pickCast({ slots, set = {}, pools = {}, names = {}, ages = {}, a
     const pool = pools[slot]?.length ? pools[slot] : pools[gender]?.length ? pools[gender] : [...(pools.female ?? []), ...(pools.male ?? [])];
     if (!pool.length) continue;
     const fresh = pool.filter((v) => !taken.has(v.id));
-    const from = fresh.length ? fresh : pool;
+    // Voices of the exact locale (`exact`, set by /cast on a widened library
+    // search) go first: a Taiwanese speaker while one is free, and only then
+    // another Mandarin.
+    const exact = fresh.filter((v) => v.exact);
+    const from = exact.length ? exact : fresh.length ? fresh : pool;
     const pick = from[Math.floor(rand() * from.length)];
     cast[slot] = withAge({ id: pick.id, name: pick.name }, pick.age || ages[pick.id]);
     taken.add(pick.id);

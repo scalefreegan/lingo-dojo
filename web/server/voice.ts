@@ -9,7 +9,7 @@ import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -541,7 +541,7 @@ const CAST_POOL = 40;
 /** Fewer locale-exact library voices than this and the draw widens to the
  *  whole language, so one or two voices don't play every part. */
 const CAST_MIN_NATIVE = 4;
-type LibVoice = { id: string; name: string; age?: string };
+type LibVoice = { id: string; name: string; age?: string; exact?: boolean };
 
 /** POST /api/voice/cast {mode, locale, units, ages?, slots?, avoid?} → this
  *  session's voices and narrator gender. Slots the learner set keep their
@@ -558,7 +558,10 @@ export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse,
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");
-  const nativeLocale = typeof body?.nativeLocale === "string" && LOCALE_RE.test(body.nativeLocale) ? body.nativeLocale : "";
+  // The learner's own language, from the session's learner (the body's
+  // only when the learner has none on file): an old tab that doesn't send
+  // it still never draws a third language's voice.
+  const nativeLocale = localeFor(ctx.learner.nativeLanguage) ?? (typeof body?.nativeLocale === "string" && LOCALE_RE.test(body.nativeLocale) ? body.nativeLocale : "");
   const all: string[] = voiceSlots(mode);
   const slots = Array.isArray(body?.slots) ? all.filter((x) => (body.slots as unknown[]).includes(x)) : all;
   const ages: Record<string, VoiceAge> = {};
@@ -593,28 +596,38 @@ export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse,
   const library: Record<string, LibVoice[] | null> = {};
   const aged: Record<string, LibVoice[] | null> = {};
   if (provider === "elevenlabs") {
-    // The locale's own speakers first; a thin or failed search is topped up
-    // with every voice of the language (another Mandarin for Taiwanese
-    // Mandarin). Never another language: a search that finds nothing leaves
-    // the slot to the account's voices of the session's two languages.
-    const page = async (gender: string, age: VoiceAge | undefined, anyLocale: boolean): Promise<LibVoice[] | null> => {
+    // The locale's own speakers first (`exact`: pickCast draws them before
+    // any other). A thin search, or a locale the library refuses (400/422),
+    // is topped up with every voice of the language (another Mandarin for
+    // Taiwanese Mandarin). Never another language: a search that finds
+    // nothing leaves the slot to the account's voices. A timeout, a rate
+    // limit or a bad key is not retried wider: it would only fail twice.
+    const page = async (gender: string, age: VoiceAge | undefined, anyLocale: boolean): Promise<{ voices: LibVoice[] | null; refused: boolean }> => {
       try {
         const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender, age, sort: "usage_character_count_1y", pageSize: CAST_POOL, anyLocale });
-        return elevenLibrary(await (await call(provider, r)).json())
+        const voices = elevenLibrary(await (await call(provider, r)).json())
           .voices.filter((v) => !refusedVoices.has(v.id))
           .map((v) => ({ id: v.id, name: v.name, age: ageOf(v.age) }));
+        return { voices, refused: false };
       } catch (e) {
-        console.warn(`[voice] library search for ${locale}${anyLocale ? " (any locale)" : ""} failed: ${(e as Error)?.message ?? e}`);
-        return null;
+        const message = String((e as Error)?.message ?? e);
+        console.warn(`[voice] library search for ${locale}${anyLocale ? " (any locale)" : ""} failed: ${message}`);
+        return { voices: null, refused: /answered (400|422)\b/.test(message) };
       }
     };
+    const narrowed = !!elevenLibraryLocale(locale);
     const search = async (gender: string, age?: VoiceAge): Promise<LibVoice[] | null> => {
-      const exact = await page(gender, age, false);
-      if (exact && exact.length >= CAST_MIN_NATIVE) return exact;
-      const wide = await page(gender, age, true);
-      if (!wide) return exact;
-      const seen = new Set((exact ?? []).map((v) => v.id));
-      return [...(exact ?? []), ...wide.filter((v) => !seen.has(v.id))];
+      // Cantonese: the library has no way to ask for it (elevenLibrarySearchable).
+      if (!elevenLibrarySearchable(locale)) return [];
+      const first = await page(gender, age, false);
+      // Not narrowed to a locale: this already was the whole language.
+      if (!narrowed) return first.voices;
+      const exact = (first.voices ?? []).map((v) => ({ ...v, exact: true }));
+      if (first.voices ? exact.length >= CAST_MIN_NATIVE : !first.refused) return first.voices ? exact : null;
+      const wide = (await page(gender, age, true)).voices;
+      if (!wide) return first.voices ? exact : null;
+      const seen = new Set(exact.map((v) => v.id));
+      return [...exact, ...wide.filter((v) => !seen.has(v.id))];
     };
     const genders = [...new Set(random.map((x) => x.split(":")[1]))];
     const wantAge = random.filter((x) => ages[x]);

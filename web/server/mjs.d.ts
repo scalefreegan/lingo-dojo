@@ -149,14 +149,14 @@ declare module "*/scripts/voice.mjs" {
   export const REPLAY_MAX_CHARS: number;
   export function replayLine(s: string): string;
   export function replayStage(v: unknown): string;
-  export function poolFor(list: { id: string; name: string; gender: string; match: boolean; home?: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
+  export function poolFor(list: { id: string; name: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
   export function retryInOtherVoice(status: number): boolean;
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
   export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
   export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
   export function replayCastNotes(raw: unknown): { slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
   export function castFallbacks(
-    own: { id: string; gender: string; match: boolean; premade?: boolean; age?: string }[],
+    own: { id: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[],
     slots: string[],
     set?: Record<string, string | undefined>,
     o?: { all?: string[]; ages?: Record<string, string>; taken?: string[] },
@@ -165,12 +165,12 @@ declare module "*/scripts/voice.mjs" {
     slots: string[];
     set?: Record<string, string | undefined>;
     ages?: Record<string, string>;
-    library?: Record<string, { id: string; name: string; age?: string }[] | null>;
-    aged?: Record<string, { id: string; name: string; age?: string }[] | null>;
-    own?: { id: string; name: string; gender: string; match: boolean; age?: string }[];
+    library?: Record<string, { id: string; name: string; age?: string; exact?: boolean }[] | null>;
+    aged?: Record<string, { id: string; name: string; age?: string; exact?: boolean }[] | null>;
+    own?: { id: string; name: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[];
     recast?: boolean;
     avoid?: string[];
-  }): { pools: Record<string, { id: string; name: string; age?: string }[]>; omitted: string[] };
+  }): { pools: Record<string, { id: string; name: string; age?: string; exact?: boolean }[]>; omitted: string[] };
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
@@ -181,12 +181,13 @@ declare module "*/scripts/voice.mjs" {
   export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];
   export function elevenLibraryRequest(o: { key: string; locale?: string; gender?: string; age?: string; search?: string; sort?: string; page?: number; pageSize?: number; anyLocale?: boolean }): Req;
   export function elevenLibraryLocale(locale: string): string;
+  export function elevenLibrarySearchable(locale: string): boolean;
   export function pinnedNarratorGender(units: unknown): import("../shared/wire.ts").VoiceGender | null;
   export function narratorDirective(gender: unknown): string;
   export function pickCast(o: {
     slots: string[];
     set?: Record<string, string | undefined>;
-    pools?: Record<string, { id: string; name: string; age?: string }[]>;
+    pools?: Record<string, { id: string; name: string; age?: string; exact?: boolean }[]>;
     names?: Record<string, string>;
     ages?: Record<string, string>;
     avoid?: string[];
