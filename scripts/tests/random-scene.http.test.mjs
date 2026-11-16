@@ -136,6 +136,7 @@ test("a malformed pool is a 400 everywhere a pack arrives, and nothing is writte
     { collections: [7] },
     { collections: Array.from({ length: 51 }, (_, i) => `c${i}`) },
     { collections: ["x".repeat(121)] },
+    { collections: ["Daily life", "   "] },
   ];
   for (const random_scene of bad) {
     const pack = { ...randomPack(), random_scene };
@@ -256,7 +257,7 @@ test("a random scene can't play without its conversation's draw: no conversation
   const runsBefore = fake.runs();
   const none = await turn(sam, null, randomPack());
   assert.equal(none.status, 409);
-  assert.match(none.body.error, /drawn when a session starts/);
+  assert.match(none.body.error, /No scene has been drawn for this random scene yet/);
   const picked = await start(sam, libraryPack("plaza"), { title: "Plaza" });
   const other = await turn(sam, picked.id, randomPack());
   assert.equal(other.status, 409);
@@ -272,6 +273,55 @@ test("a later conversation of the same session keeps the scene it drew while it 
   const fresh = await start(sam, randomPack(["Daily life"]), { drawn: "sushi" });
   assert.equal(fresh.scenarioId, "cafe", "sushi isn't in the pool: drawn afresh");
   assert.equal((await snapshot(fresh.id)).pack_snapshot.random_draw.kept, undefined);
+});
+
+test("a kept scene no longer in the pool draws afresh and still steers clear of recent scenes", async () => {
+  const sam = await someone();
+  await start(sam, libraryPack("taxi"), { title: "Taxi" });
+  // Travel essentials: taxi and hotel. Whatever the source says, and with a
+  // `drawn` that isn't in the pool, the scene just played is avoided.
+  for (const r of [0, 0.99]) {
+    useSceneRandom(() => r);
+    const c = await start(sam, randomPack(["Travel essentials"]), { drawn: "cafe" });
+    assert.equal(c.scenarioId, "hotel", `rand ${r}`);
+    assert.equal((await snapshot(c.id)).pack_snapshot.random_draw.kept, undefined);
+    await q("delete from conversations where id = $1", [c.id]);
+  }
+});
+
+test("recent scenes are the language's own: the learner's other language doesn't count", async () => {
+  const sam = await someone();
+  const spanish = sam.languageId;
+  await sam.addLanguage({ target_language: "German", target_variant: "Standard German (Germany)", level: "A1" });
+  // German played taxi (twice, to be sure); Spanish has played nothing.
+  for (let i = 0; i < 2; i++) await start(sam, libraryPack("taxi"), { title: "Taxi" });
+  await sam.pickLanguage(spanish);
+  const seen = new Set();
+  for (const r of [0, 0.99]) {
+    useSceneRandom(() => r);
+    const c = await start(sam, randomPack(["Travel essentials"]));
+    seen.add(c.scenarioId);
+    await q("delete from conversations where id = $1", [c.id]);
+  }
+  assert.deepEqual([...seen].sort(), ["hotel", "taxi"], "taxi isn't avoided in Spanish");
+  // In German it is.
+  await sam.pickLanguage("German");
+  for (const r of [0, 0.99]) {
+    useSceneRandom(() => r);
+    const c = await start(sam, randomPack(["Travel essentials"]));
+    assert.equal(c.scenarioId, "hotel", `rand ${r}`);
+    await q("delete from conversations where id = $1", [c.id]);
+  }
+});
+
+test("an unsaved turn sends the session's drawn scene in place, and plays it like a picked one", async () => {
+  const sam = await someone();
+  const { unsavedTurnPack } = await import("../../web/shared/scenes.ts");
+  const pack = unsavedTurnPack(randomPack(["Travel essentials"]), "hotel");
+  const r = await turn(sam, null, pack);
+  assert.equal(r.status, 200, r.text);
+  assert.ok(prompt().includes("# Lingo Dojo session: Checking in"));
+  assert.equal((await sam.call("GET", "/api/conversations")).body.conversations.length, 0, "nothing saved, nothing drawn");
 });
 
 test("an empty pool refuses to start, with the reason, and makes no conversation", async () => {

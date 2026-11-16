@@ -20,6 +20,7 @@ import type {
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, turnsSettled } from "../conversationLife";
+import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -334,8 +335,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const creating = useRef<Promise<SavedConversation | null> | null>(null);
   // A random scene's scenario, as the server drew it for this session's
   // first conversation. A later conversation of the same session (the
-  // first ended under it) asks to keep it, so the scene doesn't change
-  // mid-transcript; Restart forgets it, so the next session draws again.
+  // first ended while the session stayed open: Go left, two idle hours,
+  // another device's End) asks to keep it, so the scene doesn't change
+  // mid-transcript, and a turn that must run unsaved plays it. Restart
+  // forgets it, and Close unmounts the session, so the next Start draws
+  // again.
   const drawnRef = useRef<string | null>(null);
   const sessionEpoch = useRef(0);
   const unsavedFrom = useRef<number | null>(null);
@@ -662,7 +666,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const epoch = sessionEpoch.current;
     const page = getPageLearner() ?? { learnerId: "", languageId: "" };
     const start = Math.min(unsavedFrom.current ?? here, here);
-    const keep = turnPack.random_scene && drawnRef.current ? { drawn: drawnRef.current } : {};
+    const keep = keepDrawn(turnPack, drawnRef.current);
     const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current, ...keep }).then(
       ({ conversation }) => {
         const c = { id: conversation.id, start, page };
@@ -966,7 +970,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
         const elapsedMs = Date.now() - (startedAtRef.current ?? Date.now());
-        const body: VoiceTurnRequest = { mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
+        // With no conversation the server can't know a random scene's draw
+        // (it lives in the snapshot): an unsaved turn plays the scene this
+        // session drew, as a picked one; the next conversation keeps it.
+        const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
+        const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
         const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
         if (c) {
           inFlight.current.set(c.id, req);

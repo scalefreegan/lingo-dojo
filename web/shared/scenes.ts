@@ -81,6 +81,9 @@ export function readRandomScene(v: unknown): { value: RandomScene | null } | { e
   for (const c of raw) {
     if (typeof c !== "string") return { error: "random_scene.collections must hold only collection names (strings)" };
     const name = c.trim();
+    // Only a literal "" names the scenes in no collection: a name of only
+    // spaces is a slip, and trimming it to "" would quietly change the pool.
+    if (c !== "" && name === "") return { error: "a collection name in random_scene can't be only spaces (use \"\" for scenes in no collection)" };
     if (name.length > MAX_COLLECTION_NAME) return { error: `a collection name in random_scene is too long (at most ${MAX_COLLECTION_NAME} characters)` };
     if (name.includes("\u0000")) return { error: "a collection name can't contain a NUL character (\\u0000)" };
     if (!collections.includes(name)) collections.push(name);
@@ -162,6 +165,22 @@ export function drawRandomScene<S extends Pick<Scenario, "id" | "language" | "co
  *  the bank and the recap all see a library scenario). */
 export function withDrawnScene<P extends { scenario: string; quick_scenario: string; random_scene?: RandomScene | null }>(pack: P, scenarioId: string): P {
   return { ...pack, scenario: scenarioId, quick_scenario: "", random_scene: null };
+}
+
+/** What a voice session adds to its conversation create: for a random
+ *  pack, the scene the session already drew (so a later conversation of a
+ *  session still open keeps it); nothing otherwise, or before any draw. */
+export function keepDrawn(pack: { random_scene?: RandomScene | null }, drawn: string | null): { drawn?: string } {
+  return pack.random_scene && drawn ? { drawn } : {};
+}
+
+/** The pack a voice turn sends with no conversation to save into (it
+ *  couldn't be made, or Go is hidden and the last one ended): a random
+ *  pack plays the scene the session drew, as a picked one, since only a
+ *  conversation's snapshot tells the server which scene that is. Before
+ *  any draw it stays random, and the server refuses the turn (409). */
+export function unsavedTurnPack<P extends { scenario: string; quick_scenario: string; random_scene?: RandomScene | null }>(pack: P, drawn: string | null): P {
+  return pack.random_scene && drawn ? withDrawnScene(pack, drawn) : pack;
 }
 
 /** "1 scene" / "12 scenes". */

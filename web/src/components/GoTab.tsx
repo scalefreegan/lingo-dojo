@@ -148,7 +148,7 @@ export default function GoTab({
               <span className="text-xs tracking-wide text-accent uppercase">Drawn for this session</span>
               <span className="text-sm font-medium text-fg">{drawn.title}</span>
               {drawn.summary && <span className="text-sm text-fg-2">{drawn.summary}</span>}
-              <span className="text-xs text-fg-3">Restart ends this session and draws another.</span>
+              <span className="text-xs text-fg-3">Restart or Close ends this session; the next Start draws another.</span>
             </div>
           ) : (
             <p className="text-sm text-fg-2" data-testid="random-before-start">

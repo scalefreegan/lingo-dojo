@@ -29,7 +29,7 @@ import { readVoiceSettings } from "./store.ts";
 // stored for its learner's language, turn by turn, and listed in the
 // Library's History (each language has its own).
 //
-//   POST   /api/conversations             {mode, pack, title?} → {conversation}  (201)
+//   POST   /api/conversations             {mode, pack, title?, drawn?} → {conversation}  (201); a random scene is drawn here
 //   GET    /api/conversations             ?offset=&limit= → {conversations, nextOffset}, newest first
 //   GET    /api/conversations/:id         ?from=&limit= → {conversation, turns, nextFrom, plan, locale}
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
@@ -384,7 +384,10 @@ export function drawnScenario(conv: Pick<Conversation, "packSnapshot">): string 
  * created, every turn, so nothing redraws; a turn may not play a random
  * scene with no conversation to hold its draw (the conversation couldn't be
  * made, or the session started with another scene), since drawing happens
- * only when a session starts. Any other pack is played as sent.
+ * only when a conversation is made. (The client sends an unsaved turn with
+ * its session's drawn scene in place, scenes.ts unsavedTurnPack, so this
+ * refuses only a session that never drew one.) Any other pack is played
+ * as sent.
  */
 export function playedPack(pack: PackInput, conv: Pick<Conversation, "packSnapshot"> | null): PackInput {
   if (!randomSceneOf(pack)) return pack;
@@ -394,7 +397,7 @@ export function playedPack(pack: PackInput, conv: Pick<Conversation, "packSnapsh
       409,
       conv
         ? "This session started with another scene, so it has no random scene drawn. Restart to draw one."
-        : "A random scene is drawn when a session starts, and this session couldn't be started (it isn't being saved). Restart to try again.",
+        : "No scene has been drawn for this random scene yet: one is drawn when the session is saved, and saving it failed. Try again, or Restart.",
     );
   }
   return withDrawnScene(pack, drawn);
@@ -418,7 +421,9 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   if (random) {
     const target = str(effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(sent).overrides).target_language);
     const keep = typeof body.drawn === "string" && body.drawn.length <= 200 ? body.drawn : null;
-    const draw = drawOrRefuse(library, target, random, { recent: keep ? [] : await recentScenes(ctx.language), keep });
+    // Recent scenes always go in: a kept scene ignores them, but one no
+    // longer in the pool falls through to a fresh draw that must avoid them.
+    const draw = drawOrRefuse(library, target, random, { recent: await recentScenes(ctx.language), keep });
     pack = withDrawnScene(sent, draw.scene.id);
     randomDraw = { collections: random.collections, pool: draw.pool.map((s) => s.id), drawn: draw.scene.id, ...(draw.kept ? { kept: true } : {}) };
   }

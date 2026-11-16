@@ -272,7 +272,7 @@ is left the pool is empty, which is an error (the Scene tab says why and
 Start is blocked), never a silent fallback to another scene. The pool never
 crosses libraries: a kids pack draws only kids scenes. At most 50 names of
 at most 120 characters each; anything else (a string, a number, a list of
-non-strings) is refused by the app (400) and ignored with a warning in a
+non-strings, a name of only spaces: only a literal `""` means no collection) is refused by the app (400) and ignored with a warning in a
 pack file. A random pack names no `scenario` or `quick_scenario` (saving
 one clears them; a file with both warns and stays random).
 
@@ -284,10 +284,13 @@ scenario is treated exactly as if it had been picked: the conversation's
 snapshot records it (docs/DATA.md §Conversations), every turn plays it (the
 draft sent with a turn is still random; the server reads the scene from the
 conversation, never redraws), its phrases go to the bank, and recall, the
-recap, casting, `{{location}}` and the title all use it. Restart makes a new
-conversation and so a new draw; a later conversation of the same on-screen
-session (after Close and Start) keeps its scene while it is still in the
-pool. There is no reroll.
+recap, casting, `{{location}}` and the title all use it. Restart, and Close
+then Start, make a new conversation and so a new draw. When a conversation
+ends while its voice session stays open (leaving the Go tab, two idle
+hours, another device's End), the session's next conversation keeps the
+scene while it is still in the pool, else draws afresh. A turn that has to
+run unsaved (its conversation couldn't be made) plays the session's drawn
+scene; with nothing drawn yet it is refused (409). There is no reroll.
 
 The preview, word counts and `POST /api/assemble` do not draw: the
 Scenario section is a placeholder naming the pool's size ("Random scene"

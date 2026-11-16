@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { assemble } from "../assemble.mjs";
 import { loadContent, normalizePack } from "../content.mjs";
 import {
-  MAX_COLLECTION_NAME, MAX_POOL_COLLECTIONS, RECENT_SCENES, drawRandomScene, drawScene, fitsTarget, missingCollections, randomPool, readRandomScene, withDrawnScene,
+  MAX_COLLECTION_NAME, MAX_POOL_COLLECTIONS, RECENT_SCENES, drawRandomScene, drawScene, fitsTarget, keepDrawn, missingCollections, randomPool, readRandomScene, unsavedTurnPack, withDrawnScene,
 } from "../../web/shared/scenes.ts";
 import { copyFixture, write } from "./helpers.mjs";
 
@@ -163,4 +163,27 @@ test("assemble: a drawn scene plays exactly as the same scene picked, {{location
   const picked = assemble(content, { ...basePack, scenario: "cafe", overrides: { location: "Lyon" } });
   assert.equal(played.markdown, picked.markdown);
   assert.match(played.markdown, /A café in Lyon\./);
+});
+
+test("a collection name of only spaces is refused; only a literal \"\" means scenes in no collection", () => {
+  assert.deepEqual(readRandomScene({ collections: [""] }), { value: { collections: [""] } });
+  for (const name of [" ", "  \t", "\n"]) {
+    const r = readRandomScene({ collections: ["Daily life", name] });
+    assert.ok("error" in r, JSON.stringify(name));
+    assert.match(r.error, /only spaces/);
+  }
+  assert.deepEqual(readRandomScene({ collections: [" Daily life "] }), { value: { collections: ["Daily life"] } });
+});
+
+test("the voice session's keep and unsaved-turn rules", () => {
+  const random = { title: "", created: "", scenario: "", quick_scenario: "", random_scene: { collections: ["Travel"] }, units: [], overrides: {}, notes: "" };
+  const picked = { ...random, scenario: "plaza", random_scene: null };
+  // Create: a random pack asks to keep what the session drew, once it drew.
+  assert.deepEqual(keepDrawn(random, "hotel"), { drawn: "hotel" });
+  assert.deepEqual(keepDrawn(random, null), {}, "nothing drawn yet: a fresh draw");
+  assert.deepEqual(keepDrawn(picked, "hotel"), {}, "a picked scene never sends one");
+  // An unsaved turn: the drawn scene in place, as a picked one.
+  assert.deepEqual(unsavedTurnPack(random, "hotel"), { ...random, scenario: "hotel", random_scene: null });
+  assert.equal(unsavedTurnPack(random, null), random, "nothing drawn: still random (the server refuses it)");
+  assert.equal(unsavedTurnPack(picked, "hotel"), picked);
 });

@@ -153,3 +153,33 @@ test("browser storage is per language profile; a learner's keys from before prof
     globalThis.localStorage = saved;
   }
 });
+
+test("a remembered draft: an old one (no random fields) loads as a library scene; a random one keeps its pool", async () => {
+  const { loadRememberedDraft, rememberDraft, languageKey } = await import("../../web/src/draft.ts");
+  const store = new Map();
+  const saved = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const key = languageKey("lingo-dojo.draft.v1", "G1");
+    store.set(key, JSON.stringify({ units: ["intro-target"], overrides: { level: "B1" }, title: "Old", scenario: "plaza" }));
+    const old = loadRememberedDraft("G1");
+    assert.deepEqual([old.scenarioMode, old.randomCollections, old.scenario], ["library", [], "plaza"]);
+    assert.equal(draftToPack(old).random_scene, null);
+
+    rememberDraft("G1", { ...old, scenarioMode: "random", randomCollections: ["Daily life", ""] });
+    const random = loadRememberedDraft("G1");
+    assert.deepEqual([random.scenarioMode, random.randomCollections], ["random", ["Daily life", ""]]);
+    assert.deepEqual(draftToPack(random).random_scene, { collections: ["Daily life", ""] });
+
+    // Junk in either field is dropped, not trusted.
+    store.set(key, JSON.stringify({ units: [], overrides: {}, scenarioMode: "dice", randomCollections: ["Daily life", 7, null] }));
+    const junk = loadRememberedDraft("G1");
+    assert.deepEqual([junk.scenarioMode, junk.randomCollections], ["library", ["Daily life"]]);
+  } finally {
+    globalThis.localStorage = saved;
+  }
+});

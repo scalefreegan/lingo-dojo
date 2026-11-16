@@ -396,7 +396,7 @@ pack that draws its scene when a session starts: `{ collections: string[] }`,
 own column rather than a key of `overrides`, which feed the Learner block.
 `contentOf` in `scripts/db/packs.ts` validates it (`readRandomScene` in
 `web/shared/scenes.ts`: an object, at most 50 trimmed, de-duplicated names
-of at most 120 characters; anything else is a 400) and clears `scenario`
+of at most 120 characters, none only spaces; anything else is a 400) and clears `scenario`
 and `quick_scenario` when it is set. Revisions snapshot it with the rest,
 so restore and undelete bring it back; the wire `Pack.random_scene` is
 always present (`null` when not random).
@@ -508,14 +508,18 @@ can be shown with the existing transcript components.
 A random scene is drawn when its conversation is made, so the snapshot is
 the drawn pack (`scenario` set, `random_scene` null) plus
 `random_draw: { collections, pool: [scenario ids], drawn, kept? }` (`kept`
-when a later conversation of the same on-screen session kept the scene an
-earlier one drew; the client's `drawn`, honoured only while it is in the
-pool). The server writes `random_draw` and `review`; a client's own are
+when the conversation kept the scene an earlier one of the same live voice
+session drew, that one having ended while the session stayed open: leaving
+Go, two idle hours, another device's End. Restart and Close forget the
+scene. The client's `drawn` is honoured only while it is in the pool;
+otherwise the draw is fresh and still avoids recent scenes). The server writes `random_draw` and `review`; a client's own are
 dropped. `scenario_id` and the title are the drawn scenario's; the wire
 `ConversationSummary.randomScene` is true for such a row. A turn whose pack
 is still random reads its scene from this snapshot (`playedPack` in
 `web/server/conversations.ts`) and never redraws; with no conversation, or
-one that wasn't random, it is a 409. Avoiding recent scenes reads the
+one that wasn't random, it is a 409. (A turn the client must run unsaved
+sends the pack with the session's drawn scene already in place, so it is
+not random and runs as any picked scene does.) Avoiding recent scenes reads the
 language profile's last 20 conversations' `scenario_id`. No migration: the
 snapshot is jsonb.
 

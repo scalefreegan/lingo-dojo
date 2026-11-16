@@ -834,9 +834,11 @@ export interface ConversationCreateRequest {
   /** The scene title the Go tab shows. */
   title?: string;
   /** A random scene's pack only: the scenario an earlier conversation of
-   *  the same on-screen session drew (one ended under it: two idle hours,
-   *  another device's End), so the session keeps its scene. Kept when it is
-   *  still in the pool; otherwise the server draws afresh. */
+   *  the same live voice session drew, sent when that conversation ended
+   *  while the session stayed open (leaving the Go tab, two idle hours,
+   *  another device's End), so the session keeps its scene. Restart and
+   *  Close forget it: the next Start draws again. Kept when it is still in
+   *  the pool; otherwise the server draws afresh, avoiding recent scenes. */
   drawn?: string;
 }
 
