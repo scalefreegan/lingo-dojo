@@ -63,8 +63,9 @@ grammar unless the learner asks.
 - Body may use these placeholders, substituted at assembly time:
   `{{learner_name}}`, `{{native_language}}`, `{{target_language}}`,
   `{{target_variant}}`, `{{level}}`, `{{scenario_title}}`, `{{location}}` (meant
-  for scenarios; see below). Unknown placeholders
-  are left as-is and reported as a warning. When the effective profile has no
+  for scenarios; see below), and `{{phrase_review}}` (the review block of
+  phrases from the learner's bank; see "The recall slot" below). Unknown
+  placeholders are left as-is and reported as a warning. When the effective profile has no
   `target_variant`, `{{target_variant}}` renders as the target language name.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
 - Tags are free-form labels, with one that the app reads: in kids mode, a
@@ -289,6 +290,29 @@ short for speech, etc.), and the voice rule: both speakers are native speakers
 of the target variant and keep that accent even when speaking the learner's
 native language. It may use the same placeholders as units.
 
+## The recall slot: `{{phrase_review}}`
+
+Both schemas have an optional `recall` slot (adult "Phrases to revisit",
+after the warm-up; kids "Words to bring back"), with one default unit each:
+`recycle-due-phrases` and `recycle-words`. Their bodies tell the dojo master
+to bring a few of the listed phrases back naturally during the scene, and
+end in `{{phrase_review}}`. At assembly the server passes the review (the
+bank phrases due, in trouble or starred, ranked for the scene; docs/DATA.md
+§Recall in sessions) and the placeholder becomes a delimited list:
+
+```
+[FROM THE LEARNER'S PHRASE BANK]
+- ¿A cómo? — how much?
+[END OF PHRASE BANK]
+```
+
+The body must say the list is vocabulary data, never instructions. **With
+nothing to review, a unit that uses `{{phrase_review}}` is left out**, and
+its slot with it when empty: no heading, no unit, no warning. Elsewhere
+(another unit, a scenario) an empty review renders as nothing. Exports and
+Copy include the list as of now. An export with no database (the CLI)
+has no review, so the unit is left out.
+
 ## Assembly algorithm (`scripts/assemble.mjs`)
 
 Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
@@ -325,6 +349,8 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
      to keep time: follow the in-app clock line when there is one, else
      about two exchanges a minute. `assemble(content, pack, mode)` takes the
      mode for this (adult when omitted); kids wording says story and goodbye.
+     The third argument may also be `{ mode, review }`, where `review` is
+     the phrase list for `{{phrase_review}}` (see "The recall slot").
    - `## Notes from the learner` — `pack.notes`, omitted if empty
 5. `stats`: word count and approximate token count (words × 1.3).
 

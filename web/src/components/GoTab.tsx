@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { exportPack, type VoiceLanguages } from "../api";
 import { splitPackId } from "../draft";
-import type { AssembleResult, ContentReply, ExportResult, PackInput } from "../types";
+import type { AssembleResult, ContentReply, ExportResult, PackInput, RecallReview } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
+import { RubyText } from "./Ruby";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
 import { inBankLanguage, type PackStatus, type SaveOutcome } from "./shared";
 import VoicePanel from "./VoicePanel";
@@ -76,6 +77,18 @@ export default function GoTab({
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const markdown = result?.markdown ?? "";
+  // The bank phrases this session revisits: the preview's (as of now), or
+  // the running session's (each turn says, as of its start) until the
+  // preview is assembled again (a new pack, a new length).
+  const [live, setLive] = useState<{ review: RecallReview; result: AssembleResult | null } | null>(null);
+  const review = live && live.result === result ? live.review : result?.review;
+  // Stable, and tagged with the preview shown when the turn answered (a
+  // session's turn callback outlives renders).
+  const resultRef = useRef(result);
+  useEffect(() => {
+    resultRef.current = result;
+  }, [result]);
+  const onReview = useCallback((r: RecallReview) => setLive({ review: r, result: resultRef.current }), []);
 
   async function doExport() {
     setExporting(true);
@@ -125,6 +138,7 @@ export default function GoTab({
             onMinutes(m);
           }}
         />
+        <RevisitLine review={review} kids={content.mode === "kids"} />
       </Card>
 
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">Could not assemble: {error}</p>}
@@ -140,7 +154,7 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || sceneTitle} canStar={inBankLanguage(content.profile?.target_language, langs.target)} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || sceneTitle} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} />
 
       <div className={narrow}>
 
@@ -225,6 +239,32 @@ function MinutesPicker({ value, choices, onChange }: { value: number | null; cho
         })}
       </div>
     </div>
+  );
+}
+
+/** The bank phrases the session revisits (docs/DATA.md §Recall), closed
+ *  by default under one quiet line: the learner can peek, but it is no
+ *  quiz sheet. Nothing when there are none. Target text with the reading
+ *  aid (the Readings setting) where the language has one. */
+function RevisitLine({ review, kids }: { review: RecallReview | undefined; kids: boolean }) {
+  const items = review?.items ?? [];
+  if (!items.length) return null;
+  const n = items.length;
+  const label = kids ? (n === 1 ? "1 word from before comes back today" : `${n} words from before come back today`) : `Revisiting ${n} phrase${n === 1 ? "" : "s"} from your bank`;
+  return (
+    <details className="mt-1 text-sm text-fg-3 sm:text-xs" data-testid="recall-review">
+      <summary className="cursor-pointer select-none hover:text-fg-2">{label}</summary>
+      <ul className="mt-1.5 flex flex-col gap-0.5 pl-4">
+        {items.map((p) => (
+          <li key={p.id}>
+            <span className="text-fg-2" lang={review?.locale ?? undefined}>
+              <RubyText text={p.text} locale={review?.locale} />
+            </span>
+            {p.meaning ? <span> — {p.meaning}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

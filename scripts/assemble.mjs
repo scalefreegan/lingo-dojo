@@ -13,6 +13,11 @@
 
 import { PLACEHOLDERS, normalizePack } from "./content.mjs";
 import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
+import { renderReview } from "./recall.mjs";
+
+/** The placeholder the review block fills (docs/CONTENT.md, `recall`
+ *  slot): a unit that uses it is left out when there is nothing to review. */
+const REVIEW_RE = /\{\{\s*phrase_review\s*\}\}/;
 
 /** Profile keys rendered in the Learner block, in this order, with labels.
  *  Any other key in the effective profile follows in its own order. */
@@ -76,11 +81,18 @@ export function effectiveProfile(baseProfile, overrides = {}) {
 /**
  * @param {{schema, frame, profile, units, scenarios}} content  loadContent()'s result
  * @param {object} rawPack  a pack (file or UI body); normalized here
- * @param {"adult"|"kids"} [mode]  which tree `content` is: the Time budget
- *   splits the session into that mode's parts, as the voice timeline does
+ * @param {"adult"|"kids"|{mode?: "adult"|"kids", review?: {text: string, meaning?: string|null}[]}} [options]
+ *   `mode`: which tree `content` is (the Time budget splits the session into
+ *   that mode's parts, as the voice timeline does); a bare string is the
+ *   mode. `review`: the phrases the review block brings back, chosen by the
+ *   server from the learner's bank (scripts/recall.mjs selectReview); none
+ *   (the default, and the offline export) leaves out every unit that uses
+ *   {{phrase_review}}, so the prompt has no empty heading.
  * @returns {{ markdown: string, warnings: string[], stats: { words: number, tokens: number, chars: number } }}
  */
-export function assemble(content, rawPack, mode = "adult") {
+export function assemble(content, rawPack, options = "adult") {
+  const opts = typeof options === "string" ? { mode: options } : (options ?? {});
+  const mode = opts.mode === "kids" ? "kids" : "adult";
   const pack = normalizePack(rawPack);
   const warnings = [];
   const warn = (msg) => {
@@ -127,6 +139,11 @@ export function assemble(content, rawPack, mode = "adult") {
   // Deterministic on purpose: the randomness happens in the session, not here.
   if (scenario.uses_location) values.location = location || CHOSEN_CITY;
   else delete values.location;
+  // The review block: the learner's bank data, already delimited and
+  // cleaned by renderReview. Empty: a unit using it drops out (below).
+  const review = renderReview(opts.review);
+  if (review) values.phrase_review = review;
+  else delete values.phrase_review;
   const fill = (text, source) => substitute(text, values, source, warn, scenario.uses_location);
 
   // 3. Slots in schema order; each slot's units in pack order.
@@ -154,6 +171,10 @@ export function assemble(content, rawPack, mode = "adult") {
   const slotSections = [];
   for (const slot of slots) {
     let chosen = picked.filter((id) => unitsById.get(id).slot === slot.id).map((id) => unitsById.get(id));
+    // Nothing to review: a unit that is only a frame around the review list
+    // has nothing to say, so it goes, and its slot with it when empty (an
+    // optional slot; a required one would show its placeholder line).
+    if (!review) chosen = chosen.filter((u) => !REVIEW_RE.test(u.body ?? ""));
     if (slot.pick === "one" && chosen.length > 1) {
       warn(
         `Slot "${slot.title}" takes one unit but the pack has ${chosen.length} (${chosen.map((u) => u.id).join(", ")}); kept "${chosen[0].id}".`,
@@ -230,6 +251,9 @@ function resolveScenario(content, pack, warn) {
 function substitute(text, values, source, warn, scenarioUsesLocation) {
   return text.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (match, name) => {
     if (Object.hasOwn(values, name)) return values[name];
+    // Outside a unit (a unit with no review never gets here) it reads as
+    // nothing when the bank has nothing due, quietly: that is not a mistake.
+    if (name === "phrase_review") return "";
     // Setting an override would not help here: {{location}} only has a value
     // when the scenario itself is set wherever the session says.
     if (name === "location" && !scenarioUsesLocation) {

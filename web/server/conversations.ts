@@ -275,6 +275,9 @@ export async function saveTurn(
     master: VoiceHistoryItem & { durationMs: number | null; costUsd: number | null };
     pack: PackInput;
     model: string;
+    /** What a LOOKUP in this turn asked and found (scripts/recall.mjs
+     *  lookupRecord), kept on the reply's row; absent for most turns. */
+    lookup?: Record<string, unknown> | null;
   },
 ): Promise<boolean> {
   return rawDb().transaction(async (tx) => {
@@ -308,6 +311,7 @@ export async function saveTurn(
       turns,
       insert.map((r) => ({
         ...r,
+        ...(r === replyRow && turn.lookup ? { lookup: turn.lookup } : {}),
         conversationId,
         durationMs: r.durationMs == null ? null : Math.round(r.durationMs),
         costUsd: r.costUsd ?? null,
@@ -327,6 +331,22 @@ export async function saveTurn(
     );
     return true;
   });
+}
+
+/** The language's past sessions a LOOKUP searches (docs/DATA.md §Recall):
+ *  ended ones, newest first, with their titles and recap summaries, the
+ *  conversation asking left out. A plain read: no row is locked. */
+export async function pastSessions(
+  profile: LanguageProfileRef,
+  exceptId: string | null,
+  limit = 200,
+): Promise<{ id: string; title: string; startedAt: Date; summary: string | null }[]> {
+  return profileRows(profile)
+    .list(conversations, and(sql`${conversations.endedAt} is not null`, exceptId ? sql`${conversations.id} <> ${exceptId}` : undefined) as SQL, {
+      orderBy: desc(conversations.startedAt),
+      limit,
+    })
+    .then((rows) => rows.map((c) => ({ id: c.id, title: c.title, startedAt: c.startedAt, summary: c.summary })));
 }
 
 /* --------------------------------- routes ---------------------------------- */

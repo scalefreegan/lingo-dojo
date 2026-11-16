@@ -33,6 +33,12 @@ slots:
     pick: any
     required: false
     description: How new words get drilled through play, e.g. echo, call-and-response, counting, tiny-and-giant voice.
+  - id: recall
+    group: Repetition games
+    title: Words to bring back
+    pick: one
+    required: false
+    description: "A few words the child met in earlier sessions, heard again inside the story. Left out when there are none."
   - id: energy
     group: Energy and length
     title: Energy and length

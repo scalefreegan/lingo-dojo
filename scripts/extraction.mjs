@@ -48,9 +48,13 @@ function renderDue(duePhrases) {
 
 /** `{ system, user }` for the extraction call. `transcript` is a string or an
  *  array of `{ role: "learner" | "master", text }`; `duePhrases` are the
- *  phrases the session was asked to recycle, as strings or `{ text, meaning }`,
- *  so the model scores them by the exact text the bank holds. */
-export function extractionPrompt({ transcript, nativeLanguage, targetVariant, duePhrases = [], kids = false }) {
+ *  bank phrases the session had reason to recycle, as strings or `{ text,
+ *  meaning }`, so the model scores them by the exact text the bank holds.
+ *  `offered`: they are the review block the dojo master was given
+ *  (scripts/recall.mjs selectReview, as of the session's start), so a use
+ *  of one in the transcript is the recycling it was asked for; otherwise
+ *  they are only the phrases that were due (a pack without a recall unit). */
+export function extractionPrompt({ transcript, nativeLanguage, targetVariant, duePhrases = [], offered = false, kids = false }) {
   const system = [
     `You review one finished practice session between a learner (native language: ${nativeLanguage}) and a spoken-language coach called the dojo master. The learner is studying ${targetVariant}. Read the transcript and reply with ONLY one JSON object, no prose, no code fence:`,
     "",
@@ -82,7 +86,9 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
       : []),
   ].join("\n");
   const user = [
-    "PHRASES DUE THIS SESSION (the coach was asked to work these in):",
+    offered
+      ? "PHRASES OFFERED FOR REVIEW THIS SESSION (the coach was given these from the learner's bank to work back into the scene; judge each one the learner used or heard, by its exact text, and skip one that never came up):"
+      : "PHRASES DUE THIS SESSION (due for review in the learner's bank; the coach was not given them, so judge one only if it came up):",
     renderDue(duePhrases),
     "",
     "TRANSCRIPT:",

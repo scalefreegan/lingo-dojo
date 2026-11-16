@@ -104,6 +104,7 @@ export const PLACEHOLDERS = [
   "level",
   "scenario_title",
   "location",
+  "phrase_review",
 ];
 
 /** A scenario that uses {{location}} anywhere is set wherever the session

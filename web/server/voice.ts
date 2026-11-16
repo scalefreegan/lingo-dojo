@@ -9,7 +9,7 @@ import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -20,6 +20,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 import { conversationIdOf, openConversation, saveTurn, takeTurnLock } from "./conversations.ts";
+import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -28,7 +29,7 @@ import { conversationIdOf, openConversation, saveTurn, takeTurnLock } from "./co
 //   GET/PUT /api/voice/settings      provider, voices per speaker, turn-taking
 //   GET     /api/voice/voices        ?provider=&locale= → the provider's voices
 //   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
-//   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines}
+//   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines, review}
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
 //   GET     /api/voice/library       ElevenLabs Voice Library search
 //   POST    /api/voice/library/add   add a library voice to the account (admin)
@@ -325,7 +326,20 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const conversation = conversationId ? await openConversation(ctx.user.id, ctx.language, conversationId) : null;
     // The active learner and language are the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
-    const { markdown, warnings } = assemble(content, body.pack, mode);
+    // Recall (docs/DATA.md §Recall in sessions), from one read of the bank:
+    // the review block, chosen as of the conversation's start so every turn
+    // of a session (and its recap) offers the same phrases, and the bank
+    // phrases most like what was just said. Reads only; never fails a turn.
+    const now = new Date();
+    const lastMaster = history.findLast((m) => m.role === "master");
+    const recall = await turnRecall(ctx.language, {
+      content, pack: body.pack, mode, now,
+      at: conversation ? new Date(conversation.startedAt) : now,
+      message,
+      lastLine: lastMaster?.role === "master" ? lastMaster.lines.map((l) => l.text).join(" ") : "",
+    });
+    if (process.env.LINGO_DEBUG_RECALL) console.log(`[lingo-dojo] recall: ${recall.bank.length} phrases read and ranked in ${recall.ms.toFixed(1)} ms; review ${recall.review.length}, retrieval ${recall.retrieval ? "yes" : "none"}`);
+    const { markdown, warnings } = assemble(content, body.pack, { mode, review: recall.review });
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
     const plan = sessionPlan(content, body.pack, mode);
@@ -336,33 +350,55 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     let lastStage: string | null = null;
     for (const m of history) if (m.role === "master" && m.stage) lastStage = m.stage;
     const clock = clockLine({ minutes: body.pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
-    const { result } = startClaude({
-      prompt: voiceTurnPrompt(history, message, clock),
-      // The session's narrator gender, drawn by the client at session start,
-      // unless the pack's own narrator unit fixes it.
-      systemPrompt:
-        voiceSystemPrompt(markdown, mode) +
-        (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)) +
-        planDirective(plan),
-      model: settings.model,
-      // No tools, so no file access is needed: an empty temp cwd keeps the
-      // repo's CLAUDE.md (instructions for coding agents) out of the turn.
-      cwd: os.tmpdir(),
-      signal: ctrl.signal,
-      tools: "none",
-      maxTurns: 1,
-      timeoutSec: 120,
-    });
-    let run;
-    try {
-      run = await result;
-    } catch (e) {
-      const msg = String((e as Error)?.message || e);
-      throw new HttpError(msg === "cancelled" ? 499 : 502, failureHint(msg) || msg);
+    // The session's narrator gender, drawn by the client at session start,
+    // unless the pack's own narrator unit fixes it.
+    const systemPrompt =
+      voiceSystemPrompt(markdown, mode) +
+      (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)) +
+      planDirective(plan);
+    const ask = async (notes: string[]) => {
+      const { result } = startClaude({
+        prompt: voiceTurnPrompt(history, message, clock, notes),
+        systemPrompt,
+        model: settings.model,
+        // No tools, so no file access is needed: an empty temp cwd keeps the
+        // repo's CLAUDE.md (instructions for coding agents) out of the turn.
+        cwd: os.tmpdir(),
+        signal: ctrl.signal,
+        tools: "none",
+        maxTurns: 1,
+        timeoutSec: 120,
+      });
+      try {
+        return await result;
+      } catch (e) {
+        const msg = String((e as Error)?.message || e);
+        throw new HttpError(msg === "cancelled" ? 499 : 502, failureHint(msg) || msg);
+      }
+    };
+    const notes = [recall.retrieval];
+    let run = await ask(notes);
+    // LOOKUP: the dojo master asked for the learner's past instead of
+    // replying. The server answers it (the bank and past sessions, this
+    // language only) and asks once more with the results; a LOOKUP in that
+    // second reply is ignored (never spoken, never run), so a turn costs
+    // two model calls at most. The turn row keeps what was asked and found.
+    let lookup: Record<string, unknown> | null = null;
+    const query = parseLookup(run.text);
+    if (query) {
+      const found = await runLookup(ctx.language, recall.bank, query, { now, conversationId: conversation?.id ?? null });
+      const first = run;
+      run = await ask([...notes, found.block]);
+      run = {
+        ...run,
+        durationMs: (first.durationMs ?? 0) + (run.durationMs ?? 0),
+        costUsd: first.costUsd == null && run.costUsd == null ? null : (first.costUsd ?? 0) + (run.costUsd ?? 0),
+      };
+      lookup = { ...found.record, ...(parseLookup(run.text) ? { repeated: true } : {}) };
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings };
+    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
     if (conversation) {
       // Stored before the reply goes out, still under the lock. A failed
       // write doesn't cost the learner a reply that's already paid for: the
@@ -371,7 +407,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
         durationMs: run.durationMs, costUsd: run.costUsd,
       };
-      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model }).catch((e) => {
+      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model, lookup }).catch((e) => {
         console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
         return false;
       });

@@ -71,8 +71,10 @@ declare module "*/scripts/assemble.mjs" {
   export function assemble(
     content: Pick<import("../shared/wire.ts").ContentReply, "schema" | "frame" | "profile" | "units" | "scenarios">,
     pack: unknown,
-    /** Which tree `content` is; the Time budget splits that mode's parts. */
-    mode?: import("../shared/wire.ts").Mode,
+    /** Which tree `content` is (the Time budget splits that mode's parts),
+     *  or that and the review block's phrases (none: units using
+     *  {{phrase_review}} drop out). */
+    options?: import("../shared/wire.ts").Mode | { mode?: import("../shared/wire.ts").Mode; review?: { text: string; meaning?: string | null }[] },
   ): import("../shared/wire.ts").AssembleResult;
   /** The learner's profile under the pack's overrides, as the prompt sees it. */
   export function effectiveProfile(profile: Record<string, unknown> | null | undefined, overrides?: Record<string, unknown> | null): Record<string, unknown>;
@@ -135,7 +137,10 @@ declare module "*/scripts/voice.mjs" {
   export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string };
   export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
   export function voiceSystemPrompt(markdown: string, mode: Mode): string;
-  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string): string;
+  /** `notes`: recall's delimited blocks (bank retrieval, LOOKUP results), after the clock. */
+  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string, notes?: string[]): string;
+  /** The query of a reply's first LOOKUP line, or null. */
+  export function parseLookup(text: string): string | null;
   /** The "How long do you have?" choices per mode, in minutes. */
   export const MINUTE_CHOICES: Record<Mode, number[]>;
   /** The time-budget line for a turn's prompt; "" without a budget. */

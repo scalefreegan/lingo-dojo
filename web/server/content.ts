@@ -14,6 +14,7 @@ import {
 } from "../../scripts/db/packs.ts";
 import { STALE_LEARNER, languageWriteError, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
+import { reviewFor } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The content routes. The library ones call loadContent() per request:
@@ -293,7 +294,11 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   const mode = learnerMode(req, ctx);
   const body = await readJsonBody<Partial<AssembleRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack}");
-  sendJson(res, 200, assemble(learnerContent(mode, ctx), body.pack, mode) satisfies AssembleResult);
+  // The review block as a session started now would have it (the Go
+  // tab's preview, Copy), and its phrases for the "revisiting" line.
+  const content = learnerContent(mode, ctx);
+  const review = await reviewFor(ctx.language, content, body.pack, mode);
+  sendJson(res, 200, { ...assemble(content, body.pack, { mode, review: review.items }), review } satisfies AssembleResult);
 }
 
 export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
@@ -302,7 +307,9 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse, ct
   const body = await readJsonBody<Partial<ExportRequest>>(req);
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack, id}");
   const id = checkId(body.id);
-  const { markdown, stats, warnings } = assemble(learnerContent(mode, ctx), body.pack, mode);
+  const content = learnerContent(mode, ctx);
+  const review = await reviewFor(ctx.language, content, body.pack, mode);
+  const { markdown, stats, warnings } = assemble(content, body.pack, { mode, review: review.items });
   const path = writeExport(id, markdown, exportsDirFor(mode));
   sendJson(res, 200, { path, stats, warnings } satisfies ExportResult);
 }

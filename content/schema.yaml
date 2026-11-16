@@ -24,6 +24,12 @@ slots:
     pick: any
     required: false
     description: Optional drills before the scene starts.
+  - id: recall
+    group: Session flow
+    title: Phrases to revisit
+    pick: one
+    required: false
+    description: "Phrases from the learner's own bank that are due or keep slipping, worked back into the scene. Left out of the prompt when nothing is due."
   - id: style
     group: Teaching style
     title: Conversation style
