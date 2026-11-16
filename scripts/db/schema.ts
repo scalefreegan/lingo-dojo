@@ -496,6 +496,9 @@ export const phraseExamples = pgTable(
     foreignKey({ name: "phrase_examples_conversation_profile_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("set null"),
     foreignKey({ name: "phrase_examples_turn_profile_fk", columns: [t.turnId, t.languageProfileId], foreignColumns: [turns.id, turns.languageProfileId] }).onDelete("set null"),
     index("phrase_examples_phrase_idx").on(t.phraseId),
+    // For cloze_items_example_fk (migration 0006): a cloze item made from
+    // an example is of the example's own phrase.
+    unique("phrase_examples_id_phrase").on(t.id, t.phraseId),
   ],
 );
 
@@ -653,6 +656,20 @@ export const reviews = pgTable(
   ],
 ).enableRLS();
 
+/**
+ * A fill-in-the-blank sentence for a phrase's produce card (docs/DATA.md
+ * §Practice modes, "As built (phase 7c: cloze)"). Made once and kept: from
+ * one of the phrase's examples (a line of the dojo master's from the
+ * learner's own session; `example_id` set) or written by one model call
+ * for a batch of phrases (origin 'generated'). `phrase_key` is the
+ * phrase's words and meaning it was made for (practice.mjs clozeKey): an
+ * edit of either leaves every item of the old key unused (the next fill
+ * clears them), while a new alternate doesn't. A generated row with no
+ * sentence marks a call that gave nothing usable for the phrase, so the
+ * key counts as tried and the phrase never pays twice. `flagged_at`: the
+ * learner said the sentence is bad, and it is never shown again. The bank
+ * reader role of 0005 is granted nothing on it.
+ */
 export const clozeItems = pgTable(
   "cloze_items",
   {
@@ -660,19 +677,43 @@ export const clozeItems = pgTable(
     phraseId: uuid("phrase_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
     languageProfileId: uuid("language_profile_id").notNull(),
-    sentence: text("sentence").notNull(),
-    /** Character offsets of the blank in `sentence`, end exclusive. */
-    blankStart: integer("blank_start").notNull(),
-    blankEnd: integer("blank_end").notNull(),
+    /** The sentence in the target language; null only on a generated row
+     *  marking a call that gave nothing usable. */
+    sentence: text("sentence"),
+    /** Offsets of the blank in `sentence`, end exclusive (UTF-16 code
+     *  units, as JavaScript counts them). */
+    blankStart: integer("blank_start"),
+    blankEnd: integer("blank_end"),
+    /** Unused as built (null): the hint shown is the phrase's meaning now. */
     hint: text("hint"),
     origin: text("origin").$type<"example" | "generated">().notNull(),
+    /** practice.mjs clozeKey of the phrase as the item was made for it. */
+    phraseKey: text("phrase_key").notNull(),
+    /** The example it was made from (origin 'example'): deleting the
+     *  example (its turn dropped) deletes the item. */
+    exampleId: uuid("example_id"),
+    flaggedAt: tz("flagged_at"),
     createdAt: createdAt(),
   },
   (t) => [
     check("cloze_items_origin", sql`${t.origin} in ('example', 'generated')`),
     check("cloze_items_blank", sql`0 <= ${t.blankStart} and ${t.blankStart} < ${t.blankEnd}`),
+    // A sentence and its blank come together; only a generated row may
+    // have none (the tried mark); an example's item, and only it, names
+    // its example.
+    check(
+      "cloze_items_sentence",
+      sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example')`,
+    ),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "cloze_items_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
+    foreignKey({ name: "cloze_items_example_fk", columns: [t.exampleId, t.phraseId], foreignColumns: [phraseExamples.id, phraseExamples.phraseId] }).onDelete("cascade"),
     index("cloze_items_phrase_idx").on(t.phraseId),
+    // The queue reads one language's items.
+    index("cloze_items_profile_idx").on(t.languageProfileId),
+    // One item per example and key, one row per generated sentence and
+    // key: two fills at once insert each once.
+    uniqueIndex("cloze_items_example_once").on(t.exampleId, t.phraseKey).where(sql`${t.exampleId} is not null`),
+    uniqueIndex("cloze_items_generated_once").on(t.phraseId, t.phraseKey, t.sentence).where(sql`${t.origin} = 'generated' and ${t.sentence} is not null`),
   ],
 );

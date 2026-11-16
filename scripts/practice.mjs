@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
 import { matchAnswer, normalizeAnswer } from "./match.mjs";
 import { LIMITS, clean, isUuid } from "./phrases.mjs";
+import { clozeView, pickCloze } from "./cloze.mjs";
 
 /** The skills a card exercises: recognize (see the words, give the
  *  meaning), produce (see the meaning, give the words) and listen (hear the
@@ -17,13 +18,14 @@ import { LIMITS, clean, isUuid } from "./phrases.mjs";
 export const PRACTICE_SKILLS = ["recognize", "produce", "listen"];
 /** The drills, named as `reviews.mode` names them: a flashcard (typed,
  *  either way), the listening drill (audio only, a choice of meanings or
- *  typed) and speak-it (the meaning shown, the words said aloud). */
-export const DRILLS = ["flashcard", "listening", "speak"];
+ *  typed), speak-it (the meaning shown, the words said aloud) and cloze (a
+ *  sentence with the phrase blanked, the meaning as a hint: typed or said). */
+export const DRILLS = ["flashcard", "listening", "speak", "cloze"];
 /** Which skills each drill can review. */
-export const DRILL_SKILLS = { flashcard: ["recognize", "produce"], listening: ["listen"], speak: ["produce"] };
+export const DRILL_SKILLS = { flashcard: ["recognize", "produce"], listening: ["listen"], speak: ["produce"], cloze: ["produce"] };
 /** The Practice tab's mode picker: flashcards (both ways or one, as
- *  `direction` says), listening, speak-it, or a mix of the three. */
-export const PRACTICE_MODES = ["flashcards", "listening", "speak", "mixed"];
+ *  `direction` says), listening, speak-it, fill the gap (cloze), or a mix. */
+export const PRACTICE_MODES = ["flashcards", "listening", "speak", "cloze", "mixed"];
 /** The flashcards' skill filter: both, or one direction only. */
 export const DIRECTIONS = ["mixed", "recognize", "produce"];
 /** Cards a session asks, at most. */
@@ -109,12 +111,15 @@ const newOrder = (a, b) =>
  * The cards a session of `mode` asks, as [skill, drill] pairs in the order
  * a phrase meets them: flashcards are recognize then produce (or the one
  * `direction` names); listening is the listen card; speak-it is the
- * produce card said aloud; mixed is all three skills, recognize as a
- * flashcard, listen by ear and produce spoken.
+ * produce card said aloud; cloze is the produce card as a gap in a
+ * sentence; mixed is all three skills, recognize as a flashcard, listen by
+ * ear and produce spoken (or, for a phrase with a cloze sentence, every
+ * other time as a gap: produceDrill).
  */
 export function drillsFor(mode = "flashcards", direction = "mixed") {
   if (mode === "listening") return [["listen", "listening"]];
   if (mode === "speak") return [["produce", "speak"]];
+  if (mode === "cloze") return [["produce", "cloze"]];
   if (mode === "mixed") return [["recognize", "flashcard"], ["listen", "listening"], ["produce", "speak"]];
   if (direction === "recognize" || direction === "produce") return [[direction, "flashcard"]];
   return [["recognize", "flashcard"], ["produce", "flashcard"]];
@@ -134,6 +139,14 @@ export function drillsFor(mode = "flashcards", direction = "mixed") {
  *    drops that rule (the learner chose it).
  * A phrase with a review due offers no new card. Reviews come most overdue
  * first, new ones in newOrder. Each entry names its drill.
+ *
+ * Cloze needs a sentence: a phrase's `cloze` is its usable items (the
+ * server reads them: scripts/db/cloze.ts). In the cloze mode a phrase
+ * with none is left out (its card waits for a later session or another
+ * drill). `waiting` lists the cloze and mixed modes' produce candidates,
+ * in queue order (due first), whose phrase has no sentence yet and is
+ * worth a model call (`clozeNeeded`): the server writes them sentences in
+ * the background.
  */
 export function candidates(phrases, { now, direction = "mixed", mode = "flashcards" }) {
   const drills = drillsFor(mode, direction);
@@ -142,7 +155,18 @@ export function candidates(phrases, { now, direction = "mixed", mode = "flashcar
   const gated = skills.length > 1 && skills.includes("recognize");
   const reviews = [];
   const fresh = [];
+  const waitingDue = [];
+  const waitingNew = [];
   const t = ms(now);
+  // Where an entry goes: a produce card is asked as the mode says (mixed:
+  // produceDrill), and in the cloze mode only with a sentence to show.
+  const place = (phrase, skill, card, list, waiting, kind) => {
+    const hasCloze = !!phrase.cloze?.length;
+    if (skill === "produce" && (mode === "cloze" || mode === "mixed") && !hasCloze && phrase.clozeNeeded) waiting.push({ phrase, card, kind });
+    if (mode === "cloze" && !hasCloze) return;
+    const drill = skill === "produce" && mode === "mixed" ? produceDrill(phrase, card) : drillOf[skill];
+    list.push({ phrase, skill, drill, card, kind });
+  };
   for (const phrase of phrases ?? []) {
     if (!practisable(phrase)) continue;
     const bySkill = Object.fromEntries((phrase.cards ?? []).map((c) => [c.skill, c]));
@@ -151,20 +175,30 @@ export function candidates(phrases, { now, direction = "mixed", mode = "flashcar
       .filter((c) => reviewed(c) && ms(c.due) <= t)
       .sort((a, b) => ms(a.due) - ms(b.due));
     if (due.length) {
-      reviews.push({ phrase, skill: due[0].skill, drill: drillOf[due[0].skill], card: due[0], kind: "review" });
+      place(phrase, due[0].skill, due[0], reviews, waitingDue, "review");
       continue;
     }
     for (const skill of skills) {
       const card = bySkill[skill];
       if (reviewed(card)) continue;
       if (gated && skill !== "recognize" && !reviewed(bySkill.recognize)) continue;
-      fresh.push({ phrase, skill, drill: drillOf[skill], card: card ?? null, kind: "new" });
+      place(phrase, skill, card ?? null, fresh, waitingNew, "new");
       break;
     }
   }
   reviews.sort((a, b) => ms(a.card.due) - ms(b.card.due) || newOrder(a, b));
   fresh.sort(newOrder);
-  return { reviews, fresh };
+  waitingDue.sort((a, b) => ms(a.card.due) - ms(b.card.due) || newOrder(a, b));
+  waitingNew.sort(newOrder);
+  return { reviews, fresh, waiting: [...waitingDue, ...waitingNew].map((w) => w.phrase) };
+}
+
+/** Mixed mode's drill for a produce card: a gap in one of the phrase's
+ *  cloze sentences every other time (when its reviews so far are even:
+ *  the first, the third…) if it has one, else said aloud. A phrase with
+ *  sentences is practised both ways. */
+export function produceDrill(phrase, card) {
+  return phrase.cloze?.length && (Number(card?.reps) || 0) % 2 === 0 ? "cloze" : "speak";
 }
 
 /** How much of today's limits is left, given what today's practice has
@@ -201,7 +235,7 @@ export function buildQueue(
   phrases,
   { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", mode = "flashcards", limits = DAILY_LIMITS, nativeLocale = "" },
 ) {
-  const { reviews, fresh } = candidates(phrases, { now, direction, mode });
+  const { reviews, fresh, waiting } = candidates(phrases, { now, direction, mode });
   const left = remaining(done, limits);
   const nReviews = Math.min(reviews.length, left.reviews, length);
   const nNew = Math.min(fresh.length, left.new, length - nReviews);
@@ -215,6 +249,8 @@ export function buildQueue(
   }
   return {
     items: items.map((c) => queueItem(c, c.drill === "listening" ? offeredChoices(c.phrase, phrases, { version: cardVersion(c.card), nativeLocale }) : null)),
+    // Not for the wire: the phrases to write cloze sentences for, due first.
+    clozeWanted: waiting,
     stats: {
       due: reviews.length,
       new: fresh.length,
@@ -254,14 +290,18 @@ const REVISION_RE = /^[0-9a-f]{16}$/;
  *  the answer) are the meanings to pick from. */
 function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices = null) {
   const listening = drill === "listening";
+  // A cloze card carries the sentence around the gap and the meaning (the
+  // hint), never the words: those come with the answer's reply.
+  const cloze = drill === "cloze" ? pickCloze(phrase.cloze, `${phrase.id}:${cardVersion(card)}`) : null;
   return {
     phraseId: phrase.id,
     skill,
     drill,
     kind,
-    text: listening ? "" : phrase.text,
+    text: listening || drill === "cloze" ? "" : phrase.text,
     meaning: listening ? "" : phrase.meaning,
     choices: listening ? choices : null,
+    cloze: cloze ? clozeView(cloze) : null,
     lang: phrase.lang ?? "",
     starred: !!phrase.starred,
     version: cardVersion(card),
@@ -426,11 +466,13 @@ const CONTROLS_OR_BREAKS = /\s+/g;
 
 /**
  * An answer body, checked: `{ value }` or `{ error }` for a 400.
- *   { phraseId, skill, drill?, version, revision, submitId, answer?, choice?, reveal?, rating?, durationMs?, tz? }
+ *   { phraseId, skill, drill?, version, revision, submitId, answer?, choice?, reveal?, rating?, clozeId?, spoken?, durationMs?, tz? }
  * `drill` is flashcard (the default: recognize or produce, typed),
  * listening (the listen card: a `choice` among the meanings offered, or a
- * typed `answer`) or speak (the produce card: `answer` is what the
- * recogniser heard, and must not be empty). It is the review's mode.
+ * typed `answer`), speak (the produce card: `answer` is what the
+ * recogniser heard, and must not be empty) or cloze (the produce card as
+ * a gap in the sentence `clozeId`: typed, or said with `spoken: true`,
+ * then not empty). It is the review's mode.
  * `submitId` is a uuid the page makes once per card shown: a second POST
  * with the same id is the same submit (a double click, a retried fetch)
  * and gets the first's review back; another id at the same version is
@@ -479,9 +521,19 @@ export function readAnswerInput(body) {
     if (!c.t) return { error: "choice must be one of the meanings offered" };
     picked = c.t;
   }
-  // Speak-it sends what the recogniser heard. Nothing heard is not an
-  // answer (the page asks to record again), so it never records a miss.
-  if (drill === "speak" && !text) return { error: "nothing was heard: record your answer again" };
+  // A cloze answer names the sentence it was shown (a regenerated or
+  // flagged one is then refused, never graded against the old gap), and
+  // whether it was said (`spoken`: the recogniser's transcript) or typed.
+  const clozeId = body.clozeId;
+  if (drill === "cloze") {
+    if (!isUuid(clozeId)) return { error: "clozeId must be the sentence the queue gave" };
+    if (body.spoken !== undefined && typeof body.spoken !== "boolean") return { error: "spoken must be true or false" };
+  } else if (clozeId !== undefined || body.spoken !== undefined) return { error: "clozeId and spoken go with a cloze answer" };
+  const spoken = drill === "speak" || (drill === "cloze" && body.spoken === true);
+  // Speak-it (or a cloze said aloud) sends what the recogniser heard.
+  // Nothing heard is not an answer (the page asks to record again), so it
+  // never records a miss.
+  if (spoken && !text) return { error: "nothing was heard: record your answer again" };
   let r = null;
   if (reveal) {
     if (!Number.isInteger(rating) || rating < 1 || rating > 4) return { error: "a revealed card needs your rating: 1 (Again) to 4 (Easy)" };
@@ -494,6 +546,7 @@ export function readAnswerInput(body) {
     value: {
       phraseId: phraseId.toLowerCase(), skill, drill, version, revision, submitId: submitId.toLowerCase(), answer: picked ?? text, choice: picked !== null,
       reveal: !!reveal, rating: r, durationMs: d, utcOffsetMinutes: readUtcOffset(tz),
+      clozeId: drill === "cloze" ? clozeId.toLowerCase() : null, spoken,
     },
   };
 }
@@ -592,8 +645,10 @@ export function choiceMatch({ choice, meaning, nativeLocale = "" }) {
  *  A listening card's question is the words the learner heard (`heard`);
  *  a speak-it answer is a transcript (`spoken`), so spelling and
  *  punctuation are the recogniser's, not the learner's. */
-export function graderQuestion({ skill, text, meaning, drill = "flashcard" }) {
-  if (skill === "produce") return { question: meaning, expected: text, kind: "target", ...(drill === "speak" ? { spoken: true } : {}) };
+export function graderQuestion({ skill, text, meaning, drill = "flashcard", spoken = drill === "speak", gapped = null }) {
+  // A cloze answer fills a gap: the grader sees the sentence with a
+  // neutral gap (cloze.mjs gapped) and the meaning given as the hint.
+  if (skill === "produce") return { question: meaning, expected: text, kind: "target", ...(spoken ? { spoken: true } : {}), ...(drill === "cloze" && gapped ? { gapped } : {}) };
   return { question: text, expected: meaning, kind: "meaning", ...(skill === "listen" ? { heard: true } : {}) };
 }
 

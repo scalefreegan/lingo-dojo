@@ -10,12 +10,28 @@ import type { MasteryBand } from "./wire.ts";
  *  words, give the meaning). */
 export type PracticeSkill = "recognize" | "produce" | "listen";
 /** How a card is asked, named as reviews.mode names it: typed flashcards
- *  (recognize or produce), the listening drill (listen) and speak-it
- *  (produce, said aloud). */
-export type PracticeDrill = "flashcard" | "listening" | "speak";
-/** The Practice tab's mode picker: flashcards, listening, speak-it, or a
- *  mix (recognize as a flashcard, listen by ear, produce aloud). */
-export type PracticeMode = "flashcards" | "listening" | "speak" | "mixed";
+ *  (recognize or produce), the listening drill (listen), speak-it
+ *  (produce, said aloud) and cloze (produce, a gap in a sentence filled by
+ *  typing or saying the words). */
+export type PracticeDrill = "flashcard" | "listening" | "speak" | "cloze";
+/** The Practice tab's mode picker: flashcards, listening, speak-it, fill
+ *  the gap (cloze), or a mix (recognize as a flashcard, listen by ear,
+ *  produce aloud or, for a phrase with a sentence, every other time as a
+ *  gap). */
+export type PracticeMode = "flashcards" | "listening" | "speak" | "cloze" | "mixed";
+
+/** A cloze card's sentence, around the gap. The gap's words never travel
+ *  before the answer: not in `before`/`after`, not in the item's `text`. */
+export interface PracticeCloze {
+  /** The cloze item: the answer names it, so a sentence changed or
+   *  flagged since is refused rather than graded. */
+  id: string;
+  before: string;
+  after: string;
+  /** "example": a line of the dojo master's from one of your sessions;
+   *  "generated": written for practice. */
+  origin: "example" | "generated";
+}
 /** Which flashcards a flashcard session asks: both directions, or one. */
 export type PracticeDirection = "mixed" | "recognize" | "produce";
 export type PracticeLength = 5 | 10 | 20;
@@ -35,13 +51,16 @@ export interface PracticeItem {
   /** "new": never reviewed (its card may not exist yet); "review": due. */
   kind: "new" | "review";
   /** The words; "" on a listening card (heard, not read: they come with
-   *  the answer's reply). */
+   *  the answer's reply) and on a cloze card (they are the gap). */
   text: string;
-  /** The meaning; "" on a listening card (it is among `choices`). */
+  /** The meaning; "" on a listening card (it is among `choices`). On a
+   *  cloze card it is the hint for the gap. */
   meaning: string;
   /** A listening card's meanings to pick from (the right one among them),
    *  or null: the bank had too few others, so the answer is typed. */
   choices: string[] | null;
+  /** A cloze card's sentence; null on every other drill. */
+  cloze: PracticeCloze | null;
   /** The variant the phrase was first met in (BCP-47), "" when unknown. */
   lang: string;
   starred: boolean;
@@ -77,6 +96,11 @@ export interface PracticeStatsReply {
    *  key) and `speech` (speak-it: no speech-to-text key). GET /api/practice
    *  checks; the queue reply sends null (not checked). */
   setup: { audio: string | null; speech: string | null } | null;
+  /** The cloze and mixed modes: `waiting`, the cloze mode's phrases left
+   *  out because their sentences aren't written yet; `writing`, whether a
+   *  call is writing some now (ask again in a moment). Null in the other
+   *  modes. */
+  cloze: { waiting: number; writing: boolean } | null;
 }
 
 /** GET /api/practice/queue?length=&direction=&tz= */
@@ -102,6 +126,10 @@ export interface PracticeAnswerRequest {
   answer?: string;
   /** A listening card's picked meaning, instead of `answer`. */
   choice?: string;
+  /** A cloze answer: the sentence it was shown (PracticeCloze.id). */
+  clozeId?: string;
+  /** A cloze answer said aloud: `answer` is the transcript (never empty). */
+  spoken?: boolean;
   reveal?: boolean;
   rating?: PracticeRating;
   durationMs?: number;
@@ -121,6 +149,9 @@ export interface PracticeAnswerReply {
   };
   card: { version: string; due: string; mastery: MasteryBand; state: number; reps: number; lapses: number };
   expected: { text: string; meaning: string };
+  /** A cloze answer's sentence with its gap's words: the page shows it
+   *  whole once answered. Null for the other drills. */
+  cloze: { before: string; blank: string; after: string } | null;
   /** An answer the grader accepted was kept as another way to say it. */
   alternateAdded: boolean;
   /** This submit repeated one already recorded: nothing new was written. */
@@ -131,6 +162,11 @@ export interface PracticeAnswerReply {
  *  "" when nothing was (the page asks to record again; nothing is saved). */
 export interface PracticeTranscribeReply {
   text: string;
+}
+
+/** POST /api/practice/cloze/:id/flag: the sentence is never shown again. */
+export interface PracticeFlagReply {
+  flagged: true;
 }
 
 /** POST /api/practice/reviews/:id/override */

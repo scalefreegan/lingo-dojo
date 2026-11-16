@@ -4,7 +4,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeMode, PracticeQueueReply, PracticeRating, PracticeStatsReply, PracticeTranscribeReply,
+  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeFlagReply, PracticeMode, PracticeQueueReply, PracticeRating, PracticeStatsReply, PracticeTranscribeReply,
 } from "./types";
 
 /** The browser's UTC offset in minutes (local minus UTC): the server counts
@@ -31,6 +31,11 @@ export function answerCard(body: Omit<PracticeAnswerRequest, "tz">): Promise<Pra
 /** POST /api/practice/reviews/:id/override: the learner's own grade instead. */
 export function overrideAnswer(reviewId: number, rating: PracticeRating): Promise<PracticeAnswerReply> {
   return req<PracticeAnswerReply>(`/api/practice/reviews/${reviewId}/override`, json({ rating, tz: utcOffset() }));
+}
+
+/** POST /api/practice/cloze/:id/flag: a bad sentence, never shown again. */
+export function flagCloze(clozeId: string): Promise<PracticeFlagReply> {
+  return req<PracticeFlagReply>(`/api/practice/cloze/${encodeURIComponent(clozeId)}/flag`, json({}));
 }
 
 /** GET /api/practice/audio/:phraseId: the phrase said aloud (the server

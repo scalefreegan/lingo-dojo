@@ -221,6 +221,22 @@ test("0005's hand edit only adds the reader's DO block after drizzle-kit's five 
   assert.match(block, /FOR SELECT TO %I USING/);
 });
 
+test("0006's hand edits only clear the never-written cloze_items first and reorder drizzle-kit's statements", () => {
+  // Pinned on the committed file, as 0002's is.
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, "0006_cloze.sql"), "utf8");
+  const stmts = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+  const at = (re) => stmts.findIndex((s) => re.test(s));
+  assert.match(stmts[0], /^-- Hand-written \(scripts\/db\/hand-edits\.mjs, 0006 edit 1\)[\s\S]*\nDELETE FROM "cloze_items";$/);
+  assert.equal(stmts.filter((s) => s.startsWith("-- Hand-written")).length, 1);
+  // Nothing but that one table's rows is touched, and no role or grant.
+  assert.doesNotMatch(stmts.slice(1).join("\n"), /UPDATE "|INSERT INTO "|DELETE FROM "|GRANT|ROLE|POLICY/);
+  // The NOT NULL column is added after the clear (an empty table takes it).
+  assert.ok(at(/ADD COLUMN "phrase_key" text NOT NULL/) > 0);
+  // The unique key before the foreign key that references it.
+  assert.ok(at(/"phrase_examples_id_phrase" UNIQUE\("id","phrase_id"\)/) < at(/"cloze_items_example_fk" FOREIGN KEY/));
+  assert.ok(stmts.slice(1).every((s) => /^(ALTER TABLE "\w+" (ALTER COLUMN|ADD (COLUMN|CONSTRAINT))|CREATE (UNIQUE )?INDEX)/.test(s)));
+});
+
 test("bankReaderProblem: null on a migrated database, and names what a restore left out", async (t) => {
   const { query, close } = await freshDb();
   t.after(close);

@@ -2,7 +2,9 @@ import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { EDITED, PracticeError, overrideReview, practiceCandidates, practiceCard, practiceDone, recordAnswer, reviewId } from "../../scripts/db/practice.ts";
+import { clozeKey, gapped } from "../../scripts/cloze.mjs";
+import { clozeItem, flagClozeItem } from "../../scripts/db/cloze.ts";
+import { EDITED, PracticeError, clozeProblem, overrideReview, practiceCandidates, practiceCard, practiceDone, recordAnswer, reviewId } from "../../scripts/db/practice.ts";
 import { graderPrompt, parseGraderReply } from "../../scripts/match.mjs";
 import { isUuid } from "../../scripts/phrases.mjs";
 import {
@@ -10,23 +12,26 @@ import {
   readOverrideInput, readUtcOffset, cardVersion, phraseRevision,
 } from "../../scripts/practice.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
-import type { PracticeAnswerReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
+import type { PracticeAnswerReply, PracticeFlagReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
 import type { LearnerCtx } from "./auth.ts";
+import { clozeWriting, fillCloze, withCloze } from "./cloze.ts";
 import { rawDb } from "./db.ts";
+import { paidSlot } from "./paid.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 import { SPEECH_FORMATS, practiceVoice, readAudio, sttReady, synthesize, transcribeAudio } from "./voice.ts";
 
 // The Practice tab's routes (docs/DATA.md §Practice modes, §Grading):
-// flashcards both ways, the listening drill and speak-it over the active
-// learner's active language's bank.
+// flashcards both ways, the listening drill, speak-it and fill the gap
+// (cloze) over the active learner's active language's bank.
 //
-//   GET  /api/practice                       ?mode=&direction=&tz= → {stats, language}: what is due and new, today's progress
-//   GET  /api/practice/queue                 ?length=5|10|20&mode=flashcards|listening|speak|mixed&direction=mixed|recognize|produce&tz=
-//                                            → {items, stats, language}
-//   POST /api/practice/answer                {phraseId, skill, drill?, version, revision, submitId, answer? | choice? | reveal + rating, durationMs?, tz?}
+//   GET  /api/practice                       ?mode=&direction=&tz= → {stats, language, setup, cloze}: what is due and new, today's progress
+//   GET  /api/practice/queue                 ?length=5|10|20&mode=flashcards|listening|speak|cloze|mixed&direction=mixed|recognize|produce&tz=
+//                                            → {items, stats, language, cloze}
+//   POST /api/practice/answer                {phraseId, skill, drill?, version, revision, submitId, answer? | choice? | reveal + rating, clozeId?, spoken?, durationMs?, tz?}
 //                                            → the review
 //   POST /api/practice/reviews/:id/override  {rating, tz?} → the review, regraded
+//   POST /api/practice/cloze/:id/flag        a bad cloze sentence: never shown again; records nothing
 //   GET  /api/practice/audio/:phraseId       the phrase said in the user's voice for the language (cached on disk)
 //   POST /api/practice/transcribe            a speak-it recording (WAV) → {text}; records nothing
 //
@@ -80,20 +85,32 @@ function languageOf(ctx: LearnerCtx): PracticeStatsReply["language"] {
   };
 }
 
-/** The queue (and its stats) for this request's day and filters. */
+/**
+ * The queue (and its stats) for this request's day and filters. The cloze
+ * and mixed modes read each phrase's cloze sentences first (made from its
+ * session lines on the way: cloze.ts withCloze) and start writing
+ * sentences for the ones they would ask with none, in the background
+ * (fillCloze): the queue never waits for a model.
+ */
 async function queue(req: IncomingMessage, ctx: LearnerCtx) {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   const now = new Date();
   const since = dayStart(now, readUtcOffset(q.get("tz")));
-  const [phrases, done] = await Promise.all([practiceCandidates(rawDb(), ctx.language), practiceDone(rawDb(), ctx.language, since)]);
-  return buildQueue(phrases, {
+  const mode = readMode(q.get("mode"));
+  const [read, done] = await Promise.all([practiceCandidates(rawDb(), ctx.language), practiceDone(rawDb(), ctx.language, since)]);
+  const usesCloze = mode === "cloze" || mode === "mixed";
+  const phrases = usesCloze ? await withCloze(ctx, read) : read;
+  const { clozeWanted, ...built } = buildQueue(phrases, {
     now,
     done,
     length: readLength(q.get("length")),
-    mode: readMode(q.get("mode")),
+    mode,
     direction: readDirection(q.get("direction")),
     nativeLocale: nativeLocale(ctx),
   });
+  if (clozeWanted.length) fillCloze(ctx, clozeWanted);
+  const cloze = usesCloze ? { waiting: mode === "cloze" ? clozeWanted.length : 0, writing: clozeWriting(ctx.language.id) } : null;
+  return { ...built, cloze };
 }
 
 type GraderInput = Parameters<typeof graderPrompt>[0];
@@ -152,6 +169,17 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // answered isn't this one any more. Refused before any grading (the
   // write checks again, under its lock, for an edit during grading).
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
+  // A cloze answer is graded against the sentence it names: one of this
+  // phrase's, made for its words and meaning as they are, not flagged.
+  // Checked before any grading (no model call for a stale sentence), and
+  // again under the write's lock.
+  let gap: string | null = null;
+  if (a.drill === "cloze" && !stale) {
+    const item = await clozeItem(rawDb(), ctx.language, a.clozeId!);
+    const problem = clozeProblem(item, phrase.id, clozeKey(phrase));
+    if (problem) throw new HttpError(409, problem);
+    gap = gapped(item!);
+  }
   // No grade for a stale card: the write replays the stored review or
   // refuses (409), and never records one.
   let outcome = stale ? null : a.reveal ? gradeOutcome({ reveal: true, rating: a.rating }) : null;
@@ -175,54 +203,36 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
       if (!known) throw new HttpError(409, "that isn't one of the choices this card offered; skip it");
       match = choiceMatch({ choice: a.answer, meaning: graded.meaning, nativeLocale: locales.nativeLocale });
     } else if (a.skill === "listen") match = listenMatch({ answer: a.answer, ...graded, alternates: phrase.alternates, ...locales });
-    // Speak-it: the recogniser wrote what it heard, so an accent it heard
-    // differently is close, not exact (match.mjs `spoken`).
-    else match = localMatch({ skill: a.skill, answer: a.answer, ...graded, alternates: phrase.alternates, ...locales, spoken: a.drill === "speak" });
+    // Speak-it (and a cloze said aloud): the recogniser wrote what it
+    // heard, so an accent it heard differently is close, not exact
+    // (match.mjs `spoken`). A cloze gap is graded as the phrase's words:
+    // the gap is them verbatim (cloze.mjs findBlank).
+    else match = localMatch({ skill: a.skill, answer: a.answer, ...graded, alternates: phrase.alternates, ...locales, spoken: a.spoken });
     let check: { grader: ReturnType<typeof parseGraderReply>; failed: boolean } = { grader: null, failed: false };
     // A picked choice is right or wrong as it stands: no model check.
     if (!a.choice && needsGrader(match, a.answer)) {
       check = await runGrader(res, {
-        ...graderQuestion({ skill: a.skill, ...graded, drill: a.drill }),
+        ...graderQuestion({ skill: a.skill, ...graded, drill: a.drill, spoken: a.spoken, gapped: gap }),
         answer: a.answer,
         nativeLanguage: ctx.learner.nativeLanguage || "English",
         targetVariant: ctx.language.targetVariant || ctx.language.targetLanguage,
       });
     }
     outcome = gradeOutcome({ match, grader: check.grader, graderFailed: check.failed, answer: a.answer });
-    // Only typed words are kept as another way to say it: a meaning in
-    // phrases.alternates would grade as the target (practice.mjs
-    // withAlternate), and a transcript's spelling is the recogniser's.
+    // Only typed flashcard words are kept as another way to say it: a
+    // meaning in phrases.alternates would grade as the target (practice.mjs
+    // withAlternate), a transcript's spelling is the recogniser's, and a
+    // word accepted for one sentence's gap may fit only that sentence.
     keepAlternate = outcome.verdict === "accepted" && a.skill === "produce" && a.drill === "flashcard";
   }
   const out = await op(() =>
     recordAnswer(rawDb(), ctx.language, {
       phraseId: a.phraseId, skill: a.skill, drill: a.drill, version: a.version, revision: a.revision, submitId: a.submitId, outcome,
       answer: a.reveal ? null : a.answer || null, durationMs: a.durationMs, utcOffsetMinutes: a.utcOffsetMinutes, keepAlternate,
-      targetLocale: targetLocale(ctx), now: new Date(),
+      targetLocale: targetLocale(ctx), cloze: a.clozeId ? { id: a.clozeId, key: clozeKey(phrase) } : null, now: new Date(),
     }),
   );
   sendJson(res, 200, out satisfies PracticeAnswerReply);
-}
-
-/** Paid provider calls this PR's routes may run at once per user (a phrase
- *  audio miss, a transcription): enough for a replay racing the next card,
- *  not a loop spending the owner's credits in parallel. The Go tab's voice
- *  routes don't share it yet (bead ld-e6q: a common limit). */
-export const PAID_PER_USER = 2;
-const paidRunning = new Map<string, number>();
-
-/** Run `fn` in one of the user's paid slots, or 429 when they are all busy. */
-async function paidSlot<T>(userId: string, fn: () => Promise<T>): Promise<T> {
-  const n = paidRunning.get(userId) ?? 0;
-  if (n >= PAID_PER_USER) throw new HttpError(429, "too many audio requests at once; try again in a moment");
-  paidRunning.set(userId, n + 1);
-  try {
-    return await fn();
-  } finally {
-    const left = (paidRunning.get(userId) ?? 1) - 1;
-    if (left > 0) paidRunning.set(userId, left);
-    else paidRunning.delete(userId);
-  }
 }
 
 /** Why phrases can't be played for this language, or null: the same checks
@@ -314,14 +324,23 @@ export async function handlePractice(req: IncomingMessage, res: ServerResponse, 
   const parts = subPath(req).split("/").filter(Boolean);
   if (parts.length === 0) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { stats } = await queue(req, ctx);
+    const { stats, cloze } = await queue(req, ctx);
     const [audio, speech] = await Promise.all([audioProblem(ctx), speechProblem(ctx)]);
-    return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech } } satisfies PracticeStatsReply);
+    return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech }, cloze } satisfies PracticeStatsReply);
   }
   if (parts.length === 1 && parts[0] === "queue") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { items, stats } = await queue(req, ctx);
-    return sendJson(res, 200, { items, stats, language: languageOf(ctx), setup: null } satisfies PracticeQueueReply);
+    const { items, stats, cloze } = await queue(req, ctx);
+    return sendJson(res, 200, { items, stats, language: languageOf(ctx), setup: null, cloze } satisfies PracticeQueueReply);
+  }
+  if (parts.length === 3 && parts[0] === "cloze" && parts[2] === "flag") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    // A bad sentence (wrong, unnatural, or the gap guessable two ways):
+    // never shown again. Nothing is recorded for the card.
+    if (!isUuid(parts[1])) throw new HttpError(404, "no such sentence");
+    const row = await flagClozeItem(rawDb(), ctx.language, parts[1].toLowerCase(), new Date());
+    if (!row) throw new HttpError(404, "no such sentence");
+    return sendJson(res, 200, { flagged: true } satisfies PracticeFlagReply);
   }
   if (parts.length === 1 && parts[0] === "answer") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");

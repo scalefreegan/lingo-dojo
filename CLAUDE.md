@@ -31,7 +31,12 @@ drills and a mode picker (phase 7b: the phrase played from
 `scripts/audio-cache.mjs`, `data/audio/` or `LINGO_AUDIO_DIR`, files per user; a
 listening choice checked against the server's own seeded draw; a speak-it
 recording transcribed by `/api/practice/transcribe` with no keyterms; each
-answer's drill is its review's mode), and recall in sessions (phase 6:
+answer's drill is its review's mode) and fill the gap (phase 7c, migration
+0006: cloze sentences from the learner's own session lines, else written
+in the background by one tool-less claude call per batch, each checked by
+the pure rules in `scripts/cloze.mjs`, the phrase verbatim and once; rows
+in `scripts/db/cloze.ts`, the call in `web/server/cloze.ts`; a cloze
+answer also names its sentence, `clozeId`), and recall in sessions (phase 6:
 the review block in the `recall` slot's `{{phrase_review}}`, per-turn
 retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
 reads in `web/server/recall.ts`; no row locks, no migration), and the
