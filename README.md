@@ -219,3 +219,11 @@ npm --prefix web run lint      # oxlint
 ```
 
 Work is tracked with beads (`bd ready`, prefix `ld`).
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use,
+change and share Lingo Dojo, but if you distribute it or run a changed version
+as a network service, you must offer its users the complete source under the
+same license. Bundled third-party data keeps its own terms (see
+`docs/VOICE.md`).
