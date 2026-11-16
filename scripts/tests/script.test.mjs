@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
   KANGXI_RADICALS, hanChars, isHan, isTaiwan, parseRadical, particleDe, pinyinToZhuyin, readingIn, resolveMode, rubyStorageKey, scriptFor,
-  joinParts, simplifyForReading, splitHan, taiwanize,
+  readMarked, simplifyForReading, splitHan, taiwanize,
 } from "../../web/src/script/script.ts";
 import { charReadings, readCodePoints, readOffsets, simplified } from "../../web/src/script/zh.ts";
 import { ARPHIC_LICENSE_PATH, strokeFile } from "../../web/server/hanzi.ts";
@@ -24,23 +24,28 @@ test("scriptFor: Mandarin in any script or region, never Cantonese or another la
   for (const l of ["zh-HK", "zh-MO", "zh-Hant-HK", "yue-HK", "es-MX", "ja-JP", "ko-KR", "en", "", null, undefined]) assert.equal(scriptFor(l), null, String(l));
 });
 
-test("joinParts: a sentence with a marked phrase is read whole, so the words beside the mark keep their context", () => {
-  // The flashcard's sentence and a filled gap (Ruby.tsx MarkedText).
+test("readMarked: a sentence with a marked phrase is read once, whole, so the words beside the mark keep their context", () => {
+  // What Ruby.tsx MarkedText draws: the flashcard's sentence and a filled gap.
+  const read = (t) => readOffsets(t, "zh-CN");
   const cases = [
-    [["", "天黑", "了"], 2, "le", "liǎo"],
-    [["他", "跑", "得很快"], 2, "de", "dé"],
-    [["我", "会", "长时间等你"], 2, "zhǎng", "cháng"],
+    [["", "天黑", "了"], [[], ["tiān", "hēi"], ["le"]], "liǎo"],
+    [["他", "跑", "得很快"], [["tā"], ["pǎo"], ["de", "hěn", "kuài"]], "dé"],
+    [["我", "会", "长时间等你"], [["wǒ"], ["huì"], ["zhǎng", "shí", "jiān", "děng", "nǐ"]], "cháng"],
   ];
-  for (const [parts, at, whole, apart] of cases) {
-    const { text, ranges } = joinParts(parts);
-    assert.equal(text, parts.join(""));
-    assert.deepEqual(ranges.map(([s, e]) => text.slice(s, e)), parts);
-    assert.equal(readOffsets(text, "zh-CN")[at], whole, `${text}[${at}] read whole`);
-    // Why it matters: read apart, the same character gets the wrong reading.
-    assert.equal(readOffsets(parts[2], "zh-CN")[at - ranges[2][0]], apart, `${parts[2]} read apart`);
+  for (const [parts, want, apart] of cases) {
+    let calls = 0;
+    const out = readMarked(parts, (t) => (calls++, read(t)));
+    assert.equal(calls, 1, "one read, over the whole sentence");
+    assert.deepEqual(out.map((p) => p.text), parts);
+    assert.deepEqual(out.map((p) => p.readings), want, parts.join("|"));
+    // Why it matters: read apart, the first character after the mark is wrong.
+    assert.equal(read(parts[2])[0], apart, `${parts[2]} read apart`);
   }
-  // UTF-16 offsets, so a character beyond the BMP is two units.
-  assert.deepEqual(joinParts(["𠀋a", "b", ""]).ranges, [[0, 3], [3, 4], [4, 4]]);
+  // No reader (readings off, not Chinese, loading): the parts, no readings.
+  assert.deepEqual(readMarked(["a", "b", "c"], null), [{ text: "a", readings: null }, { text: "b", readings: null }, { text: "c", readings: null }]);
+  // UTF-16 offsets: a character beyond the BMP is two units, its reading at the first.
+  const wide = readMarked(["𠀋", "好", ""], () => ["x", null, "hǎo"]);
+  assert.deepEqual(wide.map((p) => p.readings), [["x", null], ["hǎo"], []]);
 });
 
 test("isTaiwan: zh-TW and traditional-script Mandarin", () => {

@@ -413,17 +413,18 @@ export function pickCloze(items, seed) {
 }
 
 /**
- * Which item a flashcard's answer side shows: not the one a cloze card of
- * the same card version would pick (pickCloze), when the phrase has
- * another, so a gap isn't a sentence the learner has just read whole (in
- * Mixed, the phrase's next card can be that gap). Among the others, the
- * same rule (own lines first) with a salted seed; with only one item, that
- * one. Deterministic per seed. Null for none.
+ * Which item a flashcard's answer side shows. `gapSeed` is the seed the
+ * phrase's next gap card would pick with (pickCloze: the phrase and its
+ * produce card's version now); when the phrase has another item, the
+ * flashcard never shows that one. Among the others, the same rule (own
+ * lines first) by the flashcard's own `seed`, salted; with only one item,
+ * that one. Deterministic for the two seeds. Null for none.
  */
-export function pickSentence(items, seed) {
-  const gap = pickCloze(items, seed);
-  if (!gap) return null;
-  const rest = (items ?? []).filter((i) => i && i.id !== gap.id);
+export function pickSentence(items, seed, gapSeed = seed) {
+  const list = (items ?? []).filter(Boolean);
+  if (!list.length) return null;
+  const gap = pickCloze(list, gapSeed);
+  const rest = list.filter((i) => i.id !== gap.id);
   return rest.length ? pickCloze(rest, `${seed}:sentence`) : gap;
 }
 

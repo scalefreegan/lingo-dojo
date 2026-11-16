@@ -1,5 +1,6 @@
-import { rubyPieces, useRuby, useRubyMode, useScript } from "../script/ruby.tsx";
-import { isHan, joinParts, scriptFor } from "../script/script.ts";
+import { useMemo } from "react";
+import { rubyPieces, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
+import { isHan, readMarked, scriptFor } from "../script/script.ts";
 
 /* The reading-aid pieces the transcript, History and the phrase bank use:
  * text with readings over it, the Off / Pinyin / Zhuyin switch, and a
@@ -13,17 +14,21 @@ export function RubyText({ text, locale }: { text: string; locale: string | null
 }
 
 /** A whole sentence with one stretch marked (`<mark>`): the readings are
- *  taken over the whole sentence once (script.ts joinParts), so the words
+ *  taken over the whole sentence once (script.ts readMarked), so the words
  *  beside the mark keep their context (了 in 天黑了 is le, not liǎo). */
 export function MarkedText({ before, marked, after, locale, markClassName }: { before: string; marked: string; after: string; locale: string | null | undefined; markClassName: string }) {
-  const { text, ranges } = joinParts([before, marked, after]);
-  const ruby = useRuby(text, locale);
-  const [b, m, a] = ranges;
+  const mode = useRubyMode(locale);
+  const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
+  const [b, m, a] = useMemo(
+    () => readMarked([before, marked, after], reader && locale && mode !== "off" ? (t) => reader.readOffsets(t, locale) : null),
+    [before, marked, after, reader, locale, mode],
+  );
+  const pieces = (p: { text: string; readings: (string | null)[] | null }) => rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings });
   return (
     <>
-      {rubyPieces(text, b[0], b[1], ruby)}
-      <mark className={markClassName}>{rubyPieces(text, m[0], m[1], ruby)}</mark>
-      {rubyPieces(text, a[0], a[1], ruby)}
+      {pieces(b)}
+      <mark className={markClassName}>{pieces(m)}</mark>
+      {pieces(a)}
     </>
   );
 }

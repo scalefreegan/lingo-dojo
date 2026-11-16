@@ -2207,16 +2207,16 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   no migration). A flashcard's answer side (Reveal on a recognize card,
   or the grade on either) shows the phrase used in a sentence under its
   meaning, from the same `cloze_items`, picked by `pickSentence`: when
-  the phrase has more than one usable sentence, never the one a gap of
-  the same card version would use (`pickCloze`), so a later gap (in
-  Mixed, often the phrase's next card) isn't a sentence just read whole;
-  among the others the learner's own line first, by a salted seed of
-  phrase and card version, so the card shows one sentence until it is
-  answered; with one sentence, that one. Shown whole, the phrase's
-  words marked, readings as the Readings switch says (taken over the
-  whole sentence once, `script.ts` `joinParts`, so a character beside
-  the phrase keeps its word: 了 in 天黑了 is le; the filled gap after a
-  cloze answer is read the same way), "from one of your
+  the phrase has more than one usable sentence, the flashcard never shows
+  the one the phrase's next gap would use (`pickCloze` at the phrase's
+  produce card version as it is now, whichever skill the flashcard is).
+  Among the others, the learner's own line first, by a salted seed of
+  phrase and the flashcard's card version, so the card shows one sentence
+  until it is answered; with one sentence, that one. Shown whole, the
+  phrase's words marked, readings as the Readings switch says (taken over
+  the whole sentence once, `script.ts` `readMarked`, so a character
+  beside the phrase keeps its word: 了 in 天黑了 is le; the filled gap
+  after a cloze answer is read the same way), "from one of your
   sessions" for a session line, and "Bad sentence?" to flag it (the same
   route; it is then gone from the card and from every later card and gap).
   The queue item carries it as `sentence: {id, before, blank, after,

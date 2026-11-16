@@ -322,11 +322,12 @@ const REVISION_RE = /^[0-9a-f]{16}$/;
  *  carries both sides (the page shows one and hides the other until it is
  *  answered; it is the learner's own bank, which the Library shows
  *  anyway). A flashcard also carries the phrase used in a sentence when
- *  the phrase has one (`sentence`: cloze.mjs pickSentence, another than a
- *  cloze card of the same version would pick when there is another, so a
- *  later gap isn't the sentence just read), for its answer side only: it
- *  holds the words, so
- *  the page never shows it before the card is revealed or answered. A
+ *  the phrase has one (`sentence`: cloze.mjs pickSentence), for its
+ *  answer side only: it holds the words, so the page never shows it
+ *  before the card is revealed or answered. When the phrase has more than
+ *  one sentence, it is never the one the phrase's next gap would use: the
+ *  pick a cloze card makes at the phrase's produce card version as it is
+ *  now (whichever skill the flashcard itself is). A
  *  listening card carries neither side nor a sentence: the words are what
  *  the learner must hear, so they come only with the answer's reply (and
  *  the audio from /api/practice/audio/:phraseId); its `choices` (or null:
@@ -337,7 +338,10 @@ function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices =
   // hint), never the words: those come with the answer's reply.
   const seed = `${phrase.id}:${cardVersion(card)}`;
   const cloze = drill === "cloze" ? pickCloze(phrase.cloze, seed) : null;
-  const sentence = drill === "flashcard" ? pickSentence(phrase.cloze, seed) : null;
+  // The next gap is the produce card's, at its version now (a card not
+  // made yet is "0:"): a flashcard of either skill steers clear of it.
+  const produce = drill === "flashcard" ? (phrase.cards ?? []).find((c) => c.skill === "produce") : null;
+  const sentence = drill === "flashcard" ? pickSentence(phrase.cloze, seed, `${phrase.id}:${cardVersion(produce)}`) : null;
   return {
     phraseId: phrase.id,
     skill,
