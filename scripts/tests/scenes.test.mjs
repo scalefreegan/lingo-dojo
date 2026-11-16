@@ -95,6 +95,15 @@ test("drawRandomScene: keeps a scene this session drew while it is in the pool, 
   assert.equal(drawRandomScene(LIBRARY, languages, "Spanish", { collections: ["Gone"] }, { rand: () => 0 }), null);
 });
 
+test("drawRandomScene: a kept scene wins even when it is the most recent one", () => {
+  const random = { collections: ["Travel essentials"] };
+  // hotel is what the session just played (newest first): keeping it is the point.
+  for (const r of [0, 0.99]) {
+    const held = drawRandomScene(LIBRARY, languages, "Spanish", random, { keep: "hotel", recent: ["hotel", "taxi"], rand: () => r });
+    assert.deepEqual([held.scene.id, held.kept], ["hotel", true], `rand ${r}`);
+  }
+});
+
 test("withDrawnScene: the pack plays the drawn scenario as if picked", () => {
   const pack = { title: "T", created: "", scenario: "", quick_scenario: "left over", random_scene: { collections: ["x"] }, units: ["u"], overrides: { location: "Lyon" }, notes: "n" };
   assert.deepEqual(withDrawnScene(pack, "taxi"), { ...pack, scenario: "taxi", quick_scenario: "", random_scene: null });

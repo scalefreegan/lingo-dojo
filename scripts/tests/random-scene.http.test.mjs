@@ -275,6 +275,18 @@ test("a later conversation of the same session keeps the scene it drew while it 
   assert.equal((await snapshot(fresh.id)).pack_snapshot.random_draw.kept, undefined);
 });
 
+test("a kept scene wins even when it is the language's most recent scene", async () => {
+  const sam = await someone();
+  // The session's earlier conversation played hotel; it is now the newest.
+  await start(sam, libraryPack("hotel"), { title: "Hotel" });
+  for (const r of [0, 0.99]) {
+    useSceneRandom(() => r);
+    const c = await start(sam, randomPack(["Travel essentials"]), { drawn: "hotel" });
+    assert.equal(c.scenarioId, "hotel", `rand ${r}`);
+    assert.equal((await snapshot(c.id)).pack_snapshot.random_draw.kept, true);
+  }
+});
+
 test("a kept scene no longer in the pool draws afresh and still steers clear of recent scenes", async () => {
   const sam = await someone();
   await start(sam, libraryPack("taxi"), { title: "Taxi" });

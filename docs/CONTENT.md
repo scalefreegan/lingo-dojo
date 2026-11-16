@@ -288,9 +288,14 @@ recap, casting, `{{location}}` and the title all use it. Restart, and Close
 then Start, make a new conversation and so a new draw. When a conversation
 ends while its voice session stays open (leaving the Go tab, two idle
 hours, another device's End), the session's next conversation keeps the
-scene while it is still in the pool, else draws afresh. A turn that has to
+scene while it is still in the pool (even though it is now a recent
+scene), else draws afresh. A turn that has to
 run unsaved (its conversation couldn't be made) plays the session's drawn
-scene; with nothing drawn yet it is refused (409). There is no reroll.
+scene; with nothing drawn yet it is refused (409). If unsaved turns were
+played as the earlier scene and the pool then changed so that scene is no
+longer in it, the next conversation is recorded under the newly drawn
+scene while holding those turns, as a picked scene changed mid-session
+always has. There is no reroll.
 
 The preview, word counts and `POST /api/assemble` do not draw: the
 Scenario section is a placeholder naming the pool's size ("Random scene"

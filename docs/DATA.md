@@ -511,8 +511,11 @@ the drawn pack (`scenario` set, `random_scene` null) plus
 when the conversation kept the scene an earlier one of the same live voice
 session drew, that one having ended while the session stayed open: leaving
 Go, two idle hours, another device's End. Restart and Close forget the
-scene. The client's `drawn` is honoured only while it is in the pool;
-otherwise the draw is fresh and still avoids recent scenes). The server writes `random_draw` and `review`; a client's own are
+scene. The client's `drawn` is honoured while it is in the pool, even when
+it is the most recent scene; otherwise the draw is fresh and still avoids
+recent scenes, and if unsaved turns were played as the earlier scene, the
+new conversation is recorded under the newly drawn scene while holding
+those turns, as a picked scene changed mid-session always has). The server writes `random_draw` and `review`; a client's own are
 dropped. `scenario_id` and the title are the drawn scenario's; the wire
 `ConversationSummary.randomScene` is true for such a row. A turn whose pack
 is still random reads its scene from this snapshot (`playedPack` in
