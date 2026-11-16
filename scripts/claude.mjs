@@ -112,6 +112,13 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
 }
 
 /**
+ * MCP tools a run may be granted by name (`mcpTools` below): exactly
+ * `mcp__<server>__<tool>`, never a wildcard, so a server that grows a tool
+ * doesn't grow the agent's permissions with it.
+ */
+const MCP_TOOL_RE = /^mcp__[a-z][a-z0-9_-]*__[a-z][a-z0-9_]*$/;
+
+/**
  * The argv for one run — pure, so the test pins the sandbox without spawning.
  *
  *   --restricted           ignores the user's, this repo's and local settings
@@ -121,24 +128,30 @@ export function contentGrants(contentDir = contentRoot(), repoRoot = REPO_ROOT) 
  *   --permission-prompts none
  *                          there is nobody to answer a prompt; anything that
  *                          would ask is denied automatically.
- *   --mcp-config <empty> --strict-mcp-config
- *                          only the servers in THIS file load — none — rather
- *                          than every MCP server the user has configured
- *                          globally (mail, calendar on this machine).
+ *   --mcp-config <file> --strict-mcp-config
+ *                          only the servers in THIS file load (none, or the
+ *                          content agent's read-only bank server: chat.ts)
+ *                          rather than every MCP server the user has
+ *                          configured globally (mail, calendar on this
+ *                          machine). Their tools are usable only when named
+ *                          in `mcpTools`, which go into --allowedTools; any
+ *                          other would prompt, and a prompt is a denial.
  *   --no-session-persistence
  *                          the server keeps the history (data/chat.jsonl);
  *                          nothing to resume, so nothing written under
  *                          ~/.claude/projects per run.
  */
-export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content" }) {
+export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content", mcpTools = [] }) {
   if (!isKnownModel(model)) throw new Error(`unknown model: ${model}`);
   if (tools !== "content" && tools !== "none") throw new Error(`unknown tool profile: ${tools}`);
+  for (const t of mcpTools) if (!MCP_TOOL_RE.test(t)) throw new Error(`not an MCP tool name: ${t}`);
+  if (tools === "none" && mcpTools.length) throw new Error("a run with no tools gets no MCP tools either");
   // "none" is the voice turn: a spoken reply needs no file access at all, so
   // `--tools ""` removes every built-in tool and nothing is granted. Fewer
   // tool definitions in the prompt is also a faster first token.
   const toolArgs = tools === "none"
     ? ["--tools", ""]
-    : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot)];
+    : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot), ...mcpTools];
   const args = [
     "-p", prompt,
     "--output-format", "json",
@@ -228,17 +241,22 @@ function armReaper() {
  * where `text` is the agent's final reply (unwrapped from the --output-format
  * json envelope), and `kill()` SIGKILLs the process group. `signal` (an
  * AbortSignal) does the same when it fires — wire it to request-close.
+ * `mcpServers` (the --mcp-config file's `mcpServers`; none by default) and
+ * `mcpTools` (their tools the run may call, by full name) are the content
+ * agent's bank server (chat.ts).
  */
-export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content" }) {
+export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content", mcpServers = {}, mcpTools = [] }) {
   const chosen = model ?? DEFAULT_MODEL;
   // Say which model actually went out: a setting that silently failed to
   // apply is otherwise invisible until the bill.
   console.log(`[lingo-dojo] claude: spawning ${chosen} (${tools === "none" ? "no tools" : "content tools"}, max ${maxTurns} turns, ${timeoutSec}s timeout)`);
 
-  // An EMPTY MCP config under --strict-mcp-config: see buildArgs.
+  // Only these MCP servers (usually none) under --strict-mcp-config: see
+  // buildArgs. The file can hold the database URL, so it is the user's
+  // alone (0600, in a 0700 directory) and removed when the run ends.
   let mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-mcp-"));
   const mcpConfigPath = path.join(mcpDir, "mcp.json");
-  fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: {} }), { mode: 0o600 });
+  fs.writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
   const cleanupMcp = () => {
     if (!mcpDir) return;
     const dir = mcpDir;
@@ -246,7 +264,13 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* tmp, it can wait for the OS */ }
   };
 
-  const args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools });
+  let args;
+  try {
+    args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools, mcpTools });
+  } catch (e) {
+    cleanupMcp();
+    throw e;
+  }
   const proc = spawn("claude", args, {
     cwd,
     env: childEnv(),

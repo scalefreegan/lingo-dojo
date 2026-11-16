@@ -10,8 +10,8 @@
 
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { databaseUrl, redact } from "../../scripts/db/config.mjs";
-import { describeMigrations, migrationState } from "../../scripts/db/migrations.mjs";
+import { databaseUrl, readerRole, redact } from "../../scripts/db/config.mjs";
+import { bankReaderProblem, describeMigrations, migrationState } from "../../scripts/db/migrations.mjs";
 import { forLanguageProfile, forLearner, forUser, type Db, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import * as schema from "../../scripts/db/schema.ts";
 
@@ -92,13 +92,23 @@ export async function checkDatabase(url?: string): Promise<{ applied: number; to
     throw new Error(`Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`);
   }
   try {
-    const state = await migrationState(async (text: string, params?: unknown[]) => (await client.query(text, params)).rows);
+    const query = async (text: string, params?: unknown[]) => (await client.query(text, params)).rows;
+    const state = await migrationState(query);
     if (state.status !== "current") {
       const fix =
         state.status === "ahead" || state.status === "diverged"
           ? "This checkout can't migrate it; point DATABASE_URL at a database for this branch (or update the checkout)."
           : FIX;
       throw new Error(`Lingo Dojo's database at ${where} is ${describeMigrations(state)}.\n${fix}`);
+    }
+    // Not fatal: without its policies or grants the agent's bank tools fail
+    // closed (no rows, or an error) and everything else works. Said at boot
+    // so a bad restore is noticed (docs/DATA.md §Backups).
+    try {
+      const problem = await bankReaderProblem(query, readerRole());
+      if (problem) console.warn(`[lingo-dojo] the content agent's phrase-bank access is incomplete: ${problem}. See docs/DATA.md §Backups.`);
+    } catch (e) {
+      console.warn(`[lingo-dojo] could not check the content agent's phrase-bank access: ${(e as Error).message}`);
     }
     return { applied: state.applied, total: state.total };
   } finally {

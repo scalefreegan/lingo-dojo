@@ -17,6 +17,7 @@
 //   fake.answers(["LOOKUP: market", "NARRATOR-F: Hola."]);  // one per run, the last repeating
 //   fake.argsLog();  // every non-recap run's argv since the last answer()/answers()
 //   fake.recap(JSON.stringify({ summary: "…", keep: [], events: [], corrections: [] }));  fake.recapRuns();
+//   fake.mcpConfig();  // the last non-recap run's --mcp-config file, parsed (the server deletes it after the run)
 
 import fs from "node:fs";
 import os from "node:os";
@@ -37,6 +38,7 @@ export function fakeClaude() {
     recapArgs: path.join(bin, "recap-args.json"),
     replies: path.join(bin, "replies.json"),
     argsLog: path.join(bin, "args.jsonl"),
+    mcp: path.join(bin, "mcp.json"),
   };
   fs.writeFileSync(
     path.join(bin, "claude"),
@@ -48,6 +50,8 @@ const recap = args.some((a) => a.startsWith("You review one finished practice se
 fs.appendFileSync(recap ? files.recapRan : files.ran, "x");
 fs.writeFileSync(recap ? files.recapArgs : files.args, JSON.stringify(args));
 if (!recap) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
+const mcpAt = args.indexOf("--mcp-config");
+if (!recap && mcpAt >= 0) fs.copyFileSync(args[mcpAt + 1], files.mcp);
 let text = fs.readFileSync(recap ? files.recap : files.reply, "utf8");
 // A sequence (answers()): the nth run since it was set takes the nth reply.
 if (!recap && fs.existsSync(files.replies)) {
@@ -93,6 +97,8 @@ setTimeout(() => {
     recapArgs: () => (fs.existsSync(files.recapArgs) ? JSON.parse(fs.readFileSync(files.recapArgs, "utf8")) : null),
     /** The argv of the last run that wasn't a recap (no "claude"), or null before any. */
     lastArgs: () => (fs.existsSync(files.args) ? JSON.parse(fs.readFileSync(files.args, "utf8")) : null),
+    /** The last non-recap run's --mcp-config file, parsed, or null. */
+    mcpConfig: () => (fs.existsSync(files.mcp) ? JSON.parse(fs.readFileSync(files.mcp, "utf8")) : null),
     install() {
       process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
     },

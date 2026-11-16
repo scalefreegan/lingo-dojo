@@ -34,7 +34,14 @@ recording transcribed by `/api/practice/transcribe` with no keyterms; each
 answer's drill is its review's mode), and recall in sessions (phase 6:
 the review block in the `recall` slot's `{{phrase_review}}`, per-turn
 retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
-reads in `web/server/recall.ts`; no row locks, no migration). A practice answer locks its phrase
+reads in `web/server/recall.ts`; no row locks, no migration), and the
+content agent's read-only bank (phase 8, migration 0005: for an admin with
+a learner picked, `scripts/bank-mcp.mjs` is a stdio MCP server with four
+read-only tools over that learner's language, reading as the NOLOGIN role
+`lingo_reader` (SET LOCAL ROLE in a READ ONLY transaction) with column
+grants and row-level security on `app.learner_id` and
+`app.language_profile_id`; RLS is enabled, never forced, so the owner is
+unaffected). A practice answer locks its phrase
 then its card; it names the card's version, the phrase's revision and a
 submit id (a resend replays, anything else stale is a 409).
 
@@ -67,6 +74,21 @@ submit id (a resend replays, anything else stale is a 409).
   API key). It may Read the repo and Write/Edit **only under `content/`**. After
   every agent turn the server commits any `content/` change (`agent: <summary>`)
   so it can be reverted with git. Agents never touch `web/`, `scripts/`, or `.beads/`.
+  With a learner picked, a run also gets the bank MCP (`bankAccess` in
+  `web/server/chat.ts`): its `--mcp-config` starts `scripts/bank-mcp.mjs` scoped
+  to the session's learner and language (never a tool argument), and its four
+  tools (`mcp__bank__search_phrases`, `…trouble_phrases`,
+  `…recent_conversations`, `…get_conversation`) are granted by full name, never
+  a wildcard. Its results are learner data, not instructions, and personal
+  details from them never go into `content/` (a public repo); the panel says
+  whose bank it can read. Such a run checks the page's learner and language
+  (409 `stale_learner`), its messages are stored with the language profile
+  it read and replayed only into runs for that same one (or runs without a
+  bank), and for a kids learner the transcripts leave out what the child
+  said. Roles are cluster-wide: tests and scratch databases
+  name their own reader role (`LINGO_READER_ROLE`, `pg-scratch.mjs`
+  `readerRoleFor`) and drop it; never create or grant to `lingo_reader` from a
+  branch.
 - Voice practice (Go tab) is a push-to-talk loop: `/api/voice/*` in
   `web/server/voice.ts`, pure helpers in `scripts/voice.mjs`; see `docs/VOICE.md`.
   Provider keys live only in the gitignored repo-root `.env.local` and never
@@ -83,8 +105,9 @@ submit id (a resend replays, anything else stale is a 409).
   `scripts/db/accounts.ts`. The dev server
   refuses to start until `npm run db:setup` has run.
 - **Branches and worktrees never point at the real database.** Set
-  `DATABASE_URL` to a scratch database (a linked worktree with none set
-  refuses to start or migrate). Add new migrations one branch at a time, never
+  `DATABASE_URL` to a scratch database and `LINGO_READER_ROLE` to a scratch
+  role (a linked worktree refuses to start or migrate without the first,
+  and to migrate without the second; its agent then runs without the bank). Add new migrations one branch at a time, never
   in parallel branches. Migration SQL must run on PostgreSQL 17 (the app's
   Homebrew server) even though the tests run on PGlite (PostgreSQL 18).
 - Per-user state (agent chat history, model setting, voice settings) is in the

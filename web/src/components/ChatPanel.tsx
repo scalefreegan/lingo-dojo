@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "../api";
-import type { ChatCommit, ChatMessage, Mode, SettingsReply } from "../types";
+import { ApiError, clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "../api";
+import type { ChatBankScope, ChatCommit, ChatMessage, Mode, SettingsReply } from "../types";
 import { Button, inputClass } from "./ui";
 
 /* The embedded agent's chat (wine-guide ChatPanel pattern, trimmed): the
@@ -9,7 +9,10 @@ import { Button, inputClass } from "./ui";
  * counter while the headless CLI works (it buffers the whole turn, so there
  * is nothing to stream before the reply), the model picker, and the commit
  * line the server reports after each turn. A commit means content/ changed,
- * so the panel asks App to reload the library straight away. */
+ * so the panel asks App to reload the library straight away. One line under
+ * the controls says whose phrase bank the agent can read (the server's
+ * `bank`, from the history and again from each run's start), so that is
+ * never a silent capability. */
 
 /** A deliberately small markdown subset — replies are prose, not documents. */
 function inline(s: string, keyBase: string): ReactNode[] {
@@ -76,11 +79,19 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<SettingsReply | null>(null);
+  const [bank, setBank] = useState<ChatBankScope | null>(null);
   const tail = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let live = true;
-    getChatHistory().then((h) => live && setMessages(h.messages), (e) => live && setError((e as Error).message));
+    getChatHistory().then(
+      (h) => {
+        if (!live) return;
+        setMessages(h.messages);
+        setBank(h.bank);
+      },
+      (e) => live && setError((e as Error).message),
+    );
     getSettings().then((s) => live && setSettings(s), (e) => live && setError((e as Error).message));
     return () => {
       live = false;
@@ -105,6 +116,7 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
       // mid-edit (on an unmount, say) would leave content/ half-written.
       // The server kills the agent only when the connection itself drops.
       await sendChat(mode, message, {
+        start: (d) => setBank(d.bank),
         heartbeat: (d) => setElapsed(d.elapsed),
         message: (d) => {
           setMessages((m) => [...m, { role: "assistant", text: d.text, ts: d.ts }]);
@@ -128,6 +140,16 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
       });
     } catch (e) {
       setError(String((e as Error).message || e));
+      // Refused because this page shows another learner or language than
+      // the session's (the auth gate is catching up too): the message was
+      // never sent, and the bank line must say whose bank the next run
+      // would read, so take both from the server again.
+      if (e instanceof ApiError && e.code === "stale_learner") {
+        getChatHistory().then((h) => {
+          setMessages(h.messages);
+          setBank(h.bank);
+        }, () => undefined);
+      }
     } finally {
       setThinking(false);
     }
@@ -180,6 +202,11 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
           Clear history
         </Button>
       </div>
+      {bank && (
+        <p className="border-b border-line px-4 py-1.5 text-sm text-fg-3 sm:text-xs" data-testid="chat-bank" title="The agent can read, not change, this learner's phrase bank and past sessions. It is told never to copy personal details into content/.">
+          Can read {bank.learner}'s phrase bank and sessions in {bank.language}, read-only{bank.kids ? " (not what they said)" : ""}
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" aria-live="polite">
         {messages.length === 0 && !thinking && (

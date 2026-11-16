@@ -340,13 +340,17 @@ async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signa
   const res = await send(url, { ...json(body), signal });
   check401(res);
   if (!res.ok || !res.body) {
-    let detail = "";
+    let reply: Partial<ErrorReply> | null = null;
     try {
-      detail = ((await res.json()) as { error?: string }).error ?? "";
+      reply = (await res.json()) as Partial<ErrorReply>;
     } catch {
       /* non-JSON body */
     }
-    throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status);
+    // The agent's run reads the page's learner's bank: a page showing
+    // someone else is refused like any learner route, and the gate catches up.
+    if (res.status === 409 && reply?.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
+    const detail = typeof reply?.error === "string" ? reply.error : "";
+    throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status, reply?.code);
   }
   const reader = res.body.getReader();
   const dec = new TextDecoder();

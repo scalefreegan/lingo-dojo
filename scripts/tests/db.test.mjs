@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { freshDb } from "./testdb.mjs";
-import { DEFAULT_DATABASE_URL, databaseName, databaseUrl, isLinkedWorktree, redact } from "../db/config.mjs";
+import { DEFAULT_DATABASE_URL, READER_ROLE, databaseName, databaseUrl, isLinkedWorktree, readerRole, redact } from "../db/config.mjs";
 import { forLanguageProfile, forLearner, forUser } from "../db/owned.ts";
 import { fromRow, newCard, review, toRow } from "../fsrs.mjs";
 import {
@@ -656,4 +656,21 @@ test("a linked worktree never defaults to the real database", () => {
   assert.equal(databaseUrl({ DATABASE_URL: "postgres://localhost/lingo_dojo_scratch_x" }, path.join(dir, ".env.local"), dir), "postgres://localhost/lingo_dojo_scratch_x");
   fs.writeFileSync(path.join(dir, ".env.local"), "DATABASE_URL=postgres://localhost/lingo_dojo_scratch_y\n");
   assert.equal(databaseUrl({}, path.join(dir, ".env.local"), dir), "postgres://localhost/lingo_dojo_scratch_y");
+});
+
+test("the reader role: the shell, then .env.local, then lingo_reader, except in a linked worktree, which must name one", () => {
+  const main = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-env-"));
+  fs.mkdirSync(path.join(main, ".git"));
+  assert.equal(readerRole({}, path.join(main, "missing"), main), READER_ROLE);
+  fs.writeFileSync(path.join(main, ".env.local"), "LINGO_READER_ROLE=lingo_reader_from_file\n");
+  assert.equal(readerRole({}, path.join(main, ".env.local"), main), "lingo_reader_from_file");
+  assert.equal(readerRole({ LINGO_READER_ROLE: "lingo_reader_shell" }, path.join(main, ".env.local"), main), "lingo_reader_shell");
+  assert.throws(() => readerRole({ LINGO_READER_ROLE: "postgres" }, path.join(main, "missing"), main), /must look like/);
+
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-wt-"));
+  fs.writeFileSync(path.join(wt, ".git"), "gitdir: /somewhere/.git/worktrees/x\n");
+  assert.throws(() => readerRole({}, path.join(wt, ".env.local"), wt), /linked git worktree[\s\S]*LINGO_READER_ROLE/);
+  assert.equal(readerRole({ LINGO_READER_ROLE: "lingo_reader_scratch_x" }, path.join(wt, ".env.local"), wt), "lingo_reader_scratch_x");
+  fs.writeFileSync(path.join(wt, ".env.local"), "LINGO_READER_ROLE=lingo_reader_scratch_y\n");
+  assert.equal(readerRole({}, path.join(wt, ".env.local"), wt), "lingo_reader_scratch_y");
 });

@@ -12,8 +12,9 @@
 // through a composite foreign key on (parent id, learner_id). That makes a
 // child that belongs to a different learner than its parent impossible, lets
 // the owned-row helper (owned.ts) treat every personal table alike, and lets
-// the row-level security planned for the read-only role (bead ld-t5f) be one
-// `learner_id = …` policy per table instead of a join per table.
+// the row-level security of the read-only role (migration 0005) be one
+// `learner_id = … and language_profile_id = …` policy per table instead of
+// a join per table.
 //
 // One level deeper (migration 0002): what belongs to one of a learner's
 // languages (packs, pack folders, pack revisions, conversations, turns)
@@ -39,6 +40,14 @@
 // declared below with a plain "set null", and hand-edits.mjs rewrites them in
 // the generated SQL. A test regenerates the migration and checks that the
 // committed file is exactly the generated one plus those edits.
+//
+// Row-level security (migration 0005, bead ld-t5f): the five tables the
+// content agent's read-only bank MCP reads (conversations, turns, phrases,
+// cards, reviews) have RLS enabled (`.enableRLS()`), NOT forced. The table
+// owner, which is the role the app connects as, bypasses it entirely, so no
+// app query changes. The policies, the read-only role they apply to and its
+// column grants can't be expressed here (the role's name is configurable),
+// so they are the hand edit in hand-edits.mjs (docs/DATA.md §Content agent).
 
 import { sql } from "drizzle-orm";
 import {
@@ -200,6 +209,13 @@ export const agentMessages = pgTable(
     role: text("role").$type<"user" | "assistant" | "commit">().notNull(),
     text: text("text").notNull(),
     ts: tz("ts").notNull().defaultNow(),
+    /** Set on the messages of a run that could read a learner's phrase bank
+     *  (chat.ts bankAccess): the language profile it read. Such a run's
+     *  messages may quote that learner's data, so they are replayed into a
+     *  later run only when it reads the same language profile (migration
+     *  0005). NULL: a run without the bank, replayed into any run. Deleting
+     *  the language profile deletes them with it. */
+    bankLanguageProfileId: uuid("bank_language_profile_id").references(() => languageProfiles.id, { onDelete: "cascade" }),
   },
   (t) => [
     check("agent_messages_role", sql`${t.role} in ('user', 'assistant', 'commit')`),
@@ -343,7 +359,7 @@ export const conversations = pgTable(
     index("conversations_learner_started_idx").on(t.learnerId, t.startedAt),
     index("conversations_profile_started_idx").on(t.languageProfileId, t.startedAt),
   ],
-);
+).enableRLS();
 
 export const turns = pgTable(
   "turns",
@@ -382,7 +398,7 @@ export const turns = pgTable(
     // For phrase_examples_turn_profile_fk: an example's turn is in its language.
     unique("turns_id_profile").on(t.id, t.languageProfileId),
   ],
-);
+).enableRLS();
 
 /* ------------------------------- phrase bank ------------------------------ */
 
@@ -454,7 +470,7 @@ export const phrases = pgTable(
     index("phrases_text_trgm").using("gin", t.text.op("gin_trgm_ops")),
     index("phrases_meaning_trgm").using("gin", t.meaning.op("gin_trgm_ops")),
   ],
-);
+).enableRLS();
 
 export const phraseExamples = pgTable(
   "phrase_examples",
@@ -596,7 +612,7 @@ export const cards = pgTable(
     // language's due cards.
     index("cards_profile_due_idx").on(t.languageProfileId, t.due),
   ],
-);
+).enableRLS();
 
 export const reviews = pgTable(
   "reviews",
@@ -635,7 +651,7 @@ export const reviews = pgTable(
     // "Trouble": lapses in the last 30 days, per language.
     index("reviews_profile_at_idx").on(t.languageProfileId, t.reviewedAt),
   ],
-);
+).enableRLS();
 
 export const clozeItems = pgTable(
   "cloze_items",

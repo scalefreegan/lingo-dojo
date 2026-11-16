@@ -9,6 +9,13 @@ import { REPO_ROOT } from "../content.mjs";
 import { envFile, parseEnv } from "../voice.mjs";
 
 export const DEFAULT_DATABASE_URL = "postgres://localhost/lingo_dojo";
+/** The default name of the content agent's read-only role (migration 0005).
+ *  Roles are cluster-wide, so tests on a shared server name their own
+ *  (readerRole below; the migration's `lingo.reader_role`). */
+export const READER_ROLE = "lingo_reader";
+/** What a reader role name must look like: the migration and readerRole
+ *  both refuse anything else, so the name never needs more than %I. */
+export const READER_ROLE_RE = /^lingo_reader[a-z0-9_]{0,50}$/;
 export const MIGRATIONS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "migrations");
 
 /** A linked git worktree has a `.git` file (pointing at the main repo's
@@ -67,4 +74,39 @@ export function redact(url) {
   } catch {
     return "(unparseable DATABASE_URL)";
   }
+}
+
+/**
+ * The content agent's read-only role (migration 0005, docs/DATA.md §Content
+ * agent): LINGO_READER_ROLE from the shell or .env.local, else
+ * `lingo_reader`. Roles are cluster-wide, so a second database on the same
+ * server that must not share the role (a test's, a scratch one) names its
+ * own; db:setup hands it to the migration as `lingo.reader_role`, and the
+ * bank MCP sets that role. It must match lingo_reader[a-z0-9_]*.
+ *
+ * In a linked worktree it must be set, like DATABASE_URL: the default is
+ * the real database's role, and a branch's migration would re-grant it and
+ * rewrite its policies' privileges cluster-wide.
+ */
+export function readerRole(env = process.env, file = envFile(), root = REPO_ROOT) {
+  let v = env.LINGO_READER_ROLE?.trim();
+  if (!v) {
+    try {
+      v = parseEnv(fs.readFileSync(file, "utf8")).LINGO_READER_ROLE?.trim();
+    } catch {
+      /* no file: the default */
+    }
+  }
+  if (!v) {
+    if (isLinkedWorktree(root)) {
+      throw new Error(
+        `No LINGO_READER_ROLE is set, and ${root} is a linked git worktree. Branches and worktrees never use the ` +
+          `real database's read-only role (${READER_ROLE}). Set LINGO_READER_ROLE, in the shell or in this checkout's .env.local, ` +
+          `to a scratch role such as ${READER_ROLE}_scratch_<branch>, then run \`npm run db:setup\`.`,
+      );
+    }
+    return READER_ROLE;
+  }
+  if (!READER_ROLE_RE.test(v)) throw new Error(`LINGO_READER_ROLE must look like ${READER_ROLE}[a-z0-9_]* (at most 62 characters), got ${JSON.stringify(v)}`);
+  return v;
 }
