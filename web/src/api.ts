@@ -137,6 +137,28 @@ export async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** A binary reply (audio) with the page's learner and language, the 401
+ *  and the stale-learner 409 as req() has them; an error reply's JSON
+ *  message becomes the ApiError. */
+export async function reqBlob(url: string, init?: RequestInit): Promise<{ blob: Blob; headers: Headers }> {
+  const res = await send(url, init);
+  check401(res);
+  if (!res.ok) {
+    const text = await res.text();
+    let reply: Partial<ErrorReply> | null = null;
+    try {
+      const body: unknown = text ? JSON.parse(text) : null;
+      reply = body && typeof body === "object" ? (body as Partial<ErrorReply>) : null;
+    } catch {
+      /* non-JSON error page */
+    }
+    if (res.status === 409 && reply?.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
+    const err = reply?.error;
+    throw new ApiError(typeof err === "string" ? err : text.slice(0, 200) || `${res.status} ${res.statusText}`, res.status, reply?.code);
+  }
+  return { blob: await res.blob(), headers: res.headers };
+}
+
 export function json(body: unknown, method = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }

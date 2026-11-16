@@ -82,6 +82,8 @@ declare module "*/scripts/match.mjs" {
     nativeLanguage: string;
     targetVariant: string;
     kind?: "target" | "meaning";
+    heard?: boolean;
+    spoken?: boolean;
   }): string;
   export function parseGraderReply(text: unknown, opts?: { strict?: boolean }): { accepted: boolean; rating_hint: "good" | "hard"; note: string } | null;
 }

@@ -1,6 +1,6 @@
 // Practice in the database (docs/DATA.md §Practice modes, §Grading): the
-// rows a flashcard session reads (one language profile's phrases and their
-// recognize and produce cards, today's reviews) and the one write an answer
+// rows a practice session reads (one language profile's phrases and their
+// recognize, produce and listen cards, today's reviews) and the one write an answer
 // makes (its review row, the card's new FSRS state, the phrase's last
 // practised time and, for an accepted produce answer, its alternates). The
 // pure half (the queue, the day, grading) is scripts/practice.mjs; the
@@ -27,7 +27,7 @@
 // of the card carries its submit id: answered with that review, nothing
 // written) or another answer (ECONFLICT: skip it).
 //
-// What a flashcard review keeps beyond the card's state goes into its
+// What a practice review keeps beyond the card's state goes into its
 // `card_before` jsonb, beside the FSRS fields (fromRow and cardVersion
 // read only those): `submit_id` (the submit that wrote it) and
 // `added_alternate` (the answer this review added to the phrase's
@@ -38,7 +38,7 @@
 import { and, desc, eq, inArray, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import { fromRow, masteryBand, review as fsrsReview, toRow, type CardState, type Rating } from "../../scripts/fsrs.mjs";
 import { cardVersion, phraseRevision, withAlternate, withoutAlternate, type CandidatePhrase, type Outcome } from "../../scripts/practice.mjs";
-import type { PracticeAnswerReply, PracticeSkill, PracticeVerdict } from "../../web/shared/practice.ts";
+import type { PracticeAnswerReply, PracticeDrill, PracticeSkill, PracticeVerdict } from "../../web/shared/practice.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { cards, phrases, reviews } from "./schema.ts";
 
@@ -54,13 +54,16 @@ export class PracticeError extends Error {
   }
 }
 
-const SKILLS: PracticeSkill[] = ["recognize", "produce"];
+const SKILLS: PracticeSkill[] = ["recognize", "produce", "listen"];
+/** The review modes a practice answer writes (reviews.mode): every one but
+ *  a session's recap. A submit id or an override is looked up among these. */
+const DRILL_MODES: PracticeDrill[] = ["flashcard", "listening", "speak"];
 
 /* ---------------------------------- reads ---------------------------------- */
 
 /**
- * What the queue is built from: the bank's phrases a flashcard can ask
- * (words and a meaning, not suspended) with their recognize and produce
+ * What the queue is built from: the bank's phrases a card can ask
+ * (words and a meaning, not suspended) with their recognize, produce and listen
  * cards. Read whole, like the bank's list: one learner's language.
  */
 export async function practiceCandidates(db: Db, profile: LanguageProfileRef): Promise<CandidatePhrase[]> {
@@ -150,7 +153,7 @@ async function lockPhraseAndCard(tx: Db, profile: LanguageProfileRef, phraseId: 
   return { phrase, card };
 }
 
-/** What a flashcard review stores in card_before besides the card. */
+/** What a practice review stores in card_before besides the card. */
 interface ReviewExtras {
   submit_id?: string;
   added_alternate?: string;
@@ -161,7 +164,7 @@ const extrasOf = (row: ReviewRow): ReviewExtras => (row.cardBefore ?? {}) as Rev
 async function reviewBySubmit(tx: Db, profile: LanguageProfileRef, cardId: string, submitId: string): Promise<ReviewRow | undefined> {
   return forLanguageProfile(tx, profile).get(
     reviews,
-    and(eq(reviews.cardId, cardId), eq(reviews.mode, "flashcard"), sql`${reviews.cardBefore}->>'submit_id' = ${submitId}`) as SQL,
+    and(eq(reviews.cardId, cardId), inArray(reviews.mode, DRILL_MODES), sql`${reviews.cardBefore}->>'submit_id' = ${submitId}`) as SQL,
   );
 }
 
@@ -174,6 +177,8 @@ async function latestReview(tx: Db, profile: LanguageProfileRef, cardId: string)
 export interface AnswerWrite {
   phraseId: string;
   skill: PracticeSkill;
+  /** The drill the answer came from: the review's mode. */
+  drill: PracticeDrill;
   /** The card version the client answered against. */
   version: string;
   /** The phrase revision the card was shown (and graded) at: an edit of
@@ -196,7 +201,7 @@ export interface AnswerWrite {
 
 /**
  * Record one answer (DATA.md §Grading), in one transaction: the reviews row
- * (mode flashcard, the card's state before it in `card_before`), the card's
+ * (its mode the drill: flashcard, listening or speak; the card's state before it in `card_before`), the card's
  * new FSRS state, the phrase's last practised time and, for an accepted
  * produce answer, the answer among its alternates. A repeat of a submit
  * already recorded gets that review back (`replayed`), writing nothing.
@@ -225,7 +230,7 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
     const [updated] = await mine.update(cards, toRow(next), eq(cards.id, card.id));
     const [row] = await mine.insert(reviews, {
       cardId: card.id,
-      mode: "flashcard",
+      mode: w.drill,
       rating: outcome.rating,
       answer: w.answer,
       verdict: outcome.verdict,
@@ -256,7 +261,7 @@ export function reviewId(v: unknown): number | null {
 }
 
 /**
- * Change a flashcard answer's grade (DATA.md §Grading, Override): the card
+ * Change a practice answer's grade (DATA.md §Grading, Override): the card
  * is restored from the review's `card_before` and reviewed again, at the
  * review's own time, with the learner's rating; the review row keeps its
  * answer and note and becomes that rating with verdict `self`. Only the
@@ -275,7 +280,7 @@ export async function overrideReview(
 ): Promise<PracticeAnswerReply> {
   return db.transaction(async (tx) => {
     const mine = forLanguageProfile(tx, profile);
-    const found = await mine.get(reviews, and(eq(reviews.id, id), eq(reviews.mode, "flashcard")) as SQL);
+    const found = await mine.get(reviews, and(eq(reviews.id, id), inArray(reviews.mode, DRILL_MODES)) as SQL);
     if (!found) throw new PracticeError("ENOENT", "no such review");
     const cardRow = await mine.get(cards, eq(cards.id, found.cardId));
     if (!cardRow) throw new PracticeError("ENOENT", "no such review");
