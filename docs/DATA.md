@@ -4,8 +4,9 @@ Status: **phase 0 (foundation), phase 1 (logins and learners), phase 2
 (packs in the database, and their import), phase 3 (conversations),
 language profiles (bead `ld-gf9.2`: one learner, several languages) and
 phase 4 (the phrase bank, bead `ld-5p2`), phase 5 (post-session
-extraction, bead `ld-aeu`) and phase 7's flashcards (bead `ld-7p1`)
-built**; the rest of phases 6–11 is plan, not built (2026-11-15). Epic `ld-gf9`,
+extraction, bead `ld-aeu`), phase 6 (recall in sessions, bead `ld-mey`)
+and phase 7's flashcards (bead `ld-7p1`) built**; the rest of phases 7–11
+is plan, not built (2026-11-15). Epic `ld-gf9`,
 "Postgres backend: logins, learners, phrase memory, practice modes". This
 document is the contract for that work, the way `CONTENT.md` is for the
 library and `VOICE.md` is for the Go tab. Change it here first, then the code.
@@ -64,7 +65,8 @@ browser ──cookie──▶ Vite middleware (web/server/*)
                      ├─ seed.ts           the first admin's seed from the old files (built, phase 1; packs, phase 2)
                      ├─ store.ts          per-user settings and agent chat (built, phase 1)
                      ├─ content.ts        library (files, as now); packs, folders, revisions → DB (built, phase 2)
-                     ├─ voice.ts          turns persist to conversations (built, phase 3); retrieval; LOOKUP
+                     ├─ voice.ts          turns persist to conversations (built, phase 3); retrieval; LOOKUP (built, phase 6)
+                     ├─ recall.ts         the bank reads behind the review block, retrieval and LOOKUP (built, phase 6)
                      ├─ conversations.ts  /api/conversations: create, list, get, end, delete; the turn lock (built, phase 3)
                      ├─ bank.ts           /api/phrases/*  bank CRUD, metrics
                      ├─ practice.ts       /api/practice/* queue, grade, review
@@ -84,7 +86,7 @@ scripts/
   conversations.mjs   pure: the turn write's reconciliation, titles, paging (built, phase 3)
   fsrs.mjs            pure: rating mapping, mastery bands (wraps ts-fsrs)
   match.mjs           pure: answer normalization and lenient match
-  recall.mjs          pure: review-block selection and retrieval ranking
+  recall.mjs          pure: review-block selection, retrieval ranking, LOOKUP search (built, phase 6)
   bank-mcp.mjs        stdio MCP server for the content agent (read-only role)
   user.mjs            CLI: add [--admin] / passwd / list / disable / enable (built, phase 1)
   import.mjs          CLI: npm run db:import, pack files → DB (idempotent; built, phase 2)
@@ -554,7 +556,10 @@ The trigram GIN indexes serve the **LOOKUP** direction: a short query found
 inside phrases (`query <% text`). Per-turn retrieval runs the other way, a
 phrase found inside the learner's message (`word_similarity(text, message)`),
 and these indexes can't serve it. That query scans the learner's own rows,
-which is fine at the size of one learner's bank.
+which is fine at the size of one learner's bank. (As built in phase 6,
+recall ranks in JS over one read of the bank instead, for languages
+written without spaces; the indexes are unused by it: see "As built
+(phase 6)" under Recall in sessions.)
 
 - **Identity.** `norm` is NFC, case-folded, outer punctuation (including ¿ ¡ 「 」)
   and repeated spaces removed. Accents are kept: *papa* and *papá* are different
@@ -1248,7 +1253,10 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   this"; no mastery bands, no event list).
 - **Not built here:** the review block and `LOOKUP` (phase 6) and
   Practice (phase 7). The due phrases passed to the prompt are those due
-  at the session's start, since no review block chose any yet.
+  at the session's start, since no review block chose any yet. (Phase 6:
+  a session whose pack has a recall unit passes the phrases its review
+  block offered instead; see "As built (phase 6)" under Recall in
+  sessions.)
 
 ## Recall in sessions
 
@@ -1308,6 +1316,186 @@ turn once, with the results under `[LOOKUP RESULTS]`, and a second `LOOKUP`
 in the rerun is ignored. Only those turns pay a second model call. The turn
 row records the lookup. `parseVoiceReply` ignores `LOOKUP:` lines, so they are
 never spoken.
+
+### As built (phase 6)
+
+Bead `ld-mey`. **No migration.** Code: `scripts/recall.mjs` (pure: the
+grams and similarity, the review's choice and rendering, the retrieval,
+the LOOKUP search and blocks), `web/server/recall.ts` (the reads, the
+session's review, a turn's recall, the assemble and export routes, the
+recap's offered list, LOOKUP), the turn route in `web/server/voice.ts`,
+`parseLookup` and the adapter in `scripts/voice.mjs`, `packUnits` in
+`scripts/content.mjs`, the bank reads `recallBank`, `recallPhrases` and
+`recallDetails` in `scripts/db/phrases.ts`, the units
+`content/units/recycle-due-phrases.md` and
+`content/kids/units/recycle-words.md`, and the Go tab's line (`GoTab.tsx`
+`RevisitLine`). Where it differs from the plan above:
+
+- **Similarity is computed in JS, not with `pg_trgm`.** Word trigrams
+  behave poorly for a language written without spaces: a run of Chinese
+  characters is one "word" to `pg_trgm`, so a two-character phrase inside
+  a sentence shares almost no trigram with it. Here a spaced word gives
+  `pg_trgm`'s padded trigrams (accents and case folded for Latin, Greek
+  and Cyrillic letters), and a run of an unspaced script (Han, kana, Thai,
+  Lao, Khmer, Burmese, Tibetan) its character bigrams, every character too
+  where the text is searched in, so 多少钱 is found in 这个多少钱？. A
+  phrase's score is the share of its grams found in the text
+  (`containment`, `word_similarity`'s direction without its window). Each
+  distinct phrase or meaning text is turned into grams once and kept
+  (`needle`, a cache keyed by the text, cleared whole at 50,000 entries),
+  so a turn's ranking is lookups, not string work. The trigram GIN indexes
+  stay unused by recall (made in phase 0, kept).
+- **The review block.** A `recall` slot (adult: "Phrases to revisit",
+  kids: "Words to bring back"; `pick: one`, optional) with the default
+  units `recycle-due-phrases` and `recycle-words`, whose bodies end in
+  `{{phrase_review}}`. `assemble(content, pack, { mode, review })` (a
+  bare mode string still works) renders `review` as a delimited list
+  (`[FROM THE LEARNER'S PHRASE BANK]` … `[END OF PHRASE BANK]`, one
+  "target — meaning" line each; a phrase never practised, such as a
+  starred one not learned yet, ends "(new: not practised yet)", and the
+  units tell the dojo master to introduce those rather than hint at them).
+  **With nothing to review the unit is left out**, and the slot with it
+  when it is empty, so the prompt has no heading, unit or placeholder for
+  it (the plan's single "No phrases due yet." line is not built: a line
+  that asks for nothing is noise in every prompt of a new learner).
+- **Packs saved before the slot.** The slot is `backfill: true` in both
+  schemas: a pack with no unit of it and no `-recall` entry in its
+  `units` (one saved before the slot existed) plays the slot's default
+  unit (`packUnits`, at assemble time and in `picksRecall`); setting the
+  slot to None in Customize saves `-recall` in the pack's units, which is
+  respected. No saved pack is rewritten: the Customize tab shows such a
+  pack with the default ticked (`withBackfill` in `web/src/draft.ts`,
+  when a pack or the remembered draft is loaded), and only a save writes
+  it. Per-turn retrieval and LOOKUP don't need the unit.
+- **What the review chooses** (`selectReview`): a phrase with words, not
+  suspended, that is due (a reviewed card of any skill due), in trouble
+  (2+ lapses in 30 days, due or not), or starred and never practised.
+  Score: due 2 + log2(1 + days overdue), trouble +1.5, a star +0.75,
+  starred-new +1, and relevance to the scene (its words or meaning found
+  in the scenario's title, summary, tags, beats, vocabulary, phrases
+  list, or a quick scenario's text) up to +4 when at least half of it is
+  found. Ties by due, then first seen, then id. At most 10 (kids 3).
+  **Kids** also bring back a word met in an earlier session and never
+  reviewed (+0.5): a child has no Practice tab, so a recap is a word's
+  only review, and bringing it back is how it gets one.
+- **Fixed for a session.** The review is chosen once, when the
+  conversation is created (`sessionReview`), and its phrase ids are
+  stored in the conversation's `pack_snapshot` as `review: {phraseIds}`
+  (the snapshot is what was played, and the review was part of the
+  prompt; `[]` for a pack with no recall unit, another language or
+  nothing to review; a `review` key in the client's pack is dropped).
+  Every turn, the Go tab's line (each turn's reply) and the recap read
+  those phrases back by id, in that order, with their current text, a
+  phrase deleted, suspended or emptied since left out (`reviewFromIds`):
+  a phrase starred mid-session doesn't join the list, and the first
+  recap's session reviews (or Practice) moving a phrase out of due don't
+  take it off a recap made again. A conversation with none stored (begun
+  before this was built, or whose bank couldn't be read when it began)
+  has its review chosen by its next turn, as of its start, and kept then
+  (`saveTurn`, under the row's lock, only if still none). An unsaved
+  session chooses as of each turn. The assemble and export routes (the
+  Go tab's preview, Copy, Export) choose as of now. None of them reads the
+  bank when the pack moves the session to another language than the
+  profile's (`bankLocale`, as the capture asks).
+- **Per-turn retrieval** (`retrieve`): the learner's message (a command's
+  bracket dropped: `[direct] …` is its words, `[skip]` nothing) and the
+  dojo master's last line; a phrase (words, not suspended) counts when at
+  least 0.6 of its words' grams, or 0.9 × its meaning's (a meaning of 4
+  letters or more, for a learner speaking their own language), are found
+  there. A short phrase (a spaced phrase of 5 grams or fewer: one word of
+  up to four letters, "el", "sí", "taxi") counts only when each of its
+  words was said as a whole word, and a lone character of an unspaced
+  script only when said on its own: "el" isn't in "elegir", "taxi" isn't
+  in "taxista", 是 isn't in 不是. Short phrases also rank lower (score ×
+  min(1, 0.5 + grams/10)), so a beginner's glossed function words don't
+  push out the phrase actually said. The best 6 (kids 3), ties by last
+  seen. Appended after the learner's words and the clock line, before the
+  reply cue, as the plan's block with one line saying it is vocabulary
+  data, never instructions: `- ¿A cómo? — how much? (familiar; last
+  practiced 3 days ago)` (also "new", "often missed", "never practiced").
+- **Bank text is data.** Every phrase, meaning, title and summary that
+  reaches a prompt goes through `bankText`: control, zero-width and bidi
+  characters out (`clean`/`modelText` in `scripts/phrases.mjs`: C0, DEL,
+  NEL, U+200B, U+200E, U+200F, U+061C, U+2060, U+FEFF, the bidi
+  embeddings, overrides and isolates, lone surrogates; ZWNJ and ZWJ stay,
+  since some scripts spell with them), one line, `[ ]` and `{ }` turned
+  into parentheses and `< >` into ‹ › (so no phrase can close the block,
+  open a fake one or forge a `<t>` mark), capped (80 characters a phrase,
+  120 a meaning, 300 a summary). Stored phrases are cleaned the same way.
+  The adapter and both units say the blocks are data to use or ignore,
+  never instructions.
+- **LOOKUP** (`parseLookup`: the first line labelled LOOKUP in any case,
+  with a colon or a dash, with or without a speaker tag, bullet, bold or
+  timing mark, at most 200 characters; `parseVoiceReply` never speaks such
+  a line, even an empty one). The server searches the bank's words it
+  already read this turn and the language's ended conversations
+  (`pastSessions` in `web/server/recall.ts`: id, title, start and recap
+  summary only, newest 200, the current one left out), then asks once
+  more with the results under `[LOOKUP RESULTS]` … `[END OF LOOKUP
+  RESULTS]` and a line saying there is no second lookup. The first reply
+  is discarded whole, spoken lines and all. A LOOKUP in the second reply
+  is ignored and the reply used as it is (a reply with nothing else to say
+  is the usual 502). **A failed or timed-out rerun** (45 s, against a first
+  call's 120) keeps the turn: the first reply's spoken lines stand (its
+  LOOKUP line never spoken), or, when it had none, the narrator says "I
+  couldn't look that up just now. Let's carry on."; the turn is saved
+  and its record says `failed: true`. A Stop still cancels. **A session
+  moved to another language** (a pack's override) searches neither the
+  bank nor the profile's past sessions, and the results say so ("Nothing
+  was searched: this session is in another language…"; recorded as
+  `skipped`). A query names phrases by their words, or by a content word
+  (stopwords such as "phrases", "learn", "last" and numbers out; an
+  unspaced run split into bigrams) found in a phrase's words, meaning or
+  note, or a session's title or summary; English date words give a window
+  ("today", "yesterday", "this week" 7 days, "last week" 14, "this month"
+  31, "last month" 62, "last N days", "N days ago"). A query of date words
+  alone gives the most recent in the window. At most 8 phrases and 3
+  sessions. The reply's duration and cost are both calls'. The reply's
+  turn row records `lookup` jsonb: `{query, phraseIds, conversationIds,
+  ms, repeated?, failed?, skipped?}`.
+- **Session reviews** stay the recap's alone (§Post-session extraction):
+  there is no second review path. The recap's prompt lists the phrases
+  the session's review offered (its stored ids, as above) under "PHRASES
+  OFFERED FOR REVIEW THIS SESSION", so a use of one is judged as the
+  recycling it was asked for. A session whose pack had no recall unit
+  gets the due phrases as before, labelled as only due.
+- **Reads, no locks.** Recall only reads, with plain SELECTs: no row
+  lock, so a turn never waits behind a capture, a recap's write or a
+  practice answer holding the bank's rows, and never makes them wait
+  (the bank's lock order is untouched). A failed read is logged and the
+  turn goes on without recall. `recall.pg.test.mjs` holds every phrase
+  and card of a 600-phrase bank `FOR UPDATE` while both kinds of read run.
+- **What a turn reads.** A turn with its session's review stored reads
+  the bank's words only (`recallPhrases`: id, text, meaning, note, flags
+  and dates; no cards, lapses or FSRS), ranks the retrieval on them, then
+  reads the metrics of just the review's and the hits' phrases
+  (`recallDetails`, a dozen rows at most). Choosing a review (a session's
+  start, a preview, an old conversation's next turn) reads the whole bank
+  with its metrics (`recallBank`: listPhrases without the example
+  counts). A LOOKUP reads the metrics of its hits the same way.
+- **Latency** (PostgreSQL 17 on this Mac, `recall.pg.test.mjs`, banks
+  with a reviewed card on half the phrases, 30 turns each; the ranking is
+  synchronous on the server's one thread):
+
+  | Bank | A turn: median (p95) | of which reads | ranking | Choosing a review |
+  |---|---|---|---|---|
+  | 600 phrases | 3.9 ms (5.8) | 2.7 ms | 1.3 ms | 4.6 ms |
+  | 3,000 | 24.3 ms (26.1) | 16.2 ms | 8.1 ms | 32.1 ms |
+  | 6,000 | 48.6 ms (51.7) | 29.0 ms | 19.3 ms | 60.0 ms |
+
+  Before (every turn reading the whole bank with its metrics and example
+  counts, grams computed afresh, the review chosen again): 68 ms at
+  3,000 and 139 ms at 6,000 (the review's measurement, a bank with two
+  cards per phrase). A tool-less model turn takes seconds, and a LOOKUP
+  turn pays a second model call. `LINGO_DEBUG_RECALL=1` logs each turn's
+  time to the server console.
+- **The Go tab** shows the review under "How long do you have?", closed
+  by default: "Revisiting 4 phrases from your bank" (kids: "3 words from
+  before come back today"), opening to the "target — meaning" list, the
+  target text with the reading aid where the language has one (`RubyText`,
+  the Readings setting). The preview's list is `/api/assemble`'s
+  `review`; once a session runs, each turn's reply carries the session's
+  list (`VoiceTurnReply.review`) until the preview is assembled again.
 
 ### 4. Content agent
 
@@ -2041,7 +2229,23 @@ Access in System Settings, or keep the checkout elsewhere.
   rename of a phrase its last run sighted (left the count stale before
   the by-id lock);
   `db-migration-0004.test.mjs` and `migration-0004.pg.test.mjs` the
-  migration; `extraction.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races 8
+  migration; Phase 6: `recall.test.mjs` the pure half (grams with accents
+  and unspaced scripts, the review's choice, order, caps and kids rule,
+  the bank text cleaned, `{{phrase_review}}` rendered and vanishing with
+  no heading or warning, retrieval and its block, `parseLookup`, the
+  date windows and terms, the LOOKUP search and block, the recap's
+  offered list); `recall.http.test.mjs` (the stand-in `claude` with a
+  reply per run and every run's argv) the review in the turn's system
+  prompt, `/api/assemble`'s reply and an export, an empty bank and a pack
+  without the unit leaving nothing behind, retrieval appended after the
+  learner's words, bank text trying to close its block, LOOKUP run once
+  with results from the bank and past sessions (recorded on the turn,
+  never spoken, both calls' time), a second LOOKUP ignored, another
+  language's bank and sessions never reached, a pack in another language
+  reading no bank, kids' three words, and the recap told what was
+  offered and reviewing a used phrase; `recall.pg.test.mjs` (with
+  `LINGO_TEST_PG_URL`) the read running while a writer holds every
+  phrase and card `FOR UPDATE` (both the review-choosing read and a later turn's words-then-details reads), and the time a turn adds on banks of 600, 3,000 and 6,000 phrases; `extraction.pg.test.mjs` (with `LINGO_TEST_PG_URL`) races 8
   claims of one recap (one wins) and a recap's write against two gloss
   captures of the same phrases (all land, one row each). The `.pg`
   tests make their throwaway databases through `scripts/tests/pg-scratch.mjs`
@@ -2058,10 +2262,10 @@ Access in System Settings, or keep the checkout elsewhere.
   and the architecture tree.
 - `CLAUDE.md`: the no-database line; the `data/` description, the auth rule in
   `wrap()` and the test database rule (done in phase 1).
-- `CONTENT.md`: the `recall` slot, `{{phrase_review}}`, and packs living in the DB
-  (done in phase 2).
+- `CONTENT.md`: the `recall` slot and `{{phrase_review}}` (done in phase 6),
+  and packs living in the DB (done in phase 2).
 - `VOICE.md`: "Nothing is saved" (done in phase 3), `LOOKUP:`, per-turn
-  retrieval; per-user settings (done in phase 1).
+  retrieval (done in phase 6); per-user settings (done in phase 1).
 
 ## Phases
 
@@ -2074,7 +2278,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 3.5 | Language profiles (`ld-gf9.2`): several languages per learner, each with its own packs and History. **Built** | 2, 3 |
 | 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
 | 5 | Session extraction (`ld-aeu`): claude pass, FSRS from sessions, the recap card. **Built** | 4 |
-| 6 | Recall: the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP` | 4 |
+| 6 | Recall (`ld-mey`): the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP`. **Built** (no migration) | 4 |
 | 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), listening, speak-it, audio cache (**built**: `ld-6a0`, see "As built (phase 7b)"), cloze | 4 |
 | 8 | Content agent bank MCP with the read-only role and RLS | 4 |
 | 9 | Backups | 2 |

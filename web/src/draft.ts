@@ -155,13 +155,40 @@ export function unslottedUnits(content: ContentReply): Unit[] {
 }
 
 /** pick:one — replace whatever this slot had, in its old position (so the
- *  pack's order elsewhere is undisturbed); `null` clears the slot. */
+ *  pack's order elsewhere is undisturbed); `null` clears the slot. Clearing
+ *  a `backfill` slot writes its opt-out ("-recall"), so the pack is not
+ *  taken for one saved before the slot existed (withBackfill). */
 export function chooseOne(draft: Draft, content: ContentReply, slot: Slot, unitId: string | null): Draft {
-  const inSlot = new Set(unitsForSlot(content, slot.id).map((u) => u.id));
+  const inSlot = new Set([...unitsForSlot(content, slot.id).map((u) => u.id), slotOptOut(slot.id)]);
   const at = draft.units.findIndex((id) => inSlot.has(id));
   const rest = draft.units.filter((id) => !inSlot.has(id));
-  if (unitId) rest.splice(at === -1 ? rest.length : at, 0, unitId);
+  const put = unitId ?? (slot.backfill ? slotOptOut(slot.id) : null);
+  if (put) rest.splice(at === -1 ? rest.length : at, 0, put);
   return { ...draft, units: rest };
+}
+
+/** A units entry saying a `backfill` slot was emptied on purpose; mirrors
+ *  slotOptOut in scripts/content.mjs. */
+export const slotOptOut = (slotId: string) => `-${slotId}`;
+
+/** How many units a pack has, opt-out entries not counted. */
+export const unitCount = (units: string[]) => units.filter((id) => !id.startsWith("-")).length;
+
+/** A draft as it plays, for a pack loaded from the Library or the browser:
+ *  each `backfill` slot it has no unit of and no opt-out for (a pack saved
+ *  before the slot existed) gets the slot's default unit, as the server's
+ *  packUnits (scripts/content.mjs) does when it assembles, so Customize
+ *  shows what the prompt uses. Nothing is saved until the learner saves. */
+export function withBackfill(content: ContentReply, draft: Draft): Draft {
+  let units = draft.units;
+  for (const slot of content.schema.slots) {
+    if (!slot.backfill || units.includes(slotOptOut(slot.id))) continue;
+    const inSlot = unitsForSlot(content, slot.id);
+    if (units.some((id) => inSlot.some((u) => u.id === id))) continue;
+    const defaults = inSlot.filter((u) => u.default);
+    units = [...units, ...(slot.pick === "one" ? defaults.slice(0, 1) : defaults).map((u) => u.id)];
+  }
+  return units === draft.units ? draft : { ...draft, units };
 }
 
 /** pick:any — a newly checked unit goes to the end, so the order within the

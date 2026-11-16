@@ -3,7 +3,7 @@ import { ApiError, listDeletedPacks, undeletePack } from "../api";
 import HistoryView from "./HistoryView";
 import PhraseBankView from "./PhraseBankView";
 import { clearBankRequest, onOpenBank, peekBankRequest } from "../bankLink";
-import { slugify, splitPackId } from "../draft";
+import { slugify, splitPackId, unitCount } from "../draft";
 import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
 import type { PackActions } from "./shared";
@@ -324,7 +324,7 @@ function PackRow({
             {open && <Badge tone="accent">open</Badge>}
           </div>
           <div className={`truncate ${fine} text-fg-3`}>
-            <span className="font-mono">{stem.slice(0, 10)}</span> · {scenario} · {p.units.length} units
+            <span className="font-mono">{stem.slice(0, 10)}</span> · {scenario} · {unitCount(p.units)} units
           </div>
         </div>
         {/* -ml-2 lines the first label up with the title on the stacked phone layout. */}

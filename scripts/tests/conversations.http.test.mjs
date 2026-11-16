@@ -98,7 +98,8 @@ test("POST /api/conversations stores the pack snapshot, title, mode, variant, mo
   assert.equal(c.turnCount, 0);
   const [row] = await q("select c.pack_snapshot, l.name from conversations c join learners l on l.id = c.learner_id where c.id = $1", [c.id]);
   assert.equal(row.name, "Sam");
-  assert.deepEqual(row.pack_snapshot, pack());
+  // With the review it was given (none: this library has no recall slot).
+  assert.deepEqual(row.pack_snapshot, { ...pack(), review: { phraseIds: [] } });
   // A pack's own variant wins; no title falls back to the scenario's.
   const other = await start(sam, { title: "", pack: pack({ overrides: { target_variant: "Castilian Spanish" } }) });
   assert.equal(other.targetVariant, "Castilian Spanish");

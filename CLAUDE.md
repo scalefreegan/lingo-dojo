@@ -31,7 +31,10 @@ drills and a mode picker (phase 7b: the phrase played from
 `scripts/audio-cache.mjs`, `data/audio/` or `LINGO_AUDIO_DIR`, files per user; a
 listening choice checked against the server's own seeded draw; a speak-it
 recording transcribed by `/api/practice/transcribe` with no keyterms; each
-answer's drill is its review's mode). A practice answer locks its phrase
+answer's drill is its review's mode), and recall in sessions (phase 6:
+the review block in the `recall` slot's `{{phrase_review}}`, per-turn
+retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
+reads in `web/server/recall.ts`; no row locks, no migration). A practice answer locks its phrase
 then its card; it names the card's version, the phrase's revision and a
 submit id (a resend replays, anything else stale is a 409).
 

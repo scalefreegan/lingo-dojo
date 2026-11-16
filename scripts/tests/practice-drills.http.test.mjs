@@ -20,6 +20,7 @@ import { fakeClaude } from "./fake-claude.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
+import { matchAnswer } from "../match.mjs";
 
 const root = copyFixture();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
@@ -164,6 +165,41 @@ test("phrase audio: the user's voice for the language, synthesized once, then se
   await sam.call("PATCH", `/api/phrases/${id}`, { text: "la vuelta, por favor" });
   const edited = await sam.call("GET", `/api/practice/audio/${id}`);
   assert.deepEqual([edited.text, synths.length], ["MP3:other-voice:la vuelta, por favor", before + 3]);
+});
+
+test("the Go tab's speak route and the phrase audio share synthesize(): the LOOKUP fallback line is said by the narrator's voice, uncached, each time", async () => {
+  const sam = await someone();
+  const p = await add(sam, PAIRS.slice(0, 1));
+  // The line voice.ts says when a LOOKUP's rerun fails (narrator, the learner's language).
+  const line = { speaker: "narrator", text: "I couldn't look that up just now. Let's carry on.", lang: "native", locale: "es-MX", nativeLocale: "en-US" };
+  const before = synths.length;
+  for (let i = 0; i < 2; i++) {
+    const r = await sam.call("POST", "/api/voice/speak", line);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.text, `MP3:voice-user${n}:${line.text}`);
+  }
+  assert.equal(synths.length, before + 2, "a turn's line is never served from the phrase cache");
+  const audio = await sam.call("GET", `/api/practice/audio/${p["la vuelta"].id}`);
+  assert.deepEqual([audio.status, audio.text, synths.at(-1).voice], [200, `MP3:voice-user${n}:la vuelta`, `voice-user${n}`]);
+});
+
+test("a phrase stored before clean() dropped invisible and bidi marks: no 409, and an answer without the marks matches it (choice, typed, flashcard)", async () => {
+  const sam = await someone();
+  const p = await add(sam, PAIRS);
+  // As an older capture stored them: a zero-width space and bidi marks inside the words and meaning.
+  const id = p["la vuelta"].id;
+  await q("update phrases set text = $2, meaning = $3 where id = $1", [id, "la​ vuel⁦ta⁩", "the‎ change﻿"]);
+  const listening = (await queue(sam, "&mode=listening&length=5")).body.items.find((i) => i.phraseId === id);
+  assert.ok(listening.choices.includes("the change"), JSON.stringify(listening.choices));
+  const picked = await answer(sam, listening, { choice: "the change" });
+  assert.equal(picked.status, 200, picked.text);
+  assert.equal(picked.body.review.verdict, "exact");
+  const flash = (await queue(sam, "&mode=flashcards&direction=produce&length=5")).body.items.find((i) => i.phraseId === id);
+  const typed = await answer(sam, flash, { answer: "la vuelta" });
+  assert.equal(typed.status, 200, typed.text);
+  assert.equal(typed.body.review.verdict, "exact");
+  // The pure matcher, directly: the marks never count as letters.
+  assert.deepEqual(matchAnswer({ answer: "la vuelta", expected: "la​ vuel‮ta", lang: "es" }), { verdict: "exact" });
 });
 
 test("phrase audio is cached per account: the same words in the same voice for another user are their own synthesis", async () => {

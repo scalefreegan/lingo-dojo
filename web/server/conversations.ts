@@ -10,6 +10,7 @@ import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/ow
 import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
+import { storedReviewIds } from "../../scripts/recall.mjs";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
   ConversationCreateRequest, ConversationReply, ConversationSummary, ConversationTurn, ConversationTurnsReply, ConversationsReply, ErrorCode,
@@ -18,6 +19,7 @@ import type {
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
 import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
+import { sessionReview } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 
@@ -275,6 +277,13 @@ export async function saveTurn(
     master: VoiceHistoryItem & { durationMs: number | null; costUsd: number | null };
     pack: PackInput;
     model: string;
+    /** What a LOOKUP in this turn asked and found (scripts/recall.mjs
+     *  lookupRecord), kept on the reply's row; absent for most turns. */
+    lookup?: Record<string, unknown> | null;
+    /** The review this turn chose for a conversation that had none stored
+     *  (one started before reviews were stored: web/server/recall.ts
+     *  turnRecall), kept so its later turns and recap offer the same. */
+    review?: { phraseIds: string[] } | null;
   },
 ): Promise<boolean> {
   return rawDb().transaction(async (tx) => {
@@ -308,6 +317,7 @@ export async function saveTurn(
       turns,
       insert.map((r) => ({
         ...r,
+        ...(r === replyRow && turn.lookup ? { lookup: turn.lookup } : {}),
         conversationId,
         durationMs: r.durationMs == null ? null : Math.round(r.durationMs),
         costUsd: r.costUsd ?? null,
@@ -320,9 +330,12 @@ export async function saveTurn(
     }
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.
+    // A review chosen by this turn is kept only if none is stored yet
+    // (checked under the row's lock): the first one chosen stands.
+    const review = turn.review && storedReviewIds(conv.packSnapshot) == null ? { packSnapshot: { ...conv.packSnapshot, review: turn.review } } : {};
     await mine.update(
       conversations,
-      { turnCount: keep + insert.length, plannedMinutes: readMinutes(turn.pack.overrides?.minutes).minutes, model: turn.model },
+      { turnCount: keep + insert.length, plannedMinutes: readMinutes(turn.pack.overrides?.minutes).minutes, model: turn.model, ...review },
       eq(conversations.id, conversationId),
     );
     return true;
@@ -339,10 +352,17 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
-  const pack = body.pack;
+  // `review` in a snapshot is the server's (below), never the client's.
+  const { review: _ignored, ...pack } = body.pack as PackInput & { review?: unknown };
   await endIdle(ctx.user.id);
+  const library = loadContent(modeRoot(mode));
   const scenarioId = typeof pack.scenario === "string" && pack.scenario ? pack.scenario : null;
-  const scenario = scenarioId ? loadContent(modeRoot(mode)).scenarios.find((s) => s.id === scenarioId) : undefined;
+  const scenario = scenarioId ? library.scenarios.find((s) => s.id === scenarioId) : undefined;
+  // The review block's phrases, chosen once for the whole session
+  // (docs/DATA.md §Recall): every turn, the Go tab and the recap read these
+  // ids back, so a star or a review mid-session doesn't change the list.
+  // Not stored when the bank couldn't be read: the first turn chooses.
+  const review = await sessionReview(ctx.language, { ...library, profile: learnerProfile(ctx.learner, ctx.language) }, pack, mode);
   const scenarioTitle = scenario?.title ?? null;
   // The session's languages, as the prompt sees them (the profile under the
   // pack's overrides, a moved target language dropping the profile's
@@ -351,8 +371,9 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
   const [row] = await profileRows(ctx.language).insert(conversations, {
     // What was played, frozen: the pack changes later, and History shows
-    // what this session was.
-    packSnapshot: pack as unknown as Record<string, unknown>,
+    // what this session was. With the review it was given (`review`), which
+    // is as much a part of what was played as the units.
+    packSnapshot: { ...(pack as unknown as Record<string, unknown>), ...(review ? { review } : {}) },
     scenarioId,
     title: conversationTitle({ title: body.title, pack, scenarioTitle }),
     mode,

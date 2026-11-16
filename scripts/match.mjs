@@ -34,8 +34,16 @@ const CJK = /^(ja|zh|ko)(?![a-z])/i;
  *  apostrophes dropped (don't = dont) and other punctuation treated as a gap,
  *  whitespace collapsed. CJK drops every space. Accents stay; the close check
  *  deals with them separately. */
+/** The invisible and direction marks phrases.mjs `clean` drops (zero-width
+ *  space, word joiner, BOM, bidi marks and overrides; not ZWJ/ZWNJ, which
+ *  some scripts spell with). An answer is cleaned before it is matched, so
+ *  a phrase stored before `clean` dropped them must compare without them
+ *  too. Kept here (phrases.mjs imports this file). */
+const INVISIBLE = /[؜​‎‏‪-‮⁠⁦-⁩﻿]/g;
+
 export function normalizeAnswer(text, lang = "") {
   let s = String(text ?? "")
+    .replace(INVISIBLE, "")
     .normalize("NFC")
     .replace(/[\uFF10-\uFF19\uFF21-\uFF3A\uFF41-\uFF5A]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
     .toLowerCase()

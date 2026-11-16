@@ -167,10 +167,29 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   from the next turn even in a hands-free chain. Restart resets the clock
   and the extra minutes. No limit is the old behaviour exactly: no
   Time budget, no clock line.
+- **Recall** (docs/DATA.md §Recall in sessions, "As built (phase 6)").
+  The pack's recall unit puts a few bank phrases (due, in trouble, starred)
+  in the system prompt, chosen once when the session's conversation is
+  created and stored with it, so every turn and the recap see the same
+  list; the Go tab shows it under "How long do you
+  have?", closed ("Revisiting 4 phrases from your bank"). Each turn also
+  appends bank phrases matching the learner's words or the dojo master's
+  last line, with how well they're known, after the learner's message.
+  The dojo master may answer a question about past practice with one
+  `LOOKUP: <query>` line: the server searches the bank and past sessions'
+  recaps, asks once more with the results, discards the first reply and
+  records the lookup on the turn. The LOOKUP line is never spoken. If the
+  second call fails or times out (45 s), the first reply's spoken lines
+  stand, or the narrator says "I couldn't look that up just now. Let's
+  carry on." (English, fixed). The bank is read once per turn with no
+  locks (words only; about 5 ms at 600 phrases, 50 ms at 6,000);
+  `LINGO_DEBUG_RECALL=1` logs each turn's timing to the server console.
 - **Shown-not-spoken lines** (`GLOSS:`, `CHOICES:`, `STAGE:`) are matched by
   their exact upper-case label (`OPTIONS:` is an older name for
   `CHOICES:`), with or without a speaker tag (any case) or a timing mark in
-  front, so a spoken "Options: …" stays speech.
+  front, so a spoken "Options: …" stays speech. `LOOKUP` is matched in any
+  case with a colon or a dash ("Lookup -", "lookup:"), since a spoken
+  lookup would leak the query; "Look up at the sky" stays speech.
 - **Dojo master** (formerly 💬 English) is a direct line to the dojo master,
   outside the practice. The narrator first says a fixed "Yes? I'm
   listening." (English learners only; a cached clip, not a model turn), then

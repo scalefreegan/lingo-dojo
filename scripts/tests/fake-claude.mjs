@@ -14,6 +14,8 @@
 //   const fake = fakeClaude();
 //   before(() => fake.install());  after(() => fake.restore());
 //   fake.answer("NARRATOR-F: Hola.", 400);  fake.runs();
+//   fake.answers(["LOOKUP: market", "NARRATOR-F: Hola."]);  // one per run, the last repeating
+//   fake.argsLog();  // every non-recap run's argv since the last answer()/answers()
 //   fake.recap(JSON.stringify({ summary: "…", keep: [], events: [], corrections: [] }));  fake.recapRuns();
 
 import fs from "node:fs";
@@ -33,6 +35,8 @@ export function fakeClaude() {
     recapDelay: path.join(bin, "recap-delay.txt"),
     recapRan: path.join(bin, "recap-ran"),
     recapArgs: path.join(bin, "recap-args.json"),
+    replies: path.join(bin, "replies.json"),
+    argsLog: path.join(bin, "args.jsonl"),
   };
   fs.writeFileSync(
     path.join(bin, "claude"),
@@ -43,7 +47,14 @@ const args = process.argv.slice(2);
 const recap = args.some((a) => a.startsWith("You review one finished practice session"));
 fs.appendFileSync(recap ? files.recapRan : files.ran, "x");
 fs.writeFileSync(recap ? files.recapArgs : files.args, JSON.stringify(args));
-const text = fs.readFileSync(recap ? files.recap : files.reply, "utf8");
+if (!recap) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
+let text = fs.readFileSync(recap ? files.recap : files.reply, "utf8");
+// A sequence (answers()): the nth run since it was set takes the nth reply.
+if (!recap && fs.existsSync(files.replies)) {
+  const list = JSON.parse(fs.readFileSync(files.replies, "utf8"));
+  const n = fs.readFileSync(files.argsLog, "utf8").split("\\n").filter(Boolean).length;
+  text = list[Math.min(n, list.length) - 1];
+}
 const delay = Number(fs.readFileSync(recap ? files.recapDelay : files.delay, "utf8")) || 0;
 setTimeout(() => {
   if (text === "!fail") {
@@ -61,7 +72,16 @@ setTimeout(() => {
     answer(text, delay = 0) {
       fs.writeFileSync(files.reply, text);
       fs.writeFileSync(files.delay, String(delay));
+      fs.rmSync(files.replies, { force: true });
+      fs.rmSync(files.argsLog, { force: true });
     },
+    /** One reply per run from now on, in order; the last repeats. */
+    answers(list, delay = 0) {
+      self.answer(list[list.length - 1], delay);
+      fs.writeFileSync(files.replies, JSON.stringify(list));
+    },
+    /** The argv of every non-recap run since the last answer()/answers(). */
+    argsLog: () => (fs.existsSync(files.argsLog) ? fs.readFileSync(files.argsLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []),
     runs: () => count(files.ran),
     /** The next extraction calls' reply (a JSON string, or "!fail"). */
     recap(text, delay = 0) {

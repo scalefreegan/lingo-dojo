@@ -99,7 +99,9 @@ declare module "*/scripts/extraction.mjs" {
     transcript: string | { role?: string; speaker?: string; text: string }[];
     nativeLanguage: string;
     targetVariant: string;
-    duePhrases?: (string | { text: string; meaning?: string })[];
+    duePhrases?: (string | { text: string; meaning?: string | null })[];
+    /** The phrases are the review block the session offered (not just due). */
+    offered?: boolean;
     kids?: boolean;
   }): { system: string; user: string };
   export function parseExtraction(text: unknown): { ok: true; value: Extraction; dropped: number } | { ok: false; error: string };
@@ -159,6 +161,7 @@ declare module "*/scripts/phrases.mjs" {
   export const MAX_CAPTURE_WORDS: number;
   export const MAX_CAPTURE_CHARS: number;
   export function clean(s: unknown): string;
+  export function modelText(v: unknown): string;
   export function isUuid(v: unknown): v is string;
   export function unspaced(locale: unknown): boolean;
   export function charCount(text: unknown): number;
@@ -190,6 +193,57 @@ declare module "*/scripts/phrases.mjs" {
     query?: { q?: string; show?: string; band?: string; sort?: string; offset?: number; limit?: number },
     now?: Date,
   ): Omit<import("../shared/wire.ts").PhrasesReply, "language">;
+}
+
+declare module "*/scripts/recall.mjs" {
+  type PhraseSummary = import("../shared/wire.ts").PhraseSummary;
+  type RecallItem = import("../shared/wire.ts").RecallItem;
+  type Mode = import("../shared/wire.ts").Mode;
+  type When = Date | string | number;
+  export const REVIEW_MAX: { adult: number; kids: number };
+  export const RETRIEVAL_MAX: { adult: number; kids: number };
+  export const RETRIEVAL_THRESHOLD: number;
+  export const LOOKUP_MAX: { phrases: number; conversations: number };
+  export const BANK_OPEN: string;
+  export const BANK_CLOSE: string;
+  export const LOOKUP_OPEN: string;
+  export const LOOKUP_CLOSE: string;
+  export function fold(s: string): string;
+  export function words(s: string): string[];
+  export function grams(s: string): Set<string>;
+  export function containment(needle: Set<string>, hay: Set<string>): number;
+  export function bankText(s: string, max: number): string;
+  export function scenarioText(scenario: unknown): string;
+  export function needle(s: string): { grams: Set<string>; words: string[]; letters: number; whole: boolean };
+  export function selectReview(bank: PhraseSummary[], opts: { scenario?: unknown; mode?: Mode; now: When; max?: number }): RecallItem[];
+  export function reviewFromIds(bank: PhraseSummary[], ids: string[]): RecallItem[];
+  export function storedReviewIds(snapshot: unknown): string[] | null;
+  export const FRESH_MARK: string;
+  export function renderReview(items: { text: string; meaning?: string | null; fresh?: boolean }[] | undefined): string;
+  export function spokenPart(message: string): string;
+  /** What matching needs of a phrase (a PhraseSummary has it all). */
+  type Matchable = Pick<PhraseSummary, "id" | "text" | "meaning" | "note" | "pending" | "suspended" | "lastSeenAt" | "createdAt">;
+  export function retrieve<P extends Matchable>(bank: P[], opts: { message?: string; lastLine?: string; mode?: Mode; max?: number }): P[];
+  export function retrievalBlock(hits: PhraseSummary[], now: When): string;
+  export interface PastSession {
+    id: string;
+    title: string | null;
+    startedAt: When;
+    summary: string | null;
+  }
+  export function lookupWindow(query: string, now: When): [number, number] | null;
+  export function lookupTerms(query: string): string[];
+  export function searchLookup<P extends Matchable, C extends PastSession>(
+    rows: { phrases?: P[]; conversations?: C[] },
+    query: string,
+    now: When,
+  ): { phrases: P[]; conversations: C[] };
+  export function lookupBlock(query: string, results: { phrases?: PhraseSummary[]; conversations?: PastSession[] }, now: When, opts?: { elsewhere?: boolean }): string;
+  export function lookupRecord(
+    query: string,
+    results: { phrases?: { id: string }[]; conversations?: { id: string }[] },
+    opts?: { ms?: number | null; repeated?: boolean; elsewhere?: boolean },
+  ): { query: string; phraseIds: string[]; conversationIds: string[]; ms?: number; repeated?: true; skipped?: string };
 }
 
 declare module "*/scripts/json-reply.mjs" {
