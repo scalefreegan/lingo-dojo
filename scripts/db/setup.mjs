@@ -10,12 +10,14 @@
 // postgres://localhost/lingo_dojo, except in a linked git worktree, which must
 // set one (scripts/db/config.mjs).
 //
-// Not yet: the read-only `lingo_reader` role and row-level security for the
-// content agent's bank MCP (DATA.md, bead ld-t5f), and the one-time import
-// (`npm run db:import`, phase 2).
+// Migration 0005 makes (or reuses) the content agent's read-only role,
+// `lingo_reader` unless LINGO_READER_ROLE names another (config.mjs
+// readerRole), and needs the connecting role to be a superuser or to have
+// CREATEROLE; otherwise it stops with the commands a superuser should run
+// (docs/DATA.md §Content agent).
 
 import pg from "pg";
-import { databaseName, databaseUrl, redact } from "./config.mjs";
+import { databaseName, databaseUrl, readerRole, redact } from "./config.mjs";
 import { applyMigrations, describeMigrations, migrationState } from "./migrations.mjs";
 
 const migrateOnly = process.argv.includes("--migrate-only");
@@ -47,6 +49,9 @@ async function main() {
   await client.connect();
   try {
     const query = async (text, params) => (await client.query(text, params)).rows;
+    // The reader role's name, for 0005 (session-wide: the migrations run in
+    // one transaction on this connection).
+    await query("select set_config('lingo.reader_role', $1, false)", [readerRole()]);
     const { applied } = await applyMigrations(query);
     if (applied.length) console.log(`applied ${applied.length} migration(s)`);
     const after = await migrationState(query);

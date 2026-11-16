@@ -203,3 +203,18 @@ test("0003's hand edits only add the empty-bank guard first, reorder drizzle-kit
   // Past the guard, every statement is one drizzle-kit wrote.
   assert.ok(stmts.slice(1).every((s) => /^(CREATE TABLE "|ALTER TABLE "\w+" ADD (COLUMN|CONSTRAINT)|DROP INDEX|CREATE (UNIQUE )?INDEX)/.test(s)));
 });
+
+test("0005's hand edit only adds the reader's DO block after drizzle-kit's five ENABLE ROW LEVEL SECURITY lines", () => {
+  const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, "0005_bank_reader.sql"), "utf8");
+  const stmts = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
+  assert.equal(stmts.length, 6);
+  assert.deepEqual(stmts.slice(0, 5), ["cards", "conversations", "phrases", "reviews", "turns"].map((t) => `ALTER TABLE "${t}" ENABLE ROW LEVEL SECURITY;`));
+  const block = stmts[5];
+  assert.match(block, /^-- Hand-written \(scripts\/db\/hand-edits\.mjs, 0005\)[\s\S]*DO \$\$[\s\S]*END \$\$;$/);
+  // Never forced (the owner must be unaffected), never a write to a row,
+  // only SELECT and the schema's USAGE granted, and the role to the owner.
+  assert.doesNotMatch(sql, /FORCE ROW LEVEL SECURITY|INSERT INTO "|UPDATE "|DELETE FROM "/);
+  assert.deepEqual([...new Set([...block.matchAll(/GRANT (\S+)/g)].map((m) => m[1]))].sort(), ["%I", "SELECT", "USAGE"]);
+  assert.match(block, /CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS/);
+  assert.match(block, /FOR SELECT TO %I USING/);
+});

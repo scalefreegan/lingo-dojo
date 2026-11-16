@@ -119,3 +119,20 @@ test("argv: the voice turn's profile has no tools and grants nothing", () => {
   assert.ok(args.includes("--disallowedTools"));
   assert.throws(() => buildArgs({ prompt: "x", tools: "all" }), /unknown tool profile/);
 });
+
+test("argv: MCP tools are granted only by full name, only to the content profile", () => {
+  // The content agent's bank server (web/server/chat.ts): its four tools go
+  // into --allowedTools after the file grants, which stay as they are.
+  const bank = ["mcp__bank__search_phrases", "mcp__bank__get_conversation"];
+  const args = buildArgs({ prompt: "hi", mcpConfigPath: "/tmp/x/mcp.json", mcpTools: bank });
+  const allowed = valuesOf(args, "--allowedTools");
+  assert.deepEqual(allowed.slice(-2), bank);
+  assert.deepEqual(allowed.slice(0, 3), ["Read", "Glob", "Grep"]);
+  assert.deepEqual(valuesOf(args, "--tools"), ["Read,Glob,Grep,Edit,Write"], "MCP tools don't widen the built-ins");
+  // No wildcard (a server that grows a tool must not grow the grant), no
+  // built-in smuggled in by name, no server-wide grant.
+  for (const bad of ["mcp__bank__*", "mcp__*", "Bash", "mcp__bank", "mcp__bank__x y"]) {
+    assert.throws(() => buildArgs({ prompt: "x", mcpTools: [bad] }), /not an MCP tool name/, bad);
+  }
+  assert.throws(() => buildArgs({ prompt: "x", tools: "none", mcpTools: bank }), /no MCP tools/);
+});

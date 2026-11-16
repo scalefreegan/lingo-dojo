@@ -45,6 +45,14 @@
 //     conversation, in the row's language delete with SET NULL (col), as in
 //     0000.
 //
+// 0005_bank_reader (the content agent's read-only phrase-bank reader,
+// docs/DATA.md §Content agent): drizzle-kit writes the five ENABLE ROW LEVEL
+// SECURITY lines from schema.ts's .enableRLS(); appended after them is one
+// DO block (READER_0005) that makes or reuses the read-only role (its name
+// is configurable, which drizzle-kit's pgRole/pgPolicy can't express), lets
+// the migrating role SET ROLE to it, grants it SELECT on exactly
+// READER_COLUMNS and creates one policy per table for it alone.
+//
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
 //                                          regenerating it (idempotent)
@@ -52,7 +60,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { MIGRATIONS_DIR } from "./config.mjs";
+import { MIGRATIONS_DIR, READER_ROLE, READER_ROLE_RE } from "./config.mjs";
 
 export const INITIAL_MIGRATION = path.join(MIGRATIONS_DIR, "0000_init.sql");
 
@@ -209,12 +217,108 @@ function phraseBankEdits(generated) {
   return setNull(reorder(generated, ORDER_0003, "0003"), BANK_SET_NULL);
 }
 
+/* ---------------------------- 0005_bank_reader ----------------------------- */
+
+
+/**
+ * Exactly what the reader may SELECT, table → columns. Nothing else is
+ * granted: no account table (users, sessions, settings, agent chat), no
+ * pack, no example sentence, no typed practice answer, no recap JSON or
+ * pack snapshot. `learner_id` and `language_profile_id` are granted so the
+ * bank MCP's own WHERE can name them; the policy filters on them anyway.
+ */
+export const READER_COLUMNS = {
+  conversations: ["id", "learner_id", "language_profile_id", "title", "scenario_id", "target_language", "target_variant", "started_at", "ended_at", "turn_count", "summary", "extraction_status"],
+  turns: ["id", "conversation_id", "learner_id", "language_profile_id", "idx", "role", "text", "lines", "glosses", "from_client", "created_at"],
+  phrases: ["id", "learner_id", "language_profile_id", "text", "meaning", "source", "starred", "suspended", "first_seen_at", "last_seen_at", "seen_count", "last_practiced_at", "created_at"],
+  cards: ["id", "phrase_id", "learner_id", "language_profile_id", "skill", "due", "stability", "stability_fast", "difficulty", "scheduled_days", "learning_steps", "reps", "lapses", "state", "last_review"],
+  reviews: ["card_id", "learner_id", "language_profile_id", "mode", "rating", "reviewed_at", "card_before"],
+};
+
+/** The one policy per table: a row is visible to the reader only when both
+ *  its learner and its language are the ones the transaction set. Unset
+ *  (or empty) settings are NULL, and NULL matches nothing. */
+export const READER_POLICY = "bank_reader_scope";
+const SCOPE =
+  "learner_id = nullif(current_setting('app.learner_id', true), '')::uuid AND language_profile_id = nullif(current_setting('app.language_profile_id', true), '')::uuid";
+
+const MARK_0005 = "-- Hand-written (scripts/db/hand-edits.mjs, 0005):";
+
+const q = (s) => s.replace(/'/g, "''");
+
+const READER_0005 = `${MARK_0005} the content agent's read-only role,
+-- its column grants and its row-level security policies (docs/DATA.md
+-- §Content agent). The role's name is the setting lingo.reader_role when
+-- set (tests on a shared server use a throwaway one), else ${READER_ROLE}.
+-- Roles are cluster-wide: an existing role is reused, after checking it
+-- has no power beyond what this grants. The policies apply to that role
+-- only, and RLS is enabled, not forced, so the table owner (the app) is
+-- unaffected.
+DO $$
+DECLARE
+  reader text := coalesce(nullif(current_setting('lingo.reader_role', true), ''), '${READER_ROLE}');
+  me text := current_user;
+  existing record;
+  t text;
+BEGIN
+  IF reader !~ '${READER_ROLE_RE.source}' THEN
+    RAISE EXCEPTION '0005_bank_reader: lingo.reader_role must look like ${READER_ROLE}[a-z0-9_]*, got %', reader;
+  END IF;
+  SELECT * INTO existing FROM pg_roles WHERE rolname = reader;
+  IF NOT FOUND THEN
+    IF NOT (SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = me) THEN
+      RAISE EXCEPTION '0005_bank_reader: the read-only role % does not exist and % may not create it', reader, me
+        USING HINT = format('As a superuser, run: CREATE ROLE %I NOLOGIN; GRANT %I TO %I WITH INHERIT FALSE, SET TRUE; then npm run db:setup again.', reader, reader, me);
+    END IF;
+    EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS', reader);
+  ELSIF existing.rolsuper OR existing.rolbypassrls OR existing.rolcanlogin OR existing.rolcreaterole OR existing.rolcreatedb OR existing.rolreplication THEN
+    RAISE EXCEPTION '0005_bank_reader: the role % exists with more than read access (superuser, bypassrls, login, createrole, createdb or replication)', reader
+      USING HINT = format('As a superuser, run: ALTER ROLE %I NOSUPERUSER NOBYPASSRLS NOLOGIN NOCREATEROLE NOCREATEDB NOREPLICATION; then npm run db:setup again.', reader);
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = reader) THEN
+    RAISE EXCEPTION '0005_bank_reader: the role % is a member of another role, whose privileges it would have', reader
+      USING HINT = 'Revoke its memberships (pg_auth_members lists them), then npm run db:setup again.';
+  END IF;
+  -- The app's own role enters the reader with SET ROLE inside a read-only
+  -- transaction: it needs SET on it, and must not inherit it.
+  IF NOT pg_has_role(me, reader, 'SET') THEN
+    BEGIN
+      EXECUTE format('GRANT %I TO %I WITH INHERIT FALSE, SET TRUE', reader, me);
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE EXCEPTION '0005_bank_reader: % may not grant itself the role %', me, reader
+        USING HINT = format('As a superuser, run: GRANT %I TO %I WITH INHERIT FALSE, SET TRUE; then npm run db:setup again.', reader, me);
+    END;
+  END IF;
+  -- Exactly these grants in this database, whatever the role had here.
+  EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', reader);
+  EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', reader);
+  EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', reader);
+${Object.entries(READER_COLUMNS)
+  .map(([table, cols]) => `  EXECUTE format('GRANT SELECT (${cols.map((c) => `"${c}"`).join(", ")}) ON "${table}" TO %I', reader);`)
+  .join("\n")}
+  FOREACH t IN ARRAY ARRAY[${Object.keys(READER_COLUMNS).map((t) => `'${t}'`).join(", ")}] LOOP
+    EXECUTE format('CREATE POLICY ${READER_POLICY} ON %I AS PERMISSIVE FOR SELECT TO %I USING (${q(SCOPE)})', t, reader);
+  END LOOP;
+END $$;`;
+
+function bankReaderEdits(generated) {
+  if (generated.includes(MARK_0005)) return generated; // already applied
+  const stmts = statements(generated);
+  const tables = Object.keys(READER_COLUMNS);
+  // drizzle-kit's part is exactly the five ENABLE ROW LEVEL SECURITY lines.
+  const expected = new Set(tables.map((t) => `ALTER TABLE "${t}" ENABLE ROW LEVEL SECURITY;`));
+  for (const s of stmts) if (!expected.has(s)) throw new Error(`hand-edits 0005: a generated statement this edit doesn't expect:\n${s}`);
+  if (stmts.length !== expected.size) throw new Error(`hand-edits 0005: expected ${expected.size} ENABLE ROW LEVEL SECURITY statements, got ${stmts.length}`);
+  return joinStatements([...stmts, READER_0005]);
+}
+
 /* ---------------------------------- all ------------------------------------ */
 
 const EDITS = {
   "0000_init": initEdits,
   "0002_language_profiles": languageProfileEdits,
   "0003_phrase_bank_per_language": phraseBankEdits,
+  "0005_bank_reader": bankReaderEdits,
 };
 
 /** The migration `tag` as committed, from drizzle-kit's output for it. */

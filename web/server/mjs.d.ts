@@ -120,6 +120,10 @@ declare module "*/scripts/claude.mjs" {
     /** "content" (the editing agent's sandbox, the default) or "none" (a
      *  voice turn: no tools at all). */
     tools?: "content" | "none";
+    /** The --mcp-config file's servers (none by default). */
+    mcpServers?: Record<string, { type: "stdio"; command: string; args: string[]; env: Record<string, string> }>;
+    /** Their tools the run may call, each by its full mcp__server__tool name. */
+    mcpTools?: string[];
   }): { result: Promise<ClaudeResult>; kill: () => void };
 }
 
@@ -288,6 +292,9 @@ declare module "*/scripts/db/config.mjs" {
   export function databaseName(url: string): string;
   /** The URL with any password masked. */
   export function redact(url: string): string;
+  /** The content agent's read-only role: LINGO_READER_ROLE, else lingo_reader. */
+  export const READER_ROLE: string;
+  export function readerRole(env?: Record<string, string | undefined>, file?: string): string;
 }
 
 declare module "*/scripts/db/migrations.mjs" {

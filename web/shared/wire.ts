@@ -506,9 +506,20 @@ export interface ChatMessage {
   ts: string;
 }
 
+/** Whose phrase bank the agent can read (read-only; docs/DATA.md §Content
+ *  agent): the session's active learner and language. null when the
+ *  session has no learner picked, and the agent runs without the bank. */
+export interface ChatBankScope {
+  learner: string;
+  /** The language profile's target language (and variant), e.g. "Spanish (Mexico)". */
+  language: string;
+}
+
 /** GET /api/chat/history */
 export interface ChatHistoryReply {
   messages: ChatMessage[];
+  /** What the next run will be able to read. */
+  bank: ChatBankScope | null;
 }
 
 /** POST /api/chat — answered as SSE (see the Chat* event shapes). 409 when a
@@ -523,6 +534,8 @@ export interface ChatRequest {
 /** SSE `start`: the run began, with the model it went out on. */
 export interface ChatStart {
   model: string;
+  /** Whose bank this run can read. */
+  bank: ChatBankScope | null;
 }
 
 /** SSE `heartbeat`, every few seconds while the agent works. */

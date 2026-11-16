@@ -11,6 +11,17 @@
 // to administrator command" with no one listening, an uncaught error that
 // node:test charges to whatever test that file is running. That was the
 // flaky failure of the .pg files run together.
+//
+// Migration 0005 makes the content agent's read-only role, and roles belong
+// to the whole server, not one database: a test must never create (or grant
+// to) the real `lingo_reader` on a server that also hosts real data. So each
+// throwaway database gets its own reader role, named after it
+// (readerRoleFor), and dropped right after the database. The name reaches
+// the migration as `lingo.reader_role` through the connection string
+// createDatabase returns (`options=-c lingo.reader_role=…`, which any role
+// may set for its own session: ALTER DATABASE … SET of a custom setting
+// needs a superuser), so every client and pool made from it migrates with
+// that name.
 
 import crypto from "node:crypto";
 import pg from "pg";
@@ -18,8 +29,17 @@ import pg from "pg";
 /** A fresh, unused name for a throwaway database. */
 export const scratchName = (tag = "x") => `lingo_dojo_test_${tag}_${process.pid}_${crypto.randomBytes(4).toString("hex")}`;
 
-/** Make database `name` on `url`'s server; returns its connection string. */
+/** The reader role of throwaway database `name`: lingo_dojo_test_… →
+ *  lingo_reader_test_… (both carry the process id and random bytes). */
+export const readerRoleFor = (name) => {
+  if (!/^lingo_dojo_test_[a-z0-9_]+$/.test(name)) throw new Error(`not a throwaway database name: ${name}`);
+  return name.replace(/^lingo_dojo_test_/, "lingo_reader_test_");
+};
+
+/** Make database `name` on `url`'s server; returns its connection string,
+ *  whose sessions migrate with its own reader role (readerRoleFor). */
 export async function createDatabase(url, name) {
+  const role = readerRoleFor(name);
   const admin = new pg.Client({ connectionString: url });
   await admin.connect();
   try {
@@ -29,6 +49,8 @@ export async function createDatabase(url, name) {
   }
   const target = new URL(url);
   target.pathname = `/${name}`;
+  const options = target.searchParams.get("options");
+  target.searchParams.set("options", `${options ? `${options} ` : ""}-c lingo.reader_role=${role}`);
   return target.toString();
 }
 
@@ -46,6 +68,8 @@ export async function dropDatabase(url, name, waitMs = 10_000) {
       await new Promise((r) => setTimeout(r, 25));
     }
     await admin.query(`drop database if exists ${name} with (force)`);
+    // Its grants and policies went with the database; nothing else holds it.
+    await admin.query(`drop role if exists ${readerRoleFor(name)}`);
   } finally {
     await admin.end();
   }

@@ -59,7 +59,7 @@
       <img src="docs/screenshots/agent-drawer.png" alt="An agent that edits the library" width="100%">
       <br><sub><i>Agent drawer: asking which units suit a scenario.</i></sub>
       <h3>An agent that edits the library</h3>
-      The chat drawer runs a headless Claude that can read the repo but only write under <code>content/</code>. Every edit is a git commit, so you can revert. It uses your Claude Code login, no API key.
+      The chat drawer runs a headless Claude that can read the repo but only write under <code>content/</code>. Every edit is a git commit, so you can revert. It uses your Claude Code login, no API key. It can also read, never change, the active learner's phrase bank and past sessions, so "write a scenario that drills what I keep missing" works.
     </td>
   </tr>
 </table>
@@ -152,7 +152,12 @@ hostname or keep the others off it. Details: [`docs/DATA.md`](docs/DATA.md#hosti
   traditional form, and your phrases that use it. All offline; see docs/VOICE.md.
 - **Agent drawer** (right edge): ask for new or revised units and scenarios in plain
   language ("add a corrections unit that only flags gender agreement"). New files
-  appear in the slots as soon as the commit lands.
+  appear in the slots as soon as the commit lands. With a learner picked, the agent
+  can also read that learner's phrase bank and past sessions in the active language
+  through four read-only tools (a line in the drawer says whose), for requests like
+  "write a scenario that drills what I keep missing". It reads them as a Postgres
+  role that can only SELECT that learner's rows (docs/DATA.md §Content agent), and is
+  told not to copy personal details into `content/`.
 
 Command line export of a pack file (a pack inside `content/kids/` renders in kids mode; or pass `--mode adult|kids`):
 
@@ -190,7 +195,8 @@ offline export CLI, and the pack files under `content/packs/` seed its packs
 ```
 content/        the product: schema, frame, profile, units, scenarios, seed packs
 scripts/        content.mjs (loader), assemble.mjs (pack -> markdown), export.mjs (CLI),
-                claude.mjs (headless agent spawn), voice.mjs (voice session helpers), tests/ (node --test)
+                claude.mjs (headless agent spawn), bank-mcp.mjs (the agent's read-only phrase-bank
+                MCP server), voice.mjs (voice session helpers), tests/ (node --test)
 web/server/     Vite serve-middleware API behind a same-origin wrap():
                 /api/content, /api/profile, /api/packs, /api/folders, /api/pack-revisions, /api/assemble,
                 /api/export, /api/chat (SSE), /api/settings, /api/voice

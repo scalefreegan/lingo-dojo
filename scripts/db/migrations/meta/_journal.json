@@ -36,6 +36,13 @@
       "when": 1794776407953,
       "tag": "0004_session_recap",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794791873129,
+      "tag": "0005_bank_reader",
+      "breakpoints": true
     }
   ]
 }
