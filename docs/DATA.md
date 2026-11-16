@@ -2207,9 +2207,14 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   no migration). A flashcard's answer side (Reveal on a recognize card,
   or the grade on either) shows the phrase used in a sentence under its
   meaning, from the same `cloze_items`, picked by `pickSentence`: when
-  the phrase has more than one usable sentence, the flashcard never shows
-  the one the phrase's next gap would use (`pickCloze` at the phrase's
-  produce card version as it is now, whichever skill the flashcard is).
+  the phrase has more than one usable sentence, the flashcard doesn't show
+  the one a gap card would use at the produce card's version as it is
+  when the queue is built (`pickCloze` at that version, whichever skill
+  the flashcard is), so a gap asked before the produce card is next
+  reviewed isn't the sentence just read. After that review (in Mixed, a
+  produce card with odd reps is said aloud first; in Flashcards, answering
+  a produce flashcard is that review) the gap picks afresh and may repeat
+  it, about one time in as many sentences as the phrase has.
   Among the others, the learner's own line first, by a salted seed of
   phrase and the flashcard's card version, so the card shows one sentence
   until it is answered; with one sentence, that one. Shown whole, the

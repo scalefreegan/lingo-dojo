@@ -325,9 +325,11 @@ const REVISION_RE = /^[0-9a-f]{16}$/;
  *  the phrase has one (`sentence`: cloze.mjs pickSentence), for its
  *  answer side only: it holds the words, so the page never shows it
  *  before the card is revealed or answered. When the phrase has more than
- *  one sentence, it is never the one the phrase's next gap would use: the
- *  pick a cloze card makes at the phrase's produce card version as it is
- *  now (whichever skill the flashcard itself is). A
+ *  one sentence, it is not the one a gap card would use at the produce
+ *  card's version as it is when the queue is built (whichever skill the
+ *  flashcard itself is), so a gap asked before the produce card is next
+ *  reviewed isn't the sentence just read; after that review the gap picks
+ *  afresh and may repeat it. A
  *  listening card carries neither side nor a sentence: the words are what
  *  the learner must hear, so they come only with the answer's reply (and
  *  the audio from /api/practice/audio/:phraseId); its `choices` (or null:
@@ -338,8 +340,10 @@ function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices =
   // hint), never the words: those come with the answer's reply.
   const seed = `${phrase.id}:${cardVersion(card)}`;
   const cloze = drill === "cloze" ? pickCloze(phrase.cloze, seed) : null;
-  // The next gap is the produce card's, at its version now (a card not
-  // made yet is "0:"): a flashcard of either skill steers clear of it.
+  // A gap is the produce card's: the flashcard (either skill) avoids the
+  // gap's pick at that card's version now ("0:" for a card not made yet).
+  // A review of the produce card moves the version, and the gap then picks
+  // afresh.
   const produce = drill === "flashcard" ? (phrase.cards ?? []).find((c) => c.skill === "produce") : null;
   const sentence = drill === "flashcard" ? pickSentence(phrase.cloze, seed, `${phrase.id}:${cardVersion(produce)}`) : null;
   return {

@@ -399,7 +399,7 @@ test("pickSentence: another sentence than the gap of the same card version would
   assert.equal(pickSentence(null, "x"), null);
 });
 
-test("flashcards carry the phrase in a sentence (another than the phrase's gap would use), both ways; never a listening, speak-it or cloze card", () => {
+test("flashcards carry the phrase in a sentence (not the one a gap would use at the produce card's version now), both ways; never a listening, speak-it or cloze card", () => {
   const own = (p) => item(`Aquí tiene ${p.text}, señora.`, p.text, "example");
   const gen = (p) => item(`Pedimos ${p.text} al mesero.`, p.text);
   const fresh = phrase();
@@ -449,7 +449,7 @@ test("flashcards carry the phrase in a sentence (another than the phrase's gap w
   assert.equal(buildQueue([{ ...fresh, cloze: [] }], { now: NOW, mode: "flashcards" }).items[0].sentence, null);
 });
 
-test("mixed, across reviews: the phrase's gap is never a sentence one of its flashcards showed (the real queue)", () => {
+test("a flashcard doesn't show the sentence a gap would use at the produce card's version when the queue is built: mixed across reviews, and a produce flashcard (the real queue)", () => {
   // A recognize card graded Good, as recordAnswer would leave it.
   const graded = (c, at) => {
     const r = review(c ?? newCard(at), 3, at).card;
@@ -480,15 +480,12 @@ test("mixed, across reviews: the phrase's gap is never a sentence one of its fla
     }
   }
   assert.equal(checked, 400);
-});
-
-test("flashcards mode, produce flashcard: never the sentence its own next gap would use", () => {
+  // A produce flashcard (flashcards mode): the gap at that same card version uses another.
   for (let k = 0; k < 100; k++) {
     const p = phrase({ cards: [card("recognize", 3), card("produce", -1, 1)] });
     p.cloze = [gen2(), gen2()].map((f) => f(p));
     const it = buildQueue([p], { now: NOW, mode: "flashcards", direction: "produce" }).items[0];
     assert.deepEqual([it.skill, it.drill], ["produce", "flashcard"]);
-    // The phrase's next gap: its produce card, at the version it is now.
     const gap = buildQueue([p], { now: NOW, mode: "cloze" }).items[0];
     assert.equal(gap.version, it.version);
     assert.notEqual(it.sentence.id, gap.cloze.id);

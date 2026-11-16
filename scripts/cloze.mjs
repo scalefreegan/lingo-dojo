@@ -413,12 +413,14 @@ export function pickCloze(items, seed) {
 }
 
 /**
- * Which item a flashcard's answer side shows. `gapSeed` is the seed the
- * phrase's next gap card would pick with (pickCloze: the phrase and its
- * produce card's version now); when the phrase has another item, the
- * flashcard never shows that one. Among the others, the same rule (own
- * lines first) by the flashcard's own `seed`, salted; with only one item,
- * that one. Deterministic for the two seeds. Null for none.
+ * Which item a flashcard's answer side shows. `gapSeed` is the seed a gap
+ * card would pick with (pickCloze) at the produce card's version as it is
+ * when the queue is built; when the phrase has another item, the
+ * flashcard doesn't show that one, so a gap asked before the produce card
+ * is next reviewed isn't the sentence just read. After that review the
+ * gap picks afresh and may repeat it. Among the others, the same rule
+ * (own lines first) by the flashcard's own `seed`, salted; with only one
+ * item, that one. Deterministic for the two seeds. Null for none.
  */
 export function pickSentence(items, seed, gapSeed = seed) {
   const list = (items ?? []).filter(Boolean);
