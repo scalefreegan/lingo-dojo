@@ -15,6 +15,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
+// Erasable TypeScript, shared with the Scene tab and the server; Node strips
+// the types (the same as scripts/db/*.ts).
+import { readRandomScene } from "../web/shared/scenes.ts";
 
 // Paths derive from import.meta.url, never process.cwd(): `npm run dev` runs
 // Vite with cwd web/, the CLI and the tests run from the repo root.
@@ -533,6 +536,8 @@ export function loadPackFile(abs, id = path.basename(abs).replace(/\.ya?ml$/, ""
   if (!PACK_ID_RE.test(id)) report("warning", `"${id}" is not a valid pack id (lowercase letters, digits, hyphens; at most one folder); the app cannot save over, move, rename or delete it`);
   if (raw.units != null && !Array.isArray(raw.units)) report("warning", "units should be a list of unit ids; ignored");
   if (raw.overrides != null && !isObj(raw.overrides)) report("warning", "overrides should be a mapping of profile keys; ignored");
+  const random = readRandomScene(raw.random_scene);
+  if ("error" in random) report("warning", `${random.error}; ignored (not a random scene)`);
   const pack = normalizePack(raw, id);
   pack.folder = splitPackId(id).folder;
   return { pack, problems };
@@ -542,15 +547,19 @@ export function loadPackFile(abs, id = path.basename(abs).replace(/\.ya?ml$/, ""
  * Coerce a pack-shaped value (a parsed file, or a JSON body from the UI) into
  * the shape the assembler reads. Lenient by design: a missing field is its
  * empty value, never an error; the assembler warns about what it can't use.
+ * A malformed `random_scene` reads as none (not random): the routes refuse
+ * one before they get here, and loadPackFile warns about a file's.
  */
 export function normalizePack(raw, id) {
   const p = isObj(raw) ? raw : {};
+  const random = readRandomScene(p.random_scene);
   const pack = {
     ...p,
     title: typeof p.title === "string" ? p.title : "",
     created: p.created == null ? "" : p.created instanceof Date ? p.created.toISOString() : String(p.created),
     scenario: typeof p.scenario === "string" ? p.scenario : "",
     quick_scenario: typeof p.quick_scenario === "string" ? p.quick_scenario : "",
+    random_scene: "error" in random ? null : random.value,
     units: Array.isArray(p.units) ? p.units.filter((u) => typeof u === "string") : [],
     overrides: isObj(p.overrides) ? p.overrides : {},
     notes: typeof p.notes === "string" ? p.notes : "",

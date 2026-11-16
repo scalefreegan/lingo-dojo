@@ -19,7 +19,7 @@ import type {
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
-import { conversationIdOf, openConversation, saveTurn, takeTurnLock } from "./conversations.ts";
+import { conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
@@ -347,6 +347,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // or 409 whose code sends the Go tab to start a new one), checked before
     // anything runs. Its part of the history starts at conversationStart.
     const conversation = conversationId ? await openConversation(ctx.user.id, ctx.language, conversationId) : null;
+    // A random scene plays the scenario its conversation drew at the start
+    // (a 409 without one); any other pack plays as sent.
+    const pack = playedPack(body.pack, conversation);
     // The active learner and language are the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
     // Recall (docs/DATA.md §Recall in sessions), from one read of the bank:
@@ -357,27 +360,27 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const now = new Date();
     const lastMaster = history.findLast((m) => m.role === "master");
     const recall = await turnRecall(ctx.language, {
-      content, pack: body.pack, mode, now, conversation,
+      content, pack, mode, now, conversation,
       message,
       lastLine: lastMaster?.role === "master" ? lastMaster.lines.map((l) => l.text).join(" ") : "",
     });
     if (process.env.LINGO_DEBUG_RECALL) console.log(`[lingo-dojo] recall: ${recall.phrases.length} phrases read and ranked in ${recall.ms.toFixed(1)} ms; review ${recall.review.length}, retrieval ${recall.retrieval ? "yes" : "none"}`);
-    const { markdown, warnings } = assemble(content, body.pack, { mode, review: recall.review });
+    const { markdown, warnings } = assemble(content, pack, { mode, review: recall.review });
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
-    const plan = sessionPlan(content, body.pack, mode);
+    const plan = sessionPlan(content, pack, mode);
     const settings = await readVoiceSettings(ctx.user.id);
     // With a time budget (the pack's minutes, plus any +5 min the browser
     // added), one clock line: the browser's elapsed time since the first
     // turn, and the part the last turn ended in. No budget, no line.
     let lastStage: string | null = null;
     for (const m of history) if (m.role === "master" && m.stage) lastStage = m.stage;
-    const clock = clockLine({ minutes: body.pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
+    const clock = clockLine({ minutes: pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
     // The session's narrator gender, drawn by the client at session start,
     // unless the pack's own narrator unit fixes it.
     const systemPrompt =
       voiceSystemPrompt(markdown, mode) +
-      (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)) +
+      (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
       planDirective(plan);
     const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
       const { result } = startClaude({
@@ -446,7 +449,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
         durationMs: run.durationMs, costUsd: run.costUsd,
       };
-      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model, lookup, review: recall.store }).catch((e) => {
+      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack, model: settings.model, lookup, review: recall.store }).catch((e) => {
         console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
         return false;
       });

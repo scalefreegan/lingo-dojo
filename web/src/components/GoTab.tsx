@@ -5,7 +5,8 @@ import type { AssembleResult, ContentReply, ExportResult, PackInput, RecallRevie
 import { useCopyStatus } from "../useCopyStatus";
 import { RubyText } from "./Ruby";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
-import { inBankLanguage, type PackStatus, type SaveOutcome } from "./shared";
+import { RANDOM_COPY_HINT, inBankLanguage, type PackStatus, type SaveOutcome } from "./shared";
+import { scenesWord } from "../../shared/scenes.ts";
 import VoicePanel from "./VoicePanel";
 
 /* Go tab: the calm, final screen. Practising here in the dojo is the main
@@ -18,6 +19,8 @@ export default function GoTab({
   title,
   sourceId,
   sceneTitle,
+  poolSize = null,
+  blocked = null,
   learnerLine,
   notes,
   minutes,
@@ -42,6 +45,10 @@ export default function GoTab({
   title: string;
   sourceId: string | null;
   sceneTitle: string;
+  /** A random scene's pool size; null when the scene isn't random. */
+  poolSize?: number | null;
+  /** Why the session can't start (an empty random pool), or null. */
+  blocked?: string | null;
   learnerLine: string;
   notes: string;
   /** The session length the pack carries (null = No limit), the picker's lengths, and a pick. */
@@ -89,6 +96,11 @@ export default function GoTab({
     resultRef.current = result;
   }, [result]);
   const onReview = useCallback((r: RecallReview) => setLive({ review: r, result: resultRef.current }), []);
+  // A random scene's draw, as the server made it when the session started
+  // (null before Start, and again after Restart until the next one).
+  const random = poolSize != null;
+  const [drawnId, setDrawnId] = useState<string | null>(null);
+  const drawn = random && drawnId ? content.scenarios.find((s) => s.id === drawnId) : undefined;
 
   async function doExport() {
     setExporting(true);
@@ -116,14 +128,33 @@ export default function GoTab({
             type="button"
             className="-mt-1 -mr-1 shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
             onClick={() => copy(markdown)}
-            disabled={!markdown}
+            disabled={!markdown || random}
             aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
-            title="Copy the prompt, to paste into ChatGPT or Claude voice instead"
+            title={random ? RANDOM_COPY_HINT : "Copy the prompt, to paste into ChatGPT or Claude voice instead"}
             data-testid="copy-prompt"
           >
             {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
           </button>
         </div>
+        {random &&
+          (blocked ? (
+            <p role="alert" className="text-sm text-err" data-testid="random-blocked">
+              {blocked}
+            </p>
+          ) : drawn ? (
+            // After Start: the scene the server drew, so the learner knows
+            // what they are walking into. Restart draws another.
+            <div className="mt-1 flex flex-col gap-0.5 rounded-md border border-accent/40 bg-accent-soft px-3 py-2" data-testid="drawn-scene" aria-live="polite">
+              <span className="text-xs tracking-wide text-accent uppercase">Drawn for this session</span>
+              <span className="text-sm font-medium text-fg">{drawn.title}</span>
+              {drawn.summary && <span className="text-sm text-fg-2">{drawn.summary}</span>}
+              <span className="text-xs text-fg-3">Restart ends this session and draws another.</span>
+            </div>
+          ) : (
+            <p className="text-sm text-fg-2" data-testid="random-before-start">
+              A scene is drawn from the {scenesWord(poolSize ?? 0)} in the pool when you start, steering clear of your last few.
+            </p>
+          ))}
         <p className="text-sm text-fg-2">{learnerLine || "Learner not set"}</p>
         <p className="text-sm text-fg-3 tabular-nums">
           {unitCount(pack.units)} unit{unitCount(pack.units) === 1 ? "" : "s"}
@@ -154,7 +185,9 @@ export default function GoTab({
       </div>
 
       {/* The main event: the session here, with native voices. */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || sceneTitle} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} />
+      {/* A random scene's conversation is named after the scene drawn
+          (the server's), not "Random scene". */}
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} />
 
       <div className={narrow}>
 
@@ -168,13 +201,19 @@ export default function GoTab({
           folders={folders}
           onSave={onSave}
         />
-        <Button onClick={() => void doExport()} disabled={!markdown || exporting}>
+        <Button onClick={() => void doExport()} disabled={!markdown || exporting || !!blocked} title={blocked ?? undefined}>
           {exporting ? "Exporting…" : "Export file"}
         </Button>
       </div>
       {exported && (
         <p className="text-sm text-fg-2 sm:text-xs" data-testid="export-path">
           Exported to <code className="font-mono break-all">{exported.path}</code>
+          {exported.drawn && (
+            <span data-testid="export-drawn">
+              {" "}
+              with the scene “{exported.drawn.title}”, drawn from {scenesWord(exported.drawn.pool)}
+            </span>
+          )}
         </p>
       )}
       {exportError && <p className="text-sm text-err sm:text-xs">Export failed: {exportError}</p>}

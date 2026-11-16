@@ -5,9 +5,10 @@ import {
 } from "./api";
 import type { AssembleResult, AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
+  draftPool, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
+import { emptyPoolMessage } from "../shared/scenes.ts";
 import TopBar from "./components/TopBar";
 import SummaryBar from "./components/SummaryBar";
 import SceneTab from "./components/SceneTab";
@@ -234,9 +235,17 @@ export default function App({
 
   const scenarioTitle = useMemo(() => {
     if (!content || !pack) return "";
+    if (pack.random_scene) return "Random scene";
     if (pack.quick_scenario.trim()) return "Quick scenario";
     return content.scenarios.find((s) => s.id === pack.scenario)?.title ?? "";
   }, [content, pack]);
+  // A random scene's pool as the Scene tab counts it (null when the draft
+  // isn't random): the summary bar shows its size, and an empty one blocks
+  // Start with the card's message.
+  const randomPool = useMemo(() => (content && draft && draft.scenarioMode === "random" ? draftPool(content, draft) : null), [content, draft]);
+  const randomBlock = content && draft && randomPool && randomPool.length === 0
+    ? emptyPoolMessage({ collections: draft.randomCollections }, sessionValues(draft, content.profile).target_language)
+    : null;
 
   // The voice panel's languages, memoized so its settings fetch reruns only
   // when the target or native language actually changes.
@@ -451,7 +460,7 @@ export default function App({
         </p>
       )}
       {ready && draft && pack && (
-        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} result={shownResult} pending={assembling} onTab={setTab}
+        <SummaryBar content={ready} draft={draft} pack={pack} sceneTitle={scenarioTitle} poolSize={randomPool?.length ?? null} blocked={randomBlock} result={shownResult} pending={assembling} onTab={setTab}
           onPractice={() => {
             setPracticeRequest(true);
             setTab("go");
@@ -481,6 +490,8 @@ export default function App({
                 title={draft.title}
                 sourceId={draft.sourceId}
                 sceneTitle={scenarioTitle}
+                poolSize={randomPool?.length ?? null}
+                blocked={randomBlock}
                 learnerLine={learnerLine}
                 notes={draft.notes}
                 minutes={validMinutes(minutes)}

@@ -5,7 +5,9 @@
 // Pure and deterministic: no fs, no clock, no randomness, no Map/Set iteration
 // over anything whose order isn't fixed by the inputs. Same content and pack
 // in, byte-identical markdown out — the test assembles twice and compares, and
-// exports are diffable in git because of it.
+// exports are diffable in git because of it. A random scene is drawn by the
+// caller (the server when a session starts, an export), never here: a
+// random pack assembles as a preview with a marked placeholder for the scene.
 //
 // Nothing here throws on a bad pack. Every problem is a warning string and the
 // markdown is still produced, with a visible placeholder where a required
@@ -14,6 +16,7 @@
 import { PLACEHOLDERS, normalizePack, packUnits } from "./content.mjs";
 import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
 import { renderReview } from "./recall.mjs";
+import { emptyPoolMessage, randomPool, scenesWord } from "../web/shared/scenes.ts";
 
 /** The placeholder the review block fills (docs/CONTENT.md, `recall`
  *  slot): a unit that uses it is left out when there is nothing to review. */
@@ -34,6 +37,8 @@ const PROFILE_LABELS = [
 const ROLE_LABELS = { dojo_master: "You (dojo master)", learner: "Learner" };
 
 export const QUICK_SCENARIO_TITLE = "Quick scenario";
+/** A random scene's title before its scene is drawn (the preview). */
+export const RANDOM_SCENE_TITLE = "Random scene";
 const NO_SCENARIO_TITLE = "No scenario";
 
 /** Shown under a required slot the pack left empty. */
@@ -103,7 +108,7 @@ export function assemble(content, rawPack, options = "adult") {
   const profile = effectiveProfile(content.profile, pack.overrides);
 
   // 2. Scenario: by id, or the quick-scenario text as an ad hoc one.
-  const scenario = resolveScenario(content, pack, warn);
+  const scenario = resolveScenario(content, pack, warn, profile);
 
   // The session's location is a setting for the scene, not a fact about the
   // learner: it never shows in the Learner block, and only a scenario that
@@ -223,8 +228,17 @@ export function countStats(markdown) {
   return { words, tokens: Math.round(words * 1.3), chars: markdown.length };
 }
 
-function resolveScenario(content, pack, warn) {
+function resolveScenario(content, pack, warn, profile) {
   const quick = pack.quick_scenario.trim();
+  if (pack.random_scene) {
+    // Not drawn yet: the preview says a scene will be, from how many, and
+    // an empty pool is a warning here (Start and an export refuse it).
+    if (pack.scenario || quick) warn(`The pack is a random scene; its ${pack.scenario ? `scenario ("${pack.scenario}")` : "quick scenario"} is ignored.`);
+    const target = typeof profile.target_language === "string" ? profile.target_language.trim() : "";
+    const pool = randomPool(content.scenarios ?? [], content.languages ?? [], target, pack.random_scene);
+    if (!pool.length) warn(emptyPoolMessage(pack.random_scene, target));
+    return { id: null, title: RANDOM_SCENE_TITLE, summary: "", roles: {}, beats: [], vocab: [], phrases: [], twists: [], body: "", uses_location: false, random: { pool: pool.length } };
+  }
   if (pack.scenario) {
     const found = (content.scenarios ?? []).find((s) => s.id === pack.scenario);
     if (found) {
@@ -304,6 +318,12 @@ function cell(s) {
  *  learner by name ("{{learner_name}} arrives at the gate"), like units. */
 function renderScenario(s, fill, setting) {
   if (s.missing) return `## Scenario\n\n${MISSING_SCENARIO_LINE}`;
+  if (s.random) {
+    const line = s.random.pool
+      ? `_(Random scene: one of the ${scenesWord(s.random.pool)} in its pool is drawn when the session starts, so this preview has no scenario yet.)_`
+      : "_(Random scene: its pool is empty, so no scene can be drawn. Choose other collections or pick a scene.)_";
+    return `## Scenario\n\n${line}`;
+  }
   const where = s.id ? `scenario "${s.id}"` : "the quick scenario";
   const parts = ["## Scenario", `### ${s.title}`];
   if (s.summary) parts.push(s.summary);

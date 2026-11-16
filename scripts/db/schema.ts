@@ -68,7 +68,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { Overrides, VoiceCastNote, VoiceGloss, VoiceLine } from "../../web/shared/wire.ts";
+import type { Overrides, RandomScene, VoiceCastNote, VoiceGloss, VoiceLine } from "../../web/shared/wire.ts";
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -244,6 +244,11 @@ export const packs = pgTable(
     created: text("created").notNull(),
     scenario: text("scenario").notNull().default(""),
     quickScenario: text("quick_scenario").notNull().default(""),
+    /** A random scene (migration 0007): {collections: string[]}, the pool
+     *  the scenario is drawn from when a session starts; null for a pack
+     *  that names its scene (every pack before 0007). Validated by
+     *  web/shared/scenes.ts readRandomScene on every write. */
+    randomScene: jsonb("random_scene").$type<RandomScene>(),
     units: jsonb("units").$type<string[]>().notNull().default([]),
     overrides: jsonb("overrides").$type<Overrides>().notNull().default({}),
     notes: text("notes").notNull().default(""),

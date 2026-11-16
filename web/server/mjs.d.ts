@@ -75,9 +75,13 @@ declare module "*/scripts/content.mjs" {
 }
 
 declare module "*/scripts/assemble.mjs" {
-  /** Pure and deterministic; never throws on a malformed pack. */
+  /** A random scene's title before its scene is drawn ("Random scene"). */
+  export const RANDOM_SCENE_TITLE: string;
+  /** Pure and deterministic; never throws on a malformed pack. A random
+   *  scene's pack assembles with a placeholder for the scene (the pool's
+   *  size taken from `languages`, when given). */
   export function assemble(
-    content: Pick<import("../shared/wire.ts").ContentReply, "schema" | "frame" | "profile" | "units" | "scenarios">,
+    content: Pick<import("../shared/wire.ts").ContentReply, "schema" | "frame" | "profile" | "units" | "scenarios"> & { languages?: import("../shared/wire.ts").Language[] },
     pack: unknown,
     /** Which tree `content` is (the Time budget splits that mode's parts),
      *  or that and the review block's phrases (none: units using

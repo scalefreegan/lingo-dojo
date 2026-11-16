@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { assemble } from "../../scripts/assemble.mjs";
-import { ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isMode, loadContent, modeRoot, writeExport } from "../../scripts/content.mjs";
+import { assemble, effectiveProfile } from "../../scripts/assemble.mjs";
+import { ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isMode, loadContent, modeRoot, normalizePack, writeExport } from "../../scripts/content.mjs";
+import { withDrawnScene } from "../shared/scenes.ts";
 import type {
   AssembleRequest, AssembleResult, ContentReply, DeletedPacksReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
   PackDeleteReply, PackReply, PackRestoreReply, PackRevisionsReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
@@ -14,6 +15,7 @@ import {
 } from "../../scripts/db/packs.ts";
 import { STALE_LEARNER, languageWriteError, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
+import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
 import { reviewFor } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
@@ -58,8 +60,8 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET    /api/pack-revisions?id=<pack id>          → {revisions}, newest first
 //   GET    /api/pack-revisions/deleted               → {packs}, the deleted packs
 //   POST   /api/pack-revisions/:revision/restore     → {pack}
-//   POST   /api/assemble           {pack} → {markdown, warnings, stats}
-//   POST   /api/export             {pack, id} → writes <exports>/<id>.md, {path, stats, warnings}
+//   POST   /api/assemble           {pack} → {markdown, warnings, stats}; a random scene is a placeholder, never drawn
+//   POST   /api/export             {pack, id} → writes <exports>/<id>.md, {path, stats, warnings, drawn?}; a random scene is drawn here
 //
 // Ids come from the request, so each is checked (a 400 the user can read)
 // before any query; the queries themselves are scoped to the language
@@ -296,6 +298,10 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack}");
   // The review block as a session started now would have it (the Go
   // tab's preview, Copy), and its phrases for the "revisiting" line.
+  // A random scene is checked here, not drawn: the preview shows a marked
+  // placeholder for the scene (assemble.mjs), and the scene is drawn when
+  // the session starts (conversations.ts).
+  randomSceneOf(body.pack);
   const content = learnerContent(mode, ctx);
   const review = await reviewFor(ctx.language, content, body.pack, mode);
   sendJson(res, 200, { ...assemble(content, body.pack, { mode, review: review.items }), review } satisfies AssembleResult);
@@ -308,8 +314,20 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse, ct
   if (!isObject(body) || !isObject(body.pack)) throw new HttpError(400, "body must be {pack, id}");
   const id = checkId(body.id);
   const content = learnerContent(mode, ctx);
-  const review = await reviewFor(ctx.language, content, body.pack, mode);
-  const { markdown, stats, warnings } = assemble(content, body.pack, { mode, review: review.items });
+  // An export is a whole prompt to paste elsewhere, so a random scene is
+  // drawn for it now (from the same pool a session would use) and the reply
+  // says which; an empty pool is a 400 and nothing is written.
+  const random = randomSceneOf(body.pack);
+  let pack = body.pack;
+  let drawn: ExportResult["drawn"];
+  if (random) {
+    const target = String(effectiveProfile(content.profile, normalizePack(pack).overrides).target_language ?? "").trim();
+    const draw = drawOrRefuse(content, target, random);
+    pack = withDrawnScene(normalizePack(pack), draw.scene.id);
+    drawn = { id: draw.scene.id, title: draw.scene.title, pool: draw.pool.length };
+  }
+  const review = await reviewFor(ctx.language, content, pack, mode);
+  const { markdown, stats, warnings } = assemble(content, pack, { mode, review: review.items });
   const path = writeExport(id, markdown, exportsDirFor(mode));
-  sendJson(res, 200, { path, stats, warnings } satisfies ExportResult);
+  sendJson(res, 200, { path, stats, warnings, ...(drawn ? { drawn } : {}) } satisfies ExportResult);
 }

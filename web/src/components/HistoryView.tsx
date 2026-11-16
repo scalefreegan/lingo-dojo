@@ -120,6 +120,7 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm text-fg">{c.title}</span>
+                  {c.randomScene && <Badge tone="accent" title="The scene was drawn at random when the session started">random</Badge>}
                   {!c.endedAt && <Badge tone="accent" title="Still open: it ends with End, leaving Go, or two hours after its last turn">open</Badge>}
                   {c.recapStatus === "failed" && <Badge tone="warn" title="Open it to retry the recap">no recap</Badge>}
                 </div>
@@ -205,6 +206,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
               {when(c.startedAt)} · {length(c)} · {turnsLabel(c.turnCount)}
               {c.plannedMinutes != null && ` · planned ${c.plannedMinutes} min`}
               {(c.targetVariant || c.targetLanguage) && ` · ${c.targetVariant || c.targetLanguage}`}
+              {c.randomScene && " · random scene"}
               {!c.endedAt && " · still open"}
             </p>
           </div>

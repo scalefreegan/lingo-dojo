@@ -1,11 +1,38 @@
 // The web app's pure draft helpers (web/src/draft.ts). Node (23.6+) strips the TS
-// types natively (draft.ts imports only types), so these run under the same
-// `node --test` as the loader and assembler, with no web test runner.
+// types natively (draft.ts imports types and the pure web/shared/scenes.ts),
+// so these run under the same `node --test` as the loader and assembler,
+// with no web test runner.
 //   node --test scripts/tests/draft.test.mjs
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { draftToPack, effectiveMinutes, foreignLanguage, minutesWarning, packToDraft, validMinutes } from "../../web/src/draft.ts";
+import { draftPool, draftToPack, effectiveMinutes, foreignLanguage, minutesWarning, packToDraft, togglePoolCollection, validMinutes } from "../../web/src/draft.ts";
+
+test("a random scene round-trips through a pack as random_scene; the scene and quick text stay in the draft but aren't sent", () => {
+  const pack = { id: "p", folder: "", title: "P", created: "", scenario: "", quick_scenario: "", random_scene: { collections: ["Daily life"] }, units: [], overrides: {}, notes: "" };
+  const draft = packToDraft(pack);
+  assert.equal(draft.scenarioMode, "random");
+  assert.deepEqual(draft.randomCollections, ["Daily life"]);
+  // Flipping modes keeps what each had; only the chosen one goes out.
+  const back = draftToPack({ ...draft, scenario: "plaza", quickScenario: "typed" });
+  assert.deepEqual([back.scenario, back.quick_scenario, back.random_scene], ["", "", { collections: ["Daily life"] }]);
+  assert.equal(draftToPack({ ...draft, scenarioMode: "library", scenario: "plaza" }).random_scene, null);
+  assert.equal(packToDraft({ ...pack, random_scene: null, scenario: "plaza" }).scenarioMode, "library");
+  // Toggling a chip selects the Random card too.
+  const toggled = togglePoolCollection({ ...draft, scenarioMode: "library", randomCollections: [] }, "Travel essentials");
+  assert.deepEqual([toggled.scenarioMode, toggled.randomCollections], ["random", ["Travel essentials"]]);
+  assert.deepEqual(togglePoolCollection(toggled, "Travel essentials").randomCollections, []);
+  // The pool the summary bar counts: the shared rule, the draft's target.
+  const scene = (id, language, collection = "c") => ({ id, title: id, summary: "", tags: [], language, collection, category: null, roles: {}, beats: [], vocab: [], phrases: [], twists: [], body: "", path: "", uses_location: false });
+  const content = {
+    profile: { target_language: "Japanese" },
+    languages: [{ name: "Spanish", variants: [], code: "es" }, { name: "Japanese", variants: [], code: "ja" }],
+    scenarios: [scene("a", "es-MX"), scene("b", null), scene("c", "ja-JP", "d")],
+  };
+  assert.deepEqual(draftPool(content, { ...draft, randomCollections: [] }).map((s) => s.id), ["b", "c"]);
+  assert.deepEqual(draftPool(content, { ...draft, randomCollections: ["d"] }).map((s) => s.id), ["c"]);
+  assert.deepEqual(draftPool(content, { ...draft, scenarioMode: "library" }), [], "not random: no pool");
+});
 
 const languages = [
   { name: "Spanish", variants: [], code: "es" },

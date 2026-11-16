@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ContentReply, Scenario } from "../types";
-import { foreignLanguage, fold, languageKey, sessionValues, type Draft } from "../draft";
+import { draftPool, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
+import { collectionKey, emptyPoolMessage, fitsTarget, missingCollections, scenesWord } from "../../shared/scenes.ts";
 import { Button, Chevron, inputClass } from "./ui";
 
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
@@ -59,6 +60,8 @@ export default function SceneTab({
   onNext: () => void;
 }) {
   const quick = draft.scenarioMode === "quick";
+  const random = draft.scenarioMode === "random";
+  const library = draft.scenarioMode === "library";
   const { scenarios } = content;
   const [filter, setFilterState] = useState<Filter>(() => loadFilter(languageId));
   const setFilter = (f: Filter) => {
@@ -110,8 +113,26 @@ export default function SceneTab({
       .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
   }, [scenarios, visible, content.languages, target]);
 
+  // The Random card's pool: one chip per collection, with how many of its
+  // scenes fit the target (a collection written for another language has
+  // none, and is dimmed as its folder is).
+  const pool = useMemo(() => draftPool(content, draft), [content, draft]);
+  const poolChoices = useMemo(() => {
+    const by = new Map<string, Scenario[]>();
+    for (const s of scenarios) by.set(collectionKey(s), [...(by.get(collectionKey(s)) ?? []), s]);
+    return [...by.entries()]
+      .map(([key, items]) => ({
+        key,
+        name: key || OTHER_SCENES,
+        fit: items.filter((s) => fitsTarget(s, content.languages, target)).length,
+        foreign: foreignLanguage(items, content.languages, target),
+      }))
+      .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
+  }, [scenarios, content.languages, target]);
+  const missing = random ? missingCollections(scenarios, { collections: draft.randomCollections }) : [];
+
   const filtering = needle !== "" || category !== "";
-  const selected = quick ? undefined : scenarios.find((s) => s.id === draft.scenario);
+  const selected = library ? scenarios.find((s) => s.id === draft.scenario) : undefined;
   const hiddenSelected = selected && !visible.some((s) => s.id === selected.id) ? selected : undefined;
   const selectedKey = selected ? (selected.collection ?? "") : undefined;
   // Default: everything open when there is one folder, else just the one
@@ -193,6 +214,20 @@ export default function SceneTab({
               onChangeText={(text) => onChange({ ...draft, quickScenario: text, scenarioMode: "quick" })}
               className={quick ? "col-span-full" : ""}
             />
+            {scenarios.length > 0 && (
+              <RandomSceneCard
+                selected={random}
+                choices={poolChoices}
+                chosen={draft.randomCollections}
+                poolSize={pool.length}
+                missing={missing}
+                emptyMessage={emptyPoolMessage({ collections: draft.randomCollections }, target)}
+                onSelect={() => onChange({ ...draft, scenarioMode: "random" })}
+                onToggle={(key) => onChange(togglePoolCollection(draft, key))}
+                onAll={() => onChange({ ...draft, scenarioMode: "random", randomCollections: [] })}
+                className={random ? "col-span-full" : ""}
+              />
+            )}
           </div>
 
           {scenarios.length > 0 && visible.length === 0 && (
@@ -244,7 +279,7 @@ export default function SceneTab({
                         title={s.title}
                         summary={s.summary}
                         category={s.category}
-                        selected={!quick && draft.scenario === s.id}
+                        selected={library && draft.scenario === s.id}
                         onClick={() => pick(s.id)}
                       />
                     ))}
@@ -255,8 +290,15 @@ export default function SceneTab({
           })}
       </div>
 
-      {selected?.uses_location && (
-        <LocationField value={draft.location} variant={sessionValues(draft, content.profile).target_variant || target} onChange={(location) => onChange({ ...draft, location })} />
+      {/* A random scene may draw one set wherever the session says: the
+          Location then applies to it exactly as to a picked one. */}
+      {(selected?.uses_location || (random && pool.some((s) => s.uses_location))) && (
+        <LocationField
+          value={draft.location}
+          variant={sessionValues(draft, content.profile).target_variant || target}
+          onChange={(location) => onChange({ ...draft, location })}
+          note={random ? "Used when the drawn scene is one set wherever you say; a scene with its own setting keeps it." : undefined}
+        />
       )}
 
       <div className="flex justify-end">
@@ -273,14 +315,33 @@ export default function SceneTab({
  *  `min-[1000px]:grid-cols-3` here lost to `sm:grid-cols-2` at every width. */
 const GRID = "grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4";
 
-function Chip({ label, count, active, onClick }: { label: string; count: number; active: boolean; onClick: () => void }) {
+function Chip({
+  label,
+  count,
+  active,
+  onClick,
+  disabled = false,
+  title,
+  testId,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  testId?: string;
+}) {
   return (
     <button
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`rounded-full border px-3 py-1 text-sm transition-colors sm:px-2.5 sm:text-xs ${
-        active ? "border-accent bg-accent-soft text-accent" : "border-line bg-panel text-fg-2 hover:border-line-strong"
+      disabled={disabled}
+      title={title}
+      data-testid={testId}
+      className={`rounded-full border px-3 py-1 text-sm transition-colors disabled:cursor-default disabled:opacity-50 sm:px-2.5 sm:text-xs ${
+        active ? "border-accent bg-accent-soft text-accent" : "border-line bg-panel text-fg-2 hover:border-line-strong disabled:hover:border-line"
       }`}
     >
       {label} <span className={active ? "" : "text-fg-3"}>{count}</span>
@@ -321,7 +382,7 @@ function ScenarioCard({
  *  {{location}}; a fixed-setting one (the Oaxaca trip) has nowhere to put
  *  it. Blank leaves the choice to the dojo master, who names the city at
  *  the start of the session. */
-function LocationField({ value, variant, onChange }: { value: string; variant: string; onChange: (v: string) => void }) {
+function LocationField({ value, variant, onChange, note }: { value: string; variant: string; onChange: (v: string) => void; note?: string }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-panel p-3" data-testid="location-field">
       <label htmlFor="scene-location" className="text-sm font-medium text-fg">
@@ -339,8 +400,111 @@ function LocationField({ value, variant, onChange }: { value: string; variant: s
         {value.trim()
           ? `The scene is set in ${value.trim()}. Voices stay in ${variant || "your target language"}.`
           : `Leave blank and the dojo master picks a city where ${variant || "your target language"} is spoken.`}
+        {note && ` ${note}`}
       </p>
     </div>
+  );
+}
+
+/** The third way to pick a scene: keep the configuration, and let the
+ *  scene be drawn from a pool when the session starts (never before: the
+ *  server draws it, steering clear of the last few played). Collapsed, a
+ *  card like Quick scene; selected, it spans the row and shows the pool's
+ *  collections as chips (none chosen = every scene that fits the target
+ *  language) and how many scenes that makes. An empty pool is an error
+ *  here, and Start refuses it too. */
+function RandomSceneCard({
+  selected,
+  choices,
+  chosen,
+  poolSize,
+  missing,
+  emptyMessage,
+  onSelect,
+  onToggle,
+  onAll,
+  className = "",
+}: {
+  selected: boolean;
+  choices: { key: string; name: string; fit: number; foreign: string | null }[];
+  chosen: string[];
+  poolSize: number;
+  missing: string[];
+  emptyMessage: string;
+  onSelect: () => void;
+  onToggle: (key: string) => void;
+  onAll: () => void;
+  className?: string;
+}) {
+  const empty = selected && poolSize === 0;
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-lg border p-3 transition-colors ${
+        empty ? "border-err bg-err-soft" : selected ? "border-accent bg-accent-soft" : "border-line bg-panel hover:border-line-strong"
+      } ${className}`}
+      data-testid="random-scene-card"
+    >
+      <button type="button" aria-pressed={selected} onClick={onSelect} className="flex flex-col items-start gap-1 text-left" data-testid="random-scene-select">
+        <span className="flex items-center gap-1.5 text-sm font-medium text-fg">
+          <DiceGlyph /> Random scene
+        </span>
+        {!selected && <span className="truncate text-sm text-fg-2 sm:text-xs">Keep your setup; the scene is drawn when you start.</span>}
+      </button>
+      {selected && (
+        <>
+          <p className="text-sm text-fg-2 sm:text-xs">
+            Your units, length and notes stay as they are; a scene from the pool is drawn when the session starts, not one of your last few.
+          </p>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Random scene pool" data-testid="random-pool">
+            <Chip label="Every scene that fits" count={choices.reduce((n, c) => n + c.fit, 0)} active={chosen.length === 0} onClick={onAll} testId="random-pool-all" />
+            {choices.map((c) => {
+              const on = chosen.includes(c.key);
+              return (
+                <Chip
+                  key={c.key}
+                  label={c.name}
+                  count={c.fit}
+                  active={on}
+                  // A collection with no scene for this language adds nothing;
+                  // still removable when a saved pool has it.
+                  disabled={!on && c.fit === 0}
+                  title={c.foreign ? `Written for ${c.foreign}` : undefined}
+                  onClick={() => onToggle(c.key)}
+                  testId="random-pool-chip"
+                />
+              );
+            })}
+          </div>
+          {missing.length > 0 && (
+            <p className="text-sm text-fg-3 sm:text-xs" data-testid="random-pool-missing">
+              Ignored (no longer in the library): {missing.join(", ")}
+            </p>
+          )}
+          {empty ? (
+            <p role="alert" className="text-sm text-err" data-testid="random-pool-empty">
+              {emptyMessage}
+            </p>
+          ) : (
+            <p className="text-sm text-fg-2 tabular-nums sm:text-xs" data-testid="random-pool-count" aria-live="polite">
+              {scenesWord(poolSize)} in the pool{chosen.length ? "" : " (every collection)"}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Two dice pips on a rounded square — inline, like the folder glyph. */
+function DiceGlyph() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="size-4 shrink-0 text-fg-3">
+      <rect x="3" y="3" width="14" height="14" rx="3" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" />
+      <circle cx="12.5" cy="12.5" r="1.2" fill="currentColor" />
+      <circle cx="12.5" cy="7.5" r="1.2" fill="currentColor" />
+      <circle cx="7.5" cy="12.5" r="1.2" fill="currentColor" />
+    </svg>
   );
 }
 
