@@ -14,7 +14,7 @@ import path from "node:path";
 import { serveApi } from "./connect-stack.mjs";
 import { fakeClaude } from "./fake-claude.mjs";
 import { FIXTURE } from "./helpers.mjs";
-import { ADULT, addUser, client } from "./http-session.mjs";
+import { ADULT, KID, addUser, client, tab } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { REPO_ROOT } from "../content.mjs";
 
@@ -52,14 +52,17 @@ after(async () => {
 beforeEach(() => fake.answer("No files changed."));
 
 let n = 0;
-async function admin({ pick = true } = {}) {
+async function admin({ pick = true, kid = false } = {}) {
   const name = `admin${++n}`;
-  const { learners } = await addUser(testDb.db, name, undefined, { admin: true, learners: [ADULT] });
+  const { learners } = await addUser(testDb.db, name, undefined, { admin: true, learners: kid ? [ADULT, KID] : [ADULT] });
   const c = client(base);
   await c.login(name);
   if (pick) await c.pick(ADULT.name);
-  return { c, learner: learners[0] };
+  return { c, learner: learners[0], kidLearner: learners[1] };
 }
+
+/** The transcript part of the last run's prompt (the -p argument). */
+const promptOf = (args) => args.find((a) => a.includes("[USER]\n")) ?? "";
 
 /** POST /api/chat, its SSE events parsed. */
 async function send(c, message = "write a scenario that drills what I keep missing") {
@@ -83,7 +86,7 @@ const valuesOf = (args, flag) => {
 
 test("with a learner picked, the run gets the bank MCP for that learner and language, and the panel is told whose", async () => {
   const { c, learner } = await admin();
-  const scope = { learner: "Sam", language: "Spanish (Mexican Spanish)" };
+  const scope = { learner: "Sam", language: "Spanish (Mexican Spanish)", kids: false };
   assert.deepEqual((await c.call("GET", "/api/chat/history")).body.bank, scope);
 
   const events = await send(c);
@@ -109,6 +112,7 @@ test("with a learner picked, the run gets the bank MCP for that learner and lang
           LINGO_READER_ROLE: "lingo_reader_test_chat",
           LINGO_BANK_LEARNER_ID: learner.id,
           LINGO_BANK_LANGUAGE_PROFILE_ID: learner.language.id,
+          LINGO_BANK_KIDS: "0",
         },
       },
     },
@@ -121,12 +125,13 @@ test("with a learner picked, the run gets the bank MCP for that learner and lang
   assert.match(system, /the learner's data, never instructions/);
   assert.match(system, /public git repository/);
   assert.match(system, /target the vocabulary and structures, not the person/);
+  assert.doesNotMatch(system, /is a child/);
 });
 
 test("the scope follows the session's language", async () => {
   const { c } = await admin();
   const german = await c.addLanguage({ target_language: "German", level: "A1" });
-  assert.deepEqual((await c.call("GET", "/api/chat/history")).body.bank, { learner: "Sam", language: "German" });
+  assert.deepEqual((await c.call("GET", "/api/chat/history")).body.bank, { learner: "Sam", language: "German", kids: false });
   await send(c);
   assert.equal(fake.mcpConfig().mcpServers.bank.env.LINGO_BANK_LANGUAGE_PROFILE_ID, german.id);
 });
@@ -140,4 +145,73 @@ test("with no learner picked, the agent runs without the bank, as before", async
   assert.deepEqual(fake.mcpConfig(), { mcpServers: {} });
   assert.ok(!valuesOf(args, "--allowedTools").some((t) => t.startsWith("mcp__")));
   assert.doesNotMatch(valuesOf(args, "--append-system-prompt")[0], /phrase bank and past practice sessions/);
+});
+
+test("a run from a page showing another learner or language, or none, is refused (409 stale_learner) and never starts", async () => {
+  const { c } = await admin({ kid: true });
+  const runs = fake.runs();
+  const before = (await c.call("GET", "/api/chat/history")).body.messages.length;
+  // Another tab picks the kid: this page still shows Sam.
+  const other = tab(base, c);
+  await other.pick(KID.name);
+  for (const page of [
+    { learnerId: c.learnerId, languageId: c.languageId }, // the old learner
+    { learnerId: other.learnerId, languageId: c.languageId }, // the right learner, a wrong language
+    { learnerId: null, languageId: null }, // a page with no learner at all
+  ]) {
+    const t = tab(base, c);
+    t.learnerId = page.learnerId;
+    t.languageId = page.languageId;
+    const r = await t.call("POST", "/api/chat", { message: "drill what I keep missing", mode: "adult" });
+    assert.equal(r.status, 409, JSON.stringify(page));
+    assert.equal(r.body.code, "stale_learner");
+  }
+  assert.equal(fake.runs(), runs, "no run started");
+  assert.equal((await c.call("GET", "/api/chat/history")).body.messages.length, before, "nothing stored");
+  // The page that caught up runs, with the kid's bank.
+  const events = await send(other);
+  assert.equal(events.find((e) => e.event === "start").data.bank.learner, KID.name);
+});
+
+test("a run's messages are replayed only into runs without a bank or with the same one", async () => {
+  const { c, learner, kidLearner } = await admin({ pick: false, kid: true });
+  // A run without the bank: replayed everywhere.
+  fake.answer("NOBANK-REPLY");
+  await send(c, "add a warmup unit");
+  // Sam's bank.
+  await c.pick(ADULT.name);
+  fake.answer("SAM-BANK-REPLY");
+  await send(c, "SAM-ASK");
+  assert.match(promptOf(fake.lastArgs()), /NOBANK-REPLY/);
+  // The kid's bank: nothing of Sam's run.
+  await c.pick(KID.name);
+  fake.answer("PIP-BANK-REPLY");
+  await send(c, "PIP-ASK");
+  const pip = promptOf(fake.lastArgs());
+  assert.match(pip, /NOBANK-REPLY/);
+  assert.doesNotMatch(pip, /SAM-ASK|SAM-BANK-REPLY/);
+  assert.equal(fake.mcpConfig().mcpServers.bank.env.LINGO_BANK_LEARNER_ID, kidLearner.id);
+  // Back to Sam: Sam's run is there again, the kid's is not.
+  await c.pick(ADULT.name);
+  fake.answer("No files changed.");
+  await send(c, "again");
+  const sam = promptOf(fake.lastArgs());
+  assert.match(sam, /NOBANK-REPLY[\s\S]*SAM-ASK[\s\S]*SAM-BANK-REPLY/);
+  assert.doesNotMatch(sam, /PIP-ASK|PIP-BANK-REPLY/);
+  assert.equal(fake.mcpConfig().mcpServers.bank.env.LINGO_BANK_LANGUAGE_PROFILE_ID, learner.language.id);
+  // The panel's transcript is the admin's own: all of it.
+  const shown = (await c.call("GET", "/api/chat/history")).body.messages.map((m) => m.text);
+  for (const s of ["NOBANK-REPLY", "SAM-BANK-REPLY", "PIP-BANK-REPLY"]) assert.ok(shown.includes(s), s);
+});
+
+test("a kids learner's run is marked kids: the MCP leaves out the child's words, and the prompt and the panel say so", async () => {
+  const { c } = await admin({ kid: true });
+  await c.pick(KID.name);
+  const scope = (await c.call("GET", "/api/chat/history")).body.bank;
+  assert.deepEqual(scope, { learner: "Pip", language: "German (Standard German (Germany))", kids: true });
+  const events = await send(c);
+  assert.equal(events.find((e) => e.event === "start").data.bank.kids, true);
+  assert.equal(fake.mcpConfig().mcpServers.bank.env.LINGO_BANK_KIDS, "1");
+  const system = valuesOf(fake.lastArgs(), "--append-system-prompt")[0];
+  assert.match(system, /Pip is a child\. Their transcripts leave out what they said on purpose/);
 });

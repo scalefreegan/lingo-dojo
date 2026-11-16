@@ -209,6 +209,13 @@ export const agentMessages = pgTable(
     role: text("role").$type<"user" | "assistant" | "commit">().notNull(),
     text: text("text").notNull(),
     ts: tz("ts").notNull().defaultNow(),
+    /** Set on the messages of a run that could read a learner's phrase bank
+     *  (chat.ts bankAccess): the language profile it read. Such a run's
+     *  messages may quote that learner's data, so they are replayed into a
+     *  later run only when it reads the same language profile (migration
+     *  0005). NULL: a run without the bank, replayed into any run. Deleting
+     *  the language profile deletes them with it. */
+    bankLanguageProfileId: uuid("bank_language_profile_id").references(() => languageProfiles.id, { onDelete: "cascade" }),
   },
   (t) => [
     check("agent_messages_role", sql`${t.role} in ('user', 'assistant', 'commit')`),

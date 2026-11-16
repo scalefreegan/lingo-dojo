@@ -14,7 +14,7 @@
 // Erasable TypeScript only, like schema.ts: the CLI and the tests import it
 // as is.
 
-import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { forLearner, forUser, type Db } from "./owned.ts";
 import { importPacks, type PackFiles } from "./packs.ts";
 import { agentMessages, authSessions, languageProfiles, learners, userSettings, users } from "./schema.ts";
@@ -51,6 +51,11 @@ export function splitLearnerValues(values: NewLearnerWithLanguage): { learner: N
 }
 export type AgentRole = "user" | "assistant" | "commit";
 export interface AgentMessage { role: AgentRole; text: string; ts: string }
+/** Which agent messages a read returns: all (the panel's transcript), or
+ *  those a run with this bank scope may be shown (`bank`: the language
+ *  profile it reads, or null for a run without the bank): the runs
+ *  without the bank, and the runs that read that same language profile. */
+export type AgentMessageScope = { bank: string | null };
 
 /* ---------------------------------- users --------------------------------- */
 
@@ -560,16 +565,28 @@ export async function saveModel(db: Db, userId: string, model: string): Promise<
 
 /** The agent chat, oldest first (by seq: ts ties within a transaction).
  *  With `last`, only the newest `last` messages. */
-export async function listAgentMessages(db: Db, userId: string, last?: number): Promise<AgentMessage[]> {
+export async function listAgentMessages(db: Db, userId: string, last?: number, scope?: AgentMessageScope): Promise<AgentMessage[]> {
   const mine = forUser(db, userId);
+  const cond = scope === undefined
+    ? undefined
+    : scope.bank === null
+      ? isNull(agentMessages.bankLanguageProfileId)
+      : or(isNull(agentMessages.bankLanguageProfileId), eq(agentMessages.bankLanguageProfileId, scope.bank));
   const rows = last === undefined
-    ? await mine.list(agentMessages, undefined, { orderBy: asc(agentMessages.seq) })
-    : (await mine.list(agentMessages, undefined, { orderBy: desc(agentMessages.seq), limit: last })).reverse();
+    ? await mine.list(agentMessages, cond, { orderBy: asc(agentMessages.seq) })
+    : (await mine.list(agentMessages, cond, { orderBy: desc(agentMessages.seq), limit: last })).reverse();
   return rows.map((r) => ({ role: r.role, text: r.text, ts: r.ts.toISOString() }));
 }
 
-export async function appendAgentMessage(db: Db, userId: string, m: AgentMessage): Promise<void> {
-  await forUser(db, userId).insert(agentMessages, { role: m.role, text: m.text, ...(validDate(m.ts) ? { ts: new Date(m.ts) } : {}) });
+/** `bank`: the language profile whose phrase bank the run could read
+ *  (AgentMessageScope), stored with the message. */
+export async function appendAgentMessage(db: Db, userId: string, m: AgentMessage, bank: string | null = null): Promise<void> {
+  await forUser(db, userId).insert(agentMessages, {
+    role: m.role,
+    text: m.text,
+    ...(validDate(m.ts) ? { ts: new Date(m.ts) } : {}),
+    ...(bank ? { bankLanguageProfileId: bank } : {}),
+  });
 }
 
 export async function clearAgentMessages(db: Db, userId: string): Promise<void> {

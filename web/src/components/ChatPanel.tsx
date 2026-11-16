@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "../api";
+import { ApiError, clearChatHistory, getChatHistory, getSettings, sendChat, setModel } from "../api";
 import type { ChatBankScope, ChatCommit, ChatMessage, Mode, SettingsReply } from "../types";
 import { Button, inputClass } from "./ui";
 
@@ -140,6 +140,16 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
       });
     } catch (e) {
       setError(String((e as Error).message || e));
+      // Refused because this page shows another learner or language than
+      // the session's (the auth gate is catching up too): the message was
+      // never sent, and the bank line must say whose bank the next run
+      // would read, so take both from the server again.
+      if (e instanceof ApiError && e.code === "stale_learner") {
+        getChatHistory().then((h) => {
+          setMessages(h.messages);
+          setBank(h.bank);
+        }, () => undefined);
+      }
     } finally {
       setThinking(false);
     }
@@ -194,7 +204,7 @@ export default function ChatPanel({ mode, onContentChanged }: { mode: Mode; onCo
       </div>
       {bank && (
         <p className="border-b border-line px-4 py-1.5 text-sm text-fg-3 sm:text-xs" data-testid="chat-bank" title="The agent can read, not change, this learner's phrase bank and past sessions. It is told never to copy personal details into content/.">
-          Can read {bank.learner}'s phrase bank and sessions in {bank.language}, read-only
+          Can read {bank.learner}'s phrase bank and sessions in {bank.language}, read-only{bank.kids ? " (not what they said)" : ""}
         </p>
       )}
 

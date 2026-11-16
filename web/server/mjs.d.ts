@@ -294,7 +294,7 @@ declare module "*/scripts/db/config.mjs" {
   export function redact(url: string): string;
   /** The content agent's read-only role: LINGO_READER_ROLE, else lingo_reader. */
   export const READER_ROLE: string;
-  export function readerRole(env?: Record<string, string | undefined>, file?: string): string;
+  export function readerRole(env?: Record<string, string | undefined>, file?: string, root?: string): string;
 }
 
 declare module "*/scripts/db/migrations.mjs" {
@@ -311,6 +311,8 @@ declare module "*/scripts/db/migrations.mjs" {
   /** Read-only: the database's recorded migrations against the files, by hash. */
   export function migrationState(query: Query, disk?: Migration[]): Promise<MigrationState>;
   export function describeMigrations(state: MigrationState): string;
+  /** Read-only: what is missing of 0005's reader (policies, RLS, grants), or null. */
+  export function bankReaderProblem(query: Query, role?: string): Promise<string | null>;
 }
 
 // Everything else: untyped.

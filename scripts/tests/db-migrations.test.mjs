@@ -14,7 +14,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { freshDb } from "./testdb.mjs";
 import { MIGRATIONS_DIR } from "../db/config.mjs";
 import { applyHandEdits, INITIAL_MIGRATION, SET_NULL_COLUMNS } from "../db/hand-edits.mjs";
-import { applyMigrations, compareMigrations, describeMigrations, migrationState, migrationsOnDisk } from "../db/migrations.mjs";
+import { applyMigrations, bankReaderProblem, compareMigrations, describeMigrations, migrationState, migrationsOnDisk } from "../db/migrations.mjs";
 import { REPO_ROOT } from "../content.mjs";
 
 const rowsOf = (pg) => async (text, params) => (await pg.query(text, params)).rows;
@@ -204,12 +204,14 @@ test("0003's hand edits only add the empty-bank guard first, reorder drizzle-kit
   assert.ok(stmts.slice(1).every((s) => /^(CREATE TABLE "|ALTER TABLE "\w+" ADD (COLUMN|CONSTRAINT)|DROP INDEX|CREATE (UNIQUE )?INDEX)/.test(s)));
 });
 
-test("0005's hand edit only adds the reader's DO block after drizzle-kit's five ENABLE ROW LEVEL SECURITY lines", () => {
+test("0005's hand edit only adds the reader's DO block after drizzle-kit's five ENABLE ROW LEVEL SECURITY lines and the agent chat's scope column", () => {
   const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, "0005_bank_reader.sql"), "utf8");
   const stmts = sql.split("--> statement-breakpoint").map((s) => s.trim()).filter(Boolean);
-  assert.equal(stmts.length, 6);
+  assert.equal(stmts.length, 8);
   assert.deepEqual(stmts.slice(0, 5), ["cards", "conversations", "phrases", "reviews", "turns"].map((t) => `ALTER TABLE "${t}" ENABLE ROW LEVEL SECURITY;`));
-  const block = stmts[5];
+  assert.match(stmts[5], /^ALTER TABLE "agent_messages" ADD COLUMN "bank_language_profile_id" uuid;$/);
+  assert.match(stmts[6], /^ALTER TABLE "agent_messages" ADD CONSTRAINT "\w+" FOREIGN KEY \("bank_language_profile_id"\) REFERENCES "public"\."language_profiles"\("id"\) ON DELETE cascade/);
+  const block = stmts[7];
   assert.match(block, /^-- Hand-written \(scripts\/db\/hand-edits\.mjs, 0005\)[\s\S]*DO \$\$[\s\S]*END \$\$;$/);
   // Never forced (the owner must be unaffected), never a write to a row,
   // only SELECT and the schema's USAGE granted, and the role to the owner.
@@ -217,4 +219,21 @@ test("0005's hand edit only adds the reader's DO block after drizzle-kit's five 
   assert.deepEqual([...new Set([...block.matchAll(/GRANT (\S+)/g)].map((m) => m[1]))].sort(), ["%I", "SELECT", "USAGE"]);
   assert.match(block, /CREATE ROLE %I NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS/);
   assert.match(block, /FOR SELECT TO %I USING/);
+});
+
+test("bankReaderProblem: null on a migrated database, and names what a restore left out", async (t) => {
+  const { query, close } = await freshDb();
+  t.after(close);
+  assert.equal(await bankReaderProblem(query), null);
+  assert.match(await bankReaderProblem(query, "lingo_reader_nobody"), /the read-only role lingo_reader_nobody does not exist/);
+  // What a dump restored before the role existed lacks: the policies and
+  // the grants (here dropped by hand, as the owner).
+  await query(`drop policy bank_reader_scope on phrases`);
+  await query(`revoke select on turns from lingo_reader`);
+  await query(`alter table cards disable row level security`);
+  const problem = await bankReaderProblem(query);
+  assert.match(problem, /the bank_reader_scope policy on phrases/);
+  assert.match(problem, /lingo_reader's column grants on turns/);
+  assert.match(problem, /row-level security on cards/);
+  assert.doesNotMatch(problem, /conversations|reviews/);
 });

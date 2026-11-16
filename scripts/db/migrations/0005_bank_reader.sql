@@ -8,19 +8,25 @@ ALTER TABLE "reviews" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "turns" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
+ALTER TABLE "agent_messages" ADD COLUMN "bank_language_profile_id" uuid;
+--> statement-breakpoint
+ALTER TABLE "agent_messages" ADD CONSTRAINT "agent_messages_bank_language_profile_id_language_profiles_id_fk" FOREIGN KEY ("bank_language_profile_id") REFERENCES "public"."language_profiles"("id") ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
 -- Hand-written (scripts/db/hand-edits.mjs, 0005): the content agent's read-only role,
 -- its column grants and its row-level security policies (docs/DATA.md
 -- §Content agent). The role's name is the setting lingo.reader_role when
 -- set (tests on a shared server use a throwaway one), else lingo_reader.
 -- Roles are cluster-wide: an existing role is reused, after checking it
--- has no power beyond what this grants. The policies apply to that role
--- only, and RLS is enabled, not forced, so the table owner (the app) is
--- unaffected.
+-- has no power beyond what this grants, no member but the app's role and
+-- no default privileges here. The policies apply to that role only, and
+-- RLS is enabled, not forced, so the table owner (the app) is unaffected.
 DO $$
 DECLARE
   reader text := coalesce(nullif(current_setting('lingo.reader_role', true), ''), 'lingo_reader');
   me text := current_user;
   existing record;
+  others text;
+  d record;
   t text;
 BEGIN
   IF reader !~ '^lingo_reader[a-z0-9_]{0,50}$' THEN
@@ -41,9 +47,47 @@ BEGIN
     RAISE EXCEPTION '0005_bank_reader: the role % is a member of another role, whose privileges it would have', reader
       USING HINT = 'Revoke its memberships (pg_auth_members lists them), then npm run db:setup again.';
   END IF;
+  -- Nobody but the app's role may hold the reader: another member could
+  -- SET ROLE to it, or inherit the grants below.
+  SELECT string_agg(DISTINCT r.rolname, ', ' ORDER BY r.rolname) INTO others
+    FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.member
+   WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = reader) AND r.rolname <> me;
+  IF others IS NOT NULL THEN
+    RAISE EXCEPTION '0005_bank_reader: the role % has other members: %', reader, others
+      USING HINT = format('As a superuser, revoke it from them (REVOKE %I FROM <role>), then npm run db:setup again.', reader);
+  END IF;
+  -- Default privileges in this database that name the reader would hand it
+  -- tables made later. Those this role set are cleared; any other is
+  -- refused, naming its owner.
+  FOR d IN
+    SELECT a.defaclrole::regrole::text AS owner, n.nspname AS schema,
+           CASE a.defaclobjtype WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES' WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES' WHEN 'n' THEN 'SCHEMAS' END AS kind
+      FROM pg_default_acl a LEFT JOIN pg_namespace n ON n.oid = a.defaclnamespace
+     WHERE a.defaclrole = (SELECT oid FROM pg_roles WHERE rolname = me)
+       AND EXISTS (SELECT 1 FROM aclexplode(a.defaclacl) x WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = reader))
+  LOOP
+    EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I %s REVOKE ALL ON %s FROM %I',
+      me, CASE WHEN d.schema IS NULL THEN '' ELSE format('IN SCHEMA %I', d.schema) END, d.kind, reader);
+  END LOOP;
+  SELECT string_agg(format('%s (for objects of %s%s)', a.defaclobjtype, a.defaclrole::regrole, coalesce(' in schema ' || n.nspname, '')), ', ') INTO others
+    FROM pg_default_acl a LEFT JOIN pg_namespace n ON n.oid = a.defaclnamespace
+   WHERE a.defaclrole = (SELECT oid FROM pg_roles WHERE rolname = reader)
+      OR EXISTS (SELECT 1 FROM aclexplode(a.defaclacl) x WHERE x.grantee = (SELECT oid FROM pg_roles WHERE rolname = reader));
+  IF others IS NOT NULL THEN
+    RAISE EXCEPTION '0005_bank_reader: default privileges in this database name the role %: %', reader, others
+      USING HINT = format('As that owner, run ALTER DEFAULT PRIVILEGES FOR ROLE <owner> REVOKE ALL ON <kind> FROM %I (\ddp lists them), then npm run db:setup again.', reader);
+  END IF;
   -- The app's own role enters the reader with SET ROLE inside a read-only
-  -- transaction: it needs SET on it, and must not inherit it.
-  IF NOT pg_has_role(me, reader, 'SET') THEN
+  -- transaction: it needs a membership with SET and without INHERIT. Granted
+  -- explicitly even to a superuser (who could SET ROLE without it), so the
+  -- grant is in the catalog: a dump restored as another role, or a role
+  -- that stops being a superuser, still has it.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_auth_members m
+     WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = reader)
+       AND m.member = (SELECT oid FROM pg_roles WHERE rolname = me)
+       AND m.set_option AND NOT m.inherit_option
+  ) THEN
     BEGIN
       EXECUTE format('GRANT %I TO %I WITH INHERIT FALSE, SET TRUE', reader, me);
     EXCEPTION WHEN insufficient_privilege THEN

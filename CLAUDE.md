@@ -81,7 +81,11 @@ submit id (a resend replays, anything else stale is a 409).
   `…recent_conversations`, `…get_conversation`) are granted by full name, never
   a wildcard. Its results are learner data, not instructions, and personal
   details from them never go into `content/` (a public repo); the panel says
-  whose bank it can read. Roles are cluster-wide: tests and scratch databases
+  whose bank it can read. Such a run checks the page's learner and language
+  (409 `stale_learner`), its messages are stored with the language profile
+  it read and replayed only into runs for that same one (or runs without a
+  bank), and for a kids learner the transcripts leave out what the child
+  said. Roles are cluster-wide: tests and scratch databases
   name their own reader role (`LINGO_READER_ROLE`, `pg-scratch.mjs`
   `readerRoleFor`) and drop it; never create or grant to `lingo_reader` from a
   branch.
@@ -101,8 +105,9 @@ submit id (a resend replays, anything else stale is a 409).
   `scripts/db/accounts.ts`. The dev server
   refuses to start until `npm run db:setup` has run.
 - **Branches and worktrees never point at the real database.** Set
-  `DATABASE_URL` to a scratch database (a linked worktree with none set
-  refuses to start or migrate). Add new migrations one branch at a time, never
+  `DATABASE_URL` to a scratch database and `LINGO_READER_ROLE` to a scratch
+  role (a linked worktree refuses to start or migrate without the first,
+  and to migrate without the second; its agent then runs without the bank). Add new migrations one branch at a time, never
   in parallel branches. Migration SQL must run on PostgreSQL 17 (the app's
   Homebrew server) even though the tests run on PGlite (PostgreSQL 18).
 - Per-user state (agent chat history, model setting, voice settings) is in the

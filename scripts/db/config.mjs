@@ -83,8 +83,12 @@ export function redact(url) {
  * server that must not share the role (a test's, a scratch one) names its
  * own; db:setup hands it to the migration as `lingo.reader_role`, and the
  * bank MCP sets that role. It must match lingo_reader[a-z0-9_]*.
+ *
+ * In a linked worktree it must be set, like DATABASE_URL: the default is
+ * the real database's role, and a branch's migration would re-grant it and
+ * rewrite its policies' privileges cluster-wide.
  */
-export function readerRole(env = process.env, file = envFile()) {
+export function readerRole(env = process.env, file = envFile(), root = REPO_ROOT) {
   let v = env.LINGO_READER_ROLE?.trim();
   if (!v) {
     try {
@@ -93,7 +97,16 @@ export function readerRole(env = process.env, file = envFile()) {
       /* no file: the default */
     }
   }
-  if (!v) return READER_ROLE;
+  if (!v) {
+    if (isLinkedWorktree(root)) {
+      throw new Error(
+        `No LINGO_READER_ROLE is set, and ${root} is a linked git worktree. Branches and worktrees never use the ` +
+          `real database's read-only role (${READER_ROLE}). Set LINGO_READER_ROLE, in the shell or in this checkout's .env.local, ` +
+          `to a scratch role such as ${READER_ROLE}_scratch_<branch>, then run \`npm run db:setup\`.`,
+      );
+    }
+    return READER_ROLE;
+  }
   if (!READER_ROLE_RE.test(v)) throw new Error(`LINGO_READER_ROLE must look like ${READER_ROLE}[a-z0-9_]* (at most 62 characters), got ${JSON.stringify(v)}`);
   return v;
 }

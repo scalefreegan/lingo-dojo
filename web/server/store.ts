@@ -1,7 +1,7 @@
 import { DEFAULT_MODEL, isAgentModel } from "../../scripts/claude.mjs";
 import { normalizeVoiceSettings } from "../../scripts/voice.mjs";
 import {
-  appendAgentMessage, clearAgentMessages, getSettings, listAgentMessages, saveModel, updateVoiceSettings as updateStoredVoice,
+  type AgentMessageScope, appendAgentMessage, clearAgentMessages, getSettings, listAgentMessages, saveModel, updateVoiceSettings as updateStoredVoice,
 } from "../../scripts/db/accounts.ts";
 import type { ChatMessage, VoiceSettings } from "../shared/wire.ts";
 import { rawDb } from "./db.ts";
@@ -14,12 +14,16 @@ import { rawDb } from "./db.ts";
 // data/voice.json; the first admin is seeded from them once (seed.ts), and
 // nothing reads them after that.
 
-export async function readHistory(userId: string, last?: number): Promise<ChatMessage[]> {
-  return listAgentMessages(rawDb(), userId, last);
+/** The transcript, oldest first. With `scope`, only the messages a run
+ *  reading that bank (a language profile id, or null for none) may be
+ *  shown: see AgentMessageScope (scripts/db/accounts.ts). */
+export async function readHistory(userId: string, last?: number, scope?: AgentMessageScope): Promise<ChatMessage[]> {
+  return listAgentMessages(rawDb(), userId, last, scope);
 }
 
-export async function appendHistory(userId: string, message: ChatMessage): Promise<void> {
-  await appendAgentMessage(rawDb(), userId, message);
+/** `bank`: the language profile whose bank the run could read, if any. */
+export async function appendHistory(userId: string, message: ChatMessage, bank: string | null = null): Promise<void> {
+  await appendAgentMessage(rawDb(), userId, message, bank);
 }
 
 export async function clearHistory(userId: string): Promise<void> {

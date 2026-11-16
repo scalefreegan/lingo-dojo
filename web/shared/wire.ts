@@ -513,6 +513,9 @@ export interface ChatBankScope {
   learner: string;
   /** The language profile's target language (and variant), e.g. "Spanish (Mexico)". */
   language: string;
+  /** A kids learner: what they said is left out of the transcripts the
+   *  agent reads. */
+  kids: boolean;
 }
 
 /** GET /api/chat/history */

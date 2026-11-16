@@ -1,5 +1,5 @@
 {
-  "id": "d982aa32-9e02-4faa-8a30-5b79d7342501",
+  "id": "db28232e-b029-4e9a-94da-f96b5a570271",
   "prevId": "66d77885-4a91-4505-9d4b-ffc3146d20fc",
   "version": "7",
   "dialect": "postgresql",
@@ -45,6 +45,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "bank_language_profile_id": {
+          "name": "bank_language_profile_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -77,6 +83,19 @@
           "tableTo": "users",
           "columnsFrom": [
             "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "agent_messages_bank_language_profile_id_language_profiles_id_fk": {
+          "name": "agent_messages_bank_language_profile_id_language_profiles_id_fk",
+          "tableFrom": "agent_messages",
+          "tableTo": "language_profiles",
+          "columnsFrom": [
+            "bank_language_profile_id"
           ],
           "columnsTo": [
             "id"

@@ -18,7 +18,7 @@
 
 import pg from "pg";
 import { databaseName, databaseUrl, readerRole, redact } from "./config.mjs";
-import { applyMigrations, describeMigrations, migrationState } from "./migrations.mjs";
+import { applyMigrations, bankReaderProblem, describeMigrations, migrationState } from "./migrations.mjs";
 
 const migrateOnly = process.argv.includes("--migrate-only");
 
@@ -51,11 +51,20 @@ async function main() {
     const query = async (text, params) => (await client.query(text, params)).rows;
     // The reader role's name, for 0005 (session-wide: the migrations run in
     // one transaction on this connection).
-    await query("select set_config('lingo.reader_role', $1, false)", [readerRole()]);
+    const role = readerRole();
+    await query("select set_config('lingo.reader_role', $1, false)", [role]);
     const { applied } = await applyMigrations(query);
     if (applied.length) console.log(`applied ${applied.length} migration(s)`);
     const after = await migrationState(query);
     console.log(`migrations: ${describeMigrations(after)}`);
+    // Recorded is not the same as in place: a dump restored before the
+    // reader role existed has 0005 recorded and none of its policies.
+    const problem = await bankReaderProblem(query, role);
+    if (problem) {
+      throw Object.assign(new Error(`the content agent's read-only access is incomplete: ${problem}`), {
+        hint: "A dump restored before the role existed does this. Drop the database, create the role and its membership, and restore again: docs/DATA.md §Backups.",
+      });
+    }
   } finally {
     await client.end();
   }
@@ -67,5 +76,9 @@ main().catch((e) => {
     : e?.code === "3D000" ? " (run `npm run db:setup` to create it)"
     : "";
   console.error(`db ${migrateOnly ? "migrate" : "setup"} failed: ${e?.message || e}${hint}`);
+  // Postgres puts what to do in the error's DETAIL and HINT (0005's RAISE
+  // ... USING HINT carries the commands a superuser should run).
+  if (e?.detail) console.error(`detail: ${e.detail}`);
+  if (e?.hint) console.error(`hint: ${e.hint}`);
   process.exit(1);
 });

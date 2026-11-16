@@ -1520,12 +1520,13 @@ unchanged.
 #### As built (phase 8)
 
 Bead `ld-t5f`, migration `0005_bank_reader`. Code: `scripts/bank-mcp.mjs`
-(the server: `bankReader`, the four tools, `configFromEnv`), `bankAccess`
-and `bankPrompt` in `web/server/chat.ts`, `mcpServers`/`mcpTools` in
-`scripts/claude.mjs`, the role's grants and policies in
-`scripts/db/hand-edits.mjs` (`READER_COLUMNS`, `READER_0005`), `readerRole`
-in `scripts/db/config.mjs`, and the line in `ChatPanel.tsx`. Where it
-differs from the plan above:
+(the server: `bankReader`, the four tools, `fit`, `pgSessions`,
+`configFromEnv`), `bankAccess` and `bankPrompt` in `web/server/chat.ts`,
+`mcpServers`/`mcpTools` in `scripts/claude.mjs`, the role's grants and
+policies in `scripts/db/hand-edits.mjs` (`READER_COLUMNS`, `READER_0005`),
+`readerRole` in `scripts/db/config.mjs`, `bankReaderProblem` in
+`scripts/db/migrations.mjs`, `agent_messages.bank_language_profile_id`,
+and the line in `ChatPanel.tsx`. Where it differs from the plan above:
 
 - **Scope: the learner and the language.** The bank is per language
   profile (migration 0003), so the scope is both: the session's active
@@ -1534,13 +1535,41 @@ differs from the plan above:
   `DATABASE_URL`, `LINGO_READER_ROLE` in the server's `env`), never from a
   tool argument. No tool takes a learner or language. An admin with no
   learner picked gets no bank server, no bank tools and no prompt section.
+  With a learner picked, `POST /api/chat` checks the page's
+  `X-Learner-Id` and `X-Language-Profile-Id` against the session like
+  every `learner: true` route (409 `stale_learner`, before anything runs
+  or is stored): a tab still showing one learner can't send a run that
+  reads another's bank. The panel then re-reads its history and bank line,
+  and the auth gate catches the page up. With none picked there is
+  nothing to check.
+- **The agent's history doesn't cross learners.** The transcript is the
+  admin's (`agent_messages`), and each run replays its last 40 messages
+  into the prompt. A run with a bank stores its user message, reply and
+  commit line with the language profile it read
+  (`agent_messages.bank_language_profile_id`, migration 0005; deleted with
+  the profile). A run replays only the messages of runs without a bank and
+  of runs that read the same language profile, so nothing the agent read
+  or wrote about one learner reaches a run for another. The panel still
+  shows the whole transcript.
+- **Kids.** For a kids learner the server runs with `LINGO_BANK_KIDS=1`,
+  and `get_conversation` leaves out what the child said: a learner turn
+  is `{ who: "learner", text: null, omitted: true }`, its text never even
+  selected, and the result carries a note saying so. The dojo master's
+  lines, the glosses, the recap and the phrase bank are unchanged: enough
+  to see what the child practised and missed, without their own words (the
+  most personal part of a session, and a child's). The prompt's bank
+  section says why, and the panel's line adds "(not what they said)".
 - **The role is entered, not logged in as.** `lingo_reader` is a NOLOGIN
   role with no password, so there is no new secret. The app's own role is
   granted it `WITH INHERIT FALSE, SET TRUE`: it never has the reader's
   privileges by default, and may switch to it. Each tool call is one
-  transaction on the MCP process's own connection (a pg.Client, whose
-  sessions also default to read-only): `BEGIN … READ ONLY`, `SET LOCAL ROLE
-  lingo_reader`, `set_config('app.learner_id', $1, true)` and
+  transaction on the MCP process's own connection (`pgSessions`: one
+  pg.Client, held for the whole call; if it is lost mid-call that call
+  fails, and only the next call opens a new one). Each connection runs
+  `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` as soon as it
+  opens, and checks it took, rather than a startup `options=`, which a
+  `DATABASE_URL` with its own `options=` would replace. The call:
+  `BEGIN … READ ONLY`, `SET LOCAL ROLE lingo_reader`, `set_config('app.learner_id', $1, true)` and
   `app.language_profile_id` (transaction-local, so nothing outlives the
   call), a 5 s statement timeout, then a check that `current_user` is the
   reader, the transaction is read-only and the role is neither superuser
@@ -1591,9 +1620,11 @@ differs from the plan above:
   Again in that time, then lapses ever; pending and suspended phrases left
   out. `recent_conversations(limit)` (default 10, at most 30): newest
   first, with the recap summary. `get_conversation(id)`: the recap and the
-  first 200 turns, each cut to 1,500 characters, the whole result to
-  60,000 (later turns dropped, with a `truncated` note); a learner turn's
-  text, a master turn's lines with speakers, and its glosses. A phrase
+  first 200 turns, each cut to 1,500 characters; a learner turn's text
+  (not for a kids learner, above), a master turn's lines with speakers,
+  and its glosses. Every tool's result is held to 60 KB of UTF-8 JSON
+  (`fit`: items dropped from the end of its list, with a `truncated` note
+  saying how many are shown). A phrase
   shows its words, meaning, mastery band, due, lapses and Agains in 30
   days, times seen, last seen and practised, starred and suspended: no ids,
   notes or examples. Control characters are dropped. A failure is a plain
@@ -1617,6 +1648,9 @@ differs from the plan above:
   phrase bank and sessions in Spanish (Mexican Spanish), read-only", from
   `GET /api/chat/history`'s `bank` and each run's `start` event. No line
   when the agent has no bank.
+- **The process.** The CLI starts the MCP server per run; it exits when its
+  stdin closes (the run is over), ending its connection first, so nothing
+  is left holding one.
 - **The migration** (`0005_bank_reader`): drizzle-kit's five `ALTER TABLE …
   ENABLE ROW LEVEL SECURITY` (`.enableRLS()` in `schema.ts`), then one
   hand-written `DO` block (the role's name is configurable, which
@@ -1635,18 +1669,43 @@ differs from the plan above:
      made it): it is reused, unless it can log in or is superuser,
      BYPASSRLS, CREATEROLE, CREATEDB or REPLICATION, or is a member of any
      role, which stops the migration with what to fix.
-  3. Grants the migrating role `SET` on it (`WITH INHERIT FALSE, SET
-     TRUE`), unless it has that already; a role that may not grant it
-     stops with the GRANT to run.
-  4. `REVOKE ALL` on the schema's tables and sequences from it, `GRANT
+  3. Any member of it other than the migrating role (who could `SET ROLE`
+     to it, or inherit the grants) stops the migration, naming them.
+     Default privileges in this database that name it (which would grant
+     it tables made later) are cleared when the migrating role set them
+     and otherwise stop the migration, naming their owner.
+  4. Grants the migrating role membership `WITH INHERIT FALSE, SET TRUE`
+     unless a membership with exactly those options is already in
+     `pg_auth_members`. It is granted even to a superuser, who could
+     `SET ROLE` without it, so the grant is in the catalog: a role that
+     later stops being a superuser, or a restore that runs as another
+     role, still has it. A role that may not grant it stops with the GRANT
+     to run.
+  5. `REVOKE ALL` on the schema's tables and sequences from it, `GRANT
      USAGE ON SCHEMA public`, the column grants, and the five policies.
-  On PostgreSQL 16+ a CREATEROLE role that creates a role is given ADMIN
-  on it, which is what lets step 3 grant it SET. On Homebrew, where the
-  app's role is the installing user and a superuser, it all just runs.
-  Tests on a shared server never touch `lingo_reader`: each throwaway
-  database gets `ALTER DATABASE … SET lingo.reader_role =
-  lingo_reader_test_<tag>_<pid>_<hex>` (`pg-scratch.mjs` `readerRoleFor`),
-  and the role is dropped right after the database.
+  It also adds `agent_messages.bank_language_profile_id` (the history's
+  scope, above). On PostgreSQL 16+ a CREATEROLE role that creates a role
+  is given ADMIN on it, which is what lets step 4 grant it SET. On
+  Homebrew, where the app's role is the installing user and a superuser,
+  it all just runs: the role is created, the membership granted
+  explicitly, and the grants and policies made. db:setup and db:migrate
+  print a failure's Postgres `detail` and `hint` lines, so the commands to
+  run are on screen.
+  In a linked git worktree `LINGO_READER_ROLE` must be set (shell or that
+  checkout's `.env.local`), as `DATABASE_URL` must: the default is the
+  real database's role. Tests on a shared server never touch
+  `lingo_reader`: each throwaway database's connection string carries
+  `options=-c lingo.reader_role=lingo_reader_test_<tag>_<pid>_<hex>`
+  (`pg-scratch.mjs` `readerRoleFor`; any role may set that for its own
+  session, where `ALTER DATABASE … SET` of a custom setting needs a
+  superuser), and the role is dropped right after the database.
+- **Recorded is not in place.** After migrating, db:setup checks that
+  0005's RLS, policies and the reader's column grants are really there
+  (`bankReaderProblem`, which counts 0005 as run when
+  `agent_messages.bank_language_profile_id` exists) and fails, pointing at
+  §Backups, when they are not; the dev server's boot check logs a warning
+  instead (the bank tools fail closed without them, and the rest of the
+  app is unaffected).
 
 ## Practice modes
 
@@ -2237,15 +2296,22 @@ applied, so `db:setup` won't make them again:
   (below).
 - **A new server, or one where `lingo_reader` was dropped**: the restore
   fails at the first policy (`role "lingo_reader" does not exist`, and
-  `--exit-on-error` stops there). Make the role first, as a superuser,
-  then restore:
+  `--exit-on-error` stops there). By then the tables, their data and the
+  recorded migrations are in, but none of the policies and grants after
+  that point, so the migration state alone calls the database current.
+  `db:setup` notices (it checks 0005's policies, RLS and grants, and fails
+  naming what is missing) and the dev server warns at boot. Don't patch
+  that database: drop it, make the role first, as a superuser, then
+  restore into a fresh one:
 
   ```sh
   psql -c "CREATE ROLE lingo_reader NOLOGIN" postgres
   psql -c "GRANT lingo_reader TO <app role> WITH INHERIT FALSE, SET TRUE" postgres
   ```
 
-  (`<app role>` is the role in `DATABASE_URL`, on Homebrew your user name.)
+  (`<app role>` is the role in `DATABASE_URL`, on Homebrew your user name.
+  `dropdb lingo_dojo_restored && createdb lingo_dojo_restored` first if a
+  restore already stopped part-way.)
   Without the GRANT the database restores and the app runs, but the
   agent's bank tools answer "could not be read" (the server log says
   `permission denied to set role`).
@@ -2433,15 +2499,27 @@ Access in System Settings, or keep the checkout elsewhere.
   `scripts/bank-mcp.mjs` itself over stdio, applies 0005 to a 0004
   database with data, migrates as a non-superuser owner with CREATEROLE
   (whose own queries still see every row), stops an owner without it with
-  the hint and then applies once a superuser has run it, and refuses an
-  existing reader role with BYPASSRLS. Every role it makes carries the
-  process id and is dropped. `chat.http.test.mjs` (the stand-in `claude`,
-  which now keeps each run's `--mcp-config`) checks the run's config, the
-  four grants by name beside the unchanged file grants, the prompt's
-  section, the panel's `bank`, the scope following a language switch, the
-  config file removed after the run, and no bank with no learner picked;
+  the hint and then applies once a superuser has run it, refuses an
+  existing reader role with BYPASSRLS, with another member (named) or
+  named in another role's default privileges (named), clears the
+  migrating role's own default privileges for it, checks the superuser's
+  explicit membership row, and checks db:setup's printed `hint:` line. It
+  also checks that the MCP process exits by itself when its stdin ends
+  and its connection goes with it, and that `pgSessions` is read-only by
+  default under a URL with its own `options=` and fails a call whose
+  connection is terminated mid-call, reconnecting only for the next.
+  Every role it makes carries the process id and is dropped.
+  `chat.http.test.mjs` (the stand-in `claude`, which now keeps each run's
+  `--mcp-config`) checks the run's config, the four grants by name beside
+  the unchanged file grants, the prompt's section, the panel's `bank`, the
+  scope following a language switch, the config file removed after the
+  run, no bank with no learner picked, the 409 `stale_learner` for a page
+  on another learner, another language or none (no run, nothing stored),
+  the history replayed only within a bank's scope, and the kids flag;
+  `bank-mcp.test.mjs` also the kids transcript and the byte cap;
   `claude.test.mjs` the MCP tool-name rule; `db-migrations.test.mjs`
-  pins 0005's hand edit. The whole suite runs as a non-superuser table
+  pins 0005's hand edit and `bankReaderProblem`; `db.test.mjs` the
+  worktree rule for `LINGO_READER_ROLE`. The whole suite runs as a non-superuser table
   owner (`testdb.mjs`), with RLS on.
 - **UI:** login, the learner picker, a voice session that persists and
   recaps, and each practice mode are verified in the real app with Playwright

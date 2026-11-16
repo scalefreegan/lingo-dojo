@@ -10,12 +10,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import crypto from "node:crypto";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import pg from "pg";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { applyMigrations, migrationsOnDisk } from "../db/migrations.mjs";
+import { bankReader, pgSessions } from "../bank-mcp.mjs";
+import { applyMigrations, bankReaderProblem, migrationsOnDisk } from "../db/migrations.mjs";
 import { REPO_ROOT } from "../content.mjs";
 import { asReader, codeOf, seedBank } from "./bank-fixture.mjs";
 import { createDatabase, dropDatabase, readerRoleFor, scratchDatabase, scratchName } from "./pg-scratch.mjs";
@@ -38,6 +42,17 @@ test("migration 0005 on PostgreSQL 17: the reader sees one learner's language, t
   // The owner (here the server's superuser, or whoever LINGO_TEST_PG_URL is)
   // still sees every row.
   assert.equal((await query("select count(*)::int as n from phrases"))[0].n, 7);
+  // The migrating role holds the reader explicitly, SET without INHERIT,
+  // even as a superuser (who could SET ROLE without it).
+  const grants = await query(
+    `select m.set_option, m.inherit_option from pg_auth_members m
+      where m.roleid = (select oid from pg_roles where rolname = $1) and m.member = (select oid from pg_roles where rolname = current_user) and m.set_option`,
+    [role],
+  );
+  assert.deepEqual(grants, [{ set_option: true, inherit_option: false }]);
+  assert.equal(await bankReaderProblem(query, role), null);
+  // Applying again changes nothing (the migration is recorded once).
+  assert.deepEqual((await applyMigrations(query)).applied, []);
 
   await asReader(query, role, fx.mine, async () => {
     // Even a query with no WHERE: this learner, this language.
@@ -124,20 +139,27 @@ test("what the database does not stop, mid-transaction: a SET of app.learner_id 
   });
 });
 
+const BANK_MCP = path.join(REPO_ROOT, "scripts", "bank-mcp.mjs");
+const mcpEnv = (dbUrl, role, scope, extra = {}) => ({
+  PATH: process.env.PATH ?? "",
+  // libpq's default user name, as the CLI passes it on.
+  ...(process.env.USER ? { USER: process.env.USER } : {}),
+  DATABASE_URL: dbUrl,
+  LINGO_READER_ROLE: role,
+  LINGO_BANK_LEARNER_ID: scope.learnerId,
+  LINGO_BANK_LANGUAGE_PROFILE_ID: scope.profileId,
+  ...extra,
+});
+/** The bank MCP's connections to this database. */
+const mcpConnections = async (query) =>
+  (await query("select count(*)::int as n from pg_stat_activity where application_name = 'lingo-dojo-bank-mcp' and datname = current_database()"))[0].n;
+
 test("scripts/bank-mcp.mjs over stdio: four tools, scoped by its environment, never by a tool argument", { skip }, async (t) => {
   const { url: dbUrl, query, fx, role } = await seeded(t, "bankmcp");
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [path.join(REPO_ROOT, "scripts", "bank-mcp.mjs")],
-    env: {
-      PATH: process.env.PATH ?? "",
-      DATABASE_URL: dbUrl,
-      LINGO_READER_ROLE: role,
-      LINGO_BANK_LEARNER_ID: fx.mine.learnerId,
-      LINGO_BANK_LANGUAGE_PROFILE_ID: fx.mine.profileId,
-    },
-    stderr: "pipe",
-  });
+  // The scratch URL carries its own `options=` (pg-scratch.mjs): the
+  // read-only default must hold anyway.
+  assert.match(dbUrl, /options=/);
+  const transport = new StdioClientTransport({ command: process.execPath, args: [BANK_MCP], env: mcpEnv(dbUrl, role, fx.mine), stderr: "pipe" });
   const client = new Client({ name: "bank-mcp-test", version: "1.0.0" });
   await client.connect(transport);
   // Closed in the test, not in t.after: the database's drop (registered
@@ -161,9 +183,106 @@ async function stdioChecks(client, query, fx) {
   assert.deepEqual((await call("recent_conversations", { limit: 5 })).conversations.map((c) => c.title), ["At the market"]);
   assert.equal((await call("get_conversation", { id: fx.mine.conversationId })).transcript.length, 2);
   assert.deepEqual(await call("get_conversation", { id: fx.otherLearner.conversationId }), { error: "No such session for this learner in this language." });
-  // Its connection is read-only by default too, and named.
-  const [conn] = await query("select usename, application_name from pg_stat_activity where application_name = 'lingo-dojo-bank-mcp' and datname = current_database()");
-  assert.ok(conn, "the MCP's connection is visible");
+  // Its connection is named (and was checked read-only by default when it
+  // opened: pgSessions, tested below).
+  assert.equal(await mcpConnections(query), 1, "the MCP's connection is visible");
+}
+
+/** Newline-delimited JSON-RPC to a spawned bank MCP: send, and wait for the
+ *  reply to an id. */
+function rpc(child) {
+  const waiting = new Map();
+  createInterface({ input: child.stdout }).on("line", (line) => {
+    const msg = JSON.parse(line);
+    waiting.get(msg.id)?.(msg);
+  });
+  let id = 0;
+  return {
+    notify: (method, params = {}) => child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`),
+    call(method, params = {}) {
+      const n = ++id;
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: n, method, params })}\n`);
+      return new Promise((resolve) => waiting.set(n, resolve));
+    },
+  };
+}
+
+test("scripts/bank-mcp.mjs ends when its stdin does, and its connection goes with it", { skip }, async (t) => {
+  const { url: dbUrl, query, fx, role } = await seeded(t, "bankend");
+  const child = spawn(process.execPath, [BANK_MCP], { env: mcpEnv(dbUrl, role, fx.mine), stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (d) => (stderr += d));
+  const exited = once(child, "exit");
+  t.after(() => child.kill("SIGKILL"));
+  const r = rpc(child);
+  await r.call("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "1" } });
+  r.notify("notifications/initialized");
+  const reply = await r.call("tools/call", { name: "recent_conversations", arguments: {} });
+  assert.equal(reply.result.isError, undefined, JSON.stringify(reply) + stderr);
+  assert.equal(await mcpConnections(query), 1);
+  // The CLI's run is over: its end of the pipe closes, nothing else.
+  child.stdin.end();
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+  const [code, signal] = await exited;
+  clearTimeout(timer);
+  assert.deepEqual([code, signal], [0, null], `exited by itself, cleanly: ${stderr}`);
+  // The backend goes once the client's Terminate has been read.
+  const until = Date.now() + 3_000;
+  while ((await mcpConnections(query)) && Date.now() < until) await new Promise((res) => setTimeout(res, 25));
+  assert.equal(await mcpConnections(query), 0, "no connection left behind");
+});
+
+test("pgSessions: read-only by default despite the URL's own options; a connection lost mid-call fails that call, and only the next call reconnects", { skip }, async (t) => {
+  const { url: dbUrl, query, fx, role } = await seeded(t, "bankconn");
+  const sessions = pgSessions(dbUrl);
+  // Closed in the test, before the database's drop (registered first).
+  try {
+    await connectionChecks(sessions, dbUrl, query, fx, role);
+  } finally {
+    await sessions.close();
+  }
+});
+
+async function connectionChecks(sessions, dbUrl, query, fx, role) {
+  const q0 = await sessions.session();
+  assert.equal((await q0("show default_transaction_read_only"))[0].default_transaction_read_only, "on");
+  // The URL's options= still applied (it named the reader role).
+  assert.equal((await q0("select current_setting('lingo.reader_role', true) as r"))[0].r, role);
+  const [{ pid: first }] = await q0("select pg_backend_pid() as pid");
+
+  // A session whose connection is killed by the server just before the
+  // call's SET ROLE: that call fails, it does not carry on elsewhere.
+  let kill = false;
+  const statements = [];
+  const session = async () => {
+    const q = await sessions.session();
+    return async (text, params) => {
+      statements.push(text);
+      if (kill && text.startsWith("set local role")) {
+        kill = false;
+        const [{ pid }] = await q("select pg_backend_pid() as pid");
+        await query("select pg_terminate_backend($1)", [pid]);
+      }
+      return q(text, params);
+    };
+  };
+  const reader = bankReader({ session, role, learnerId: fx.mine.learnerId, languageProfileId: fx.mine.profileId });
+  assert.equal((await reader.recentConversations(5)).conversations.length, 1);
+  kill = true;
+  statements.length = 0;
+  await assert.rejects(reader.recentConversations(5));
+  assert.ok(!statements.some((s) => s.startsWith("select id, title")), "the call stopped at the lost connection");
+  // Between calls a new connection is opened (the old one's end is noticed
+  // first; give it a moment), and the next call reads as before.
+  const until = Date.now() + 3_000;
+  let ok = null;
+  while (!ok && Date.now() < until) {
+    ok = await reader.recentConversations(5).catch(() => null);
+    if (!ok) await new Promise((res) => setTimeout(res, 50));
+  }
+  assert.equal(ok?.conversations.length, 1);
+  const [{ pid: second }] = await (await sessions.session())("select pg_backend_pid() as pid");
+  assert.notEqual(second, first);
 }
 
 test("0005 applies on a 0004 database with data: the owner's rows untouched, the reader scoped", { skip }, async (t) => {
@@ -199,6 +318,25 @@ async function admin(t) {
   const tag = `${process.pid}_${crypto.randomBytes(3).toString("hex")}`;
   return {
     q: (text) => c.query(text),
+    /** A plain role for one case. */
+    async role(attrs = "nologin") {
+      const role = `lingo_owner_test_${tag}_${roles.length}`;
+      await c.query(`create role ${role} ${attrs}`);
+      roles.push(role);
+      return role;
+    },
+    /** Run `text` as the superuser inside database `name`. */
+    async inDb(name, text) {
+      const u = new URL(url);
+      u.pathname = `/${name}`;
+      const d = new pg.Client({ connectionString: u.toString() });
+      await d.connect();
+      try {
+        return (await d.query(text)).rows;
+      } finally {
+        await d.end();
+      }
+    },
     /** A login role and a throwaway database it owns; the URL to it as that role. */
     async owner(attrs) {
       const role = `lingo_owner_test_${tag}_${roles.length}`;
@@ -297,4 +435,50 @@ test("an existing reader role with more than read access is refused", { skip }, 
   await assert.rejects(migrateAs(o.url), /exists with more than read access/);
   await a.q(`alter role ${o.reader} nobypassrls`);
   await migrateAs(o.url);
+});
+
+test("an existing reader role held by another role, or named in this database's default privileges, is refused, naming them", { skip }, async (t) => {
+  if (!(await isSuperuser())) return t.skip("needs a superuser behind LINGO_TEST_PG_URL (it makes owners and hands them databases)");
+  const a = await admin(t);
+  const o = await a.owner("nosuperuser createrole");
+  await a.q(`create role ${o.reader} nologin`);
+  await a.q(`grant ${o.reader} to ${o.role} with inherit false, set true`);
+  const other = await a.role();
+  await a.q(`grant ${o.reader} to ${other}`);
+  await assert.rejects(migrateAs(o.url), (e) => {
+    assert.match(e.message, new RegExp(`the role ${o.reader} has other members: ${other}$`));
+    assert.match(e.hint, new RegExp(`REVOKE ${o.reader} FROM`));
+    return true;
+  });
+  await a.q(`revoke ${o.reader} from ${other}`);
+  // Another role's default privileges naming the reader: refused.
+  await a.inDb(o.name, `alter default privileges for role ${other} in schema public grant select on tables to ${o.reader}`);
+  await assert.rejects(migrateAs(o.url), new RegExp(`default privileges in this database name the role ${o.reader}: r \\(for objects of ${other} in schema public\\)`));
+  await a.inDb(o.name, `alter default privileges for role ${other} in schema public revoke select on tables from ${o.reader}`);
+  // The migrating role's own: cleared, and the migration goes on.
+  await a.inDb(o.name, `alter default privileges for role ${o.role} grant select on tables to ${o.reader}`);
+  await a.inDb(o.name, `alter default privileges for role ${o.role} in schema public grant usage on sequences to ${o.reader}`);
+  const query = await migrateAs(o.url).then(() => null);
+  assert.equal(query, null);
+  const left = await a.inDb(o.name, `select count(*)::int as n from pg_default_acl a where exists (select 1 from aclexplode(a.defaclacl) x where x.grantee = '${o.reader}'::regrole)`);
+  assert.deepEqual(left, [{ n: 0 }]);
+});
+
+test("db:setup prints Postgres's DETAIL and HINT when a migration stops", { skip }, async (t) => {
+  if (!(await isSuperuser())) return t.skip("needs a superuser behind LINGO_TEST_PG_URL (it makes owners and hands them databases)");
+  const a = await admin(t);
+  const o = await a.owner("nosuperuser nocreaterole");
+  const out = await new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [path.join(REPO_ROOT, "scripts", "db", "setup.mjs"), "--migrate-only"],
+      {
+        env: { PATH: process.env.PATH ?? "", DATABASE_URL: o.url, LINGO_READER_ROLE: o.reader, LINGO_ENV_FILE: path.join(REPO_ROOT, "no-such.env") },
+      },
+      (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout, stderr }),
+    );
+  });
+  assert.equal(out.code, 1, out.stdout + out.stderr);
+  assert.match(out.stderr, new RegExp(`db migrate failed: 0005_bank_reader: the read-only role ${o.reader} does not exist and ${o.role} may not create it`));
+  assert.match(out.stderr, new RegExp(`\\nhint: As a superuser, run: CREATE ROLE ${o.reader} NOLOGIN; GRANT ${o.reader} TO ${o.role} WITH INHERIT FALSE, SET TRUE; then npm run db:setup again\\.`));
 });

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { bankReader, CAPS, configFromEnv, createBankServer } from "../bank-mcp.mjs";
+import { bankReader, CAPS, configFromEnv, createBankServer, fit, KIDS_NOTE } from "../bank-mcp.mjs";
 import { READER_COLUMNS } from "../db/hand-edits.mjs";
 import { READER_ROLE } from "../db/config.mjs";
 import { APP_OWNER, freshDb } from "./testdb.mjs";
@@ -23,8 +23,8 @@ async function setup(t) {
 }
 
 /** An MCP client connected, in process, to the bank server for `scope`. */
-async function connect(t, query, scope, logs = []) {
-  const reader = bankReader({ query, role: READER_ROLE, learnerId: scope.learnerId, languageProfileId: scope.profileId });
+async function connect(t, query, scope, logs = [], { kids = false } = {}) {
+  const reader = bankReader({ query, role: READER_ROLE, learnerId: scope.learnerId, languageProfileId: scope.profileId, kids });
   const server = createBankServer(reader, (...a) => logs.push(a.map(String).join(" ")));
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test", version: "1.0.0" });
@@ -121,8 +121,8 @@ test("limits are capped, a hostile query is only text, and a failure says nothin
     [fx.mine.conversationId, fx.mine.learnerId, fx.mine.profileId],
   );
   const long = await call("get_conversation", { id: fx.mine.conversationId });
-  assert.ok(long.text.length <= CAPS.resultChars + 200, `${long.text.length} characters`);
-  assert.match(long.data.truncated, /only the first \d+ turns/);
+  assert.ok(Buffer.byteLength(long.text) <= CAPS.resultBytes, `${Buffer.byteLength(long.text)} bytes`);
+  assert.match(long.data.truncated, /only the first \d+ of \d+ turns are shown \(size limit\)/);
   assert.ok(long.data.transcript.every((x) => x.text.length <= CAPS.turnChars));
 
   // Without the reader role the transaction refuses to read at all.
@@ -211,6 +211,34 @@ test("the owner is unaffected by row-level security (enabled, not forced) and th
   assert.deepEqual(role, { rolcanlogin: false, rolsuper: false, rolbypassrls: false, rolinherit: false, memberships: 0 });
 });
 
+test("a kids learner's transcript leaves out what the child said, and says so", async (t) => {
+  const { query, fx } = await setup(t);
+  const { call } = await connect(t, query, fx.mine, [], { kids: true });
+  const conv = (await call("get_conversation", { id: fx.mine.conversationId })).data;
+  assert.equal(conv.note, KIDS_NOTE);
+  assert.deepEqual(conv.transcript, [
+    { n: 0, who: "learner", text: null, omitted: true },
+    { n: 1, who: "dojo master", text: "VENDOR: ¡Claro que sí!", glosses: ["claro = of course"] },
+  ]);
+  assert.equal(conv.recap, "Recap of At the market.");
+  assert.doesNotMatch(JSON.stringify(conv), /quiero dos mangos/);
+  // Phrases and recaps are unchanged.
+  assert.deepEqual((await call("search_phrases", { query: "mercado" })).data.phrases.map((p) => p.text), ["mercado"]);
+});
+
+test("every result is held to one byte cap: items dropped from the end, and the result says so", () => {
+  // Multi-byte text: a character cap would let this through at twice the size.
+  const phrases = Array.from({ length: 50 }, (_, i) => ({ n: i, text: "ñ".repeat(100) }));
+  const small = { phrases: phrases.slice(0, 2) };
+  assert.equal(fit(small, "phrases", 10_000), small, "within the cap: untouched");
+  const cut = fit({ window: "30 days", phrases }, "phrases", 2_000);
+  assert.ok(Buffer.byteLength(JSON.stringify(cut)) <= 2_000);
+  assert.ok(cut.phrases.length > 0 && cut.phrases.length < 50);
+  assert.deepEqual(cut.phrases, phrases.slice(0, cut.phrases.length), "the first ones, in order");
+  assert.equal(cut.truncated, `only the first ${cut.phrases.length} of 50 phrases are shown (size limit)`);
+  assert.equal(cut.window, "30 days");
+});
+
 test("configFromEnv refuses a scope that isn't two uuids, or an odd role", () => {
   const ok = { LINGO_BANK_LEARNER_ID: "11111111-1111-4111-8111-111111111111", LINGO_BANK_LANGUAGE_PROFILE_ID: "22222222-2222-4222-8222-222222222222", DATABASE_URL: "postgres://localhost/x" };
   assert.equal(configFromEnv(ok).role, READER_ROLE);
@@ -218,4 +246,7 @@ test("configFromEnv refuses a scope that isn't two uuids, or an odd role", () =>
   assert.throws(() => configFromEnv({ ...ok, LINGO_BANK_LANGUAGE_PROFILE_ID: "x' or 1=1" }), /uuid/);
   assert.throws(() => configFromEnv({ ...ok, LINGO_READER_ROLE: "postgres" }), /LINGO_READER_ROLE/);
   assert.throws(() => configFromEnv({ ...ok, DATABASE_URL: "" }), /DATABASE_URL/);
+  assert.equal(configFromEnv(ok).kids, false);
+  assert.equal(configFromEnv({ ...ok, LINGO_BANK_KIDS: "1" }).kids, true);
+  assert.throws(() => configFromEnv({ ...ok, LINGO_BANK_KIDS: "yes" }), /LINGO_BANK_KIDS/);
 });

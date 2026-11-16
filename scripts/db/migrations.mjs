@@ -18,7 +18,8 @@
 // connection.
 
 import { readMigrationFiles } from "drizzle-orm/migrator";
-import { MIGRATIONS_DIR } from "./config.mjs";
+import { MIGRATIONS_DIR, READER_ROLE } from "./config.mjs";
+import { READER_COLUMNS, READER_POLICY } from "./hand-edits.mjs";
 
 /** The migrations on disk, oldest first: { sql: string[], folderMillis, hash }. */
 export function migrationsOnDisk(dir = MIGRATIONS_DIR) {
@@ -77,6 +78,44 @@ export function describeMigrations(state) {
     default:
       return state.status;
   }
+}
+
+/**
+ * What is missing of migration 0005's reader (docs/DATA.md §Backups), or
+ * null when it is all there or 0005 never ran. A dump restored before the
+ * reader role existed comes back with its data and its migrations recorded
+ * but without the policies and grants that name the role, so the migration
+ * state alone calls it current. 0005 is taken to have run when
+ * agent_messages has its bank_language_profile_id column (restored with
+ * the table). Read-only; `role` is the reader role's name.
+ */
+export async function bankReaderProblem(query, role = READER_ROLE) {
+  const [{ ran }] = await query(
+    `select exists (select 1 from information_schema.columns
+                     where table_schema = 'public' and table_name = 'agent_messages' and column_name = 'bank_language_profile_id') as ran`,
+  );
+  if (!ran) return null;
+  const [r] = await query("select oid::text as oid from pg_roles where rolname = $1", [role]);
+  if (!r) return `the read-only role ${role} does not exist`;
+  const tables = Object.keys(READER_COLUMNS);
+  const rows = await query(
+    `select t.name,
+            coalesce(c.relrowsecurity, false) as rls,
+            exists (select 1 from pg_policy p where p.polrelid = c.oid and p.polname = $2 and $3::oid = any(p.polroles)) as policy,
+            c.oid is not null and has_table_privilege($3::oid, c.oid, 'SELECT') as whole_table,
+            c.oid is not null and has_any_column_privilege($3::oid, c.oid, 'SELECT') as columns
+       from unnest($1::text[]) as t(name)
+       left join pg_class c on c.relname = t.name and c.relnamespace = 'public'::regnamespace and c.relkind = 'r'`,
+    [tables, READER_POLICY, r.oid],
+  );
+  const missing = [];
+  for (const t of rows) {
+    if (!t.rls) missing.push(`row-level security on ${t.name}`);
+    if (!t.policy) missing.push(`the ${READER_POLICY} policy on ${t.name}`);
+    if (!t.columns) missing.push(`${role}'s column grants on ${t.name}`);
+    if (t.whole_table) missing.push(`(not missing but extra) a whole-table grant on ${t.name}`);
+  }
+  return missing.length ? `migration 0005 is recorded, but ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not as it made them` : null;
 }
 
 /** Where a database stands against the migrations on disk. Read-only. */
