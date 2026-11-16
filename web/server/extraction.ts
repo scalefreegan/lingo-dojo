@@ -15,6 +15,8 @@ import type { LearnerCtx } from "./auth.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
 import { HttpError, methodNotAllowed, sendJson } from "./sse.ts";
 import { getModel } from "./store.ts";
+import { loadContent, modeRoot } from "../../scripts/content.mjs";
+import { offeredReview } from "./recall.ts";
 
 // The post-session extraction (docs/DATA.md §Post-session extraction): when
 // a conversation ends, one tool-less `claude -p` reads its transcript and
@@ -146,11 +148,19 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     const owner = await languageProfileOwner(db, profile);
     if (!owner) return void (await fail(REASON.gone));
     const locale = bankLocale(owner.targetLanguage, conv);
+    // The phrases the session's review block offered (stored on the
+    // conversation when it began: web/server/recall.ts), so the recap judges
+    // the recycling it asked for, however the bank moved since (this
+    // recap's own reviews, Practice, a star); the session reviews come from
+    // its events as for any phrase. A pack without a recall unit offered
+    // none: the phrases due then, as before.
+    const offered = locale == null ? null : await offeredFor(profile, conv);
     const { system, user } = extractionPrompt({
       transcript: sessionTranscript(rows),
       nativeLanguage: conv.nativeLanguage || owner.nativeLanguage || "English",
       targetVariant: conv.targetVariant || conv.targetLanguage || owner.targetLanguage || "the target language",
-      duePhrases: locale == null ? [] : await duePhrasesAt(db, profile, new Date(conv.startedAt)),
+      duePhrases: offered ?? (locale == null ? [] : await duePhrasesAt(db, profile, new Date(conv.startedAt))),
+      offered: offered != null,
       kids: conv.mode === "kids",
     });
     const model = await getModel(owner.userId);
@@ -187,6 +197,16 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
   } catch (e) {
     await fail(REASON.save, `${REASON.save}: ${detail(e)}`).catch((e2) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: the failure couldn't be stored: ${detail(e2)}`));
   }
+}
+
+/** The review block the conversation offered (recall.ts offeredReview),
+ *  as the prompt lists it. Null when its pack had no recall unit. The
+ *  session's own languages decide whether it was in the bank's (the caller
+ *  checked bankLocale, as for its captures). */
+async function offeredFor(profile: LanguageProfileRef, conv: Conversation): Promise<{ text: string; meaning?: string | null }[] | null> {
+  const content = loadContent(modeRoot(conv.mode === "kids" ? "kids" : "adult"));
+  const items = await offeredReview(profile, content, conv);
+  return items && items.map((p) => ({ text: p.text, meaning: p.meaning }));
 }
 
 /* --------------------------------- reading --------------------------------- */

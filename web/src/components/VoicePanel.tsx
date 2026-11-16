@@ -14,7 +14,7 @@ import {
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
-  LibrarySort, LibraryVoice, Mode, PackInput, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
@@ -58,6 +58,7 @@ export default function VoicePanel({
   minutesPick = 0,
   title = "",
   canStar = false,
+  onReview,
 }: {
   mode: Mode;
   pack: PackInput;
@@ -74,6 +75,9 @@ export default function VoicePanel({
   /** ☆ Star in the transcript's definitions (the session is in the active
    *  language, so its words belong in that language's phrase bank). */
   canStar?: boolean;
+  /** Each turn's review block (the bank phrases this session revisits),
+   *  for the Go tab's line. A state setter: stable. */
+  onReview?: (review: RecallReview) => void;
 }) {
   const [open, setOpen] = useState(openRequest);
   // A request while closed opens it during render (React's pattern for state
@@ -96,7 +100,7 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} canStar={canStar} onClose={() => setOpen(false)} />;
+  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} canStar={canStar} onReview={onReview} onClose={() => setOpen(false)} />;
 }
 
 /** The saved conversation a session writes to: its id, the transcript index
@@ -104,7 +108,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -959,6 +963,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         r = await send(sent);
       }
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      if (r.review) onReview?.(r.review);
       if (sent && r.saved === false) {
         // Stored by this conversation's next turn (it reconciles the whole
         // screen), or by the next conversation's first if this one is over.

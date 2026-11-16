@@ -41,12 +41,22 @@ const UNSPACED = new Set(["ja", "zh", "th", "lo", "km", "my", "bo"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v) => typeof v === "string" && UUID_RE.test(v);
 
-/** Control characters a phrase never needs: C0 (but tab and newline, which
- *  oneLine folds or a note keeps), DEL, and the bidi embeddings, overrides
- *  and isolates, which can make text read differently from what it is. */
-const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g;
+/** Control and invisible characters a phrase never needs: C0 (but tab and
+ *  newline, which oneLine folds or a note keeps), DEL, NEL (U+0085, a line
+ *  break to some readers), the zero-width space, word joiner and BOM, and
+ *  the bidi marks, embeddings, overrides and isolates (U+200E, U+200F,
+ *  U+061C, U+202A–U+202E, U+2066–U+2069), which can make text read
+ *  differently from what it is. ZWNJ and ZWJ (U+200C, U+200D) stay: some
+ *  scripts (Persian, Hindi, emoji sequences) spell with them. */
+const CONTROLS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0085\u061C\u200B\u200E\u200F\u202A-\u202E\u2060\u2066-\u2069\uFEFF]/g;
 /** `s` as text a phrase may hold: the controls above removed. */
 export const clean = (s) => String(s ?? "").replace(CONTROLS, "");
+/** Lone UTF-16 surrogates (half an emoji, say): not text, and Postgres
+ *  refuses them in jsonb. */
+const LONE_SURROGATES = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+/** Model- or learner-written text made safe to store or to put in a
+ *  prompt: well-formed, with none of the characters `clean` drops. */
+export const modelText = (v) => clean(String(v ?? "").replace(LONE_SURROGATES, ""));
 const oneLine = (s) => clean(s).replace(/\s+/g, " ").trim();
 /** A note: its own line breaks kept (CR LF as LF), other controls gone. */
 const noteText = (s) => clean(String(s ?? "").replace(/\r\n?/g, "\n")).replace(/\r/g, "").trim();

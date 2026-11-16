@@ -21,6 +21,10 @@ export interface Slot {
   pick: Pick;
   /** Defaults to false when the schema omits it. */
   required: boolean;
+  /** A slot added after packs were saved (recall): a pack with no unit of it
+   *  and no "-<id>" opt-out plays its default unit (scripts/content.mjs
+   *  packUnits). False when the schema omits it. */
+  backfill?: boolean;
   /** "" when the schema omits it. */
   description: string;
   /** Display heading the UI clusters slots under on the Customize tab
@@ -320,6 +324,27 @@ export interface AssembleResult {
    *  unit/scenario/placeholder. Never fatal — the markdown is always there. */
   warnings: string[];
   stats: Stats;
+  /** POST /api/assemble only: the phrases the review block brings back
+   *  (docs/DATA.md §Recall), for the Go tab's "revisiting" line. Empty when
+   *  the pack has no recall unit, the bank has nothing due, or the session
+   *  is in another language than the bank's. */
+  review?: RecallReview;
+}
+
+/** One phrase the review block brings back from the learner's bank. */
+export interface RecallItem {
+  id: string;
+  text: string;
+  meaning: string | null;
+  /** Never practised (a starred phrase not learned yet): the dojo master
+   *  introduces it rather than hints at it. */
+  fresh?: boolean;
+}
+
+/** The review block's phrases and the bank's locale (for readings). */
+export interface RecallReview {
+  items: RecallItem[];
+  locale: string | null;
 }
 
 /** POST /api/export — `id` names exports/<id>.md. */
@@ -759,6 +784,9 @@ export interface VoiceTurnReply {
    *  is stored. False when the write failed, or the conversation ended or
    *  was deleted meanwhile; the turn still stands. */
   saved?: boolean;
+  /** The review block this turn's prompt carried (chosen as of the
+   *  conversation's start), so the Go tab shows what the session revisits. */
+  review?: RecallReview;
 }
 
 /* ------------------------------ conversations ----------------------------- */

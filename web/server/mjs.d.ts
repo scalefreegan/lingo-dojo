@@ -38,6 +38,14 @@ declare module "*/scripts/content.mjs" {
   export function exportsDirFor(mode?: import("../shared/wire.ts").Mode): string;
   /** A pack from a file or a request body, with every field in its shape. */
   export function normalizePack(pack: unknown): import("../shared/wire.ts").PackInput & { overrides: Record<string, unknown> };
+  /** A units entry saying a `backfill` slot was emptied on purpose ("-recall"). */
+  export function slotOptOut(slotId: string): string;
+  /** The units a pack plays: its own, opt-outs dropped, plus each `backfill`
+   *  slot's default unit when the pack has none of it and no opt-out. */
+  export function packUnits(
+    content: { schema?: { slots?: import("../shared/wire.ts").Slot[] }; units?: import("../shared/wire.ts").Unit[] } | null | undefined,
+    units: unknown,
+  ): string[];
   /** The level picker's options per mode. */
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
   /** Never throws; bad files land in `problems`. The mode and its levels are
@@ -71,8 +79,10 @@ declare module "*/scripts/assemble.mjs" {
   export function assemble(
     content: Pick<import("../shared/wire.ts").ContentReply, "schema" | "frame" | "profile" | "units" | "scenarios">,
     pack: unknown,
-    /** Which tree `content` is; the Time budget splits that mode's parts. */
-    mode?: import("../shared/wire.ts").Mode,
+    /** Which tree `content` is (the Time budget splits that mode's parts),
+     *  or that and the review block's phrases (none: units using
+     *  {{phrase_review}} drop out). */
+    options?: import("../shared/wire.ts").Mode | { mode?: import("../shared/wire.ts").Mode; review?: { text: string; meaning?: string | null }[] },
   ): import("../shared/wire.ts").AssembleResult;
   /** The learner's profile under the pack's overrides, as the prompt sees it. */
   export function effectiveProfile(profile: Record<string, unknown> | null | undefined, overrides?: Record<string, unknown> | null): Record<string, unknown>;
@@ -135,7 +145,10 @@ declare module "*/scripts/voice.mjs" {
   export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string };
   export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
   export function voiceSystemPrompt(markdown: string, mode: Mode): string;
-  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string): string;
+  /** `notes`: recall's delimited blocks (bank retrieval, LOOKUP results), after the clock. */
+  export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string, notes?: string[]): string;
+  /** The query of a reply's first LOOKUP line, or null. */
+  export function parseLookup(text: string): string | null;
   /** The "How long do you have?" choices per mode, in minutes. */
   export const MINUTE_CHOICES: Record<Mode, number[]>;
   /** The time-budget line for a turn's prompt; "" without a budget. */

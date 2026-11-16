@@ -5,7 +5,7 @@ import {
 } from "./api";
 import type { AssembleResult, AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft,
+  draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
 import TopBar from "./components/TopBar";
@@ -135,7 +135,9 @@ export default function App({
     setFolders(p.folders);
     setLoadError(null);
     setContentVersion((v) => v + 1);
-    setDraft((d) => (fresh || !d ? (loadRememberedDraft(languageId) ?? newDraft(c)) : d));
+    // A remembered draft may predate a slot added since (recall): it plays
+    // that slot's default, as a saved pack does (withBackfill).
+    setDraft((d) => (fresh || !d ? withBackfill(c, loadRememberedDraft(languageId) ?? newDraft(c)) : d));
   }, []);
 
   // Load the library. The effect's own `live` flag drops a reply that lands
@@ -377,7 +379,9 @@ export default function App({
 
   /** Load jumps to Scene: that's where the loaded pack's scenario shows up. */
   function load(p: Pack) {
-    setDraft(packToDraft(p));
+    // A pack saved before a slot was added (recall) plays its default: shown
+    // ticked in Customize, saved only if the learner saves.
+    setDraft(content ? withBackfill(content, packToDraft(p)) : packToDraft(p));
     setSaveRequest(null);
     setTab("scene");
   }
@@ -387,7 +391,8 @@ export default function App({
    *  jumps to Go, where that save form now lives. */
   function clone(p: Pack) {
     const title = `${p.title} (copy)`;
-    setDraft({ ...packToDraft(p), title, sourceId: null, created: "" });
+    const d = packToDraft(p);
+    setDraft({ ...(content ? withBackfill(content, d) : d), title, sourceId: null, created: "" });
     setSaveRequest((r) => ({ title, folder: p.folder, seq: (r?.seq ?? 0) + 1 }));
     setTab("go");
   }

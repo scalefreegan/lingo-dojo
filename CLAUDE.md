@@ -25,7 +25,10 @@ pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.ts
 Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
-`web/src/components/PracticeView.tsx`). A practice answer locks its phrase
+`web/src/components/PracticeView.tsx`), and recall in sessions (phase 6:
+the review block in the `recall` slot's `{{phrase_review}}`, per-turn
+retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
+reads in `web/server/recall.ts`; no row locks, no migration). A practice answer locks its phrase
 then its card; it names the card's version, the phrase's revision and a
 submit id (a resend replays, anything else stale is a 409).
 
