@@ -76,12 +76,15 @@ test("exampleFor: the line's target words holding the term as whole words; not t
   assert.ok(exampleFor("x", [{ speaker: "x", text: "x ".repeat(400) }], "es-MX").sentence.length <= LIMITS.sentence);
 });
 
-test("clean: C0 controls, DEL and bidi overrides go; a note keeps its lines", () => {
+test("clean: C0 controls, DEL, NEL, zero-width and bidi characters go; ZWJ and ZWNJ stay; a note keeps its lines", () => {
   assert.equal(clean("a\u0007b\u202Ec\u2066d\u007Fe"), "abcde");
   assert.deepEqual(readPhraseInput({ text: "\u202Emangos\u202C", meaning: "mango\u0001es", note: "one\r\ntwo\u0008" }, { create: true }).value, {
     text: "mangos", meaning: "mangoes", note: "one\ntwo",
   });
-  assert.deepEqual(glossCaptures([{ term: "ma\u200Fngo\u202E", meaning: "mango" }], [], "es-MX").map((i) => i.text), ["ma\u200Fngo"], "only the overrides, not every bidi mark");
+  assert.deepEqual(glossCaptures([{ term: "ma\u200Fngo\u202E", meaning: "mango" }], [], "es-MX").map((i) => i.text), ["mango"], "the bidi marks too");
+  assert.equal(clean("a\u0085b\u200Bc\u200Ed\u200Fe\u061Cf\u2060g\uFEFFh\u2067i"), "abcdefghi");
+  // Persian and Hindi spell with the joiners: kept.
+  assert.equal(clean("\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645 \u0915\u094D\u200D\u0937"), "\u0645\u06CC\u200C\u062E\u0648\u0627\u0647\u0645 \u0915\u094D\u200D\u0937");
 });
 
 test("sameLanguage: by ISO language where known, else by name; a blank side never disagrees", () => {

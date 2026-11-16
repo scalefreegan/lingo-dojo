@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { exportPack, type VoiceLanguages } from "../api";
-import { splitPackId } from "../draft";
+import { splitPackId, unitCount } from "../draft";
 import type { AssembleResult, ContentReply, ExportResult, PackInput, RecallReview } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { RubyText } from "./Ruby";
@@ -126,7 +126,7 @@ export default function GoTab({
         </div>
         <p className="text-sm text-fg-2">{learnerLine || "Learner not set"}</p>
         <p className="text-sm text-fg-3 tabular-nums">
-          {pack.units.length} unit{pack.units.length === 1 ? "" : "s"}
+          {unitCount(pack.units)} unit{unitCount(pack.units) === 1 ? "" : "s"}
           {result && ` · ${result.stats.words.toLocaleString()} words · ~${result.stats.tokens.toLocaleString()} tokens`}
           {pending && " · updating"}
         </p>

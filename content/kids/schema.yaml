@@ -38,6 +38,9 @@ slots:
     title: Words to bring back
     pick: one
     required: false
+    # A pack saved before this slot existed plays its default unit; one
+    # whose slot was set to None says so ("-recall" in its units).
+    backfill: true
     description: "A few words the child met in earlier sessions, heard again inside the story. Left out when there are none."
   - id: energy
     group: Energy and length

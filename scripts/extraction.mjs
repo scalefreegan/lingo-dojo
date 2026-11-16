@@ -10,7 +10,7 @@
 import { extractJsonObject } from "./json-reply.mjs";
 import { SESSION_EVENT_KINDS, ratingForSessionEvent } from "./fsrs.mjs";
 import { normKey, defang } from "./match.mjs";
-import { LIMITS as BANK_LIMITS, charCount, clean, exampleFor, unspaced, wordCount } from "./phrases.mjs";
+import { LIMITS as BANK_LIMITS, charCount, exampleFor, modelText, unspaced, wordCount } from "./phrases.mjs";
 
 /** Caps, enforced by parseExtraction. Generous for a 20-minute session; they
  *  exist to bound a runaway reply, not to shape a normal one. */
@@ -101,21 +101,16 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
 
 /* --------------------------------- parsing --------------------------------- */
 
-/** Lone UTF-16 surrogates (half an emoji, say): not text, and Postgres
- *  refuses them in jsonb, which would fail the whole recap's write. */
-const LONE_SURROGATES = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-/** Invisible characters with no job in a recap: zero-width space, word
- *  joiner, BOM. ZWJ and ZWNJ stay: some scripts spell with them. */
-const INVISIBLE = /[\u200B\u2060\uFEFF]/g;
-/** Model text made safe to store: well-formed, no invisible or control
- *  characters (phrases.mjs clean: C0, DEL, the bidi overrides and isolates). */
-export const modelText = (v) => clean(String(v).replace(LONE_SURROGATES, "").replace(INVISIBLE, ""));
+/** Model text made safe to store (phrases.mjs modelText: well-formed, no
+ *  control, invisible or bidi characters). Lone surrogates would otherwise
+ *  fail the whole recap's jsonb write. */
+export { modelText };
 /** Trimmed string capped at `max`, or null when not a non-empty string.
  *  Cut at `max` without leaving half a surrogate pair. */
 const str = (v, max) => {
   if (typeof v !== "string") return null;
   const s = modelText(v).replace(/\s+/g, " ").trim();
-  return s ? s.slice(0, max).replace(LONE_SURROGATES, "") || null : null;
+  return s ? modelText(s.slice(0, max)) || null : null;
 };
 /** Optional string: "" when absent or not a string. */
 const opt = (v, max) => str(v, max) ?? "";

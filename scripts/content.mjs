@@ -307,10 +307,39 @@ function loadSchema(abs, report) {
       title: s.title,
       pick: s.pick,
       required: s.required === true,
+      backfill: s.backfill === true,
       description: typeof s.description === "string" ? s.description.trim() : "",
     });
   });
   return schema;
+}
+
+/** A pack's `units` entry saying a `backfill` slot was left empty on
+ *  purpose ("-recall"). Never a unit id: unit ids are kebab-case words. */
+export const slotOptOut = (slotId) => `-${slotId}`;
+
+/**
+ * The units a pack plays: its own, opt-out entries dropped, plus, for each
+ * slot marked `backfill: true` in schema.yaml that the pack has no unit of
+ * and doesn't opt out of, the slot's default unit(s). A pack saved before
+ * such a slot existed has no entry for it at all, so it gets the default
+ * a new pack would; a learner who empties the slot (Customize's None) saves
+ * the opt-out instead, which is respected. Saved packs are never rewritten
+ * for this: it is decided each time the pack is played. The Customize tab
+ * mirrors it (web/src/draft.ts withBackfill).
+ */
+export function packUnits(content, units) {
+  const list = Array.isArray(units) ? units.filter((u) => typeof u === "string") : [];
+  const own = list.filter((id) => !id.startsWith("-"));
+  const out = [...own];
+  for (const slot of content?.schema?.slots ?? []) {
+    if (!slot.backfill || list.includes(slotOptOut(slot.id))) continue;
+    const inSlot = (content.units ?? []).filter((u) => u.slot === slot.id);
+    if (own.some((id) => inSlot.some((u) => u.id === id))) continue;
+    const defaults = inSlot.filter((u) => u.default);
+    out.push(...(slot.pick === "one" ? defaults.slice(0, 1) : defaults).map((u) => u.id));
+  }
+  return out;
 }
 
 function loadProfile(abs, report) {

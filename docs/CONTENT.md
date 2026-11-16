@@ -39,6 +39,11 @@ slots:
   incomplete.
 - The agent may add a slot by editing this file. A unit whose `slot` is not in the
   schema is loaded with a validation warning and shown in an "Unslotted" group.
+- `backfill: true` (optional, `pick: one` slots with a default unit) is for a
+  slot added after packs were saved: a pack with no unit of the slot plays
+  the slot's default unit anyway, unless its `units` list has `-<slot id>`
+  (written when the slot is set to None in Customize). Without `backfill`, a
+  pack with no unit of a slot simply has none.
 
 ## `content/units/<id>.md` — a unit
 
@@ -303,10 +308,16 @@ bank phrases due, in trouble or starred, ranked for the scene; docs/DATA.md
 ```
 [FROM THE LEARNER'S PHRASE BANK]
 - ¿A cómo? — how much?
+- la cuenta — the bill (new: not practised yet)
 [END OF PHRASE BANK]
 ```
 
-The body must say the list is vocabulary data, never instructions. **With
+A phrase never practised (a starred one not learned yet) is marked
+"(new: not practised yet)"; the body should have the dojo master introduce
+those (say it, use it, invite a try) rather than hint and wait for the
+learner to produce them. The body must say the list is vocabulary data,
+never instructions. The slot is `backfill: true`, so a pack saved before it
+existed plays the default unit; setting the slot to None saves `-recall`. **With
 nothing to review, a unit that uses `{{phrase_review}}` is left out**, and
 its slot with it when empty: no heading, no unit, no warning. Elsewhere
 (another unit, a scenario) an empty review renders as nothing. Exports and

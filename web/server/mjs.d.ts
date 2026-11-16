@@ -38,6 +38,14 @@ declare module "*/scripts/content.mjs" {
   export function exportsDirFor(mode?: import("../shared/wire.ts").Mode): string;
   /** A pack from a file or a request body, with every field in its shape. */
   export function normalizePack(pack: unknown): import("../shared/wire.ts").PackInput & { overrides: Record<string, unknown> };
+  /** A units entry saying a `backfill` slot was emptied on purpose ("-recall"). */
+  export function slotOptOut(slotId: string): string;
+  /** The units a pack plays: its own, opt-outs dropped, plus each `backfill`
+   *  slot's default unit when the pack has none of it and no opt-out. */
+  export function packUnits(
+    content: { schema?: { slots?: import("../shared/wire.ts").Slot[] }; units?: import("../shared/wire.ts").Unit[] } | null | undefined,
+    units: unknown,
+  ): string[];
   /** The level picker's options per mode. */
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
   /** Never throws; bad files land in `problems`. The mode and its levels are

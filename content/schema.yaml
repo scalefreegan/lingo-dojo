@@ -29,6 +29,9 @@ slots:
     title: Phrases to revisit
     pick: one
     required: false
+    # A pack saved before this slot existed plays its default unit; one
+    # whose slot was set to None says so ("-recall" in its units).
+    backfill: true
     description: "Phrases from the learner's own bank that are due or keep slipping, worked back into the scene. Left out of the prompt when nothing is due."
   - id: style
     group: Teaching style

@@ -29,12 +29,16 @@ process.env.LINGO_ENV_FILE = path.join(dataDir, "no-such.env");
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]) delete process.env[k];
 
 // The recall slot and units, in the fixture copy only (the real ones are
-// under content/; the fixture's other tests don't know this slot).
-const recallSlot = (title) => `  - id: recall\n    title: ${title}\n    pick: one\n    required: false\n    description: Bank phrases to revisit.\n`;
+// under content/; the fixture's other tests don't know this slot). As in
+// content/: a `backfill` slot whose unit is the default, so a pack saved
+// before it existed plays it, and "-recall" in a pack's units is None.
+const recallSlot = (title) => `  - id: recall\n    title: ${title}\n    pick: one\n    required: false\n    backfill: true\n    description: Bank phrases to revisit.\n`;
 fs.appendFileSync(path.join(root, "schema.yaml"), recallSlot("Phrases to revisit"));
 fs.appendFileSync(path.join(root, "kids/schema.yaml"), recallSlot("Words to bring back"));
-write(root, "units/recycle-due-phrases.md", "---\nid: recycle-due-phrases\nslot: recall\ntitle: Recycle due phrases\nsummary: Bring them back.\n---\nWork these back into the scene in {{target_variant}}.\n\n{{phrase_review}}\n");
-write(root, "kids/units/recycle-words.md", "---\nid: recycle-words\nslot: recall\ntitle: Bring back old words\nsummary: By ear.\n---\nSay these again in the story.\n\n{{phrase_review}}\n");
+write(root, "units/recycle-due-phrases.md", "---\nid: recycle-due-phrases\nslot: recall\ntitle: Recycle due phrases\nsummary: Bring them back.\ndefault: true\n---\nWork these back into the scene in {{target_variant}}.\n\n{{phrase_review}}\n");
+write(root, "kids/units/recycle-words.md", "---\nid: recycle-words\nslot: recall\ntitle: Bring back old words\nsummary: By ear.\ndefault: true\n---\nSay these again in the story.\n\n{{phrase_review}}\n");
+/** A pack whose learner set the recall slot to None. */
+const NO_RECALL = ["intro-native", "-recall"];
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
@@ -124,14 +128,16 @@ test("the review block: due phrases in the turn's system prompt and in /api/asse
   assert.equal(a.status, 200, a.text);
   assert.deepEqual(a.body.review.items.map((p) => p.text), ["la vuelta", "¿Me lo envuelve?", "quesillo"]);
   assert.equal(a.body.review.locale, "es-MX");
-  assert.deepEqual(reviewBlock(a.body.markdown), ["- la vuelta — the change", "- ¿Me lo envuelve? — Could you wrap it?", "- quesillo — string cheese"]);
+  // The starred phrase never practised is marked, for the unit to introduce.
+  assert.deepEqual(reviewBlock(a.body.markdown), ["- la vuelta — the change", "- ¿Me lo envuelve? — Could you wrap it?", "- quesillo — string cheese (new: not practised yet)"]);
+  assert.deepEqual(a.body.review.items.map((p) => p.fresh), [false, false, true]);
   assert.match(a.body.markdown, /## Phrases to revisit\n\n### Recycle due phrases\n\nWork these back into the scene in Mexican Spanish\.\n\n\[FROM THE LEARNER'S PHRASE BANK\]/);
 
   const conv = await start(sam);
   const r = await turn(sam, conv.id, [], "");
   assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.body.review.items.map((p) => p.text), ["la vuelta", "¿Me lo envuelve?", "quesillo"]);
-  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change", "- ¿Me lo envuelve? — Could you wrap it?", "- quesillo — string cheese"]);
+  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change", "- ¿Me lo envuelve? — Could you wrap it?", "- quesillo — string cheese (new: not practised yet)"]);
 
   // The export carries the block too (a pasted session recycles phrases).
   const e = await sam.call("POST", "/api/export?mode=adult", { pack: pack(), id: "recall-export" });
@@ -152,9 +158,9 @@ test("an empty bank, or a pack without the recall unit: no heading, no unit, no 
   assert.doesNotMatch(system, /Phrases to revisit|phrase_review|\[FROM THE LEARNER'S PHRASE BANK\]\n/);
   assert.doesNotMatch(prompt, /PHRASE BANK\]\n/);
   assert.deepEqual(r.body.review.items, []);
-  // A bank with due phrases, but no recall unit in the pack: no block.
+  // A bank with due phrases, but the recall slot set to None: no block.
   await seed(sam, [["la vuelta", "the change", 3]]);
-  const b = await sam.call("POST", "/api/assemble?mode=adult", { pack: pack({ units: ["intro-native"] }) });
+  const b = await sam.call("POST", "/api/assemble?mode=adult", { pack: pack({ units: NO_RECALL }) });
   assert.deepEqual(b.body.review.items, []);
   assert.doesNotMatch(b.body.markdown, /PHRASE BANK/);
 });
@@ -304,10 +310,154 @@ test("the recap is told which phrases the session offered for review, and turns 
   const [rev] = await q("select r.mode, r.rating from reviews r join cards c on c.id = r.card_id where c.phrase_id = $1 and r.conversation_id = $2", [ids["la vuelta"], conv.id]);
   assert.deepEqual([rev.mode, rev.rating], ["session", 3]);
   // A session whose pack had no recall unit: the due phrases, said to be only due.
-  const conv2 = await start(sam, pack({ units: ["intro-native"] }));
-  await turn(sam, conv2.id, [], "hola", pack({ units: ["intro-native"] }));
+  const conv2 = await start(sam, pack({ units: NO_RECALL }));
+  await turn(sam, conv2.id, [], "hola", pack({ units: NO_RECALL }));
   await sam.call("POST", `/api/conversations/${conv2.id}/end`);
   await settleExtractions();
   const args2 = fake.recapArgs();
   assert.match(args2[args2.indexOf("-p") + 1], /^PHRASES DUE THIS SESSION \(due for review/);
+});
+
+/* ---------------------- the review is fixed for a session ---------------------- */
+
+test("the review is chosen once per session: a phrase starred mid-session doesn't join it; one edited shows its new words; one suspended leaves", async () => {
+  const sam = await someone();
+  const ids = await seed(sam, [["la vuelta", "the change", 3], ["el recibo", "the receipt", 2]]);
+  const conv = await start(sam);
+  const [row] = await q("select pack_snapshot from conversations where id = $1", [conv.id]);
+  assert.deepEqual(row.pack_snapshot.review.phraseIds.sort(), [ids["la vuelta"], ids["el recibo"]].sort(), "stored on the conversation when it began");
+  const r1 = await turn(sam, conv.id, [], "");
+  assert.equal(r1.status, 200, r1.text);
+  const b1 = reviewBlock(lastPrompts().system);
+  assert.equal(b1.length, 2);
+  // Mid-session: ☆ Star on a new word, an edit, a suspension.
+  await sam.call("POST", "/api/phrases", { text: "el aguacate", meaning: "avocado", starred: true });
+  await sam.call("PATCH", `/api/phrases/${ids["la vuelta"]}`, { meaning: "the change (coins)" });
+  const r2 = await turn(sam, conv.id, after1([], "", r1), "hola");
+  assert.equal(r2.status, 200, r2.text);
+  assert.deepEqual(reviewBlock(lastPrompts().system).sort(), ["- el recibo — the receipt", "- la vuelta — the change (coins)"].sort());
+  assert.deepEqual(r2.body.review.items.map((p) => p.text).sort(), ["el recibo", "la vuelta"], "the Go tab's line: the same phrases");
+  await sam.call("PATCH", `/api/phrases/${ids["el recibo"]}`, { suspended: true });
+  const r3 = await turn(sam, conv.id, after1(after1([], "", r1), "hola", r2), "otra");
+  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change (coins)"]);
+  assert.deepEqual(r3.body.review.items.map((p) => p.text), ["la vuelta"]);
+  // The preview, as of now, does show the new star (no session behind it).
+  const a = await sam.call("POST", "/api/assemble?mode=adult", { pack: pack() });
+  assert.ok(a.body.review.items.some((p) => p.text === "el aguacate"));
+});
+
+test("a recap made again lists the phrases the session offered, though the first recap's reviews moved them out of due", async () => {
+  const sam = await someone();
+  await seed(sam, [["la vuelta", "the change", 5], ["el recibo", "the receipt", 4]]);
+  const conv = await start(sam);
+  fake.answer("CHARACTER-F: <t>Aquí tiene la vuelta.</t>");
+  const r = await turn(sam, conv.id, [], "la vuelta y el recibo, por favor");
+  assert.equal(r.status, 200, r.text);
+  fake.recap(JSON.stringify({ summary: "You asked for your change.", keep: [], events: [{ phrase: "la vuelta", kind: "produced" }, { phrase: "el recibo", kind: "produced" }], corrections: [] }));
+  await sam.call("POST", `/api/conversations/${conv.id}/end`);
+  await settleExtractions();
+  const offered = (args) => args[args.indexOf("-p") + 1].split("\n\n")[0].split("\n").slice(1).sort();
+  const first = offered(fake.recapArgs());
+  assert.deepEqual(first, ["- el recibo (the receipt)", "- la vuelta (the change)"]);
+  const due = await q("select count(*)::int as n from cards where language_profile_id = $1 and due <= now()", [sam.languageId]);
+  assert.equal(due[0].n, 0, "the session's reviews moved both out of due");
+  const again = await sam.call("POST", `/api/conversations/${conv.id}/recap`);
+  assert.equal(again.status, 202, again.text);
+  await settleExtractions();
+  assert.deepEqual(offered(fake.recapArgs()), first, "the re-run is told the same");
+});
+
+test("a conversation started before reviews were stored: its first turn chooses (as of its start) and keeps the choice", async () => {
+  const sam = await someone();
+  await seed(sam, [["la vuelta", "the change", 3]]);
+  const conv = await start(sam);
+  await q("update conversations set pack_snapshot = pack_snapshot - 'review' where id = $1", [conv.id]);
+  const r1 = await turn(sam, conv.id, [], "");
+  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change"]);
+  const [row] = await q("select pack_snapshot from conversations where id = $1", [conv.id]);
+  assert.equal(row.pack_snapshot.review.phraseIds.length, 1);
+  await sam.call("POST", "/api/phrases", { text: "el aguacate", meaning: "avocado", starred: true });
+  await turn(sam, conv.id, after1([], "", r1), "hola");
+  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change"]);
+});
+
+test("a client can't choose a session's review: a `review` in the pack it sends is dropped", async () => {
+  const sam = await someone();
+  await seed(sam, [["la vuelta", "the change", 3]]);
+  const conv = await start(sam, { ...pack(), review: { phraseIds: ["00000000-0000-4000-8000-000000000001"] } });
+  const [row] = await q("select pack_snapshot from conversations where id = $1", [conv.id]);
+  assert.equal(row.pack_snapshot.review.phraseIds.length, 1);
+  assert.notEqual(row.pack_snapshot.review.phraseIds[0], "00000000-0000-4000-8000-000000000001");
+});
+
+/* ------------------------------- LOOKUP failures ------------------------------- */
+
+test("LOOKUP: a failed rerun keeps the turn: the first reply's spoken lines (or a short narrator line), saved, the lookup marked failed", async () => {
+  const sam = await someone();
+  const conv = await start(sam);
+  fake.answers(["NARRATOR-F: <t>Un momento.</t>\nLOOKUP: market", "!fail"]);
+  const r = await turn(sam, conv.id, [], "what did we do last week?");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(fake.argsLog().length, 2);
+  assert.deepEqual(r.body.lines.map((l) => l.text), ["Un momento."]);
+  assert.equal(r.body.saved, true);
+  const [row] = await q("select lookup, lines from turns where conversation_id = $1 and role = 'master'", [conv.id]);
+  assert.deepEqual([row.lookup.query, row.lookup.failed], ["market", true]);
+  // Nothing but the LOOKUP line: the narrator says it couldn't look.
+  fake.answers(["LOOKUP: market", "!fail"]);
+  const r2 = await turn(sam, conv.id, after1([], "what did we do last week?", r), "and before?");
+  assert.equal(r2.status, 200, r2.text);
+  assert.deepEqual(r2.body.lines.map((l) => [l.speaker, l.text]), [["narrator", "I couldn't look that up just now. Let's carry on."]]);
+  // The rerun has a shorter timeout than a first call.
+  assert.equal(fake.argsLog().length, 2);
+});
+
+test("LOOKUP in a session moved to another language searches neither the bank nor that profile's past sessions, and says so", async () => {
+  const sam = await someone();
+  await seed(sam, [["la vuelta", "the change at the market", 3]]);
+  const past = await start(sam);
+  await q("update conversations set ended_at = now(), summary = 'Spanish market session.' where id = $1", [past.id]);
+  const p = pack({ overrides: { target_language: "German" } });
+  const conv = await start(sam, p);
+  fake.answers(["LOOKUP: market session", "NARRATOR-F: <t>Hallo.</t>"]);
+  const r = await turn(sam, conv.id, [], "what did we do at the market?", p);
+  assert.equal(r.status, 200, r.text);
+  const second = fake.argsLog()[1];
+  const prompt2 = second[second.indexOf("-p") + 1];
+  assert.match(prompt2, /Nothing was searched: this session is in another language/);
+  assert.doesNotMatch(prompt2, /Spanish market session|la vuelta/);
+  const [row] = await q("select lookup from turns where conversation_id = $1 and role = 'master'", [conv.id]);
+  assert.deepEqual([row.lookup.skipped, row.lookup.phraseIds, row.lookup.conversationIds], ["another language", [], []]);
+});
+
+/* ------------------------- packs saved before the slot ------------------------- */
+
+test("a pack saved before the recall slot (no entry for it) plays the default unit; one set to None doesn't; adult and kids", async () => {
+  const sam = await someone();
+  await seed(sam, [["la vuelta", "the change", 3]]);
+  const old = pack({ units: ["intro-native"] });
+  const a = await sam.call("POST", "/api/assemble?mode=adult", { pack: old });
+  assert.deepEqual(a.body.review.items.map((p) => p.text), ["la vuelta"]);
+  assert.match(a.body.markdown, /## Phrases to revisit\n\n### Recycle due phrases/);
+  const conv = await start(sam, old);
+  await turn(sam, conv.id, [], "", old);
+  assert.deepEqual(reviewBlock(lastPrompts().system), ["- la vuelta — the change"]);
+  const none = await sam.call("POST", "/api/assemble?mode=adult", { pack: pack({ units: NO_RECALL }) });
+  assert.deepEqual(none.body.review.items, []);
+  assert.doesNotMatch(none.body.markdown, /Phrases to revisit|PHRASE BANK/);
+  assert.deepEqual(none.body.warnings, []);
+
+  const pip = await someone([KID]);
+  await seed(pip, [["der Hund", "dog", 1]]);
+  const oldKids = { ...kidsPack(), units: ["intro-game", "story-quest"] };
+  const k = await pip.call("POST", "/api/assemble?mode=kids", { pack: oldKids });
+  assert.deepEqual(k.body.review.items.map((p) => p.text), ["der Hund"]);
+  assert.match(k.body.markdown, /## Words to bring back\n\n### Bring back old words/);
+  const kNone = await pip.call("POST", "/api/assemble?mode=kids", { pack: { ...kidsPack(), units: ["intro-game", "story-quest", "-recall"] } });
+  assert.doesNotMatch(kNone.body.markdown, /Words to bring back|PHRASE BANK/);
+  // A saved pack keeps what was saved: nothing rewrote it.
+  const saved = await sam.call("PUT", "/api/packs/old-pack", { ...old, title: "Old pack" });
+  assert.ok(saved.status === 200 || saved.status === 201, saved.text);
+  const back = await sam.call("GET", "/api/packs/old-pack");
+  assert.deepEqual(back.body.pack.units, ["intro-native"]);
 });

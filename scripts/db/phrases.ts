@@ -504,16 +504,57 @@ function summary(row: PhraseRow, cardRows: CardRow[], lapses: number, examples: 
 
 /** `rows` with their metrics: cards, lapses and example counts read for
  *  just those phrases (all of the bank's when `all`). */
-async function withMetrics(db: Db, profile: LanguageProfileRef, rows: PhraseRow[], all = false): Promise<PhraseSummary[]> {
+async function withMetrics(db: Db, profile: LanguageProfileRef, rows: PhraseRow[], all = false, withExamples = true): Promise<PhraseSummary[]> {
   if (!rows.length) return [];
   const ids = all ? undefined : rows.map((r) => r.id);
   const mine = forLanguageProfile(db, profile);
   const cardRows = await mine.list(cards, ids ? inArray(cards.phraseId, ids) : undefined);
   const byPhrase = new Map<string, CardRow[]>();
-  for (const c of cardRows) byPhrase.set(c.phraseId, [...(byPhrase.get(c.phraseId) ?? []), c]);
+  for (const c of cardRows) {
+    const list = byPhrase.get(c.phraseId);
+    if (list) list.push(c);
+    else byPhrase.set(c.phraseId, [c]);
+  }
   const lapses = await lapsesByPhrase(db, profile, ids);
-  const examples = await examplesByPhrase(db, profile, ids);
+  const examples = withExamples ? await examplesByPhrase(db, profile, ids) : new Map<string, number>();
   return rows.map((r) => summary(r, byPhrase.get(r.id) ?? [], lapses.get(r.id) ?? 0, examples.get(r.id) ?? 0));
+}
+
+/** The whole bank with the metrics recall chooses a review by
+ *  (web/server/recall.ts: once per session, and the Go tab's preview):
+ *  listPhrases without the example counts, which recall never shows
+ *  (`exampleCount` is 0). A plain read: no row lock. */
+export async function recallBank(db: Db, profile: LanguageProfileRef): Promise<PhraseSummary[]> {
+  const rows = await forLanguageProfile(db, profile).list(phrases);
+  return withMetrics(db, profile, rows, true, false);
+}
+
+/** A phrase as a turn's retrieval and a LOOKUP match it: its words and
+ *  dates, no cards. */
+export type RecallPhrase = Pick<PhraseSummary, "id" | "text" | "meaning" | "note" | "pending" | "starred" | "suspended" | "firstSeenAt" | "lastSeenAt" | "createdAt">;
+
+/** The whole bank as each voice turn reads it: only the columns matched
+ *  on, no cards, lapses or FSRS (what makes a full read cost; recallDetails
+ *  adds them for the few phrases a turn shows). A plain read: no row lock. */
+export async function recallPhrases(db: Db, profile: LanguageProfileRef): Promise<RecallPhrase[]> {
+  const rows = await db
+    .select({
+      id: phrases.id, text: phrases.text, meaning: phrases.meaning, note: phrases.note, starred: phrases.starred, suspended: phrases.suspended,
+      firstSeenAt: phrases.firstSeenAt, lastSeenAt: phrases.lastSeenAt, createdAt: phrases.createdAt,
+    })
+    .from(phrases)
+    .where(forLanguageProfile(db, profile).where(phrases));
+  return rows.map((r) => ({ ...r, pending: r.text == null, firstSeenAt: iso(r.firstSeenAt), lastSeenAt: iso(r.lastSeenAt), createdAt: iso(r.createdAt)! }));
+}
+
+/** These phrases of the bank with their metrics (no example counts): what
+ *  a turn shows of its review and its retrieval's hits. Another
+ *  language's or learner's id is simply not found. */
+export async function recallDetails(db: Db, profile: LanguageProfileRef, ids: string[]): Promise<PhraseSummary[]> {
+  const wanted = ids.filter(isUuid);
+  if (!wanted.length) return [];
+  const rows = await forLanguageProfile(db, profile).list(phrases, inArray(phrases.id, wanted));
+  return withMetrics(db, profile, rows, false, false);
 }
 
 /** The whole bank with its metrics. A bank is one learner's language, a

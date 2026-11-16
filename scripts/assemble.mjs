@@ -11,7 +11,7 @@
 // markdown is still produced, with a visible placeholder where a required
 // piece is missing, so an export is never silently incomplete.
 
-import { PLACEHOLDERS, normalizePack } from "./content.mjs";
+import { PLACEHOLDERS, normalizePack, packUnits } from "./content.mjs";
 import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
 import { renderReview } from "./recall.mjs";
 
@@ -151,7 +151,8 @@ export function assemble(content, rawPack, options = "adult") {
   const slots = content.schema?.slots ?? [];
   const slotIds = new Set(slots.map((s) => s.id));
   const picked = []; // unit ids in pack order, unknown/duplicate/unslotted ones dropped
-  for (const id of pack.units) {
+  // A pack older than a `backfill` slot gets its default unit (packUnits).
+  for (const id of packUnits(content, pack.units)) {
     if (picked.includes(id)) {
       warn(`Unit "${id}" is listed twice in the pack; included once.`);
       continue;

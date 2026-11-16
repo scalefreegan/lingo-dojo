@@ -1,5 +1,5 @@
 // Recall's reads on a real Postgres (web/server/recall.ts reads the bank with
-// scripts/db/phrases.ts listPhrases, then ranks in memory: scripts/
+// scripts/db/phrases.ts recallBank, then ranks in memory: scripts/
 // recall.mjs). Two things PGlite can't show: the read takes no row lock, so
 // a turn never waits behind a capture, a recap or a practice answer holding
 // the bank's rows (and never makes them wait); and it is fast enough to run
@@ -15,8 +15,8 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { applyMigrations } from "../db/migrations.mjs";
 import * as schema from "../db/schema.ts";
 import { createLearner, createUser } from "../db/accounts.ts";
-import { listPhrases } from "../db/phrases.ts";
-import { retrievalBlock, retrieve, selectReview } from "../recall.mjs";
+import { recallBank, recallDetails, recallPhrases } from "../db/phrases.ts";
+import { retrievalBlock, retrieve, reviewFromIds, selectReview } from "../recall.mjs";
 import { ADULT } from "./http-session.mjs";
 import { scratchDatabase } from "./pg-scratch.mjs";
 
@@ -24,9 +24,9 @@ const url = process.env.LINGO_TEST_PG_URL;
 const skip = !url && "set LINGO_TEST_PG_URL to run";
 const BANK = 600;
 
-/** A migrated throwaway database with one learner's bank of BANK phrases,
+/** A migrated throwaway database with one learner's bank of `size` phrases,
  *  half of them with a reviewed produce card (some due), and lapses on a few. */
-async function withBank(t, fn) {
+async function withBank(t, fn, size = BANK) {
   const scratch = await scratchDatabase(url, "recall");
   const pool = new pg.Pool({ connectionString: scratch.url, max: 4 });
   t.after(async () => {
@@ -42,7 +42,7 @@ async function withBank(t, fn) {
   await pool.query(
     `insert into phrases (learner_id, language_profile_id, lang, text, norm, meaning, source, first_seen_at, last_seen_at, seen_count)
      select $1, $2, 'es-MX', 'frase número ' || i, 'frase numero ' || i, 'phrase number ' || i, 'gloss', now() - interval '30 days', now() - make_interval(days => i % 20), 1
-     from generate_series(1, ${BANK}) i`,
+     from generate_series(1, ${size}) i`,
     [learner.id, id],
   );
   await pool.query(
@@ -60,13 +60,33 @@ async function withBank(t, fn) {
   await fn(pool, db, profile);
 }
 
-/** One turn's recall work, as web/server/recall.ts turnRecall does it. */
-async function turnRecall(db, profile, message) {
-  const bank = await listPhrases(db, profile);
+const SCENE = { id: "s", title: "Market", summary: "", tags: [], beats: [], phrases: [], vocab: [] };
+
+/** One turn's recall work, as web/server/recall.ts turnRecall does it. With
+ *  the session's stored review (`reviewIds`, chosen once when the
+ *  conversation began): the bank's words read (no cards), the retrieval
+ *  ranked, then the metrics of the review and the hits only. Without: the
+ *  whole bank with its metrics, and the review chosen (a conversation's
+ *  creation, the Go tab's preview). The reads and the ranking (synchronous,
+ *  on the server's one thread) are timed apart. */
+async function turnRecall(db, profile, message, reviewIds = null) {
   const now = new Date();
-  const review = selectReview(bank, { now, scenario: { id: "s", title: "Market", summary: "", tags: [], beats: [], phrases: [], vocab: [] } });
-  const block = retrievalBlock(retrieve(bank, { message, lastLine: "Aquí tiene." }), now);
-  return { bank, review, block };
+  const t0 = performance.now();
+  if (!reviewIds) {
+    const bank = await recallBank(db, profile);
+    const review = selectReview(bank, { now, scenario: SCENE });
+    const block = retrievalBlock(retrieve(bank, { message, lastLine: "Aquí tiene." }), now);
+    return { bank, review, block };
+  }
+  const words = await recallPhrases(db, profile);
+  const t1 = performance.now();
+  const hits = retrieve(words, { message, lastLine: "Aquí tiene." });
+  const t2 = performance.now();
+  const details = new Map((await recallDetails(db, profile, [...reviewIds, ...hits.map((p) => p.id)])).map((p) => [p.id, p]));
+  const t3 = performance.now();
+  const review = reviewFromIds([...details.values()], reviewIds);
+  const block = retrievalBlock(hits.map((p) => details.get(p.id)), now);
+  return { bank: words, review, block, readMs: t1 - t0 + (t3 - t2), rankMs: t2 - t1 + (performance.now() - t3) };
 }
 
 test("the recall read takes no row lock: it runs while a writer holds every phrase and card of the bank, and the writer never waits on it", { skip }, async (t) => {
@@ -90,6 +110,13 @@ test("the recall read takes no row lock: it runs while a writer holds every phra
       assert.equal(got.bank.length, BANK);
       assert.equal(got.review.length, 10);
       assert.match(got.block, /- frase número 12 — phrase number 12/);
+      // A later turn's reads (the words, then the review's and hits' details).
+      const later = await Promise.race([
+        turnRecall(reader, profile, "frase número 14, por favor", got.review.map((p) => p.id)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("a later turn's read waited on the writer's locks")), 5000)),
+      ]);
+      assert.equal(later.review.length, 10);
+      assert.match(later.block, /- frase número 14 — phrase number 14/);
       // And no lock of the reader's is held: the writer's own update of a
       // card goes through at once.
       await writer.query("set local lock_timeout = '1s'");
@@ -103,20 +130,43 @@ test("the recall read takes no row lock: it runs while a writer holds every phra
   });
 });
 
-test(`a turn's recall on a ${BANK}-phrase bank: the time it adds`, { skip }, async (t) => {
-  await withBank(t, async (_pool, db, profile) => {
-    const times = [];
-    for (let i = 0; i < 30; i++) {
-      const t0 = performance.now();
-      await turnRecall(db, profile, `quiero la frase número ${i}`);
-      times.push(performance.now() - t0);
-    }
-    times.sort((a, b) => a - b);
-    const median = times[Math.floor(times.length / 2)];
-    const p95 = times[Math.floor(times.length * 0.95)];
-    t.diagnostic(`recall per turn, ${BANK} phrases: median ${median.toFixed(1)} ms, p95 ${p95.toFixed(1)} ms`);
-    // A tool-less model turn takes seconds (docs/VOICE.md: about 4 s); this
-    // must stay a rounding error next to it.
-    assert.ok(median < 150, `median ${median.toFixed(1)} ms`);
+const pct = (xs, q) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length * q)];
+
+for (const size of [600, 3000, 6000]) {
+  test(`a turn's recall on a ${size}-phrase bank: the time it adds`, { skip }, async (t) => {
+    await withBank(
+      t,
+      async (_pool, db, profile) => {
+        // The session's review, chosen once (as a conversation's creation does).
+        const ids = selectReview(await recallBank(db, profile), { now: new Date(), scenario: SCENE }).map((p) => p.id);
+        const total = [];
+        const read = [];
+        const rank = [];
+        for (let i = 0; i < 30; i++) {
+          const t0 = performance.now();
+          const got = await turnRecall(db, profile, `quiero la frase número ${i}`, ids);
+          total.push(performance.now() - t0);
+          read.push(got.readMs);
+          rank.push(got.rankMs);
+          assert.equal(got.review.length, 10);
+        }
+        t.diagnostic(
+          `recall per turn, ${size} phrases: median ${pct(total, 0.5).toFixed(1)} ms, p95 ${pct(total, 0.95).toFixed(1)} ms ` +
+            `(read median ${pct(read, 0.5).toFixed(1)} ms; ranking median ${pct(rank, 0.5).toFixed(1)} ms, p95 ${pct(rank, 0.95).toFixed(1)} ms)`,
+        );
+        // Choosing a review: once per session, and each Go tab preview.
+        const choose = [];
+        for (let i = 0; i < 10; i++) {
+          const t0 = performance.now();
+          await turnRecall(db, profile, "hola");
+          choose.push(performance.now() - t0);
+        }
+        t.diagnostic(`choosing a review (session start, preview), ${size} phrases: median ${pct(choose, 0.5).toFixed(1)} ms`);
+        // A tool-less model turn takes seconds (docs/VOICE.md: about 4 s);
+        // this must stay a rounding error next to it.
+        assert.ok(pct(total, 0.5) < 250, `median ${pct(total, 0.5).toFixed(1)} ms`);
+      },
+      size,
+    );
   });
-});
+}

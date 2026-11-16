@@ -159,6 +159,7 @@ declare module "*/scripts/phrases.mjs" {
   export const MAX_CAPTURE_WORDS: number;
   export const MAX_CAPTURE_CHARS: number;
   export function clean(s: unknown): string;
+  export function modelText(v: unknown): string;
   export function isUuid(v: unknown): v is string;
   export function unspaced(locale: unknown): boolean;
   export function charCount(text: unknown): number;
@@ -211,10 +212,16 @@ declare module "*/scripts/recall.mjs" {
   export function containment(needle: Set<string>, hay: Set<string>): number;
   export function bankText(s: string, max: number): string;
   export function scenarioText(scenario: unknown): string;
+  export function needle(s: string): { grams: Set<string>; words: string[]; letters: number; whole: boolean };
   export function selectReview(bank: PhraseSummary[], opts: { scenario?: unknown; mode?: Mode; now: When; max?: number }): RecallItem[];
-  export function renderReview(items: { text: string; meaning?: string | null }[] | undefined): string;
+  export function reviewFromIds(bank: PhraseSummary[], ids: string[]): RecallItem[];
+  export function storedReviewIds(snapshot: unknown): string[] | null;
+  export const FRESH_MARK: string;
+  export function renderReview(items: { text: string; meaning?: string | null; fresh?: boolean }[] | undefined): string;
   export function spokenPart(message: string): string;
-  export function retrieve(bank: PhraseSummary[], opts: { message?: string; lastLine?: string; mode?: Mode; max?: number }): PhraseSummary[];
+  /** What matching needs of a phrase (a PhraseSummary has it all). */
+  type Matchable = Pick<PhraseSummary, "id" | "text" | "meaning" | "note" | "pending" | "suspended" | "lastSeenAt" | "createdAt">;
+  export function retrieve<P extends Matchable>(bank: P[], opts: { message?: string; lastLine?: string; mode?: Mode; max?: number }): P[];
   export function retrievalBlock(hits: PhraseSummary[], now: When): string;
   export interface PastSession {
     id: string;
@@ -224,17 +231,17 @@ declare module "*/scripts/recall.mjs" {
   }
   export function lookupWindow(query: string, now: When): [number, number] | null;
   export function lookupTerms(query: string): string[];
-  export function searchLookup<C extends PastSession>(
-    rows: { phrases?: PhraseSummary[]; conversations?: C[] },
+  export function searchLookup<P extends Matchable, C extends PastSession>(
+    rows: { phrases?: P[]; conversations?: C[] },
     query: string,
     now: When,
-  ): { phrases: PhraseSummary[]; conversations: C[] };
-  export function lookupBlock(query: string, results: { phrases?: PhraseSummary[]; conversations?: PastSession[] }, now: When): string;
+  ): { phrases: P[]; conversations: C[] };
+  export function lookupBlock(query: string, results: { phrases?: PhraseSummary[]; conversations?: PastSession[] }, now: When, opts?: { elsewhere?: boolean }): string;
   export function lookupRecord(
     query: string,
     results: { phrases?: { id: string }[]; conversations?: { id: string }[] },
-    opts?: { ms?: number | null; repeated?: boolean },
-  ): { query: string; phraseIds: string[]; conversationIds: string[]; ms?: number; repeated?: true };
+    opts?: { ms?: number | null; repeated?: boolean; elsewhere?: boolean },
+  ): { query: string; phraseIds: string[]; conversationIds: string[]; ms?: number; repeated?: true; skipped?: string };
 }
 
 declare module "*/scripts/json-reply.mjs" {

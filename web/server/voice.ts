@@ -50,6 +50,14 @@ const PROVIDER_TIMEOUT_MS = 30_000;
 const MAX_AUDIO_BYTES = 8 << 20;
 /** Longer than any turn worth speaking; a runaway reply is cut, not billed. */
 const MAX_SPEAK_CHARS = 2000;
+/** A turn's model call, and the shorter rerun after a LOOKUP (the learner
+ *  has already waited once, and the turn holds its lock meanwhile). */
+const TURN_TIMEOUT_SEC = 120;
+const LOOKUP_TIMEOUT_SEC = 45;
+/** Said when a LOOKUP's rerun failed and the first reply had nothing to say
+ *  aloud besides its LOOKUP line. In English: the narrator's language
+ *  isn't known here without the model. */
+const LOOKUP_FAILED_LINE = "NARRATOR: I couldn't look that up just now. Let's carry on.";
 /** Exchanges replayed into a turn's prompt. */
 const HISTORY_WINDOW = 60;
 /** The most history entries a turn may send: the saved conversation mirrors
@@ -327,18 +335,18 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // The active learner and language are the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
     // Recall (docs/DATA.md §Recall in sessions), from one read of the bank:
-    // the review block, chosen as of the conversation's start so every turn
-    // of a session (and its recap) offers the same phrases, and the bank
-    // phrases most like what was just said. Reads only; never fails a turn.
+    // the review block (the phrases stored on the conversation when it
+    // began, read back by id, so every turn of a session and its recap offer
+    // the same ones), and the bank phrases most like what was just said.
+    // Reads only; never fails a turn.
     const now = new Date();
     const lastMaster = history.findLast((m) => m.role === "master");
     const recall = await turnRecall(ctx.language, {
-      content, pack: body.pack, mode, now,
-      at: conversation ? new Date(conversation.startedAt) : now,
+      content, pack: body.pack, mode, now, conversation,
       message,
       lastLine: lastMaster?.role === "master" ? lastMaster.lines.map((l) => l.text).join(" ") : "",
     });
-    if (process.env.LINGO_DEBUG_RECALL) console.log(`[lingo-dojo] recall: ${recall.bank.length} phrases read and ranked in ${recall.ms.toFixed(1)} ms; review ${recall.review.length}, retrieval ${recall.retrieval ? "yes" : "none"}`);
+    if (process.env.LINGO_DEBUG_RECALL) console.log(`[lingo-dojo] recall: ${recall.phrases.length} phrases read and ranked in ${recall.ms.toFixed(1)} ms; review ${recall.review.length}, retrieval ${recall.retrieval ? "yes" : "none"}`);
     const { markdown, warnings } = assemble(content, body.pack, { mode, review: recall.review });
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
@@ -356,7 +364,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       voiceSystemPrompt(markdown, mode) +
       (pinnedNarratorGender(body.pack.units) ? "" : narratorDirective(body.narratorGender)) +
       planDirective(plan);
-    const ask = async (notes: string[]) => {
+    const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
       const { result } = startClaude({
         prompt: voiceTurnPrompt(history, message, clock, notes),
         systemPrompt,
@@ -367,7 +375,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         signal: ctrl.signal,
         tools: "none",
         maxTurns: 1,
-        timeoutSec: 120,
+        timeoutSec,
       });
       try {
         return await result;
@@ -386,15 +394,31 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     let lookup: Record<string, unknown> | null = null;
     const query = parseLookup(run.text);
     if (query) {
-      const found = await runLookup(ctx.language, recall.bank, query, { now, conversationId: conversation?.id ?? null });
+      const found = await runLookup(ctx.language, recall.phrases, query, { now, conversationId: conversation?.id ?? null, inBank: recall.inBank });
       const first = run;
-      run = await ask([...notes, found.block]);
-      run = {
-        ...run,
-        durationMs: (first.durationMs ?? 0) + (run.durationMs ?? 0),
-        costUsd: first.costUsd == null && run.costUsd == null ? null : (first.costUsd ?? 0) + (run.costUsd ?? 0),
-      };
-      lookup = { ...found.record, ...(parseLookup(run.text) ? { repeated: true } : {}) };
+      let failed = false;
+      try {
+        // Shorter than a first call: the learner has already waited once,
+        // and the turn holds its lock meanwhile.
+        run = await ask([...notes, found.block], LOOKUP_TIMEOUT_SEC);
+      } catch (e) {
+        // Stop or a reload: the turn is cancelled, as any.
+        if (e instanceof HttpError && e.status === 499) throw e;
+        // A failed or timed-out rerun doesn't lose the turn: the first
+        // reply stands, its LOOKUP line never spoken (parseVoiceReply), or
+        // a short line from the narrator when it had nothing else to say.
+        console.warn(`[lingo-dojo] voice turn: the rerun after a LOOKUP failed; using the first reply: ${(e as Error)?.message ?? e}`);
+        failed = true;
+        run = parseVoiceReply(first.text, mode).length ? first : { ...first, text: `${first.text}\n${LOOKUP_FAILED_LINE}` };
+      }
+      if (!failed) {
+        run = {
+          ...run,
+          durationMs: (first.durationMs ?? 0) + (run.durationMs ?? 0),
+          costUsd: first.costUsd == null && run.costUsd == null ? null : (first.costUsd ?? 0) + (run.costUsd ?? 0),
+        };
+      }
+      lookup = { ...found.record, ...(failed ? { failed: true } : parseLookup(run.text) ? { repeated: true } : {}) };
     }
     const lines = parseVoiceReply(run.text, mode);
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
@@ -407,7 +431,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
         durationMs: run.durationMs, costUsd: run.costUsd,
       };
-      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model, lookup }).catch((e) => {
+      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack: body.pack, model: settings.model, lookup, review: recall.store }).catch((e) => {
         console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
         return false;
       });

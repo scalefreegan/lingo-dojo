@@ -16,7 +16,7 @@ import { profileRows, rawDb, schema } from "./db.ts";
 import { HttpError, methodNotAllowed, sendJson } from "./sse.ts";
 import { getModel } from "./store.ts";
 import { loadContent, modeRoot } from "../../scripts/content.mjs";
-import { chooseReview, picksRecall, readBank } from "./recall.ts";
+import { offeredReview } from "./recall.ts";
 
 // The post-session extraction (docs/DATA.md §Post-session extraction): when
 // a conversation ends, one tool-less `claude -p` reads its transcript and
@@ -148,12 +148,13 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     const owner = await languageProfileOwner(db, profile);
     if (!owner) return void (await fail(REASON.gone));
     const locale = bankLocale(owner.targetLanguage, conv);
-    // The phrases the session's review block offered (the same choice each
-    // turn made, as of the conversation's start: web/server/recall.ts), so
-    // the recap judges the recycling it asked for; the session reviews come
-    // from its events as for any phrase. A pack without a recall unit
-    // offered none: the phrases due then, as before.
-    const offered = locale == null ? null : await offeredReview(profile, conv);
+    // The phrases the session's review block offered (stored on the
+    // conversation when it began: web/server/recall.ts), so the recap judges
+    // the recycling it asked for, however the bank moved since (this
+    // recap's own reviews, Practice, a star); the session reviews come from
+    // its events as for any phrase. A pack without a recall unit offered
+    // none: the phrases due then, as before.
+    const offered = locale == null ? null : await offeredFor(profile, conv);
     const { system, user } = extractionPrompt({
       transcript: sessionTranscript(rows),
       nativeLanguage: conv.nativeLanguage || owner.nativeLanguage || "English",
@@ -198,21 +199,14 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
   }
 }
 
-/** The review block the conversation's turns carried, recomputed: its
- *  pack (as played) and the bank as of its start. Null when the pack had no
- *  recall unit (nothing was offered). */
-async function offeredReview(
-  profile: LanguageProfileRef,
-  conv: Conversation,
-): Promise<{ text: string; meaning?: string | null }[] | null> {
-  const mode = conv.mode === "kids" ? "kids" : "adult";
-  const content = loadContent(modeRoot(mode));
-  const pack = conv.packSnapshot ?? {};
-  if (!picksRecall(content, pack)) return null;
-  // The session's own languages decide whether it was in the bank's (the
-  // caller checked bankLocale, as for its captures), so this only chooses.
-  const items = chooseReview(await readBank(profile), content, pack, mode, new Date(conv.startedAt));
-  return items.map((p) => ({ text: p.text, meaning: p.meaning }));
+/** The review block the conversation offered (recall.ts offeredReview),
+ *  as the prompt lists it. Null when its pack had no recall unit. The
+ *  session's own languages decide whether it was in the bank's (the caller
+ *  checked bankLocale, as for its captures). */
+async function offeredFor(profile: LanguageProfileRef, conv: Conversation): Promise<{ text: string; meaning?: string | null }[] | null> {
+  const content = loadContent(modeRoot(conv.mode === "kids" ? "kids" : "adult"));
+  const items = await offeredReview(profile, content, conv);
+  return items && items.map((p) => ({ text: p.text, meaning: p.meaning }));
 }
 
 /* --------------------------------- reading --------------------------------- */

@@ -510,8 +510,11 @@ const STAGE_RE = metaRe("STAGE");
 // Who a voice tag now is, so the app can give it a voice of the right age.
 const CAST_RE = metaRe("CAST");
 /** The dojo master asking the app for the learner's past (docs/VOICE.md,
- *  LOOKUP). Never spoken (isMeta); the turn route runs the query. */
-const LOOKUP_RE = metaRe("LOOKUP");
+ *  LOOKUP). Never spoken (isMeta); the turn route runs the query. Looser
+ *  than the other labels: any case, and a colon or a dash ("Lookup: …",
+ *  "LOOKUP - …"), since a query read aloud would be the app's plumbing
+ *  spoken to the learner, while no spoken line starts that way. */
+const LOOKUP_RE = new RegExp(`${META_TAG}${ci("LOOKUP")} ?[:\\-–—] ?`);
 const LOOKUP_CHARS = 200;
 
 /** The query of a reply's first LOOKUP line, or null: one line, at most
