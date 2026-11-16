@@ -114,7 +114,7 @@ test("buildQueue: reviews first claim the room, new fill the rest, spread among 
   assert.ok(!q.items.some((it, i) => i > 0 && it.kind === "new" && q.items[i - 1].kind === "new"));
   // Items carry what the page shows and the version to answer.
   const first = q.items.find((i) => i.kind === "review");
-  assert.deepEqual(Object.keys(first).sort(), ["choices", "cloze", "drill", "kind", "lang", "meaning", "phraseId", "revision", "skill", "starred", "text", "version"]);
+  assert.deepEqual(Object.keys(first).sort(), ["choices", "cloze", "drill", "kind", "lang", "meaning", "phraseId", "revision", "sentence", "skill", "starred", "text", "version"]);
   assert.equal(q.items.find((i) => i.kind === "new").version, "0:");
   assert.deepEqual(q.stats, { due: 6, new: 6, done: { new: 0, reviews: 0 }, limits: DAILY_LIMITS, left: DAILY_LIMITS, ready: 12 });
 

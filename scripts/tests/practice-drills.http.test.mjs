@@ -58,6 +58,9 @@ globalThis.fetch = async (input, init) => {
 };
 
 const { apiPlugins } = await import("../../web/server/api.ts");
+// A started flashcards session writes its cards sentences in the background
+// (the stand-in claude answers them): let those runs end before the database.
+const { settleClozeFills } = await import("../../web/server/cloze.ts");
 
 const fake = fakeClaude();
 const ACCEPT = JSON.stringify({ accepted: true, rating_hint: "good", note: "Another natural way to say it." });
@@ -71,6 +74,7 @@ before(async () => {
   ({ base, close } = await serveApi(apiPlugins, { db: testDb.db }));
 });
 after(async () => {
+  await settleClozeFills();
   fake.restore();
   globalThis.fetch = realFetch;
   await close();

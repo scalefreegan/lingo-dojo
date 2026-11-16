@@ -10,16 +10,19 @@ import { rawDb } from "./db.ts";
 import { BackgroundBusy, backgroundSlot } from "./paid.ts";
 
 // Cloze sentences for the Practice tab (docs/DATA.md §Practice modes, "As
-// built (phase 7c: cloze)"). The queue reads what each phrase has
-// (scripts/db/cloze.ts clozeStates: its own session lines first, no
-// model). Only a session being started (the queue route in the cloze or
-// mixed mode, never the counts or the page's poll) has sentences written,
-// and only for the phrases that session would ask as a gap
-// (practice.mjs clozeWanted: at most its length), by tool-less
-// `claude -p` calls of up to CLOZE_BATCH phrases each, in the background:
+// built (phase 7c: cloze)"). The same sentences show a flashcard's phrase
+// used in a sentence on its answer side. The queue reads what each phrase
+// has (scripts/db/cloze.ts clozeStates: its own session lines first, no
+// model). Only a session being started (the queue route in the cloze,
+// mixed or flashcards mode, never the counts or the page's poll) has
+// sentences written, and only for the phrases that session would show in
+// one (practice.mjs clozeWanted: at most its length; for flashcards, its
+// own cards with none), by tool-less `claude -p` calls of up to
+// CLOZE_BATCH phrases each, in the background:
 //  - never in the queue's way: the queue answers with the sentences that
-//    exist (a phrase without one waits, or is said aloud in mixed); the
-//    page may poll the counts while a call runs, and that starts nothing;
+//    exist (a phrase without one waits, is said aloud in mixed, or is a
+//    flashcard with no sentence); the page may poll the counts while a
+//    call runs, and that starts nothing;
 //  - at most CLOZE_DAILY_CALLS calls per language profile in any 24 hours,
 //    counted from a ledger written as each call starts (cloze_calls, apart
 //    from the sentence cache an edit or delete clears), so a failed call
@@ -88,9 +91,10 @@ export async function clozeStatus(ctx: LearnerCtx): Promise<{ writing: boolean; 
 
 /**
  * `phrases` with their cloze state (`cloze`: usable items; `clozeNeeded`:
- * worth a model call), for the cloze and mixed modes. A failure to read or
- * update the items is logged and leaves every phrase without cloze: the
- * session goes on with the other drills.
+ * worth a model call), for the cloze and mixed modes and a started
+ * flashcards session. A failure to read or update the items is logged and
+ * leaves every phrase without cloze: the session goes on with the other
+ * drills (and flashcards without sentences).
  */
 export async function withCloze(ctx: LearnerCtx, phrases: CandidatePhrase[]): Promise<CandidatePhrase[]> {
   try {

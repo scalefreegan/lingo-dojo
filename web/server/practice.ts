@@ -88,12 +88,15 @@ function languageOf(ctx: LearnerCtx): PracticeStatsReply["language"] {
 /**
  * The queue (and its stats) for this request's day and filters. The cloze
  * and mixed modes read each phrase's cloze sentences first (made from its
- * session lines on the way: cloze.ts withCloze, no model). Only a session
- * being started (`start`: the queue route, never the counts the tab shows
- * or polls) has sentences written, and only for the phrases that session
- * would ask as a gap (practice.mjs clozeWanted: its length, within what is
- * left of today's limits), in the background (fillCloze, under the
- * language's daily cap): the queue never waits for a model.
+ * session lines on the way: cloze.ts withCloze, no model); so does a
+ * flashcards session being started, for the sentence on each card's
+ * answer side (its counts don't need them, so they don't read them). Only
+ * a session being started (`start`: the queue route, never the counts the
+ * tab shows or polls) has sentences written, and only for the phrases
+ * that session would show in one (practice.mjs clozeWanted: a gap within
+ * its length and what is left of today's limits, or its own cards with
+ * none), in the background (fillCloze, under the language's daily cap):
+ * the queue never waits for a model.
  */
 async function queue(req: IncomingMessage, ctx: LearnerCtx, start: boolean) {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
@@ -102,7 +105,7 @@ async function queue(req: IncomingMessage, ctx: LearnerCtx, start: boolean) {
   const mode = readMode(q.get("mode"));
   const [read, done] = await Promise.all([practiceCandidates(rawDb(), ctx.language), practiceDone(rawDb(), ctx.language, since)]);
   const usesCloze = mode === "cloze" || mode === "mixed";
-  const phrases = usesCloze ? await withCloze(ctx, read) : read;
+  const phrases = usesCloze || (start && mode === "flashcards") ? await withCloze(ctx, read) : read;
   const { clozeWanted, clozeWaiting, ...built } = buildQueue(phrases, {
     now,
     done,

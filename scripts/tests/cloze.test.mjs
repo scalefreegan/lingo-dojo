@@ -14,7 +14,7 @@ import { newCard, review } from "../fsrs.mjs";
 import { graderPrompt } from "../match.mjs";
 import {
   CLOZE_BATCH, CLOZE_DAILY_CALLS, CLOZE_RULES_SINCE, LEVEL_MAX, SENTENCES_PER_PHRASE, TRIED_DAYS, cefr, clozeWritable, triedStill, wrongLanguage, checkExample, checkSentence, clozeKey, clozePrompt, clozeView, clozeable, findBlank, gapped, inScripts, parseClozeReply,
-  pickCloze, scriptsFor,
+  pickCloze, pickSentence, scriptsFor, sentenceView,
 } from "../cloze.mjs";
 import { buildQueue, candidates, drillsFor, graderQuestion, phraseRevision, produceDrill, readAnswerInput, readMode } from "../practice.mjs";
 
@@ -31,6 +31,12 @@ function phrase(extra = {}) {
   n++;
   return { id: uuid(), text: `palabra${n}`, meaning: `word ${n}`, lang: "es-MX", starred: false, suspended: false, lastSeenAt: null, createdAt: new Date(NOW.getTime() - DAY), cards: [], ...extra };
 }
+/** A generated sentence for a phrase, made once the phrase exists (its words). */
+let g2 = 0;
+const gen2 = () => {
+  const words = ["Pedimos", "Busco", "Necesito", "Quiero"][g2++ % 4];
+  return (p) => item(`${words} ${p.text} ahora mismo.`, p.text);
+};
 const item = (sentence, text, origin = "generated", locale = "es-MX") => {
   const b = findBlank(sentence, text, locale);
   assert.ok(b, `${text} in ${sentence}`);
@@ -293,11 +299,16 @@ test("clozeWanted is one session's worth: its length, within what is left of tod
     return p;
   });
   assert.equal(buildQueue([...ready, ...bank], { now: NOW, mode: "cloze", length: 10 }).clozeWanted.length, 6);
-  // Flashcards, listening and speak-it write nothing.
-  for (const mode of ["flashcards", "listening", "speak"]) assert.deepEqual(buildQueue(bank, { now: NOW, mode, length: 20 }).clozeWanted, []);
+  // Listening and speak-it write nothing; flashcards only for the session's own cards.
+  for (const mode of ["listening", "speak"]) assert.deepEqual(buildQueue(bank, { now: NOW, mode, length: 20 }).clozeWanted, []);
+  for (const length of [5, 10, 20]) {
+    const f = buildQueue([...bank, ...dueOnes], { now: NOW, mode: "flashcards", length });
+    assert.equal(f.items.length, length);
+    assert.deepEqual(f.clozeWanted.map((p) => p.id).sort(), f.items.map((i) => i.phraseId).sort(), `flashcards ${length}: the session's cards (due first), no more`);
+  }
 });
 
-test("clozeWanted over a grid: never more phrases than the session's unfilled places, never past today's limits, in cloze and mixed, new and due", () => {
+test("clozeWanted over a grid: never more phrases than the session's unfilled places, never past today's limits, in cloze, mixed and flashcards, new and due", () => {
   const withS = (extra) => {
     const p = phrase(extra);
     p.cloze = [item(`Pedimos ${p.text} al mesero.`, p.text)];
@@ -307,7 +318,7 @@ test("clozeWanted over a grid: never more phrases than the session's unfilled pl
   const limits = { new: 8, reviews: 12 };
   const COUNTS = [0, 2, 5, 13];
   let cases = 0;
-  for (const mode of ["cloze", "mixed"]) {
+  for (const mode of ["cloze", "mixed", "flashcards"]) {
     // In mixed a produce card is new once the phrase was read and heard;
     // due once it was reviewed (an odd rep count: asked aloud even with a
     // sentence, so a ready due card is a session place either way).
@@ -345,6 +356,11 @@ test("clozeWanted over a grid: never more phrases than the session's unfilled pl
             const expectDue = Math.min(wd, left.reviews - sessionDue, unfilled);
             assert.equal(wantedDue, expectDue, `due fill: ${at}`);
             assert.equal(wantedNew, Math.min(wn, left.new - sessionNew, unfilled - expectDue), `new fill: ${at}`);
+          } else if (mode === "flashcards") {
+            // Flashcards: only cards of this session that show no sentence, and every one of them.
+            const bare = q.items.filter((i) => !i.sentence).map((i) => i.phraseId);
+            assert.deepEqual(q.clozeWanted.map((p) => p.id).sort(), bare.filter((id) => kindOf.get(id).startsWith("waiting")).sort(), `the session's own bare cards: ${at}`);
+            assert.ok(q.items.every((i) => !!i.sentence === kindOf.get(i.phraseId).startsWith("ready")), `a sentence on every card that has one: ${at}`);
           } else {
             // Mixed: only cards of this session, asked aloud for want of a sentence.
             const ids = new Set(q.items.filter((i) => i.skill === "produce" && i.drill === "speak").map((i) => i.phraseId));
@@ -355,11 +371,125 @@ test("clozeWanted over a grid: never more phrases than the session's unfilled pl
         }
     }
   }
-  assert.equal(cases, 2 * 3 * 4 ** 4 * 3);
+  assert.equal(cases, 3 * 3 * 4 ** 4 * 3);
   // Codex's case: five ready new cards fill a session of five; five due
   // phrases waiting for a sentence get no call.
   const full = buildQueue([...many(5, () => withS()), ...many(5, () => phrase({ cards: [card("produce", -1, 1)], clozeNeeded: true }))], { now: NOW, mode: "cloze", length: 5 });
   assert.deepEqual([full.items.length, full.clozeWanted.length, full.clozeWaiting], [5, 0, 5]);
+});
+
+test("pickSentence: another sentence than the gap of the same card version would use, when there is one; else that one; stable per seed", () => {
+  const own = item("Aquí tiene la vuelta, señora.", "la vuelta", "example");
+  const gens = [item("Cuente bien la vuelta, por favor.", "la vuelta"), item("No olvide la vuelta en la mesa.", "la vuelta")];
+  for (let i = 0; i < 30; i++) {
+    const seed = `p:${i}:`;
+    for (const items of [gens, [own, ...gens], [own, gens[0]]]) {
+      const gap = pickCloze(items, seed);
+      const shown = pickSentence(items, seed);
+      assert.notEqual(shown.id, gap.id, `never the gap's sentence: ${seed}`);
+      assert.equal(pickSentence([...items].reverse(), seed).id, shown.id, "not the order the rows came in");
+    }
+  }
+  // Own lines first among the others too.
+  const two = [own, item("Aquí está la vuelta, joven.", "la vuelta", "example"), ...gens];
+  for (let i = 0; i < 30; i++) assert.equal(pickSentence(two, `p:${i}:`).origin, "example");
+  // One sentence: the flashcard shows it (nothing else to show).
+  assert.equal(pickSentence([own], "x").id, own.id);
+  assert.equal(pickSentence([], "x"), null);
+  assert.equal(pickSentence(null, "x"), null);
+});
+
+test("flashcards carry the phrase in a sentence (not the one a gap would use at the produce card's version now), both ways; never a listening, speak-it or cloze card", () => {
+  const own = (p) => item(`Aquí tiene ${p.text}, señora.`, p.text, "example");
+  const gen = (p) => item(`Pedimos ${p.text} al mesero.`, p.text);
+  const fresh = phrase();
+  fresh.cloze = [gen(fresh), own(fresh)];
+  const due = phrase({ cards: [card("recognize", 3), card("produce", -1, 1)] });
+  due.cloze = [gen(due), gen(due)];
+  const single = phrase();
+  single.cloze = [own(single)];
+  const bare = phrase({ clozeNeeded: true });
+  const q = buildQueue([fresh, due, single, bare], { now: NOW, mode: "flashcards", length: 10 });
+  const by = Object.fromEntries(q.items.map((i) => [i.phraseId, i]));
+  assert.deepEqual([by[fresh.id].skill, by[due.id].skill], ["recognize", "produce"]);
+  // The gap would take the learner's own line: the flashcard shows the other, whole, the words marked.
+  assert.equal(pickCloze(fresh.cloze, `${fresh.id}:0:`).id, fresh.cloze[1].id);
+  assert.deepEqual(by[fresh.id].sentence, { id: fresh.cloze[0].id, before: "Pedimos ", blank: fresh.text, after: " al mesero.", origin: "generated" });
+  // With only one sentence, that one (own line, whole).
+  assert.deepEqual(by[single.id].sentence, { id: single.cloze[0].id, before: "Aquí tiene ", blank: single.text, after: ", señora.", origin: "example" });
+  // Never the gap of the same card version, and stable until answered.
+  const gapPick = pickCloze(due.cloze, `${due.id}:${by[due.id].version}`);
+  assert.notEqual(by[due.id].sentence.id, gapPick.id);
+  assert.equal(by[due.id].sentence.blank, due.text);
+  assert.equal(buildQueue([fresh, due, single, bare], { now: NOW, mode: "flashcards", length: 10 }).items.find((i) => i.phraseId === due.id).sentence.id, by[due.id].sentence.id);
+  assert.equal(by[bare.id].sentence, null, "none yet: asked all the same");
+  assert.deepEqual(q.clozeWanted.map((p) => p.id), [bare.id]);
+  // One direction only: the same.
+  for (const direction of ["recognize", "produce"]) {
+    const one = buildQueue([fresh, bare], { now: NOW, mode: "flashcards", direction, length: 10 });
+    assert.ok(one.items.every((i) => i.skill === direction));
+    assert.equal(one.items.find((i) => i.phraseId === fresh.id).sentence.id, fresh.cloze[0].id);
+    assert.deepEqual(one.clozeWanted.map((p) => p.id), [bare.id]);
+  }
+  // Never on a listening, speak-it or cloze card (a cloze card's words are its gap).
+  for (const mode of ["listening", "speak", "cloze"]) {
+    const other = buildQueue([fresh, due], { now: NOW, mode, length: 10 });
+    assert.ok(other.items.length > 0, mode);
+    assert.ok(other.items.every((i) => i.sentence === null), mode);
+  }
+  const listen = buildQueue([fresh], { now: NOW, mode: "listening" });
+  assert.doesNotMatch(JSON.stringify(listen.items), new RegExp(fresh.text));
+  // Mixed reads sentences already: its recognize flashcard shows one; its gap and spoken cards don't.
+  const mixed = buildQueue([fresh, due], { now: NOW, mode: "mixed", length: 10 });
+  for (const i of mixed.items) assert.equal(!!i.sentence, i.drill === "flashcard", `${i.drill}`);
+  // A flagged sentence is no longer among the phrase's items (clozeStates
+  // leaves it out): the card shows the other, or none.
+  const left = { ...fresh, cloze: fresh.cloze.filter((c) => c.origin === "example") };
+  assert.equal(buildQueue([left], { now: NOW, mode: "flashcards" }).items[0].sentence.id, fresh.cloze[1].id);
+  assert.equal(buildQueue([{ ...fresh, cloze: [] }], { now: NOW, mode: "flashcards" }).items[0].sentence, null);
+});
+
+test("a flashcard doesn't show the sentence a gap would use at the produce card's version when the queue is built: mixed across reviews, and a produce flashcard (the real queue)", () => {
+  // A recognize card graded Good, as recordAnswer would leave it.
+  const graded = (c, at) => {
+    const r = review(c ?? newCard(at), 3, at).card;
+    return { ...r, skill: "recognize", due: new Date(NOW.getTime() - DAY) };
+  };
+  let checked = 0;
+  for (let k = 0; k < 200; k++) {
+    for (const make of [() => [gen2(), gen2()], () => [gen2(), gen2(), gen2()]]) {
+      const p = phrase();
+      p.cloze = make().map((f) => f(p));
+      // 1. New: the recognize flashcard at version 0:.
+      const q1 = buildQueue([p], { now: NOW, mode: "mixed" }).items[0];
+      assert.deepEqual([q1.skill, q1.drill], ["recognize", "flashcard"]);
+      const shown = [q1.sentence.id];
+      // 2. Graded Good, due again: the recognize flashcard at its next version.
+      const r1 = graded(null, new Date(NOW.getTime() - 3 * DAY));
+      p.cards = [r1];
+      const q2 = buildQueue([p], { now: NOW, mode: "mixed" }).items[0];
+      assert.deepEqual([q2.skill, q2.drill], ["recognize", "flashcard"]);
+      assert.notEqual(q2.version, q1.version);
+      shown.push(q2.sentence.id);
+      // 3. Read and heard: the produce card's first time, a gap.
+      p.cards = [{ ...r1, due: new Date(NOW.getTime() + 9 * DAY) }, card("listen", 9)];
+      const q3 = buildQueue([p], { now: NOW, mode: "mixed" }).items[0];
+      assert.deepEqual([q3.skill, q3.drill], ["produce", "cloze"]);
+      assert.ok(!shown.includes(q3.cloze.id), `phrase ${k}: the gap ${q3.cloze.id} was shown by a flashcard (${shown})`);
+      checked++;
+    }
+  }
+  assert.equal(checked, 400);
+  // A produce flashcard (flashcards mode): the gap at that same card version uses another.
+  for (let k = 0; k < 100; k++) {
+    const p = phrase({ cards: [card("recognize", 3), card("produce", -1, 1)] });
+    p.cloze = [gen2(), gen2()].map((f) => f(p));
+    const it = buildQueue([p], { now: NOW, mode: "flashcards", direction: "produce" }).items[0];
+    assert.deepEqual([it.skill, it.drill], ["produce", "flashcard"]);
+    const gap = buildQueue([p], { now: NOW, mode: "cloze" }).items[0];
+    assert.equal(gap.version, it.version);
+    assert.notEqual(it.sentence.id, gap.cloze.id);
+  }
 });
 
 test("mixed: produce is a gap every other time when the phrase has a sentence, said aloud otherwise; read first; one card per phrase", () => {

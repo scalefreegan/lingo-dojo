@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
   KANGXI_RADICALS, hanChars, isHan, isTaiwan, parseRadical, particleDe, pinyinToZhuyin, readingIn, resolveMode, rubyStorageKey, scriptFor,
-  simplifyForReading, splitHan, taiwanize,
+  readMarked, simplifyForReading, splitHan, taiwanize,
 } from "../../web/src/script/script.ts";
 import { charReadings, readCodePoints, readOffsets, simplified } from "../../web/src/script/zh.ts";
 import { ARPHIC_LICENSE_PATH, strokeFile } from "../../web/server/hanzi.ts";
@@ -22,6 +22,30 @@ test("the card links the licence at the path the middleware serves it", () => {
 test("scriptFor: Mandarin in any script or region, never Cantonese or another language", () => {
   for (const l of ["zh-CN", "zh-TW", "zh", "zh-Hant-TW", "zh-Hans", "zh_TW", "cmn-TW", "zh-SG"]) assert.equal(scriptFor(l)?.id, "zh", l);
   for (const l of ["zh-HK", "zh-MO", "zh-Hant-HK", "yue-HK", "es-MX", "ja-JP", "ko-KR", "en", "", null, undefined]) assert.equal(scriptFor(l), null, String(l));
+});
+
+test("readMarked: a sentence with a marked phrase is read once, whole, so the words beside the mark keep their context", () => {
+  // What Ruby.tsx MarkedText draws: the flashcard's sentence and a filled gap.
+  const read = (t) => readOffsets(t, "zh-CN");
+  const cases = [
+    [["", "天黑", "了"], [[], ["tiān", "hēi"], ["le"]], "liǎo"],
+    [["他", "跑", "得很快"], [["tā"], ["pǎo"], ["de", "hěn", "kuài"]], "dé"],
+    [["我", "会", "长时间等你"], [["wǒ"], ["huì"], ["zhǎng", "shí", "jiān", "děng", "nǐ"]], "cháng"],
+  ];
+  for (const [parts, want, apart] of cases) {
+    let calls = 0;
+    const out = readMarked(parts, (t) => (calls++, read(t)));
+    assert.equal(calls, 1, "one read, over the whole sentence");
+    assert.deepEqual(out.map((p) => p.text), parts);
+    assert.deepEqual(out.map((p) => p.readings), want, parts.join("|"));
+    // Why it matters: read apart, the first character after the mark is wrong.
+    assert.equal(read(parts[2])[0], apart, `${parts[2]} read apart`);
+  }
+  // No reader (readings off, not Chinese, loading): the parts, no readings.
+  assert.deepEqual(readMarked(["a", "b", "c"], null), [{ text: "a", readings: null }, { text: "b", readings: null }, { text: "c", readings: null }]);
+  // UTF-16 offsets: a character beyond the BMP is two units, its reading at the first.
+  const wide = readMarked(["𠀋", "好", ""], () => ["x", null, "hǎo"]);
+  assert.deepEqual(wide.map((p) => p.readings), [["x", null], ["hǎo"], []]);
 });
 
 test("isTaiwan: zh-TW and traditional-script Mandarin", () => {

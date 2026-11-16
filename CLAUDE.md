@@ -40,7 +40,10 @@ from the sentence cache), in a background paid slot apart from audio
 and transcription, each checked by
 the pure rules in `scripts/cloze.mjs`, the phrase verbatim and once; rows
 in `scripts/db/cloze.ts`, the call in `web/server/cloze.ts`; a cloze
-answer also names its sentence, `clozeId`), and recall in sessions (phase 6:
+answer also names its sentence, `clozeId`; a flashcard's answer side shows
+the phrase in one of the same sentences, `sentence` on its queue item, and
+a started flashcards session asks generation for its own cards that have
+none, under the same ledger and cap), and recall in sessions (phase 6:
 the review block in the `recall` slot's `{{phrase_review}}`, per-turn
 retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
 reads in `web/server/recall.ts`; no row locks, no migration), and the

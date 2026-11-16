@@ -2,7 +2,8 @@
 // modes, "As built (phase 7c: cloze)"). Where a phrase's blank is in a
 // sentence, whether a sentence may be used at all (one of the learner's own
 // session lines, or one a model wrote), the model call's prompt and how its
-// reply is read, and which of a phrase's sentences a card shows. No I/O and
+// reply is read, and which of a phrase's sentences a card shows (a cloze
+// card as a gap, a flashcard whole on its answer side). No I/O and
 // no clock reads; scripts/db/cloze.ts reads and writes the rows and
 // web/server/practice.ts runs the model.
 //
@@ -411,11 +412,37 @@ export function pickCloze(items, seed) {
   return pool[h % pool.length];
 }
 
+/**
+ * Which item a flashcard's answer side shows. `gapSeed` is the seed a gap
+ * card would pick with (pickCloze) at the produce card's version as it is
+ * when the queue is built; when the phrase has another item, the
+ * flashcard doesn't show that one, so a gap asked before the produce card
+ * is next reviewed isn't the sentence just read. After that review the
+ * gap picks afresh and may repeat it. Among the others, the same rule
+ * (own lines first) by the flashcard's own `seed`, salted; with only one
+ * item, that one. Deterministic for the two seeds. Null for none.
+ */
+export function pickSentence(items, seed, gapSeed = seed) {
+  const list = (items ?? []).filter(Boolean);
+  if (!list.length) return null;
+  const gap = pickCloze(list, gapSeed);
+  const rest = list.filter((i) => i.id !== gap.id);
+  return rest.length ? pickCloze(rest, `${seed}:sentence`) : gap;
+}
+
 /** A cloze item as the page shows it: the sentence around the blank. The
  *  blank's words stay on the server until the answer. */
 export function clozeView(item) {
   const s = String(item.sentence ?? "");
   return { id: item.id, before: s.slice(0, item.blankStart), after: s.slice(item.blankEnd), origin: item.origin };
+}
+
+/** A sentence as a flashcard's answer side shows it: whole, the phrase's
+ *  words (`blank`) to be marked. Only for a card whose words are on the
+ *  wire anyway (practice.mjs queueItem), never a cloze or listening card. */
+export function sentenceView(item) {
+  const s = String(item.sentence ?? "");
+  return { id: item.id, before: s.slice(0, item.blankStart), blank: s.slice(item.blankStart, item.blankEnd), after: s.slice(item.blankEnd), origin: item.origin };
 }
 
 /** The sentence with a neutral gap, for the grader: no length or letters given. */

@@ -612,3 +612,72 @@ test("paid slots: background writing has its own slot per user and never takes a
   await Promise.all([bg, a, b]);
   assert.equal(await backgroundSlot("u1", async () => 3), 3);
 });
+
+const flashQueue = (who, qs = "") => who.call("GET", `/api/practice/queue?tz=${TZ}&mode=flashcards${qs}`);
+
+test("flashcards: the answer side's sentence rides on the card (own line first), never on a listening card; a started session writes only for its own bare cards", async () => {
+  const sam = await someone();
+  // Added first: the oldest of the new cards, so it leads them.
+  const p = await add(sam, [["la vuelta", "the change"]]);
+  await example(p["la vuelta"], "Aquí tiene la vuelta, señora.");
+  const bare = await many(sam, 12, "f");
+  const runs0 = fake.clozeRuns();
+  // The counts (and their poll) neither read sentences nor start a call.
+  for (let i = 0; i < 3; i++) {
+    const s = await sam.call("GET", `/api/practice?tz=${TZ}&mode=flashcards`);
+    assert.deepEqual([s.status, s.body.cloze], [200, null]);
+  }
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0, "no call from the counts");
+  assert.deepEqual(await itemsOf(p["la vuelta"].id), [], "the counts don't even read the session lines");
+  // A started session of 5: the line's card carries it whole; one call for the bare cards of this session only.
+  fake.cloze(JSON.stringify({ items: [] }), 50);
+  const r = await flashQueue(sam, "&length=5");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.items.length, 5);
+  assert.equal(r.body.cloze, null);
+  const own = r.body.items.find((i) => i.phraseId === p["la vuelta"].id);
+  assert.ok(own, r.text);
+  assert.deepEqual([own.skill, own.drill, own.text], ["recognize", "flashcard", "la vuelta"]);
+  assert.deepEqual(own.sentence, { id: own.sentence.id, before: "Aquí tiene ", blank: "la vuelta", after: ", señora.", origin: "example" });
+  const sessionBare = r.body.items.filter((i) => !i.sentence).map((i) => i.phraseId);
+  assert.equal(sessionBare.length, 4);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 1);
+  const asked = fake
+    .clozeArgs()
+    .find((a) => a.startsWith("PHRASES"))
+    .split("\n")
+    .filter((l) => /^\d+\. /.test(l))
+    .map((l) => l.replace(/^\d+\. /, "").split(" — ")[0]);
+  const textOf = new Map(bare.map((b) => [b.id, b.text]));
+  assert.deepEqual(asked.sort(), sessionBare.map((id) => textOf.get(id)).sort(), "only this session's cards without a sentence");
+  assert.deepEqual(await ledger(p["la vuelta"].id), [{ phrases: 4, kept: 0 }]);
+  // Listening cards carry no sentence, and no words.
+  const l = await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=listening&length=20`);
+  assert.equal(l.status, 200, l.text);
+  assert.ok(l.body.items.length > 0 && l.body.items.every((i) => i.sentence === null && i.text === ""));
+  assert.doesNotMatch(l.text, /vuelta/);
+  // Kids: the same 403 as every practice route.
+  const pip = await someone([KID]);
+  assert.equal((await flashQueue(pip)).status, 403);
+});
+
+test("flashcards: a written sentence shows on the next session; flagged, it is no longer attached and nothing is paid again", async () => {
+  const sam = await someone();
+  const p = await add(sam, [["la cuenta", "the bill"]]);
+  fake.cloze(reply(["¿Me trae la cuenta, por favor?"]));
+  const first = await flashQueue(sam);
+  assert.equal(first.body.items[0].sentence, null, "none yet: the card is asked without one, nothing waits");
+  await settleClozeFills();
+  const runs = fake.clozeRuns();
+  const [card] = (await flashQueue(sam)).body.items;
+  assert.deepEqual([card.sentence.before, card.sentence.blank, card.sentence.after, card.sentence.origin], ["¿Me trae ", "la cuenta", ", por favor?", "generated"]);
+  const f = await sam.call("POST", `/api/practice/cloze/${card.sentence.id}/flag`, {});
+  assert.deepEqual([f.status, f.body], [200, { flagged: true }]);
+  const [again] = (await flashQueue(sam)).body.items;
+  assert.equal(again.sentence, null, "flagged: not attached any more");
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs, "a call was made for these words already: no second one");
+  assert.ok((await itemsOf(p["la cuenta"].id)).every((x) => x.flagged_at));
+});

@@ -3,9 +3,9 @@ import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
 import { startRecording, type Recording } from "../recorder";
 import type {
-  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeStatsReply, PracticeVerdict,
+  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
 } from "../types";
-import { RubyText, RubyToggle } from "./Ruby";
+import { MarkedText, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* Practice over the active language's phrase bank (docs/DATA.md §Practice
@@ -14,7 +14,10 @@ import { Badge, Button, Card, inputClass } from "./ui";
  * 4 a.m. here). Four modes:
  *  - Flashcards: recognize (the words shown, type what they mean, or
  *    Reveal and grade yourself) and produce (the meaning shown, type the
- *    words), both ways or one.
+ *    words), both ways or one. The answer side also shows the phrase used
+ *    in a sentence when it has one (the fill-the-gap sentences: your own
+ *    session lines first); a started session has one written for its
+ *    cards without, for next time.
  *  - Listening: the phrase is played in your voice for the language, never
  *    shown; pick its meaning from four (or type the meaning or the words).
  *    The words, and their readings for Mandarin, appear only after.
@@ -37,7 +40,7 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 const LENGTHS = [5, 10, 20] as const;
 const PREFS_KEY = "lingo-dojo.practice.v1";
 const MODES: { value: PracticeMode; label: string; hint: string }[] = [
-  { value: "flashcards", label: "Flashcards", hint: "Read and type, either way" },
+  { value: "flashcards", label: "Flashcards", hint: "Read and type, either way; the answer shows it in a sentence" },
   { value: "listening", label: "Listening", hint: "Hear it, pick or type what it means" },
   { value: "speak", label: "Speak it", hint: "See the meaning, say it aloud" },
   { value: "cloze", label: "Fill the gap", hint: "A sentence with the phrase missing: type or say it" },
@@ -539,12 +542,17 @@ function TypedAnswer({
 /**
  * A flashcard: the prompt, the answer box, then the grade. A recognize
  * card can be revealed instead (then the learner grades it); a produce
- * card has "I don't know" (an empty answer: Again).
+ * card has "I don't know" (an empty answer: Again). The answer side (the
+ * reveal, or the grade) also shows the phrase in a sentence when the card
+ * carries one: never before, as it holds the words a produce card asks for.
  */
 function FlashCard({ item, languageName, nativeName, locale, answer, last, onNext }: CardProps) {
   const recognize = item.skill === "recognize";
   const [revealed, setRevealed] = useState(false);
+  // Kept here, not in the sentence: a flag on the reveal holds through the grade.
+  const flag = useFlag();
   const { busy, result } = answer;
+  const sentence = item.sentence && <CardSentence sentence={item.sentence} locale={locale} lang={item.lang || undefined} flag={flag} busy={busy} />;
   // Readings go over the target words only where they are already shown:
   // a recognize card's prompt and the answer once it is out. A produce
   // card's prompt is the meaning, so nothing there gives the answer away.
@@ -577,12 +585,68 @@ function FlashCard({ item, languageName, nativeName, locale, answer, last, onNex
           <p className="text-lg text-fg" data-testid="practice-expected">
             {item.meaning}
           </p>
+          {sentence}
           <p className={`${fine} text-fg-2`}>How well did you know it?</p>
           <RatingRow current={null} busy={busy} focusFirst onPick={(r) => void answer.submit({ reveal: true, rating: r })} />
         </div>
       )}
-      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} />}
+      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} extra={sentence} />}
     </>
+  );
+}
+
+/** Flagging a bad sentence (POST /api/practice/cloze/:id/flag): it is
+ *  never shown again. Nothing is recorded for the card. */
+function useFlag() {
+  const [state, setState] = useState<"idle" | "busy" | "done">("idle");
+  const [error, setError] = useState<string | null>(null);
+  async function flag(id: string) {
+    if (state !== "idle") return;
+    setState("busy");
+    setError(null);
+    try {
+      await flagCloze(id);
+      setState("done");
+    } catch (e) {
+      setError(errText(e));
+      setState("idle");
+    }
+  }
+  return { state, error, flag };
+}
+
+/** A flashcard's phrase in a sentence, quiet under the meaning: its words
+ *  marked as a filled gap is, readings as the Readings switch says, and
+ *  where it came from when it is one of the learner's own session lines.
+ *  Flagged, it goes (and isn't shown again anywhere). */
+function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: PracticeSentence; locale: string | null; lang?: string; flag: ReturnType<typeof useFlag>; busy: boolean }) {
+  if (flag.state === "done") {
+    return (
+      <p className={`${fine} text-fg-2`} role="status" data-testid="practice-sentence-flagged">
+        Flagged: this sentence won't be shown again.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-1" data-testid="practice-sentence">
+      <div className="flex flex-wrap items-center gap-x-2">
+        <span className={`${fine} text-fg-3`}>
+          In a sentence
+          {sentence.origin === "example" && <span data-testid="practice-sentence-origin"> · from one of your sessions</span>}
+        </span>
+        <Button variant="ghost" className="ml-auto px-2 py-0.5 text-sm sm:text-xs" disabled={flag.state === "busy" || busy} onClick={() => void flag.flag(sentence.id)} data-testid="practice-sentence-flag">
+          {flag.state === "busy" ? "Flagging…" : "Bad sentence?"}
+        </Button>
+      </div>
+      <p className="text-base leading-relaxed break-words text-fg" lang={lang} dir="auto" data-testid="practice-sentence-text">
+        <MarkedText before={sentence.before} marked={sentence.blank} after={sentence.after} locale={locale} markClassName="rounded bg-accent-soft px-1 text-accent" />
+      </p>
+      {flag.error && (
+        <p className="text-sm text-err" role="alert">
+          {flag.error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -933,19 +997,21 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
 
 /** The sentence around a gap: the context with its readings (Mandarin),
  *  the gap a fixed-width box that gives no length away (and no reading:
- *  it has no characters on the page to read). */
+ *  it has no characters on the page to read). Filled (the answer is out),
+ *  it is read as one sentence, so the words beside the gap keep their
+ *  context (MarkedText). */
 function GapSentence({ before, after, locale, lang, filled }: { before: string; after: string; locale: string | null; lang?: string; filled?: string }) {
   return (
     <p className="font-[family-name:var(--font-display)] text-2xl leading-relaxed font-semibold break-words text-fg sm:text-3xl" lang={lang} dir="auto" data-testid={filled ? "practice-cloze-filled" : "practice-prompt"}>
-      <RubyText text={before} locale={locale} />
       {filled ? (
-        <mark className="rounded bg-accent-soft px-1 text-accent">
-          <RubyText text={filled} locale={locale} />
-        </mark>
+        <MarkedText before={before} marked={filled} after={after} locale={locale} markClassName="rounded bg-accent-soft px-1 text-accent" />
       ) : (
-        <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+        <>
+          <RubyText text={before} locale={locale} />
+          <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+          <RubyText text={after} locale={locale} />
+        </>
       )}
-      <RubyText text={after} locale={locale} />
     </p>
   );
 }
@@ -1075,6 +1141,7 @@ function Result({
   last,
   onNext,
   how = "wrote",
+  extra,
 }: {
   result: PracticeAnswerReply;
   item: PracticeItem;
@@ -1084,6 +1151,8 @@ function Result({
   onNext: (answered: PracticeAnswerReply | null) => void;
   /** How the answer was given: typed, a picked choice, or said aloud. */
   how?: "wrote" | "picked" | "said";
+  /** Shown under the card's two sides (a flashcard's sentence). */
+  extra?: ReactNode;
 }) {
   const verdict = VERDICT[result.review.verdict];
   const lead = how === "said" ? "Heard" : how === "picked" ? "You picked" : "You wrote";
@@ -1101,6 +1170,7 @@ function Result({
         </p>
         <p className="text-sm text-fg-2">{result.expected.meaning}</p>
       </div>
+      {extra}
       {result.replayed && (
         <p className={`${fine} text-fg-3`} data-testid="practice-replayed">
           This answer was already recorded (it was sent twice); nothing new was saved.
