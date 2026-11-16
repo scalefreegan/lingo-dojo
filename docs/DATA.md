@@ -541,8 +541,7 @@ reviews         id (bigserial), card_id, learner_id, language_profile_id, mode
 cloze_items     id, phrase_id, learner_id, language_profile_id, phrase_key,
                 sentence, blank_start, blank_end (all three null: a
                 generated "nothing usable" mark), hint (unused),
-                origin (example|generated), example_id, call_id (a
-                generated row's call: the daily cap), flagged_at,
+                origin (example|generated), example_id, flagged_at,
                 created_at
                 fk (example_id, phrase_id) → phrase_examples, cascade;
                 unique (example_id, phrase_key) where example_id is set;
@@ -550,6 +549,13 @@ cloze_items     id, phrase_id, learner_id, language_profile_id, phrase_key,
                 unique (language_profile_id, phrase_id, phrase_key) where
                 no sentence
                 (migration 0006; see "As built (phase 7c)")
+cloze_calls     id, learner_id, language_profile_id, phrases (asked, > 0),
+                kept (sentences kept; null while running or after a
+                failure), created_at
+                fk (language_profile_id, learner_id) → language_profiles,
+                cascade; index (language_profile_id, created_at)
+                (migration 0006: the generation calls' ledger, which the
+                daily cap counts)
 ```
 
 As built, the `cards` columns follow ts-fsrs 6.0.0. Its `Card` type is due,
@@ -2099,9 +2105,16 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   poll while sentences are written (every 4 s, counts only). The calls run
   **in the background** after the queue answers; the queue shows what
   exists. On top: at most **6 calls per language profile in any 24
-  hours** (`CLOZE_DAILY_CALLS`), counted from the rows the calls leave
-  (`cloze_items.call_id`), so a restart doesn't reset it; the tab says when
-  today's are used up. One run at a time per language profile, in the
+  hours** (`CLOZE_DAILY_CALLS`), counted from a ledger, `cloze_calls`: a
+  row is written as each call starts (in the background slot, before the
+  model is asked), whatever the call then gives, so a failed call counts
+  too, and a restart doesn't reset it. The ledger is apart from
+  `cloze_items` on purpose: those are a cache that a phrase's edit or
+  delete and an expiring or refreshed mark clear, and a paid call must
+  not drop out of the count with them (an edit between one-card sessions
+  would otherwise buy a call each time). Its rows go only with the
+  language profile, and a call prunes the profile's rows older than the
+  24 hours. The tab says when today's are used up. One run at a time per language profile, in the
   user's single **background** paid slot (`web/server/paid.ts`
   `backgroundSlot`), apart from the two interactive slots audio and
   transcription use, so writing never makes a card's audio or a speak-it
@@ -2182,16 +2195,18 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   usable sentence, said aloud otherwise. A phrase asked aloud for want of
   a sentence gets sentences written for next time. The cloze mode alone asks only
   phrases with a sentence and lists the rest as waiting, due first.
-- **Reader role.** `cloze_items` has no grant to the content agent's
-  read-only role and no policy: the agent's bank tools don't read it.
+- **Reader role.** `cloze_items` and `cloze_calls` have no grant to the
+  content agent's read-only role and no policy: the agent's bank tools
+  don't read them (0005 cleared the default privileges that could have
+  granted a new table).
   `bankReaderProblem()` is unchanged and passes after 0006.
 - **Migration 0006.** Drizzle's output plus one hand edit
   (`scripts/db/hand-edits.mjs`): `DELETE FROM "cloze_items"` first (the
   table existed since 0000 and nothing wrote it; a row would have no
   phrase key), then the statements ordered so a unique key comes before
-  the foreign key that needs it. `call_id` names a generated row's call
-  (checked: set exactly on generated rows), indexed with `created_at` for
-  the daily cap. Runs on PostgreSQL 17 and PGlite.
+  the foreign key that needs it. It creates `cloze_calls` (the ledger;
+  checked counts, indexed by language profile and `created_at` for the
+  daily cap). Runs on PostgreSQL 17 and PGlite.
 - **The page.** The gap sentence is `dir="auto"` (a gap at the start of a
   Hebrew or Arabic sentence sits on the right), and the gap has no margin
   of its own, so trailing punctuation follows it directly.
@@ -2207,12 +2222,15 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   from session lines, background generation once, failures, tombstones,
   answers, 409s, flagging, a spoken answer, mixed, Mandarin, deletes,
   kids; the counts never paying, ⌈N/10⌉ calls per session, the daily cap
-  across a restart, a mark's expiry, an alternate sent to the grader,
+  across a restart, the cap holding through an edit loop, a phrase's
+  delete, expired marks and failed calls, a mark's expiry, an alternate
+  sent to the grader,
   Japanese ー, no Korean calls, the separate background slot),
   `cloze.pg.test.mjs` (stale and fresh loads racing an edit on PostgreSQL
   17: the new key's flagged row survives), `db-migration-0006.test.mjs` and `migration-0006.pg.test.mjs`
   (0005 with data → 0006: rows kept but the cloze one, schema as a fresh
-  build, the reader kept out), and the 0006 hand-edit pin in
+  build, the reader kept out of both tables, the ledger's checks, kept
+  when phrases go and gone with the profile), and the 0006 hand-edit pin in
   `db-migrations.test.mjs`.
 
 ## Session length (added 2026-11-15; does not need the database)

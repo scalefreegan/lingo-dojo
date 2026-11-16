@@ -1,5 +1,5 @@
 {
-  "id": "9702fa41-ec0c-4bf0-9f25-c0253af8c279",
+  "id": "0a21c65a-0949-4707-a16e-8f18e555286c",
   "prevId": "db28232e-b029-4e9a-94da-f96b5a570271",
   "version": "7",
   "dialect": "postgresql",
@@ -446,6 +446,100 @@
       },
       "isRLSEnabled": true
     },
+    "public.cloze_calls": {
+      "name": "cloze_calls",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "learner_id": {
+          "name": "learner_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "language_profile_id": {
+          "name": "language_profile_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "phrases": {
+          "name": "phrases",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kept": {
+          "name": "kept",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "cloze_calls_profile_idx": {
+          "name": "cloze_calls_profile_idx",
+          "columns": [
+            {
+              "expression": "language_profile_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cloze_calls_profile_fk": {
+          "name": "cloze_calls_profile_fk",
+          "tableFrom": "cloze_calls",
+          "tableTo": "language_profiles",
+          "columnsFrom": [
+            "language_profile_id",
+            "learner_id"
+          ],
+          "columnsTo": [
+            "id",
+            "learner_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "cloze_calls_counts": {
+          "name": "cloze_calls_counts",
+          "value": "\"cloze_calls\".\"phrases\" > 0 and \"cloze_calls\".\"kept\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.cloze_items": {
       "name": "cloze_items",
       "schema": "",
@@ -513,12 +607,6 @@
         },
         "example_id": {
           "name": "example_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "call_id": {
-          "name": "call_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -645,28 +733,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "cloze_items_calls_idx": {
-          "name": "cloze_items_calls_idx",
-          "columns": [
-            {
-              "expression": "language_profile_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"cloze_items\".\"call_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -730,7 +796,7 @@
         },
         "cloze_items_sentence": {
           "name": "cloze_items_sentence",
-          "value": "(\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_start\" is null) and (\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_end\" is null) and (\"cloze_items\".\"sentence\" is not null or \"cloze_items\".\"origin\" = 'generated') and (\"cloze_items\".\"example_id\" is not null) = (\"cloze_items\".\"origin\" = 'example') and (\"cloze_items\".\"call_id\" is not null) = (\"cloze_items\".\"origin\" = 'generated')"
+          "value": "(\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_start\" is null) and (\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_end\" is null) and (\"cloze_items\".\"sentence\" is not null or \"cloze_items\".\"origin\" = 'generated') and (\"cloze_items\".\"example_id\" is not null) = (\"cloze_items\".\"origin\" = 'example')"
         }
       },
       "isRLSEnabled": false

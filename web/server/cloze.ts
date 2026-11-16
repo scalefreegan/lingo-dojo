@@ -1,8 +1,7 @@
-import crypto from "node:crypto";
 import os from "node:os";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { CLOZE_BATCH, CLOZE_DAILY_CALLS, clozeKey, clozePrompt, clozeWritable, parseClozeReply } from "../../scripts/cloze.mjs";
-import { clozeCallsSince, clozeStates, storeGenerated } from "../../scripts/db/cloze.ts";
+import { clozeCallDone, clozeCallStarted, clozeCallsSince, clozeStates, storeGenerated } from "../../scripts/db/cloze.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { CandidatePhrase } from "../../scripts/practice.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
@@ -22,8 +21,9 @@ import { BackgroundBusy, backgroundSlot } from "./paid.ts";
 //    exist (a phrase without one waits, or is said aloud in mixed); the
 //    page may poll the counts while a call runs, and that starts nothing;
 //  - at most CLOZE_DAILY_CALLS calls per language profile in any 24 hours,
-//    counted from the rows the calls leave (cloze_items.call_id), so a
-//    restart doesn't reset it;
+//    counted from a ledger written as each call starts (cloze_calls, apart
+//    from the sentence cache an edit or delete clears), so a failed call
+//    counts and a restart doesn't reset it;
 //  - one run at a time per language profile, its calls one after another,
 //    each in the user's single background slot (paid.ts), apart from the
 //    interactive slots audio and transcription use; a busy slot skips the
@@ -154,8 +154,12 @@ async function write(
   const sent = batch.map((p) => ({ id: p.id, text: p.text ?? "", meaning: p.meaning ?? "", key: clozeKey(p) }));
   const { system, user } = clozePrompt({ phrases: sent, targetVariant: opts.targetVariant, nativeLanguage: opts.nativeLanguage, level: opts.level, locale: opts.locale });
   let text: string;
+  let callId = "";
   try {
     text = await backgroundSlot(opts.userId, async () => {
+      // In the ledger before the model is asked: a call that then fails
+      // was (or may have been) paid all the same. No entry, no call.
+      callId = await clozeCallStarted(rawDb(), profile, sent.length, new Date(Date.now() - DAY_MS));
       const { result } = startClaude({ prompt: user, systemPrompt: system, model: CLOZE_MODEL, cwd: os.tmpdir(), tools: "none", maxTurns: 1, timeoutSec: CALL_TIMEOUT_SEC });
       return (await result).text;
     });
@@ -165,7 +169,6 @@ async function write(
     const msg = String((e as Error)?.message || e);
     throw new Error(failureHint(msg) || msg);
   }
-  const callId = crypto.randomUUID();
   const parsed = parseClozeReply(text, { phrases: sent, locale: opts.locale, level: opts.level, nativeLanguage: opts.nativeLanguage });
   // A reply that isn't the JSON asked for was paid all the same: its
   // phrases are marked as tried (and the call counts toward the cap).
@@ -175,9 +178,10 @@ async function write(
   const kept = await storeGenerated(
     rawDb(),
     profile,
-    callId,
     sent.map((p, i) => ({ phraseId: p.id, phraseKey: p.key, sentences: sentences[i] })),
   );
+  // Only for diagnosis: the call counts already.
+  await clozeCallDone(rawDb(), profile, callId, kept).catch((e) => console.warn("[lingo-dojo] cloze: the call's outcome wasn't noted:", String(e?.message || e)));
   console.log(`[lingo-dojo] cloze: ${kept} sentence(s) kept for ${sent.length} phrase(s)`);
   return true;
 }

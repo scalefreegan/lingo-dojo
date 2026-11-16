@@ -35,7 +35,8 @@ answer's drill is its review's mode) and fill the gap (phase 7c, migration
 0006: cloze sentences from the learner's own session lines, else written
 in the background by tool-less claude calls only for a started session's
 cards (never from the counts or a poll), at most 6 calls per language a
-day counted from the rows, in a background paid slot apart from audio
+day counted from a ledger written as each call starts (`cloze_calls`, never
+from the sentence cache), in a background paid slot apart from audio
 and transcription, each checked by
 the pure rules in `scripts/cloze.mjs`, the phrase verbatim and once; rows
 in `scripts/db/cloze.ts`, the call in `web/server/cloze.ts`; a cloze

@@ -1,11 +1,13 @@
 // Migration 0006 (fill the gap: cloze_items gets its phrase key, example
-// link and flag; phrase_examples a unique (id, phrase_id) for that link)
+// link and flag; phrase_examples a unique (id, phrase_id) for that link;
+// a new cloze_calls ledger)
 // against a database at 0005 with data in it: an account, a learner, a
 // bank with a phrase, an example, a card and a review, and a cloze row as
 // the never-written table could have held. Every row but the cloze one
 // stays as it was; that one is cleared (it has no phrase key); the schema
 // is a fresh build's; the new checks and keys hold; and the content
-// agent's read-only role is as 0005 left it, with no grant on cloze_items.
+// agent's read-only role is as 0005 left it, with no grant on cloze_items
+// or cloze_calls.
 // Shared by the PGlite test (db-migration-0006.test.mjs) and the
 // real-Postgres one (migration-0006.pg.test.mjs). Not a test itself.
 // Every name here is made up.
@@ -53,9 +55,10 @@ export async function seedBefore0006(query) {
   await query(`insert into cloze_items (phrase_id, learner_id, language_profile_id, sentence, blank_start, blank_end, origin) values ($1, $2, $3, $4, 11, 20, 'example')`, [P, L, LP, SENTENCE]);
 }
 
-/** Every row of every public table as JSON text, but cloze_items. */
+/** Every row of every public table as JSON text, but cloze_items (and
+ *  0006's new cloze_calls). */
 async function oldContents(query) {
-  const tables = (await query(`select tablename from pg_tables where schemaname = 'public' and tablename <> 'cloze_items' order by 1`)).map((r) => r.tablename);
+  const tables = (await query(`select tablename from pg_tables where schemaname = 'public' and tablename not in ('cloze_items', 'cloze_calls') order by 1`)).map((r) => r.tablename);
   const out = {};
   for (const t of tables) out[t] = (await query(`select to_jsonb(t)::text as row from "${t}" t order by 1`)).map((r) => r.row);
   return out;
@@ -74,10 +77,12 @@ export async function migrateAndCheck0006(query, fresh, role) {
   assert.deepEqual(await query(`select * from cloze_items`), []);
   assert.deepEqual(await catalog(query), await catalog(fresh));
   assert.equal(await bankReaderProblem(query, role), null, "sound at 0006");
-  assert.deepEqual(await query(`select has_table_privilege($1, 'cloze_items', 'select') as can`, [role]), [{ can: false }]);
+  for (const t of ["cloze_items", "cloze_calls"]) {
+    assert.deepEqual(await query(`select has_table_privilege($1, $2, 'select') as can, has_any_column_privilege($1, $2, 'select') as cols`, [role, t]), [{ can: false, cols: false }], t);
+  }
+  assert.deepEqual(await query(`select * from cloze_calls`), []);
 
-  // A generated row names its call (call_id), as the app writes it.
-  const cloze = `insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end, call_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, case when $5::text = 'generated' then gen_random_uuid() end)`;
+  const cloze = `insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
   // An example's item, once per key; a generated one, and its "nothing usable" tombstone.
   await query(cloze, [P, L, LP, "k1", "example", E, SENTENCE, 11, 20]);
   await assert.rejects(query(cloze, [P, L, LP, "k1", "example", E, SENTENCE, 11, 20]), /cloze_items_example_once/);
@@ -85,16 +90,8 @@ export async function migrateAndCheck0006(query, fresh, role) {
   await query(cloze, [P, L, LP, "k1", "generated", null, "No olvide la vuelta en la mesa.", 10, 19]);
   await assert.rejects(query(cloze, [P, L, LP, "k1", "generated", null, "No olvide la vuelta en la mesa.", 10, 19]), /cloze_items_generated_once/);
   await query(cloze, [P, L, LP, "k1", "generated", null, null, null, null]);
-  // One mark per phrase and key; a generated row names its call, an example's doesn't.
+  // One mark per phrase and key.
   await assert.rejects(query(cloze, [P, L, LP, "k1", "generated", null, null, null, null]), /cloze_items_tried_once/);
-  await assert.rejects(
-    query(`insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, sentence, blank_start, blank_end) values ($1, $2, $3, 'k5', 'generated', 'Otra vez la vuelta, por favor.', 10, 19)`, [P, L, LP]),
-    /cloze_items_sentence/,
-  );
-  await assert.rejects(
-    query(`insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end, call_id) values ($1, $2, $3, 'k5', 'example', $4, $5, 11, 20, gen_random_uuid())`, [P, L, LP, E, SENTENCE]),
-    /cloze_items_sentence/,
-  );
   // The rules: no blank without a sentence, no sentence-less example, an example's link exactly when it is one.
   await assert.rejects(query(cloze, [P, L, LP, "k3", "generated", null, "Algo.", null, null]), /cloze_items_sentence/);
   await assert.rejects(query(cloze, [P, L, LP, "k3", "example", E, null, null, null]), /cloze_items_sentence/);
@@ -107,4 +104,18 @@ export async function migrateAndCheck0006(query, fresh, role) {
   // Dropping the example drops its items, not the generated ones.
   await query(`delete from phrase_examples where id = $1`, [E]);
   assert.deepEqual((await query(`select origin, sentence is null as tomb from cloze_items order by 1, 2`)).map((r) => [r.origin, r.tomb]), [["generated", false], ["generated", true]]);
+
+  // The call ledger: its counts checked, owned by a language profile of
+  // its learner's, kept when the phrases go, gone with the profile.
+  const call = `insert into cloze_calls (learner_id, language_profile_id, phrases, kept) values ($1, $2, $3, $4)`;
+  await query(call, [L, LP, 10, null]);
+  await query(call, [L, LP, 3, 0]);
+  await assert.rejects(query(call, [L, LP, 0, null]), /cloze_calls_counts/);
+  await assert.rejects(query(call, [L, LP, 1, -1]), /cloze_calls_counts/);
+  await assert.rejects(query(call, [U, LP, 1, null]), /cloze_calls_profile_fk/);
+  await query(`delete from phrases where learner_id = $1`, [L]);
+  assert.deepEqual(await query(`select count(*)::int as n from cloze_items`), [{ n: 0 }]);
+  assert.deepEqual(await query(`select count(*)::int as n from cloze_calls`), [{ n: 2 }]);
+  await query(`delete from language_profiles where id = $1`, [LP]);
+  assert.deepEqual(await query(`select count(*)::int as n from cloze_calls`), [{ n: 0 }]);
 }

@@ -62,8 +62,9 @@
 //     cache isn't worth refusing to start over.
 //  2. Reordered (ORDER_0006): drizzle-kit adds cloze_items_example_fk
 //     before phrase_examples_id_phrase, the unique key it references.
-//  The reader role of 0005 gets nothing on cloze_items: the table's
-//  sentences are the learner's own session lines.
+//  The reader role of 0005 gets nothing on cloze_items (the table's
+//  sentences are the learner's own session lines) or on the new
+//  cloze_calls (0005 cleared any default privilege that would grant it).
 //
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
@@ -380,6 +381,7 @@ DELETE FROM "cloze_items";`;
 
 const ORDER_0006 = [
   { name: "clear", insert: [CLEAR_0006] },
+  { name: "new tables", re: /^CREATE TABLE "cloze_calls" \(/ },
   { name: "relaxed columns", re: /^ALTER TABLE "cloze_items" ALTER COLUMN "\w+" DROP NOT NULL;$/ },
   // Not "new columns": reorder() takes that bucket's NOT NULL off for a
   // backfill to set; this key is NOT NULL at once (the table is empty).

@@ -32,8 +32,9 @@ export const SENTENCES_PER_PHRASE = 2;
 /** A sentence a model wrote is kept at most this long (characters). */
 export const MAX_GENERATED = 200;
 /** Generation calls one language profile may make in any 24 hours,
- *  counted from the rows they leave (cloze_items.call_id), so a restart
- *  doesn't reset it: at most this many times CLOZE_BATCH phrases a day. */
+ *  counted from their ledger (cloze_calls, written as each starts), so a
+ *  failed call counts and a restart doesn't reset it: at most this many
+ *  times CLOZE_BATCH phrases a day. */
 export const CLOZE_DAILY_CALLS = 6;
 /** A "nothing usable" mark stops paying for a phrase this long, then the
  *  phrase may be tried again (a model, or the rules, may do better). */

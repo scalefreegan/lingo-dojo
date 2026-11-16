@@ -692,10 +692,6 @@ export const clozeItems = pgTable(
     /** The example it was made from (origin 'example'): deleting the
      *  example (its turn dropped) deletes the item. */
     exampleId: uuid("example_id"),
-    /** The generation call a generated row came from (origin 'generated'
-     *  only): the language's calls in a day are counted from these
-     *  (cloze.mjs CLOZE_DAILY_CALLS), so a restart doesn't reset the cap. */
-    callId: uuid("call_id"),
     flaggedAt: tz("flagged_at"),
     createdAt: createdAt(),
   },
@@ -707,7 +703,7 @@ export const clozeItems = pgTable(
     // its example.
     check(
       "cloze_items_sentence",
-      sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example') and (${t.callId} is not null) = (${t.origin} = 'generated')`,
+      sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example')`,
     ),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "cloze_items_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
@@ -722,7 +718,36 @@ export const clozeItems = pgTable(
     // One "nothing usable" mark per phrase and key: a later try refreshes it
     // (an upsert, whose target always leads with the owner: owned.ts).
     uniqueIndex("cloze_items_tried_once").on(t.languageProfileId, t.phraseId, t.phraseKey).where(sql`${t.sentence} is null`),
+  ],
+);
+
+/**
+ * One generation call for cloze sentences (docs/DATA.md §Practice modes,
+ * "As built (phase 7c: cloze)"): the ledger the daily cap counts
+ * (cloze.mjs CLOZE_DAILY_CALLS). Written as the call starts, whatever it
+ * then gives, and kept apart from cloze_items: those are a cache that an
+ * edit, a phrase's delete or an expiring mark clears, and a call paid for
+ * must count all the same; nor does a restart reset it. Goes only with its
+ * language profile; rows older than the window are pruned as calls are
+ * made. The bank reader role of 0005 is granted nothing on it.
+ */
+export const clozeCalls = pgTable(
+  "cloze_calls",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** How many phrases the call asked sentences for. */
+    phrases: integer("phrases").notNull(),
+    /** Sentences kept from its reply; null while it runs, or when it got
+     *  no reply (the CLI, a limit, a timeout). */
+    kept: integer("kept"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("cloze_calls_counts", sql`${t.phrases} > 0 and ${t.kept} >= 0`),
+    foreignKey({ name: "cloze_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
     // The daily cap counts one language's recent calls.
-    index("cloze_items_calls_idx").on(t.languageProfileId, t.createdAt).where(sql`${t.callId} is not null`),
+    index("cloze_calls_profile_idx").on(t.languageProfileId, t.createdAt),
   ],
 );

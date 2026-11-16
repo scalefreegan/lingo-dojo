@@ -110,6 +110,10 @@ const answer = (who, item, body, submitId = crypto.randomUUID()) =>
     ...(item.cloze ? { clozeId: item.cloze.id } : {}), ...body,
   });
 const itemsOf = (phraseId) => q("select * from cloze_items where phrase_id = $1 order by created_at, id", [phraseId]);
+/** The call ledger of the language a phrase is in, by its id or by words
+ *  only one test's bank has (palabraa0). */
+const ledger = (phrase) =>
+  q("select phrases, kept from cloze_calls where language_profile_id = (select language_profile_id from phrases where id::text = $1 or text = $1) order by created_at, id", [phrase]);
 
 test("a session line of the dojo master's is the gap; the gap's words never travel before the answer", async () => {
   const sam = await someone();
@@ -185,6 +189,7 @@ test("generated sentences: one call for the batch in the background, checked, ke
   assert.doesNotMatch(next.text, /la cuenta|cuánto cuesta/i);
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 1, "no second call: not for the kept ones, not for the one that got nothing");
+  assert.deepEqual(await ledger(p["la cuenta"].id), [{ phrases: 3, kept: 3 }], "one call in the ledger: three phrases asked, three sentences kept");
 });
 
 test("a failed call is no cloze for now: nothing kept, nothing marked, and no retry straight away", async () => {
@@ -196,6 +201,7 @@ test("a failed call is no cloze for now: nothing kept, nothing marked, and no re
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 1);
   assert.deepEqual(await itemsOf(p["la mesa"].id), []);
+  assert.deepEqual(await ledger(p["la mesa"].id), [{ phrases: 1, kept: null }], "the failed call is in the ledger all the same");
   const again = await queue(sam);
   assert.deepEqual([again.status, again.body.items.length, again.body.cloze.waiting, again.body.cloze.writing], [200, 0, 1, false]);
   await settleClozeFills();
@@ -391,6 +397,49 @@ test("deletes: a phrase takes its sentences with it; a dropped example takes its
   } finally {
     await q("rollback");
   }
+  // Nor on the call ledger.
+  await q("begin");
+  try {
+    await q("set local role lingo_reader");
+    await assert.rejects(q("select * from cloze_calls"), /permission denied/);
+  } finally {
+    await q("rollback");
+  }
+});
+
+test("the cap holds whatever clears the sentences: an edit loop, a phrase's delete, an expired or refreshed mark, a failed call", async () => {
+  const sam = await someone();
+  const [p] = await many(sam, 1, "f");
+  const [other] = await many(sam, 1, "g");
+  const runs0 = fake.clozeRuns();
+  const used = async () => (await ledger("palabraf0")).length;
+  // Codex's loop: a one-card session, then an edit of the phrase's meaning
+  // (which clears its sentences and marks), over and over; failures and
+  // restarts mixed in.
+  for (let i = 0; i < 9; i++) {
+    fake.cloze(i % 3 === 1 ? "!fail" : JSON.stringify({ items: [] }));
+    resetClozeMemory();
+    await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=1`);
+    await settleClozeFills();
+    const edit = await sam.call("PATCH", `/api/phrases/${p.id}`, { meaning: `word f ${i} again` });
+    assert.equal(edit.status, 200);
+  }
+  assert.equal(fake.clozeRuns(), runs0 + 6, "six calls, then capped");
+  assert.equal(await used(), 6);
+  assert.deepEqual(await itemsOf(p.id), [], "the edits cleared every mark");
+  assert.equal((await stats(sam)).body.cloze.limited, true);
+  // Deleting a phrase, or a mark expiring or being refreshed, doesn't give
+  // a call back.
+  await q(`update cloze_items set created_at = now() - interval '31 days' where language_profile_id = (select language_profile_id from phrases where text = 'palabraf0')`);
+  assert.equal((await sam.call("DELETE", `/api/phrases/${other.id}`)).status, 200);
+  assert.equal((await sam.call("DELETE", `/api/phrases/${p.id}`)).status, 200);
+  const [left] = await many(sam, 1, "h");
+  assert.equal((await ledger("palabrah0")).length, 6, "the ledger outlives the phrases");
+  resetClozeMemory();
+  await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=1`);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 6, "still capped");
+  assert.deepEqual(await itemsOf(left.id), []);
 });
 
 test("kids learners don't practise: the cloze queue and the flag route are 403", async () => {
@@ -425,8 +474,9 @@ test("the counts never pay: viewing the tab and its poll start no call; a starte
   for (let i = 0; i < 3; i++) await stats(sam);
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 2);
-  const tried = await q("select count(*)::int as n, count(distinct call_id)::int as calls from cloze_items c join phrases p on p.id = c.phrase_id where p.text like 'palabraa%'");
-  assert.deepEqual(tried, [{ n: 20, calls: 2 }], "twenty phrases tried, by two calls");
+  const tried = await q("select count(*)::int as n from cloze_items c join phrases p on p.id = c.phrase_id where p.text like 'palabraa%'");
+  assert.deepEqual(tried, [{ n: 20 }], "twenty phrases tried");
+  assert.deepEqual(await ledger("palabraa0"), [{ phrases: 10, kept: 0 }, { phrases: 10, kept: 0 }], "by two calls");
   // A session of 5: one call for 5 phrases.
   await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=5`);
   await settleClozeFills();
@@ -434,7 +484,7 @@ test("the counts never pay: viewing the tab and its poll start no call; a starte
   assert.equal(fake.clozeArgs().find((a) => a.startsWith("PHRASES")).split("\n").filter((l) => /^\d+\. /.test(l)).length, 5);
 });
 
-test("the daily cap: at most CLOZE_DAILY_CALLS calls per language in 24 hours, counted from the rows, so a restart doesn't reset it", async () => {
+test("the daily cap: at most CLOZE_DAILY_CALLS calls per language in 24 hours, counted from the ledger, so a restart doesn't reset it", async () => {
   const sam = await someone();
   await many(sam, 75, "b");
   fake.cloze(JSON.stringify({ items: [] }));
@@ -450,16 +500,17 @@ test("the daily cap: at most CLOZE_DAILY_CALLS calls per language in 24 hours, c
   await start();
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 6, "capped");
-  // A restart forgets what memory held; the cap is in the rows.
+  // A restart forgets what memory held; the cap is in the ledger.
   resetClozeMemory();
   await start();
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 6, "still capped after a restart");
   // A day later the calls have aged out.
-  await q(`update cloze_items set created_at = now() - interval '25 hours' where call_id is not null and language_profile_id = (select language_profile_id from phrases where text = 'palabrab0')`);
+  await q(`update cloze_calls set created_at = now() - interval '25 hours' where language_profile_id = (select language_profile_id from phrases where text = 'palabrab0')`);
   await start();
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 8, "the last 15: a call of ten and one of five");
+  assert.deepEqual(await ledger("palabrab0"), [{ phrases: 10, kept: 0 }, { phrases: 5, kept: 0 }], "the aged-out entries were pruned");
   // Another language of someone else's isn't held back by it.
   const ana = await someone();
   await many(ana, 3, "c");
@@ -479,7 +530,7 @@ test("a nothing-usable mark expires after 30 days (and with a rules change): the
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 1);
   const [mark] = await itemsOf(p.id);
-  await q(`update cloze_items set created_at = now() - interval '31 days', call_id = gen_random_uuid() where id = $1`, [mark.id]);
+  await q(`update cloze_items set created_at = now() - interval '31 days' where id = $1`, [mark.id]);
   assert.equal((await stats(sam)).body.cloze.waiting, 1);
   await queue(sam);
   await settleClozeFills();

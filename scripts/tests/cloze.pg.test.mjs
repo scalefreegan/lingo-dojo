@@ -10,7 +10,6 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import pg from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { clozeKey, findBlank } from "../cloze.mjs";
@@ -45,7 +44,7 @@ async function withProfile(t, fn) {
 /** A generated sentence for `phrase` as it is, kept and then flagged. */
 async function flaggedSentence(db, profile, phrase, sentence) {
   const b = findBlank(sentence, phrase.text, "es-MX");
-  await storeGenerated(db, profile, crypto.randomUUID(), [{ phraseId: phrase.id, phraseKey: clozeKey(phrase), sentences: [{ sentence, start: b.start, end: b.end }] }]);
+  await storeGenerated(db, profile, [{ phraseId: phrase.id, phraseKey: clozeKey(phrase), sentences: [{ sentence, start: b.start, end: b.end }] }]);
   const [row] = (await db.query.clozeItems.findMany({ where: (c, { eq }) => eq(c.phraseId, phrase.id) })).filter((r) => r.sentence === sentence);
   await flagClozeItem(db, profile, row.id, new Date());
   return row.id;
@@ -57,7 +56,7 @@ test("a load holding a copy from before an edit keeps the edited phrase's rows, 
       const { phrase: before } = await addPhrase(db, profile, "es-MX", { text: `la vuelta${round}`, meaning: "the change" });
       // A sentence for the old words (a row of the old key).
       const b = findBlank(`Aquí tiene la vuelta${round}, señora.`, before.text, "es-MX");
-      await storeGenerated(db, profile, crypto.randomUUID(), [{ phraseId: before.id, phraseKey: clozeKey(before), sentences: [{ sentence: `Aquí tiene la vuelta${round}, señora.`, start: b.start, end: b.end }] }]);
+      await storeGenerated(db, profile, [{ phraseId: before.id, phraseKey: clozeKey(before), sentences: [{ sentence: `Aquí tiene la vuelta${round}, señora.`, start: b.start, end: b.end }] }]);
       // The edit, then a flagged sentence for the new words.
       await updatePhrase(db, profile, before.id, { text: `el cambio${round}` });
       const after = { ...before, text: `el cambio${round}` };

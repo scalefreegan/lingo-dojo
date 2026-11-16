@@ -234,7 +234,10 @@ test("0006's hand edits only clear the never-written cloze_items first and reord
   assert.ok(at(/ADD COLUMN "phrase_key" text NOT NULL/) > 0);
   // The unique key before the foreign key that references it.
   assert.ok(at(/"phrase_examples_id_phrase" UNIQUE\("id","phrase_id"\)/) < at(/"cloze_items_example_fk" FOREIGN KEY/));
-  assert.ok(stmts.slice(1).every((s) => /^(ALTER TABLE "\w+" (ALTER COLUMN|ADD (COLUMN|CONSTRAINT))|CREATE (UNIQUE )?INDEX)/.test(s)));
+  // The new ledger table first, before the foreign key and index on it.
+  assert.ok(at(/^CREATE TABLE "cloze_calls" \(/) === 1);
+  assert.ok(at(/"cloze_calls_profile_fk" FOREIGN KEY/) > 1);
+  assert.ok(stmts.slice(2).every((s) => /^(ALTER TABLE "\w+" (ALTER COLUMN|ADD (COLUMN|CONSTRAINT))|CREATE (UNIQUE )?INDEX)/.test(s)));
 });
 
 test("bankReaderProblem: null on a migrated database, and names what a restore left out", async (t) => {

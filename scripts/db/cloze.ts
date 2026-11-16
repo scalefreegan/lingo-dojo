@@ -13,10 +13,10 @@
 //
 // Erasable TypeScript only, like practice.ts: the tests import it as is.
 
-import { and, eq, gt, inArray, isNotNull, ne, sql, type SQL } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, lt, ne, sql, type SQL } from "drizzle-orm";
 import { checkExample, clozeKey, clozeable, clozeWritable, triedStill } from "../../scripts/cloze.mjs";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { clozeItems, phraseExamples, phrases as phrases_, turns } from "./schema.ts";
+import { clozeCalls, clozeItems, phraseExamples, phrases as phrases_, turns } from "./schema.ts";
 
 type ClozeRow = typeof clozeItems.$inferSelect;
 
@@ -153,24 +153,24 @@ export interface Generated {
  * one edited meanwhile keeps rows of its old key, which the next fill
  * clears. Returns how many sentences were kept.
  */
-export async function storeGenerated(db: Db, profile: LanguageProfileRef, callId: string, results: Generated[]): Promise<number> {
+export async function storeGenerated(db: Db, profile: LanguageProfileRef, results: Generated[]): Promise<number> {
   const mine = forLanguageProfile(db, profile);
   let kept = 0;
   for (const g of results) {
     try {
       if (!g.sentences.length) {
         // One mark per phrase and key: a later try (the old one expired)
-        // refreshes it, so it holds from now and counts for this call.
+        // refreshes it, so it holds from now.
         await mine.upsert(
           clozeItems,
-          { phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated", callId, sentence: null, blankStart: null, blankEnd: null },
-          { target: [clozeItems.phraseId, clozeItems.phraseKey], targetWhere: sql`${clozeItems.sentence} is null`, set: { callId, createdAt: sql`now()` } },
+          { phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated", sentence: null, blankStart: null, blankEnd: null },
+          { target: [clozeItems.phraseId, clozeItems.phraseKey], targetWhere: sql`${clozeItems.sentence} is null`, set: { createdAt: sql`now()` } },
         );
         continue;
       }
       const rows = await mine.insertOrIgnore(
         clozeItems,
-        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, callId, sentence: s.sentence, blankStart: s.start, blankEnd: s.end })),
+        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, sentence: s.sentence, blankStart: s.start, blankEnd: s.end })),
       );
       kept += Array.isArray(rows) ? rows.length : 0;
     } catch (err) {
@@ -180,15 +180,34 @@ export async function storeGenerated(db: Db, profile: LanguageProfileRef, callId
   return kept;
 }
 
-/** How many generation calls this language made since `since`, counted
- *  from the rows they left (each call's sentences and marks share its
- *  call_id): the daily cap survives a restart. */
+/**
+ * Enter a generation call in this language's ledger (cloze_calls) before
+ * it is made, so it counts toward the daily cap whatever it then gives (a
+ * failure too), and prune the language's entries from before `prune`
+ * (older than the cap's window: nothing reads them). Returns the entry's
+ * id, for clozeCallDone.
+ */
+export async function clozeCallStarted(db: Db, profile: LanguageProfileRef, phrases: number, prune: Date): Promise<string> {
+  const mine = forLanguageProfile(db, profile);
+  await mine.remove(clozeCalls, lt(clozeCalls.createdAt, prune));
+  const [row] = await mine.insert(clozeCalls, { phrases });
+  return row.id;
+}
+
+/** How many sentences a call's reply left (the ledger, for diagnosis). */
+export async function clozeCallDone(db: Db, profile: LanguageProfileRef, id: string, kept: number): Promise<void> {
+  await forLanguageProfile(db, profile).update(clozeCalls, { kept }, eq(clozeCalls.id, id));
+}
+
+/** How many generation calls this language made since `since`, from the
+ *  ledger: not the cloze items (a cache that edits, deletes and expiring
+ *  marks clear), and the cap survives a restart. */
 export async function clozeCallsSince(db: Db, profile: LanguageProfileRef, since: Date): Promise<number> {
   const mine = forLanguageProfile(db, profile);
   const [row] = await db
-    .select({ n: sql<number>`count(distinct ${clozeItems.callId})::int` })
-    .from(clozeItems)
-    .where(mine.where(clozeItems, and(isNotNull(clozeItems.callId), gt(clozeItems.createdAt, since)) as SQL));
+    .select({ n: sql<number>`count(*)::int` })
+    .from(clozeCalls)
+    .where(mine.where(clozeCalls, gt(clozeCalls.createdAt, since)));
   return Number(row?.n) || 0;
 }
 
