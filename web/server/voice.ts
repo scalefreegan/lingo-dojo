@@ -7,8 +7,8 @@ import { assemble } from "../../scripts/assemble.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
-  ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
-  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, elevenVoices, elevenVoicesRequest, envFile,
+  SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
+  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
   ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
@@ -198,7 +198,7 @@ async function handleVoices(req: IncomingMessage, res: ServerResponse): Promise<
 
 /* ------------------------------- transcribe ------------------------------- */
 
-async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
+export async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const c of req) {
@@ -223,8 +223,23 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
     .filter((s) => LOCALE_RE.test(s));
   const audio = await readAudio(req);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
-  const keys = keysFor(provider);
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
+  const text = await transcribeAudio(res, { provider, audio, mime, locales, keyterms });
+  sendJson(res, 200, { text, provider } satisfies TranscribeReply);
+}
+
+/**
+ * One recording → text, with `provider` (the user's speech-to-text
+ * setting). `locales[0]` is the language the speech is taken to be in;
+ * `keyterms` are words to expect (Scribe only). The practice drill's
+ * speak-it passes none: hinting the expected answer would hear it into the
+ * transcript. A paid call, so it stops when the browser gives up on `res`.
+ */
+export async function transcribeAudio(
+  res: ServerResponse,
+  { provider, audio, mime, locales, keyterms = [] }: { provider: SttProvider; audio: Uint8Array; mime: string; locales: string[]; keyterms?: string[] },
+): Promise<string> {
+  const keys = keysFor(provider);
   const request = provider === "elevenlabs"
     ? elevenTranscribeRequest({ key: keys.elevenlabs, audio, mime, language: locales[0], keyterms })
     : azureTranscribeRequest({ key: keys.azureKey, region: keys.azureRegion, audio, locales, mime });
@@ -236,7 +251,7 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
   res.on("close", onClose);
   try {
     const json = await (await call(provider, request, ctrl.signal)).json();
-    sendJson(res, 200, { text: transcriptText(provider, json), provider } satisfies TranscribeReply);
+    return transcriptText(provider, json);
   } finally {
     res.off("close", onClose);
   }
@@ -451,7 +466,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
 function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buffer> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-say-"));
   const out = path.join(dir, "line.wav");
-  const args = ["--file-format=WAVE", "--data-format=LEI16@24000", "-o", out];
+  const args = ["--file-format=WAVE", `--data-format=${VOICE_SPEECH_FORMATS.system}`, "-o", out];
   if (voice) args.unshift("-v", voice);
   return new Promise<Buffer>((resolve, reject) => {
     const p = spawn("say", args, { stdio: ["pipe", "ignore", "pipe"], signal });
@@ -493,7 +508,7 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   }
   const settings = await readVoiceSettings(ctx.user.id);
   const provider = settings.tts;
-  const keys = keysFor(provider);
+  keysFor(provider);
   // The speaker's own voice; a speaker without one borrows the narrator's,
   // so a half-set-up kids session still talks.
   // Always the speaker's own native voice, whatever language the text is in:
@@ -520,14 +535,13 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   };
   res.on("close", onClose);
   try {
-    let audio: Buffer;
-    let type = "audio/mpeg";
+    let out: Speech;
+    const line = { provider, text, locale: textLocale, model: settings.elevenModel };
     if (provider === "elevenlabs") {
-      let r;
       // A cast voice refused once goes straight to the retry voice after
       // that (speechVoices), so a free plan doesn't pay two calls a line.
       try {
-        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: first, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+        out = await synthesize({ ...line, voice: first }, ctrl.signal);
       } catch (e) {
         // A library voice drawn for the cast can be refused: a plan without
         // library access, or a voice since removed. retryInOtherVoice takes
@@ -536,29 +550,94 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
         // retry voice (speechVoices) rather than lose it.
         const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
         if (!cast || !retry || !retryInOtherVoice(status)) throw e;
-        r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice: retry, text, model: settings.elevenModel, locale: textLocale }), ctrl.signal);
+        out = await synthesize({ ...line, voice: retry }, ctrl.signal);
         // The other voice worked, so it was the cast voice: skip it from now on.
         if (refusedVoices.size >= 200) refusedVoices.clear();
         refusedVoices.add(cast);
       }
-      audio = Buffer.from(await r.arrayBuffer());
-    } else if (provider === "azure") {
-      let request;
-      try {
-        request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale: textLocale });
-      } catch (e) {
-        throw new HttpError(400, String((e as Error).message));
-      }
-      audio = Buffer.from(await (await call(provider, request, ctrl.signal)).arrayBuffer());
     } else {
-      audio = await sayToWav(text, voice, ctrl.signal);
-      type = "audio/wav";
+      out = await synthesize({ ...line, voice }, ctrl.signal);
     }
-    res.writeHead(200, { "Content-Type": type, "Content-Length": audio.length, "Cache-Control": "no-store" });
-    res.end(audio);
+    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "no-store" });
+    res.end(out.audio);
   } finally {
     res.off("close", onClose);
   }
+}
+
+/** Synthesized audio and its content type. */
+export interface Speech {
+  audio: Buffer;
+  type: "audio/mpeg" | "audio/wav";
+}
+
+/** The output format each provider is asked for: scripts/voice.mjs's, the
+ *  one its requests and sayToWav use (part of the phrase audio cache key). */
+export const SPEECH_FORMATS: Readonly<Record<TtsProvider, string>> = VOICE_SPEECH_FORMATS;
+
+/** The keys `provider` needs for speech-to-text, or the 400 that says where
+ *  to put them (the Practice tab's speak-it check before a session). */
+export function sttReady(provider: SttProvider): void {
+  keysFor(provider);
+}
+
+/**
+ * One line of speech from `provider` in `voice` (one call, no retry in
+ * another voice). `locale` steers pronunciation; `model` is the ElevenLabs
+ * model (the others ignore it). /api/voice/speak and the practice drill's
+ * phrase audio (practice.ts, through the audio cache) both come here.
+ */
+export async function synthesize(
+  { provider, voice, text, locale, model }: { provider: TtsProvider; voice: string; text: string; locale: string; model: string },
+  signal: AbortSignal,
+): Promise<Speech> {
+  const keys = keysFor(provider);
+  if (provider === "elevenlabs") {
+    const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model, locale }), signal);
+    return { audio: Buffer.from(await r.arrayBuffer()), type: "audio/mpeg" };
+  }
+  if (provider === "azure") {
+    let request;
+    try {
+      request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale });
+    } catch (e) {
+      throw new HttpError(400, String((e as Error).message));
+    }
+    return { audio: Buffer.from(await (await call(provider, request, signal)).arrayBuffer()), type: "audio/mpeg" };
+  }
+  return { audio: await sayToWav(text, voice, signal), type: "audio/wav" };
+}
+
+/** The macOS voices for a locale (`say -v '?'`, read once per process). */
+let sayListOnce: Promise<string> | null = null;
+export async function systemVoicesFor(locale: string): Promise<{ id: string }[]> {
+  sayListOnce ??= sayList().catch((e) => {
+    sayListOnce = null;
+    throw e;
+  });
+  return systemVoices(await sayListOnce, locale);
+}
+
+/**
+ * The voice a practice drill says a phrase in: the user's own voice
+ * setting for the language's locale, the narrator's first (as voiceFor
+ * borrows: the Go tab's dojo master). With none set, macOS voices take the
+ * first voice of the locale (`say` with no voice would read the words in
+ * the system's own language); the paid providers need one picked (400,
+ * naming where). → { provider, voice, model }.
+ */
+export async function practiceVoice(settings: VoiceSettings, locale: string): Promise<{ provider: TtsProvider; voice: string; model: string }> {
+  const provider = settings.tts;
+  keysFor(provider);
+  let voice = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", null);
+  if (!voice && provider === "system") voice = (await systemVoicesFor(locale).catch(() => []))[0]?.id ?? "";
+  // Without one, `say` would read the words in the Mac's own language, and
+  // that audio would be cached: refuse instead.
+  if (!voice && provider === "system") {
+    throw new HttpError(400, `no macOS voice is installed for ${locale}: add one in System Settings → Accessibility → Spoken Content, or pick another voice provider`);
+  }
+  if (!voice) throw new HttpError(400, `pick an ${NAMES[provider]} voice for this language first (Go tab → voice settings)`);
+  return { provider, voice, model: provider === "elevenlabs" ? settings.elevenModel : "" };
 }
 
 /* --------------------------------- library -------------------------------- */

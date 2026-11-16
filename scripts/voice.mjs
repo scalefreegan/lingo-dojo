@@ -873,13 +873,24 @@ export function voiceFor(set, speaker, gender) {
 // Each provider call as {url, init}: pure, so the tests pin exactly what goes
 // over the wire (and that the key goes only in a header) without a network.
 
+/** The audio format each provider is asked for: ElevenLabs' output_format,
+ *  Azure's X-Microsoft-OutputFormat, and the `say --data-format` of a
+ *  macOS voice (written as WAVE). The requests below and the server's
+ *  sayToWav read these, and so does the phrase audio cache's key, so a
+ *  change of format is a new cached file, never a stale one. */
+export const SPEECH_FORMATS = Object.freeze({
+  elevenlabs: "mp3_44100_128",
+  azure: "audio-24khz-96kbitrate-mono-mp3",
+  system: "LEI16@24000",
+});
+
 export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_MODEL, locale }) {
   const body = { text, model_id: model };
   // language_code steers pronunciation and number reading toward the target
   // language. Multilingual v2 rejects it; the others take it.
   if (locale && model !== "eleven_multilingual_v2") body.language_code = languageOf(locale);
   return {
-    url: `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=mp3_44100_128`,
+    url: `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voice)}?output_format=${SPEECH_FORMATS.elevenlabs}`,
     init: {
       method: "POST",
       headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
@@ -985,7 +996,7 @@ export function azureSpeechRequest({ key, region: r, voice, text, locale }) {
       headers: {
         "Ocp-Apim-Subscription-Key": key,
         "Content-Type": "application/ssml+xml",
-        "X-Microsoft-OutputFormat": "audio-24khz-96kbitrate-mono-mp3",
+        "X-Microsoft-OutputFormat": SPEECH_FORMATS.azure,
         "User-Agent": "lingo-dojo",
       },
       body: azureSsml({ voice, text, locale }),

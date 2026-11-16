@@ -47,7 +47,7 @@ async function withProfile(t, fn) {
 
 const good = { verdict: "exact", rating: 3, note: null };
 const write = (phrase, skill, version, extra = {}) => ({
-  phraseId: phrase.id, skill, version, revision: phraseRevision(phrase), submitId: crypto.randomUUID(), outcome: good, answer: phrase.meaning,
+  phraseId: phrase.id, skill, drill: "flashcard", version, revision: phraseRevision(phrase), submitId: crypto.randomUUID(), outcome: good, answer: phrase.meaning,
   durationMs: null, utcOffsetMinutes: 0, keepAlternate: false, targetLocale: "es-MX", now: new Date(), ...extra,
 });
 const settle = (ps) => Promise.allSettled(ps);
@@ -138,6 +138,30 @@ test("an override racing the card's next answer: one wins, the other is refused 
       assert.equal(rows[0].verdict, ov.status === "fulfilled" ? "self" : "exact");
       const [card] = (await pool.query("select reps from cards where phrase_id = $1", [phrase.id])).rows;
       assert.equal(card.reps, 2);
+    }
+  });
+});
+
+test("a listening answer (one submit) on six connections, and three drills answering three cards of one phrase at once: one review each, no deadlock", { skip }, async (t) => {
+  await withProfile(t, async (pool, db, profile) => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const { phrase } = await addPhrase(db, profile, "es-MX", { text: `oído ${round}`, meaning: `heard ${round}` });
+      const submitId = crypto.randomUUID();
+      const out = await settle(Array.from({ length: RACERS }, () => recordAnswer(db, profile, write(phrase, "listen", "0:", { drill: "listening", submitId }))));
+      assert.deepEqual(out.filter((o) => o.status === "rejected").map((o) => String(o.reason)), [], `round ${round}`);
+      assert.equal(new Set(out.map((o) => o.value.review.id)).size, 1, "every racer got the one review");
+      assert.equal(out.filter((o) => !o.value.replayed).length, 1, "one wrote it");
+      // A flashcard, a listening and a speak-it answer to one phrase's three
+      // cards at once: each locks the phrase, then its own card.
+      const { phrase: other } = await addPhrase(db, profile, "es-MX", { text: `tres ${round}`, meaning: `three ${round}` });
+      const three = await settle([
+        recordAnswer(db, profile, write(other, "recognize", "0:")),
+        recordAnswer(db, profile, write(other, "listen", "0:", { drill: "listening" })),
+        recordAnswer(db, profile, write(other, "produce", "0:", { drill: "speak" })),
+      ]);
+      assert.deepEqual(three.map((o) => o.status), ["fulfilled", "fulfilled", "fulfilled"], three.map((o) => String(o.reason ?? "")).join("; "));
+      const rows = (await pool.query("select c.skill, r.mode from reviews r join cards c on c.id = r.card_id where c.phrase_id = $1 order by c.skill", [other.id])).rows;
+      assert.deepEqual(rows, [{ skill: "listen", mode: "listening" }, { skill: "produce", mode: "speak" }, { skill: "recognize", mode: "flashcard" }]);
     }
   });
 });

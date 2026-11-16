@@ -5,11 +5,19 @@
 
 import type { MasteryBand } from "./wire.ts";
 
-/** The two flashcard directions: recognize (see the words, give the
- *  meaning) and produce (see the meaning, give the words). */
-export type PracticeSkill = "recognize" | "produce";
-/** Which cards a session asks: both directions, or one. */
-export type PracticeDirection = "mixed" | PracticeSkill;
+/** The skills a card exercises: recognize (see the words, give the
+ *  meaning), produce (see the meaning, give the words) and listen (hear the
+ *  words, give the meaning). */
+export type PracticeSkill = "recognize" | "produce" | "listen";
+/** How a card is asked, named as reviews.mode names it: typed flashcards
+ *  (recognize or produce), the listening drill (listen) and speak-it
+ *  (produce, said aloud). */
+export type PracticeDrill = "flashcard" | "listening" | "speak";
+/** The Practice tab's mode picker: flashcards, listening, speak-it, or a
+ *  mix (recognize as a flashcard, listen by ear, produce aloud). */
+export type PracticeMode = "flashcards" | "listening" | "speak" | "mixed";
+/** Which flashcards a flashcard session asks: both directions, or one. */
+export type PracticeDirection = "mixed" | "recognize" | "produce";
 export type PracticeLength = 5 | 10 | 20;
 /** 1 Again, 2 Hard, 3 Good, 4 Easy. */
 export type PracticeRating = 1 | 2 | 3 | 4;
@@ -23,10 +31,17 @@ export type PracticeVerdict = "exact" | "close" | "accepted" | "wrong" | "self";
 export interface PracticeItem {
   phraseId: string;
   skill: PracticeSkill;
+  drill: PracticeDrill;
   /** "new": never reviewed (its card may not exist yet); "review": due. */
   kind: "new" | "review";
+  /** The words; "" on a listening card (heard, not read: they come with
+   *  the answer's reply). */
   text: string;
+  /** The meaning; "" on a listening card (it is among `choices`). */
   meaning: string;
+  /** A listening card's meanings to pick from (the right one among them),
+   *  or null: the bank had too few others, so the answer is typed. */
+  choices: string[] | null;
   /** The variant the phrase was first met in (BCP-47), "" when unknown. */
   lang: string;
   starred: boolean;
@@ -57,6 +72,11 @@ export interface PracticeStatsReply {
   stats: PracticeStats;
   /** The language: the bank's target language and variant, and the native one. */
   language: { targetLanguage: string; targetVariant: string; locale: string | null; nativeLanguage: string };
+  /** Why the drills that need a voice can't run here, or null for each when
+   *  they can: `audio` (listening: no voice picked for the language, no
+   *  key) and `speech` (speak-it: no speech-to-text key). GET /api/practice
+   *  checks; the queue reply sends null (not checked). */
+  setup: { audio: string | null; speech: string | null } | null;
 }
 
 /** GET /api/practice/queue?length=&direction=&tz= */
@@ -70,13 +90,18 @@ export interface PracticeQueueReply extends PracticeStatsReply {
 export interface PracticeAnswerRequest {
   phraseId: string;
   skill: PracticeSkill;
+  /** The drill (the review's mode); flashcard when left out. */
+  drill?: PracticeDrill;
   version: string;
   revision: string;
   /** A uuid the page makes for this answer: a resend of it (double click,
    *  retry) gets the first's review back; any other answer at the same
    *  version is a 409. */
   submitId: string;
+  /** Typed, or (speak) what the recogniser heard: never empty there. */
   answer?: string;
+  /** A listening card's picked meaning, instead of `answer`. */
+  choice?: string;
   reveal?: boolean;
   rating?: PracticeRating;
   durationMs?: number;
@@ -100,6 +125,12 @@ export interface PracticeAnswerReply {
   alternateAdded: boolean;
   /** This submit repeated one already recorded: nothing new was written. */
   replayed: boolean;
+}
+
+/** POST /api/practice/transcribe (a speak-it recording): what was heard,
+ *  "" when nothing was (the page asks to record again; nothing is saved). */
+export interface PracticeTranscribeReply {
+  text: string;
 }
 
 /** POST /api/practice/reviews/:id/override */

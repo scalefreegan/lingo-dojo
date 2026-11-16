@@ -449,6 +449,38 @@ The narrator's gender is drawn too, unless the pack's narrator unit fixes it
 picks the same gender every time, so the app makes the draw and states it in
 the system prompt (`narratorDirective`).
 
+## Practice drills: phrase audio and speak-it
+
+The Practice tab's listening and speak-it drills (docs/DATA.md §As built
+(phase 7b)) use the same providers and keys, server-side only:
+
+- **Phrase audio.** `GET /api/practice/audio/:phraseId` says one of the
+  active language's phrases with your TTS provider in your voice for that
+  language (the narrator's slot first; macOS voices with none picked take
+  the locale's first voice; ElevenLabs or Azure with none picked answer
+  400: pick one in the Go tab's voice settings). The synthesis is
+  `/api/voice/speak`'s (`synthesize()` in `web/server/voice.ts`), with no
+  cast and no retry in another voice. The audio is cached on disk
+  (`scripts/audio-cache.mjs`): `data/audio/<sha256>.mp3` (`.wav` for macOS
+  voices), keyed on the user, provider, voice, model, output format,
+  locale, speed and text, so a replay and the next session never pay
+  again; changing any of them is a new file. `LINGO_AUDIO_DIR` moves it (else `<LINGO_DATA_DIR or data/>/audio`)
+  and `LINGO_AUDIO_CACHE_MB` bounds it (default 256 MB, least recently used
+  first). Writes are atomic; the route takes a phrase id, never a hash or
+  text, and files are per user, so the cache can't be used to hear or
+  time another account's phrases. Hit or miss is logged, never sent. A
+  macOS voice setup with no voice installed for the locale is a 400, not
+  the Mac's own-language voice. Paid calls from these routes (an audio
+  miss, a transcription) run at most two at once per user (429 beyond).
+- **Speak-it.** `POST /api/practice/transcribe` takes the recording (the
+  same 16 kHz WAV as a turn) and answers `{text}` with your STT provider
+  in the language's locale. Unlike a turn it sends **no keyterms**: the
+  expected answer would be heard into the transcript. Only a WAV
+  (`audio/wav`, `audio/wave`, `audio/x-wav`; else 415), at most 8 MiB. It
+  records nothing; the answer is sent after you see what was heard. The
+  card lets go of the microphone, and cancels the transcription, when it
+  goes, even while the microphone is still opening.
+
 ## Cost (rough, Nov 2026)
 
 The header shows characters spoken this session. ElevenLabs Eleven v4 runs about

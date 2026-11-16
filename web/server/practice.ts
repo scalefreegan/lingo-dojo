@@ -1,25 +1,34 @@
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { EDITED, PracticeError, overrideReview, practiceCandidates, practiceCard, practiceDone, recordAnswer, reviewId } from "../../scripts/db/practice.ts";
 import { graderPrompt, parseGraderReply } from "../../scripts/match.mjs";
+import { isUuid } from "../../scripts/phrases.mjs";
 import {
-  buildQueue, dayStart, gradeOutcome, graderQuestion, localMatch, needsGrader, readAnswerInput, readDirection, readLength, readOverrideInput, readUtcOffset,
-  cardVersion, phraseRevision,
+  buildQueue, choiceMatch, dayStart, offeredChoices, sameChoice, gradeOutcome, graderQuestion, listenMatch, localMatch, needsGrader, readAnswerInput, readDirection, readLength, readMode,
+  readOverrideInput, readUtcOffset, cardVersion, phraseRevision,
 } from "../../scripts/practice.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
-import type { PracticeAnswerReply, PracticeQueueReply, PracticeStatsReply } from "../shared/practice.ts";
+import type { PracticeAnswerReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
+import { readVoiceSettings } from "./store.ts";
+import { SPEECH_FORMATS, practiceVoice, readAudio, sttReady, synthesize, transcribeAudio } from "./voice.ts";
 
 // The Practice tab's routes (docs/DATA.md §Practice modes, §Grading):
-// flashcards both ways over the active learner's active language's bank.
+// flashcards both ways, the listening drill and speak-it over the active
+// learner's active language's bank.
 //
-//   GET  /api/practice                       ?tz= → {stats, language}: what is due and new, today's progress
-//   GET  /api/practice/queue                 ?length=5|10|20&direction=mixed|recognize|produce&tz= → {items, stats, language}
-//   POST /api/practice/answer                {phraseId, skill, version, answer?, reveal?, rating?, durationMs?, tz?} → the review
+//   GET  /api/practice                       ?mode=&direction=&tz= → {stats, language}: what is due and new, today's progress
+//   GET  /api/practice/queue                 ?length=5|10|20&mode=flashcards|listening|speak|mixed&direction=mixed|recognize|produce&tz=
+//                                            → {items, stats, language}
+//   POST /api/practice/answer                {phraseId, skill, drill?, version, revision, submitId, answer? | choice? | reveal + rating, durationMs?, tz?}
+//                                            → the review
 //   POST /api/practice/reviews/:id/override  {rating, tz?} → the review, regraded
+//   GET  /api/practice/audio/:phraseId       the phrase said in the user's voice for the language (cached on disk)
+//   POST /api/practice/transcribe            a speak-it recording (WAV) → {text}; records nothing
 //
 // Mounted with wrap's `learner: true`: the page must name the session's
 // learner and language (else 409 stale_learner), and every row is read and
@@ -31,12 +40,18 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // the limits count and the day boundary FSRS schedules by turn over at
 // 4 a.m. there. The server keeps no timezone per learner.
 //
-// Grading: the lenient local match first; on a miss with something typed,
-// one tool-less Haiku `claude -p` call (match.mjs graderPrompt, the answer
-// fenced and defanged, the reply parsed defensively), before the write's
-// transaction so no lock waits on a model. Its note is model output,
-// cleaned and capped (practice.mjs gradeOutcome) before it is stored or
-// sent.
+// Grading: the lenient local match first; on a miss with something typed
+// (or said), one tool-less Haiku `claude -p` call (match.mjs graderPrompt,
+// the answer fenced and defanged, the reply parsed defensively), before the
+// write's transaction so no lock waits on a model. Its note is model
+// output, cleaned and capped (practice.mjs gradeOutcome) before it is
+// stored or sent. A listening card's picked choice is right or wrong at
+// once, with no model.
+//
+// Audio: the phrase route takes a phrase id this language owns, never a
+// hash or text, so the shared on-disk cache (scripts/audio-cache.mjs) can't
+// be used to read or probe another learner's phrases, and no path is made
+// from anything the client sends.
 
 /** The grader: the cheapest model, which is plenty for one yes/no. */
 const GRADER_MODEL = "claude-haiku-5-5";
@@ -71,8 +86,17 @@ async function queue(req: IncomingMessage, ctx: LearnerCtx) {
   const now = new Date();
   const since = dayStart(now, readUtcOffset(q.get("tz")));
   const [phrases, done] = await Promise.all([practiceCandidates(rawDb(), ctx.language), practiceDone(rawDb(), ctx.language, since)]);
-  return buildQueue(phrases, { now, done, length: readLength(q.get("length")), direction: readDirection(q.get("direction")) });
+  return buildQueue(phrases, {
+    now,
+    done,
+    length: readLength(q.get("length")),
+    mode: readMode(q.get("mode")),
+    direction: readDirection(q.get("direction")),
+    nativeLocale: nativeLocale(ctx),
+  });
 }
+
+type GraderInput = Parameters<typeof graderPrompt>[0];
 
 /**
  * The model check on a miss: `{ grader }` with its parsed reply, or
@@ -80,10 +104,7 @@ async function queue(req: IncomingMessage, ctx: LearnerCtx) {
  * answer is then wrong, and the learner can override). A browser that gave
  * up (the page closed) cancels it.
  */
-async function runGrader(
-  res: ServerResponse,
-  input: { question: string; expected: string; answer: string; kind: "target" | "meaning"; nativeLanguage: string; targetVariant: string },
-): Promise<{ grader: ReturnType<typeof parseGraderReply>; failed: boolean }> {
+async function runGrader(res: ServerResponse, input: GraderInput): Promise<{ grader: ReturnType<typeof parseGraderReply>; failed: boolean }> {
   const ctrl = new AbortController();
   const onClose = () => {
     if (!res.writableEnded) ctrl.abort();
@@ -136,30 +157,155 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   let outcome = stale ? null : a.reveal ? gradeOutcome({ reveal: true, rating: a.rating }) : null;
   let keepAlternate = false;
   if (!a.reveal && !stale) {
-    const match = localMatch({
-      skill: a.skill, answer: a.answer, ...graded, alternates: phrase.alternates, targetLocale: targetLocale(ctx), nativeLocale: nativeLocale(ctx),
-    });
+    const locales = { targetLocale: targetLocale(ctx), nativeLocale: nativeLocale(ctx) };
+    let match;
+    if (a.choice) {
+      // Only a pick among the choices this card offered: they are drawn
+      // again from the same seed (phrase, card version, revision) and
+      // bank, never taken from the client.
+      const bank = await op(() => practiceCandidates(rawDb(), ctx.language));
+      const self = bank.find((p) => p.id === phrase.id);
+      const offered = self ? offeredChoices(self, bank, { version: a.version, nativeLocale: locales.nativeLocale }) : null;
+      if (!offered) throw new HttpError(400, "this card offered no choices: type the answer instead");
+      // The bank may have grown since the queue drew them (a capture in
+      // another tab reshuffles the draw): a pick that is still some
+      // phrase's meaning in this bank is graded (the right one is always
+      // offered); anything else was never on offer.
+      const known = offered.includes(a.answer) || bank.some((p) => sameChoice(p.meaning, a.answer));
+      if (!known) throw new HttpError(409, "that isn't one of the choices this card offered; skip it");
+      match = choiceMatch({ choice: a.answer, meaning: graded.meaning, nativeLocale: locales.nativeLocale });
+    } else if (a.skill === "listen") match = listenMatch({ answer: a.answer, ...graded, alternates: phrase.alternates, ...locales });
+    // Speak-it: the recogniser wrote what it heard, so an accent it heard
+    // differently is close, not exact (match.mjs `spoken`).
+    else match = localMatch({ skill: a.skill, answer: a.answer, ...graded, alternates: phrase.alternates, ...locales, spoken: a.drill === "speak" });
     let check: { grader: ReturnType<typeof parseGraderReply>; failed: boolean } = { grader: null, failed: false };
-    if (needsGrader(match, a.answer)) {
+    // A picked choice is right or wrong as it stands: no model check.
+    if (!a.choice && needsGrader(match, a.answer)) {
       check = await runGrader(res, {
-        ...graderQuestion({ skill: a.skill, ...graded }),
+        ...graderQuestion({ skill: a.skill, ...graded, drill: a.drill }),
         answer: a.answer,
         nativeLanguage: ctx.learner.nativeLanguage || "English",
         targetVariant: ctx.language.targetVariant || ctx.language.targetLanguage,
       });
     }
     outcome = gradeOutcome({ match, grader: check.grader, graderFailed: check.failed, answer: a.answer });
-    // Only words are kept as another way to say it: a meaning in
-    // phrases.alternates would grade as the target (practice.mjs withAlternate).
-    keepAlternate = outcome.verdict === "accepted" && a.skill === "produce";
+    // Only typed words are kept as another way to say it: a meaning in
+    // phrases.alternates would grade as the target (practice.mjs
+    // withAlternate), and a transcript's spelling is the recogniser's.
+    keepAlternate = outcome.verdict === "accepted" && a.skill === "produce" && a.drill === "flashcard";
   }
   const out = await op(() =>
     recordAnswer(rawDb(), ctx.language, {
-      phraseId: a.phraseId, skill: a.skill, version: a.version, revision: a.revision, submitId: a.submitId, outcome, answer: a.reveal ? null : a.answer || null,
-      durationMs: a.durationMs, utcOffsetMinutes: a.utcOffsetMinutes, keepAlternate, targetLocale: targetLocale(ctx), now: new Date(),
+      phraseId: a.phraseId, skill: a.skill, drill: a.drill, version: a.version, revision: a.revision, submitId: a.submitId, outcome,
+      answer: a.reveal ? null : a.answer || null, durationMs: a.durationMs, utcOffsetMinutes: a.utcOffsetMinutes, keepAlternate,
+      targetLocale: targetLocale(ctx), now: new Date(),
     }),
   );
   sendJson(res, 200, out satisfies PracticeAnswerReply);
+}
+
+/** Paid provider calls this PR's routes may run at once per user (a phrase
+ *  audio miss, a transcription): enough for a replay racing the next card,
+ *  not a loop spending the owner's credits in parallel. The Go tab's voice
+ *  routes don't share it yet (bead ld-e6q: a common limit). */
+export const PAID_PER_USER = 2;
+const paidRunning = new Map<string, number>();
+
+/** Run `fn` in one of the user's paid slots, or 429 when they are all busy. */
+async function paidSlot<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const n = paidRunning.get(userId) ?? 0;
+  if (n >= PAID_PER_USER) throw new HttpError(429, "too many audio requests at once; try again in a moment");
+  paidRunning.set(userId, n + 1);
+  try {
+    return await fn();
+  } finally {
+    const left = (paidRunning.get(userId) ?? 1) - 1;
+    if (left > 0) paidRunning.set(userId, left);
+    else paidRunning.delete(userId);
+  }
+}
+
+/** Why phrases can't be played for this language, or null: the same checks
+ *  the audio route makes, so the mode picker can say so before a session
+ *  rather than card by card. */
+async function audioProblem(ctx: LearnerCtx): Promise<string | null> {
+  const locale = targetLocale(ctx);
+  if (!locale) return "this language has no voice locale, so its phrases can't be played";
+  try {
+    await practiceVoice(await readVoiceSettings(ctx.user.id), locale);
+    return null;
+  } catch (e) {
+    if (e instanceof HttpError) return e.message;
+    throw e;
+  }
+}
+
+/** Why answers can't be transcribed, or null (no key for the provider). */
+async function speechProblem(ctx: LearnerCtx): Promise<string | null> {
+  try {
+    sttReady((await readVoiceSettings(ctx.user.id)).stt);
+    return null;
+  } catch (e) {
+    if (e instanceof HttpError) return e.message;
+    throw e;
+  }
+}
+
+/**
+ * A phrase said aloud for the listening drill, in the user's own voice for
+ * the language (practiceVoice), through the audio cache: the first play
+ * pays the provider, every later one (a replay, the next session) is read
+ * from disk. The phrase must be one of this language's practisable
+ * phrases (404 otherwise, as for any other id). The cache key includes the
+ * user, and whether it was a hit is logged, never sent: no account can
+ * learn by the reply, or its timing, whether another has had a text said.
+ * The browser keeps it no longer than the page does (no-store).
+ */
+async function phraseAudio(res: ServerResponse, ctx: LearnerCtx, phraseId: string): Promise<void> {
+  const { phrase } = await op(() => practiceCard(rawDb(), ctx.language, phraseId, "listen"));
+  const text = (phrase.text ?? "").trim();
+  if (!text) throw new HttpError(409, "this phrase has no words to say");
+  const locale = targetLocale(ctx);
+  if (!locale) throw new HttpError(400, "this language has no voice locale, so its phrases can't be played");
+  const settings = await readVoiceSettings(ctx.user.id);
+  const { provider, voice, model } = await practiceVoice(settings, locale);
+  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, ctrl.signal)));
+    console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
+    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
+    res.end(out.audio);
+  } finally {
+    res.off("close", onClose);
+  }
+}
+
+/** What the recorder sends (recorder.ts toWav): a WAV, by whichever name. */
+const RECORDING_TYPES = new Set(["audio/wav", "audio/wave", "audio/x-wav"]);
+
+/**
+ * A speak-it recording → what the recogniser heard, in the language's
+ * locale, with the user's speech-to-text provider. Deliberately no
+ * keyterms and nothing about the card: hinting the expected answer would
+ * hear it into the transcript. Records nothing: the page shows what was
+ * heard, then sends it as the answer (or records again). An empty
+ * transcript is a 200 with "" (nothing heard), a provider failure a 502:
+ * neither is a review. Only a WAV (415 otherwise), at most 8 MiB
+ * (readAudio: 413), in one of the user's paid slots.
+ */
+async function transcribe(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const mime = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!RECORDING_TYPES.has(mime)) throw new HttpError(415, "a recording must be sent as audio/wav");
+  const audio = await readAudio(req);
+  const provider = (await readVoiceSettings(ctx.user.id)).stt;
+  const locale = targetLocale(ctx);
+  const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime: "audio/wav", locales: locale ? [locale] : [] }));
+  sendJson(res, 200, { text: text.trim() } satisfies PracticeTranscribeReply);
 }
 
 /** /api/practice, mounted with wrap's `learner: true`. */
@@ -169,16 +315,28 @@ export async function handlePractice(req: IncomingMessage, res: ServerResponse, 
   if (parts.length === 0) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     const { stats } = await queue(req, ctx);
-    return sendJson(res, 200, { stats, language: languageOf(ctx) } satisfies PracticeStatsReply);
+    const [audio, speech] = await Promise.all([audioProblem(ctx), speechProblem(ctx)]);
+    return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech } } satisfies PracticeStatsReply);
   }
   if (parts.length === 1 && parts[0] === "queue") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     const { items, stats } = await queue(req, ctx);
-    return sendJson(res, 200, { items, stats, language: languageOf(ctx) } satisfies PracticeQueueReply);
+    return sendJson(res, 200, { items, stats, language: languageOf(ctx), setup: null } satisfies PracticeQueueReply);
   }
   if (parts.length === 1 && parts[0] === "answer") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     return answer(req, res, ctx);
+  }
+  if (parts.length === 2 && parts[0] === "audio") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    // A phrase id, as every other phrase route takes it; anything else is
+    // no phrase of this language's (and never reaches a path).
+    if (!isUuid(parts[1])) throw new HttpError(404, "no such phrase");
+    return phraseAudio(res, ctx, parts[1].toLowerCase());
+  }
+  if (parts.length === 1 && parts[0] === "transcribe") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    return transcribe(req, res, ctx);
   }
   if (parts.length === 3 && parts[0] === "reviews" && parts[2] === "override") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");

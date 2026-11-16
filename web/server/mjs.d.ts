@@ -133,6 +133,7 @@ declare module "*/scripts/voice.mjs" {
   type Req = { url: string; init: RequestInit };
   export const TTS_PROVIDERS: TtsProvider[];
   export const STT_PROVIDERS: SttProvider[];
+  export const SPEECH_FORMATS: Readonly<Record<import("../shared/wire.ts").TtsProvider, string>>;
   export const ELEVEN_MODELS: import("../shared/wire.ts").VoiceOption[];
   export const VOICE_MODELS: import("../shared/wire.ts").VoiceOption[];
   export const SILENCE_MS: { min: number; max: number; default: number };

@@ -8,6 +8,8 @@ declare module "*/scripts/practice.mjs" {
   type PracticeSkill = import("../shared/practice.ts").PracticeSkill;
   type PracticeDirection = import("../shared/practice.ts").PracticeDirection;
   type PracticeVerdict = import("../shared/practice.ts").PracticeVerdict;
+  type PracticeDrill = import("../shared/practice.ts").PracticeDrill;
+  type PracticeMode = import("../shared/practice.ts").PracticeMode;
   type Rating = 1 | 2 | 3 | 4;
 
   /** A phrase with its cards, as the queue reads it. */
@@ -26,6 +28,17 @@ declare module "*/scripts/practice.mjs" {
 
   export const PRACTICE_SKILLS: PracticeSkill[];
   export const DIRECTIONS: PracticeDirection[];
+  export const DRILLS: PracticeDrill[];
+  export const DRILL_SKILLS: Record<PracticeDrill, PracticeSkill[]>;
+  export const PRACTICE_MODES: PracticeMode[];
+  export const CHOICES: number;
+  export function drillsFor(mode?: PracticeMode, direction?: PracticeDirection): [PracticeSkill, PracticeDrill][];
+  export function readMode(v: unknown): PracticeMode;
+  export function listenChoices(phrase: CandidatePhrase, bank: CandidatePhrase[], opts?: { nativeLocale?: string; seed?: string; rand?: () => number }): string[] | null;
+  export function offeredChoices(phrase: CandidatePhrase, bank: CandidatePhrase[], opts: { version: string; nativeLocale?: string }): string[] | null;
+  export function sameChoice(meaning: string | null | undefined, pick: string): boolean;
+  export function seededRand(seed: string): () => number;
+  export function choiceSeed(phraseId: string, version: string, revision: string): string;
   export const SESSION_LENGTHS: number[];
   export const DEFAULT_LENGTH: number;
   export const DAILY_LIMITS: { new: number; reviews: number };
@@ -47,15 +60,27 @@ declare module "*/scripts/practice.mjs" {
   export function readDirection(v: unknown): PracticeDirection;
   export function buildQueue(
     phrases: CandidatePhrase[],
-    opts: { now: Date; done?: { new: number; reviews: number }; length?: number; direction?: PracticeDirection; limits?: { new: number; reviews: number } },
+    opts: {
+      now: Date;
+      done?: { new: number; reviews: number };
+      length?: number;
+      direction?: PracticeDirection;
+      mode?: PracticeMode;
+      limits?: { new: number; reviews: number };
+      nativeLocale?: string;
+    },
   ): { items: PracticeItem[]; stats: PracticeStats };
   export interface AnswerInput {
     phraseId: string;
     skill: PracticeSkill;
+    drill: PracticeDrill;
     version: string;
     revision: string;
     submitId: string;
+    /** The typed answer, the transcript (speak), or the picked choice. */
     answer: string;
+    /** `answer` is a listening card's picked choice. */
+    choice: boolean;
     reveal: boolean;
     rating: Rating | null;
     durationMs: number | null;
@@ -71,8 +96,24 @@ declare module "*/scripts/practice.mjs" {
     alternates?: string[];
     targetLocale?: string;
     nativeLocale?: string;
+    spoken?: boolean;
   }): { verdict: "exact" | "close" | "miss"; note?: string };
-  export function graderQuestion(input: { skill: PracticeSkill; text: string; meaning: string }): { question: string; expected: string; kind: "target" | "meaning" };
+  export function listenMatch(input: {
+    answer: string;
+    text: string;
+    meaning: string;
+    alternates?: string[];
+    targetLocale?: string;
+    nativeLocale?: string;
+  }): { verdict: "exact" | "close" | "miss"; note?: string; as: "words" | "meaning" };
+  export function choiceMatch(input: { choice: string; meaning: string; nativeLocale?: string }): { verdict: "exact" | "miss" };
+  export function graderQuestion(input: { skill: PracticeSkill; text: string; meaning: string; drill?: PracticeDrill }): {
+    question: string;
+    expected: string;
+    kind: "target" | "meaning";
+    heard?: boolean;
+    spoken?: boolean;
+  };
   export interface Outcome {
     verdict: PracticeVerdict;
     rating: Rating;
@@ -89,4 +130,19 @@ declare module "*/scripts/practice.mjs" {
   export function needsGrader(match: { verdict: string } | null | undefined, answer: unknown): boolean;
   export function withAlternate(alternates: unknown, answer: string, opts?: { text?: string; lang?: string }): string[];
   export function withoutAlternate(alternates: unknown, answer: string, lang?: string): string[];
+}
+
+declare module "*/scripts/audio-cache.mjs" {
+  export const DEFAULT_CACHE_MB: number;
+  export function audioDir(env?: Record<string, string | undefined>): string;
+  export function cacheLimitBytes(env?: Record<string, string | undefined>): number;
+  export function audioKey(input: { owner?: string; provider: string; voice: string; model?: string; format?: string; locale?: string; speed?: number; text: string }): string;
+  export function readCached(key: string, opts?: { dir?: string }): { audio: Buffer; type: string } | null;
+  export function writeCached(key: string, audio: Buffer | Uint8Array, type: string, opts?: { dir?: string; limit?: number }): boolean;
+  export function evict(opts?: { dir?: string; limit?: number; keep?: string | null; now?: number }): string[];
+  export function cachedAudio(
+    key: string,
+    make: () => Promise<{ audio: Buffer; type: string }>,
+    opts?: { dir?: string; limit?: number },
+  ): Promise<{ audio: Buffer; type: string; cached: boolean }>;
 }

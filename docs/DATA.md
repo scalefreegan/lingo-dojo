@@ -1533,9 +1533,10 @@ a session length picker (5 / 10 / 20 items).
   sessions, when a phrase has any. Otherwise one claude call generates them for
   a batch of up to 10 due phrases when the queue is built, cached in
   `cloze_items`.
-- **Audio:** the existing `/api/voice/speak` with the learner's voices, cached
-  on disk at `data/audio/<sha256(voice+text)>.mp3`, so a card never pays
-  ElevenLabs twice.
+- **Audio:** the speak path's synthesis with the user's voice for the
+  language, cached on disk at `data/audio/<sha256 of provider, voice,
+  model, format, locale, speed and text>.mp3` (`.wav` for macOS voices),
+  so a card never pays ElevenLabs twice. As built: §As built (phase 7b).
 - **Speak-it** does not pass the expected answer to Scribe as a keyterm, since
   that would hear the answer into the transcript. Pronunciation scoring stays
   `ld-e80`.
@@ -1548,9 +1549,17 @@ a session length picker (5 / 10 / 20 items).
   holds. This grades as `exact` → Good.
 - **Close.** The answer equals the target once accents are stripped, or is
   within edit distance 1 for answers of at least 6 characters. This grades as
-  `close` → Hard, with "check the accent" or a highlighted letter. For spoken
-  answers, accent-only differences count as exact, since STT chooses the
-  spelling.
+  `close` → Hard, with "check the accent" or a highlighted letter. A spoken
+  answer is held to the same rule: the recogniser writes the accent it
+  heard, so "hablo" for "habló", "papa" for "papá", "esta" for "está",
+  Portuguese "avó" for "avô" or Greek "πότε" for "ποτέ" is a stress or vowel
+  heard wrong, `close` with `heard as "…": check the accent`. Exact only
+  where the marks don't change the sound: those ordinary writing leaves out
+  (Arabic tashkeel, Hebrew niqqud, Russian ё) and a short per-language list
+  of same-sound words (`SAME_SOUND` in `scripts/match.mjs`: French où/ou,
+  à/a, là/la…; Spanish's diacritical accent, qué/que, cuánto/cuanto, tú/tu,
+  sí/si…), word for word. Any language not listed is strict. Case,
+  punctuation and ¿ ¡ are ignored as for typed answers.
 - **Miss.** One claude call (Haiku, no tools) gets the question, the expected
   answer and the learner's answer. It returns `{ accepted, rating_hint, note }`:
   `accepted` covers a valid synonym, another correct phrasing or a correct
@@ -1576,8 +1585,9 @@ follow-up bead covers a kids audio game (hear a word, tap a picture).
 
 Bead `ld-7p1`. No migration: `cards`, `reviews` (with `card_before`) and
 `phrases.alternates` were already there. Cloze, listening, speak-it and
-the audio cache are later beads (`ld-7dr`, `ld-6a0`); the `listen` skill's
-cards are left alone by this queue.
+the audio cache are later beads (`ld-7dr`, `ld-6a0`); the flashcard
+modes leave the `listen` skill's cards alone (listening and speak-it:
+§As built (phase 7b)).
 
 - **Where.** A **Practice** tab beside Library (in the "…" menu below
   `md`, like Library), hidden for kids learners; its routes answer a kids
@@ -1710,6 +1720,138 @@ cards are left alone by this queue.
   answer against a capture making the same card and an edit, an override
   against the next answer (the lock tests fail with the row locks
   removed).
+
+### As built (phase 7b: listening, speak-it, phrase audio)
+
+Bead `ld-6a0`. No migration: the `listen` card skill and the
+`listening` / `speak` review modes were in schema v1. Everything in 7a
+holds; this adds two drills and a mode picker.
+
+- **Modes.** The Practice tab picks **Flashcards** (both ways or one, as
+  in 7a), **Listening**, **Speak it** or **Mixed**. Each queue item names
+  its **drill**, which is the review's `mode`: `flashcard` (recognize or
+  produce, typed), `listening` (the `listen` card) or `speak` (the
+  `produce` card, said aloud). Mixed asks recognize as a flashcard, listen
+  by ear and produce aloud (`drillsFor`). `GET /api/practice` and
+  `/queue` take `mode=flashcards|listening|speak|mixed` (default
+  flashcards, so an older page is unchanged) beside `direction`.
+- **Queue rules extended.** Still at most one card per phrase per
+  session, the most overdue of the mode's skills when several are due, so
+  a phrase with three cards due is one item and counts once in the
+  stats' `due`. New cards follow `drillsFor`'s order (recognize, listen,
+  produce); when a mode has recognize and something else (flashcards both
+  ways, mixed), the phrase's other cards are new only once its recognize
+  card has been reviewed (read before you hear or say it). A one-skill
+  mode (listening, speak it, one direction) drops that rule. The daily
+  limits count every practice review (all modes but `session`), so a mode
+  switch never resets them.
+- **Listening.** A listening item carries no `text` and no `meaning`
+  (both ""): the words come only in the answer's reply, so they are not on
+  the page (or in its network log) before the answer, and Mandarin
+  readings show only with the result. It carries `choices`: the meaning
+  and three others from the same bank (`listenChoices`: practisable
+  phrases whose meaning is not too like the right one or another choice:
+  no comparable form in common, as `localMatch` compares meanings, neither
+  inside the other ("bye" / "goodbye"), not within two edits, no content
+  word in common ("thanks" / "thank you"; English stopwords don't count));
+  `null` when the bank has fewer than three such meanings, and the page
+  asks for a typed answer. The draw is **deterministic**
+  (`offeredChoices`): seeded by the phrase id, the card's version and the
+  phrase's revision, over the bank in id order, so the same card shows the
+  same choices until it is answered or edited. A **choice** (`{choice}`)
+  is checked against that draw, made again on the server: a choice on a
+  card that offered none is a 400; one that isn't among them (nor, if the
+  bank has grown since, any phrase's meaning in it) is a 409; neither is
+  recorded. A choice is right only as an exact meaning match
+  (`choiceMatch`): Good, or Again, with no model call and no near miss. A **typed** answer (`{answer}`) is checked as the words heard
+  (a dictation, against the words and alternates) and as the meaning
+  (`listenMatch`), and the better verdict wins: exact on either beats
+  close on the other ("university" for French "université" is the right
+  meaning, not a typo of the words); of two close ones the nearer (an
+  accent before a letter; the words on a tie), its note saying which
+  reading it was taken as. A miss on both goes once to the grader with the heard-phrase wording
+  (`graderPrompt({heard: true})`: "they were not shown it", any spelling
+  or romanization of the words counts). Replay is the page's own copy of
+  the audio (no second request).
+- **Speak-it.** The meaning is shown; the page records (the Go tab's
+  `recorder.ts`, stop on a pause or by hand) and sends the WAV to
+  `POST /api/practice/transcribe`, which answers `{text}` and records
+  nothing. It transcribes in the language's locale with the user's
+  speech-to-text provider and **no keyterms** (nothing about the card
+  reaches the recogniser). The page shows what was heard; Check sends it
+  as the answer (`drill: speak`), Record again throws it away. So a
+  blocked or missing microphone, an empty recording, nothing heard
+  (`text: ""`), a provider failure (502) or a mishearing never becomes a
+  review, and the server refuses an empty `speak` answer (400). The match
+  is `spoken` (§Grading: a heard accent difference is close, a same-sound
+  one exact); a miss goes
+  to the grader told it is a transcript. An accepted transcript is **not**
+  kept as an alternate (its spelling is the recogniser's). "Type it
+  instead" (or "I don't know") answers the same produce card as a typed
+  flashcard (`drill: flashcard`).
+- **Stale answers.** Unchanged for the new drills: every answer names the
+  card's version, the phrase's revision and a submit id; a resend replays
+  (a review of that card, in any practice mode, with that submit id), any
+  other stale answer is a 409; the lock order is the phrase, then the
+  card. Overrides take any practice review (`flashcard`, `listening`,
+  `speak`).
+- **Phrase audio.** `GET /api/practice/audio/:phraseId` (learner: true,
+  kids 403) says a practisable phrase of the active language in the
+  user's TTS provider and voice for the language's locale (the narrator's
+  slot first, as `voiceFor` borrows; macOS voices with none set take the
+  locale's first voice; a paid provider with none set is a 400 that says
+  where to pick one). Another language's or account's phrase id is a 404
+  like any unknown id. The audio goes through `scripts/audio-cache.mjs`:
+  - **Key:** sha256 over the user, provider, voice, model (ElevenLabs),
+    output format (`SPEECH_FORMATS` in `scripts/voice.mjs`, the one its
+    requests use), locale, speed (1: there is no speed setting yet) and
+    text. Any change is a new file; editing a phrase's words is new audio.
+  - **Where:** `LINGO_AUDIO_DIR`, else `<LINGO_DATA_DIR or data/>/audio`
+    (gitignored), files `<key>.mp3` (ElevenLabs, Azure) or `<key>.wav`
+    (macOS `say`), mode 0600 in a 0700 directory. A file name is only ever
+    a computed key; nothing from the client becomes a path.
+  - **Writes** go to a temp file in the same directory, then rename.
+    Concurrent misses for one key share one synthesis in the process (a
+    waiter whose first request was cancelled makes its own; any other
+    failure is every waiter's answer, not a retry each).
+  - **Bound:** `LINGO_AUDIO_CACHE_MB` (default 256). After a write that
+    takes it over, the least recently used files go (a hit touches the
+    mtime) until it is under 90%; the cache's own temp files
+    (`.<key>.<pid>.<random>.tmp`) over an hour old go too, and nothing else.
+  - **Isolation:** files are per user (the user id is in the key), and
+    the route only takes a phrase id the active language owns: nothing in
+    a reply, or its timing, tells one account what another has had said.
+    Two learners of one login share files, as they share its voices.
+  - The reply is `Cache-Control: private, no-store`. Hit or miss is logged
+    on the server, never sent.
+  - **Paid calls** (an audio miss, a transcription) run at most two at
+    once per user; a third is a 429. The Go tab's routes don't share the
+    bound yet (bead ld-e6q).
+  - **macOS voices:** with no voice picked, the locale's first installed
+    one; with none installed for the locale, a 400 (rather than `say`
+    reading the words in the Mac's own language, and caching that).
+  - **Before a session**, `GET /api/practice` answers `setup: { audio,
+    speech }`: why phrases can't be played (no voice picked, no key, no
+    locale) or answers can't be transcribed (no key), or null each. The
+    mode picker says so, and won't start listening or speak-it alone
+    that can't run. A listening card whose audio fails anyway shows why
+    and where to fix it, with only Skip (nothing recorded); its choices
+    wait for the audio.
+- **Transcribe input.** Only the recorder's WAV (`audio/wav`,
+  `audio/wave`, `audio/x-wav`; anything else is a 415 before any provider
+  call), at most 8 MiB (413).
+- **Tests.** `practice-drills.test.mjs` (the pure rules: modes and
+  drills, one card per phrase, hidden words, choices, the answer body,
+  listen and choice matching, the grader's wording), `audio-cache.test.mjs`
+  (the key, the directory, atomic writes, eviction, one synthesis),
+  `practice-drills.http.test.mjs` (ElevenLabs stubbed in fetch, the cache
+  in a temp dir: audio once then a hit, another voice or an edit is a new
+  file, another account's or language's id is a 404, choices and typed
+  listening answers, replays, 409s and overrides, transcription with no
+  keyterms, a spoken answer recorded as `speak`, failures that record
+  nothing, mixed, kids) and a `practice.pg.test.mjs` race (a listening
+  submit on six connections; three drills answering one phrase's three
+  cards at once).
 
 ## Session length (added 2026-11-15; does not need the database)
 
@@ -2137,7 +2279,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
 | 5 | Session extraction (`ld-aeu`): claude pass, FSRS from sessions, the recap card. **Built** | 4 |
 | 6 | Recall (`ld-mey`): the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP`. **Built** (no migration) | 4 |
-| 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), cloze, listening, speak-it, audio cache | 4 |
+| 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), listening, speak-it, audio cache (**built**: `ld-6a0`, see "As built (phase 7b)"), cloze | 4 |
 | 8 | Content agent bank MCP with the read-only role and RLS | 4 |
 | 9 | Backups | 2 |
 | 10 | Tailscale serve: allowed host, origin test (built); verify login and a voice turn from a second device (owner) | 1 |

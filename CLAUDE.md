@@ -25,7 +25,13 @@ pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.ts
 Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
-`web/src/components/PracticeView.tsx`), and recall in sessions (phase 6:
+`web/src/components/PracticeView.tsx`), with the listening and speak-it
+drills and a mode picker (phase 7b: the phrase played from
+`/api/practice/audio/:phraseId` through the on-disk audio cache
+`scripts/audio-cache.mjs`, `data/audio/` or `LINGO_AUDIO_DIR`, files per user; a
+listening choice checked against the server's own seeded draw; a speak-it
+recording transcribed by `/api/practice/transcribe` with no keyterms; each
+answer's drill is its review's mode), and recall in sessions (phase 6:
 the review block in the `recall` slot's `{{phrase_review}}`, per-turn
 retrieval and the `LOOKUP:` line; pure ranking in `scripts/recall.mjs`,
 reads in `web/server/recall.ts`; no row locks, no migration). A practice answer locks its phrase

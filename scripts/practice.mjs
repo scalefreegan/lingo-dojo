@@ -11,11 +11,20 @@ import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
 import { matchAnswer, normalizeAnswer } from "./match.mjs";
 import { LIMITS, clean, isUuid } from "./phrases.mjs";
 
-/** The skills a flashcard exercises: recognize (see the words, give the
- *  meaning) and produce (see the meaning, give the words). `listen` is the
- *  listening drill's (a later phase), so the queue leaves its cards alone. */
-export const PRACTICE_SKILLS = ["recognize", "produce"];
-/** The queue's skill filter: both, or one direction only. */
+/** The skills a card exercises: recognize (see the words, give the
+ *  meaning), produce (see the meaning, give the words) and listen (hear the
+ *  words, give the meaning). */
+export const PRACTICE_SKILLS = ["recognize", "produce", "listen"];
+/** The drills, named as `reviews.mode` names them: a flashcard (typed,
+ *  either way), the listening drill (audio only, a choice of meanings or
+ *  typed) and speak-it (the meaning shown, the words said aloud). */
+export const DRILLS = ["flashcard", "listening", "speak"];
+/** Which skills each drill can review. */
+export const DRILL_SKILLS = { flashcard: ["recognize", "produce"], listening: ["listen"], speak: ["produce"] };
+/** The Practice tab's mode picker: flashcards (both ways or one, as
+ *  `direction` says), listening, speak-it, or a mix of the three. */
+export const PRACTICE_MODES = ["flashcards", "listening", "speak", "mixed"];
+/** The flashcards' skill filter: both, or one direction only. */
 export const DIRECTIONS = ["mixed", "recognize", "produce"];
 /** Cards a session asks, at most. */
 export const SESSION_LENGTHS = [5, 10, 20];
@@ -97,20 +106,40 @@ const newOrder = (a, b) =>
   (a.phrase.id < b.phrase.id ? -1 : a.phrase.id > b.phrase.id ? 1 : 0);
 
 /**
- * What a session could ask now, per phrase at most one card (the two
- * directions of one phrase in one session would show each other's answer):
- *  - review: a card that has been reviewed and is due (`due` ≤ now), the
- *    most overdue of the phrase's when both are;
- *  - new: a card never reviewed, or not made yet (cards are made lazily,
- *    on the first answer). In "mixed", produce is new only once the
- *    phrase's recognize card has been reviewed: a phrase is read before
- *    it is asked for. A one-direction session drops that rule (the
- *    learner chose it).
- * A phrase with a review due offers no new card. Reviews come most overdue
- * first, new ones in newOrder.
+ * The cards a session of `mode` asks, as [skill, drill] pairs in the order
+ * a phrase meets them: flashcards are recognize then produce (or the one
+ * `direction` names); listening is the listen card; speak-it is the
+ * produce card said aloud; mixed is all three skills, recognize as a
+ * flashcard, listen by ear and produce spoken.
  */
-export function candidates(phrases, { now, direction = "mixed" }) {
-  const skills = direction === "recognize" || direction === "produce" ? [direction] : PRACTICE_SKILLS;
+export function drillsFor(mode = "flashcards", direction = "mixed") {
+  if (mode === "listening") return [["listen", "listening"]];
+  if (mode === "speak") return [["produce", "speak"]];
+  if (mode === "mixed") return [["recognize", "flashcard"], ["listen", "listening"], ["produce", "speak"]];
+  if (direction === "recognize" || direction === "produce") return [[direction, "flashcard"]];
+  return [["recognize", "flashcard"], ["produce", "flashcard"]];
+}
+
+/**
+ * What a session could ask now, per phrase at most one card (two cards of
+ * one phrase in one session would show each other's answer, and a phrase
+ * with several cards due counts once, in the queue and in its stats):
+ *  - review: a card of the mode's skills that has been reviewed and is due
+ *    (`due` ≤ now), the most overdue of the phrase's when several are;
+ *  - new: a card never reviewed, or not made yet (cards are made lazily,
+ *    on the first answer), the first in drillsFor's order. When the mode
+ *    has recognize and more (flashcards both ways, mixed), the phrase's
+ *    other cards are new only once its recognize card has been reviewed:
+ *    a phrase is read before it is asked for or heard. A one-skill mode
+ *    drops that rule (the learner chose it).
+ * A phrase with a review due offers no new card. Reviews come most overdue
+ * first, new ones in newOrder. Each entry names its drill.
+ */
+export function candidates(phrases, { now, direction = "mixed", mode = "flashcards" }) {
+  const drills = drillsFor(mode, direction);
+  const skills = drills.map(([skill]) => skill);
+  const drillOf = Object.fromEntries(drills);
+  const gated = skills.length > 1 && skills.includes("recognize");
   const reviews = [];
   const fresh = [];
   const t = ms(now);
@@ -122,14 +151,14 @@ export function candidates(phrases, { now, direction = "mixed" }) {
       .filter((c) => reviewed(c) && ms(c.due) <= t)
       .sort((a, b) => ms(a.due) - ms(b.due));
     if (due.length) {
-      reviews.push({ phrase, skill: due[0].skill, card: due[0], kind: "review" });
+      reviews.push({ phrase, skill: due[0].skill, drill: drillOf[due[0].skill], card: due[0], kind: "review" });
       continue;
     }
     for (const skill of skills) {
       const card = bySkill[skill];
       if (reviewed(card)) continue;
-      if (skill === "produce" && direction === "mixed" && !reviewed(bySkill.recognize)) continue;
-      fresh.push({ phrase, skill, card: card ?? null, kind: "new" });
+      if (gated && skill !== "recognize" && !reviewed(bySkill.recognize)) continue;
+      fresh.push({ phrase, skill, drill: drillOf[skill], card: card ?? null, kind: "new" });
       break;
     }
   }
@@ -156,6 +185,10 @@ export function readLength(v) {
 /** A direction from a request: one of DIRECTIONS, else mixed. */
 export const readDirection = (v) => (DIRECTIONS.includes(v) ? v : "mixed");
 
+/** A practice mode from a request: one of PRACTICE_MODES, else flashcards
+ *  (what a page from before the mode picker asks for). */
+export const readMode = (v) => (PRACTICE_MODES.includes(v) ? v : "flashcards");
+
 /**
  * One session's queue: due reviews first claim the room (owed work), up to
  * today's review limit; new cards fill what is left, up to today's new
@@ -164,8 +197,11 @@ export const readDirection = (v) => (DIRECTIONS.includes(v) ? v : "mixed");
  * counts the tab shows before a session (what is due and new right now,
  * and today's progress against the limits).
  */
-export function buildQueue(phrases, { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", limits = DAILY_LIMITS }) {
-  const { reviews, fresh } = candidates(phrases, { now, direction });
+export function buildQueue(
+  phrases,
+  { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", mode = "flashcards", limits = DAILY_LIMITS, nativeLocale = "" },
+) {
+  const { reviews, fresh } = candidates(phrases, { now, direction, mode });
   const left = remaining(done, limits);
   const nReviews = Math.min(reviews.length, left.reviews, length);
   const nNew = Math.min(fresh.length, left.new, length - nReviews);
@@ -178,7 +214,7 @@ export function buildQueue(phrases, { now, done = { new: 0, reviews: 0 }, length
     items.push(takeNew ? fresh[f++] : reviews[r++]);
   }
   return {
-    items: items.map(queueItem),
+    items: items.map((c) => queueItem(c, c.drill === "listening" ? offeredChoices(c.phrase, phrases, { version: cardVersion(c.card), nativeLocale }) : null)),
     stats: {
       due: reviews.length,
       new: fresh.length,
@@ -208,22 +244,180 @@ export function phraseRevision(phrase) {
 }
 const REVISION_RE = /^[0-9a-f]{16}$/;
 
-/** A queue entry as the wire carries it: both sides of the card (the page
- *  shows one and hides the other until it is answered; it is the learner's
- *  own bank, which the Library shows anyway), the card version and the
- *  phrase revision to answer against. */
-function queueItem({ phrase, skill, card, kind }) {
+/** A queue entry as the wire carries it: the card version and the phrase
+ *  revision to answer against, and the drill. A flashcard or speak-it card
+ *  carries both sides (the page shows one and hides the other until it is
+ *  answered; it is the learner's own bank, which the Library shows
+ *  anyway). A listening card carries neither: the words are what the
+ *  learner must hear, so they come only with the answer's reply (and the
+ *  audio from /api/practice/audio/:phraseId); its `choices` (or null: type
+ *  the answer) are the meanings to pick from. */
+function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices = null) {
+  const listening = drill === "listening";
   return {
     phraseId: phrase.id,
     skill,
+    drill,
     kind,
-    text: phrase.text,
-    meaning: phrase.meaning,
+    text: listening ? "" : phrase.text,
+    meaning: listening ? "" : phrase.meaning,
+    choices: listening ? choices : null,
     lang: phrase.lang ?? "",
     starred: !!phrase.starred,
     version: cardVersion(card),
     revision: phraseRevision(phrase),
   };
+}
+
+/** How many meanings a listening card offers (the right one among them). */
+export const CHOICES = 4;
+
+/** The comparable forms of a meaning: each of its parts (meaningParts),
+ *  normalized, and for an English native language without a leading
+ *  "the"/"to" too (the forms localMatch would take as the same answer). */
+function meaningKeys(meaning, nativeLocale) {
+  const keys = new Set();
+  for (const part of [String(meaning ?? ""), ...meaningParts(meaning)]) {
+    const k = normalizeAnswer(part, nativeLocale);
+    if (k) keys.add(k);
+    if (isEnglish(nativeLocale)) {
+      const bare = normalizeAnswer(part.trim().replace(EN_LEAD, ""), nativeLocale);
+      if (bare) keys.add(bare);
+    }
+  }
+  return keys;
+}
+
+/** Words that carry no meaning of their own in an English meaning: two
+ *  meanings sharing only these ("how are you", "how much") aren't alike. */
+const EN_STOPWORDS = new Set(
+  "a an the to of in on at for and or but is are am was were be been it its i you he she we they me him her us them my your his our their this that these those do does did not no yes with by from as so if then there here what how where when who why which".split(" "),
+);
+
+/** Levenshtein distance, stopping early once it is past `max`. */
+function editDistance(a, b, max = 3) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      best = Math.min(best, cur[j]);
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** A meaning's content words: its words, less English stopwords, at least
+ *  three letters. */
+function contentWords(keys, nativeLocale) {
+  const out = new Set();
+  for (const k of keys) {
+    for (const w of k.split(" ")) {
+      if (w.length >= 3 && !(isEnglish(nativeLocale) && EN_STOPWORDS.has(w))) out.add(w);
+    }
+  }
+  return out;
+}
+
+/** Two content words that are one word in practice: equal, an ending away
+ *  ("thank" / "thanks", "beach" / "beaches": one the start of the other and
+ *  at most two letters longer, so "good" / "goodbye" stay apart), or one
+ *  letter off. */
+const relatedWords = (x, y) =>
+  x === y ||
+  (Math.min(x.length, y.length) >= 4 && (((x.startsWith(y) || y.startsWith(x)) && Math.abs(x.length - y.length) <= 2) || editDistance(x, y, 1) <= 1));
+
+/**
+ * Whether two meanings are too alike to stand side by side as choices: a
+ * form in common (meaningKeys, so both would grade as right), one inside
+ * the other ("bye" / "goodbye"), within two edits of each other, or a
+ * content word in common ("thanks" / "thank you", "how much is it" /
+ * "how much money").
+ */
+function tooAlike(a, b, nativeLocale) {
+  const ka = meaningKeys(a, nativeLocale);
+  const kb = meaningKeys(b, nativeLocale);
+  if (!ka.size || !kb.size) return true;
+  for (const x of ka) {
+    for (const y of kb) {
+      if (x === y) return true;
+      if (Math.min(x.length, y.length) >= 3 && (x.includes(y) || y.includes(x))) return true;
+      if (Math.min(x.length, y.length) >= 4 && editDistance(x, y, 2) <= 2) return true;
+    }
+  }
+  const wa = contentWords(ka, nativeLocale);
+  for (const y of contentWords(kb, nativeLocale)) for (const x of wa) if (relatedWords(x, y)) return true;
+  return false;
+}
+
+/** A deterministic rand from a string (mulberry32 over a sha256 of it): the
+ *  queue and the answer route draw the same choices for the same card. */
+export function seededRand(seed) {
+  let s = createHash("sha256").update(String(seed)).digest().readUInt32LE(0);
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The seed of a listening card's choices: the phrase, its card version
+ *  and its revision, so a card shows the same choices until it is answered
+ *  or edited, and the answer route can draw them again to check a pick. */
+export const choiceSeed = (phraseId, version, revision) => `${phraseId}:${version}:${revision}`;
+
+/** A choice as the wire and the answer check carry it: one line, as
+ *  readAnswerInput cleans a picked choice. */
+const choiceText = (s) => clean(s).replace(CONTROLS_OR_BREAKS, " ").trim();
+
+/** Whether a picked choice (as readAnswerInput cleaned it) is `meaning`. */
+export const sameChoice = (meaning, pick) => !!meaning && choiceText(meaning) === pick;
+
+/**
+ * A listening card's meanings to pick from: the phrase's own and
+ * CHOICES - 1 others from the same bank, in an order drawn from `seed`
+ * (choiceSeed; the bank is taken in id order first, so the same bank and
+ * seed always give the same choices). A distractor must be a practisable
+ * phrase's meaning not too alike (tooAlike) the right one or another
+ * distractor: two choices that could both be right, or read nearly the
+ * same, make the pick a coin toss. Null when the bank has too few such
+ * meanings: the learner types the answer instead. `rand` overrides the
+ * seed in tests.
+ */
+export function listenChoices(phrase, bank, { nativeLocale = "", seed = "", rand = seededRand(seed) } = {}) {
+  const pool = (bank ?? [])
+    .filter((p) => p.id !== phrase.id && practisable(p))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Fisher-Yates over a copy, then take the first usable ones.
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  const right = choiceText(phrase.meaning);
+  const picked = [];
+  for (const p of pool) {
+    if (picked.length === CHOICES - 1) break;
+    const m = choiceText(p.meaning);
+    if ([right, ...picked].some((other) => tooAlike(m, other, nativeLocale))) continue;
+    picked.push(m);
+  }
+  if (picked.length < CHOICES - 1) return null;
+  const at = Math.floor(rand() * CHOICES);
+  picked.splice(at, 0, right);
+  return picked;
+}
+
+/** The choices a listening card of `phrase` at card `version` offers (or
+ *  null): what the queue sends, and what the answer route draws again to
+ *  accept only a pick that was offered. */
+export function offeredChoices(phrase, bank, { version, nativeLocale = "" }) {
+  return listenChoices(phrase, bank, { nativeLocale, seed: choiceSeed(phrase.id, version, phraseRevision(phrase)) });
 }
 
 /* ---------------------------------- answers ---------------------------------- */
@@ -232,33 +426,62 @@ const CONTROLS_OR_BREAKS = /\s+/g;
 
 /**
  * An answer body, checked: `{ value }` or `{ error }` for a 400.
- *   { phraseId, skill, version, revision, submitId, answer?, reveal?, rating?, durationMs?, tz? }
+ *   { phraseId, skill, drill?, version, revision, submitId, answer?, choice?, reveal?, rating?, durationMs?, tz? }
+ * `drill` is flashcard (the default: recognize or produce, typed),
+ * listening (the listen card: a `choice` among the meanings offered, or a
+ * typed `answer`) or speak (the produce card: `answer` is what the
+ * recogniser heard, and must not be empty). It is the review's mode.
  * `submitId` is a uuid the page makes once per card shown: a second POST
  * with the same id is the same submit (a double click, a retried fetch)
  * and gets the first's review back; another id at the same version is
  * another answer, a 409.
- * `reveal: true` (Reveal on a recognize card, then the learner's own
- * grade) takes a `rating` 1-4 and no grading; otherwise the typed `answer`
- * is graded and `rating` is refused (an override comes after, by review
- * id). The answer is one line, control characters dropped, at most
- * MAX_ANSWER characters as stored; a NUL is refused outright.
+ * `reveal: true` (Reveal on a recognize flashcard, then the learner's own
+ * grade) takes a `rating` 1-4 and no grading; otherwise the answer is
+ * graded and `rating` is refused (an override comes after, by review
+ * id). An answer or choice is one line, control characters dropped, at
+ * most MAX_ANSWER characters as stored; a NUL is refused outright.
  */
 export function readAnswerInput(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return { error: "the body must be a JSON object" };
-  const { phraseId, skill, version, revision, submitId, answer, reveal, rating, durationMs, tz } = body;
+  const { phraseId, skill, version, revision, submitId, answer, choice, reveal, rating, durationMs, tz } = body;
+  // The drill the answer came from (reviews.mode); a page from before the
+  // other drills sends none, which is a flashcard.
+  const drill = body.drill === undefined ? "flashcard" : body.drill;
   if (!isUuid(phraseId)) return { error: "phraseId must be a phrase id" };
-  if (!PRACTICE_SKILLS.includes(skill)) return { error: `skill must be one of ${PRACTICE_SKILLS.join(", ")}` };
+  if (!DRILLS.includes(drill)) return { error: `drill must be one of ${DRILLS.join(", ")}` };
+  if (!DRILL_SKILLS[drill].includes(skill)) return { error: `a ${drill} answer's skill must be ${DRILL_SKILLS[drill].join(" or ")}` };
   if (!isVersion(version)) return { error: "version must be the card version the queue gave" };
   if (typeof revision !== "string" || !REVISION_RE.test(revision)) return { error: "revision must be the phrase revision the queue gave" };
   if (!isUuid(submitId)) return { error: "submitId must be a uuid made for this answer" };
   if (reveal !== undefined && typeof reveal !== "boolean") return { error: "reveal must be true or false" };
+  if (reveal && drill !== "flashcard") return { error: "only a flashcard can be revealed" };
+  const line = (v, name) => {
+    if (typeof v !== "string") return { error: `${name} must be a string` };
+    if (v.includes("\u0000")) return { error: `${name} can't contain a NUL character` };
+    const t = clean(v).replace(CONTROLS_OR_BREAKS, " ").trim();
+    if (t.length > MAX_ANSWER) return { error: `${name} is longer than ${MAX_ANSWER} characters` };
+    return { t };
+  };
   let text = "";
   if (answer !== undefined && answer !== null) {
-    if (typeof answer !== "string") return { error: "answer must be a string" };
-    if (answer.includes("\u0000")) return { error: "answer can't contain a NUL character" };
-    text = clean(answer).replace(CONTROLS_OR_BREAKS, " ").trim();
-    if (text.length > MAX_ANSWER) return { error: `answer is longer than ${MAX_ANSWER} characters` };
+    const a = line(answer, "answer");
+    if (a.error) return a;
+    text = a.t;
   }
+  // A listening card's picked meaning: one of the choices the queue gave,
+  // graded as the meaning or not (no model check, no near miss).
+  let picked = null;
+  if (choice !== undefined && choice !== null) {
+    if (drill !== "listening") return { error: "choice goes with a listening answer" };
+    if (answer !== undefined && answer !== null) return { error: "send a choice or an answer, not both" };
+    const c = line(choice, "choice");
+    if (c.error) return c;
+    if (!c.t) return { error: "choice must be one of the meanings offered" };
+    picked = c.t;
+  }
+  // Speak-it sends what the recogniser heard. Nothing heard is not an
+  // answer (the page asks to record again), so it never records a miss.
+  if (drill === "speak" && !text) return { error: "nothing was heard: record your answer again" };
   let r = null;
   if (reveal) {
     if (!Number.isInteger(rating) || rating < 1 || rating > 4) return { error: "a revealed card needs your rating: 1 (Again) to 4 (Easy)" };
@@ -269,8 +492,8 @@ export function readAnswerInput(body) {
   const d = Number.isInteger(durationMs) && durationMs >= 0 ? Math.min(durationMs, 3_600_000) : null;
   return {
     value: {
-      phraseId: phraseId.toLowerCase(), skill, version, revision, submitId: submitId.toLowerCase(), answer: text, reveal: !!reveal, rating: r, durationMs: d,
-      utcOffsetMinutes: readUtcOffset(tz),
+      phraseId: phraseId.toLowerCase(), skill, drill, version, revision, submitId: submitId.toLowerCase(), answer: picked ?? text, choice: picked !== null,
+      reveal: !!reveal, rating: r, durationMs: d, utcOffsetMinutes: readUtcOffset(tz),
     },
   };
 }
@@ -313,8 +536,8 @@ const meaningParts = (meaning) =>
  *    what the model check is for.
  * Returns matchAnswer's `{ verdict: exact|close|miss, note? }`.
  */
-export function localMatch({ skill, answer, text, meaning, alternates = [], targetLocale = "", nativeLocale = "" }) {
-  if (skill === "produce") return matchAnswer({ answer, expected: text, alternates, lang: targetLocale });
+export function localMatch({ skill, answer, text, meaning, alternates = [], targetLocale = "", nativeLocale = "", spoken = false }) {
+  if (skill === "produce") return matchAnswer({ answer, expected: text, alternates, lang: targetLocale, spoken });
   const parts = meaningParts(meaning);
   const expected = String(meaning ?? "");
   const first = matchAnswer({ answer, expected, alternates: parts, lang: nativeLocale });
@@ -323,12 +546,55 @@ export function localMatch({ skill, answer, text, meaning, alternates = [], targ
   return matchAnswer({ answer: bare(answer ?? ""), expected: bare(expected), alternates: parts.map(bare), lang: nativeLocale });
 }
 
+/**
+ * A typed answer to a listening card: the learner may write down the words
+ * they heard or what they mean. Both readings are checked, as a dictation
+ * (the words, as a produce card checks them) and as the meaning (as a
+ * recognize card does), and the better verdict wins: exact on either beats
+ * close on the other ("university" for French "université", meaning
+ * "university", is the right meaning, not a typo of the words); of two
+ * close ones, the nearer (an accent before a letter), the words on a tie.
+ * `as` says which reading it is, and the note is that reading's. A miss on
+ * both goes to the model check once, worded for a heard phrase (either
+ * reading counts there).
+ */
+export function listenMatch({ answer, text, meaning, alternates = [], targetLocale = "", nativeLocale = "" }) {
+  const words = { ...localMatch({ skill: "produce", answer, text, meaning, alternates, targetLocale }), as: "words" };
+  const sense = { ...localMatch({ skill: "recognize", answer, text, meaning, targetLocale, nativeLocale }), as: "meaning" };
+  // A miss on both is reported as the meaning: the model check grades it so.
+  const best = closeness(sense) < closeness(words) || (sense.verdict === "miss" && words.verdict === "miss") ? sense : words;
+  // Say which reading a near miss was taken as: the learner may have meant the other.
+  if (best.verdict === "close" && best.note) return { ...best, note: `${best.as === "words" ? "as the words heard" : "as the meaning"}: ${best.note}` };
+  return best;
+}
+
+/** How far a local verdict is from right: exact, an accent off, a letter
+ *  off, a miss. */
+function closeness(m) {
+  if (m.verdict === "exact") return 0;
+  if (m.verdict === "close") return /accent/.test(m.note ?? "") ? 1 : 2;
+  return 3;
+}
+
+/**
+ * A listening card's picked choice: right only when it is the phrase's
+ * meaning (or one of its parts) exactly as localMatch compares meanings.
+ * No near miss (a choice is clicked, not typed: one letter off is another
+ * choice) and no model check. → matchAnswer's shape, `exact` or `miss`.
+ */
+export function choiceMatch({ choice, meaning, nativeLocale = "" }) {
+  const m = localMatch({ skill: "recognize", answer: choice, meaning, nativeLocale });
+  return m.verdict === "exact" ? { verdict: "exact" } : { verdict: "miss" };
+}
+
 /** What the model check is asked (match.mjs graderPrompt's inputs) for a
- *  card: the side shown, the side expected, and which way it is graded. */
-export function graderQuestion({ skill, text, meaning }) {
-  return skill === "produce"
-    ? { question: meaning, expected: text, kind: "target" }
-    : { question: text, expected: meaning, kind: "meaning" };
+ *  card: the side shown, the side expected, and which way it is graded.
+ *  A listening card's question is the words the learner heard (`heard`);
+ *  a speak-it answer is a transcript (`spoken`), so spelling and
+ *  punctuation are the recogniser's, not the learner's. */
+export function graderQuestion({ skill, text, meaning, drill = "flashcard" }) {
+  if (skill === "produce") return { question: meaning, expected: text, kind: "target", ...(drill === "speak" ? { spoken: true } : {}) };
+  return { question: text, expected: meaning, kind: "meaning", ...(skill === "listen" ? { heard: true } : {}) };
 }
 
 const NOTE_MAX = 200;
