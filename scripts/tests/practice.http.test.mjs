@@ -29,6 +29,9 @@ process.env.LINGO_ENV_FILE = path.join(dataDir, "no-such.env");
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]) delete process.env[k];
 
 const { apiPlugins } = await import("../../web/server/api.ts");
+// A started flashcards session writes its cards sentences in the background
+// (the stand-in claude answers them): let those runs end before the database.
+const { settleClozeFills } = await import("../../web/server/cloze.ts");
 
 const fake = fakeClaude();
 const ACCEPT = JSON.stringify({ accepted: true, rating_hint: "good", note: "Another natural way to ask." });
@@ -42,6 +45,7 @@ before(async () => {
   ({ base, close } = await serveApi(apiPlugins, { db: testDb.db }));
 });
 after(async () => {
+  await settleClozeFills();
   fake.restore();
   await close();
   await testDb.close();

@@ -32,6 +32,19 @@ export interface PracticeCloze {
    *  "generated": written for practice. */
   origin: "example" | "generated";
 }
+/** A flashcard's example: the phrase used in a sentence, whole, its words
+ *  (`blank`) to be marked. The same sentence store as cloze, so it is one
+ *  of your own session lines when one fits, else one written for practice.
+ *  It holds the card's words, so the page shows it only on the answer side
+ *  (revealed or answered), never with the prompt. */
+export interface PracticeSentence {
+  /** The cloze item: POST /api/practice/cloze/:id/flag flags it. */
+  id: string;
+  before: string;
+  blank: string;
+  after: string;
+  origin: "example" | "generated";
+}
 /** Which flashcards a flashcard session asks: both directions, or one. */
 export type PracticeDirection = "mixed" | "recognize" | "produce";
 export type PracticeLength = 5 | 10 | 20;
@@ -61,6 +74,10 @@ export interface PracticeItem {
   choices: string[] | null;
   /** A cloze card's sentence; null on every other drill. */
   cloze: PracticeCloze | null;
+  /** A flashcard's phrase used in a sentence, for its answer side; null
+   *  on every other drill, and for a phrase with none yet (a started
+   *  flashcards session has one written for its next session). */
+  sentence: PracticeSentence | null;
   /** The variant the phrase was first met in (BCP-47), "" when unknown. */
   lang: string;
   starred: boolean;

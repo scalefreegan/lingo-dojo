@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
 import { matchAnswer, normalizeAnswer } from "./match.mjs";
 import { LIMITS, clean, isUuid } from "./phrases.mjs";
-import { clozeView, pickCloze } from "./cloze.mjs";
+import { clozeView, pickCloze, sentenceView } from "./cloze.mjs";
 
 /** The skills a card exercises: recognize (see the words, give the
  *  meaning), produce (see the meaning, give the words) and listen (hear the
@@ -143,10 +143,12 @@ export function drillsFor(mode = "flashcards", direction = "mixed") {
  * Cloze needs a sentence: a phrase's `cloze` is its usable items (the
  * server reads them: scripts/db/cloze.ts). In the cloze mode a phrase
  * with none is left out (its card waits for a later session or another
- * drill). `waiting` lists the cloze and mixed modes' produce candidates,
- * in queue order (due first), whose phrase has no sentence yet and is
- * worth a model call (`clozeNeeded`): the server writes them sentences in
- * the background.
+ * drill). `waiting` lists the candidates, in queue order (due first),
+ * whose phrase has no sentence yet and is worth a model call
+ * (`clozeNeeded`): the cloze and mixed modes' produce cards, and every
+ * card of the flashcards mode (its answer side shows the phrase used in a
+ * sentence); the server writes them sentences in the background. A
+ * flashcard without one is asked all the same, with no sentence.
  */
 export function candidates(phrases, { now, direction = "mixed", mode = "flashcards" }) {
   const drills = drillsFor(mode, direction);
@@ -160,9 +162,10 @@ export function candidates(phrases, { now, direction = "mixed", mode = "flashcar
   const t = ms(now);
   // Where an entry goes: a produce card is asked as the mode says (mixed:
   // produceDrill), and in the cloze mode only with a sentence to show.
+  const wantsSentence = (skill) => mode === "flashcards" || (skill === "produce" && (mode === "cloze" || mode === "mixed"));
   const place = (phrase, skill, card, list, waiting, kind) => {
     const hasCloze = !!phrase.cloze?.length;
-    if (skill === "produce" && (mode === "cloze" || mode === "mixed") && !hasCloze && phrase.clozeNeeded) waiting.push({ phrase, card, kind });
+    if (wantsSentence(skill) && !hasCloze && phrase.clozeNeeded) waiting.push({ phrase, card, kind });
     if (mode === "cloze" && !hasCloze) return;
     const drill = skill === "produce" && mode === "mixed" ? produceDrill(phrase, card) : drillOf[skill];
     list.push({ phrase, skill, drill, card, kind });
@@ -202,12 +205,14 @@ export function produceDrill(phrase, card) {
 }
 
 /**
- * The phrases one session would ask as a gap if they had a sentence, no
+ * The phrases one session would show in a sentence if they had one, no
  * more: the generation a started session pays for is cut to that session.
  * The invariant (cloze.test.mjs checks it over a grid):
  *  - mixed: only the session's own produce cards, asked aloud for want of
  *    a sentence. They already hold places in it, under its length and
  *    today's limits, so nothing is wanted beyond the session.
+ *  - flashcards: only the session's own cards with no sentence for their
+ *    answer side, likewise.
  *  - cloze (which leaves such phrases out): at most the places the session
  *    left unfilled (its length less every card already in it, due and new
  *    alike), and within today's limits less what the session already takes:
@@ -216,7 +221,7 @@ export function produceDrill(phrase, card) {
  *    first.
  */
 function wantedFor(mode, waiting, items, { length, left, nReviews, nNew }) {
-  if (mode === "mixed") {
+  if (mode === "mixed" || mode === "flashcards") {
     const inSession = new Set(items.map((c) => c.phrase.id));
     return waiting.filter((w) => inSession.has(w.phrase.id)).map((w) => w.phrase);
   }
@@ -277,8 +282,9 @@ export function buildQueue(
   }
   return {
     items: items.map((c) => queueItem(c, c.drill === "listening" ? offeredChoices(c.phrase, phrases, { version: cardVersion(c.card), nativeLocale }) : null)),
-    // Not for the wire: the phrases this session would ask as a gap had
-    // they a sentence, due first (what a started session writes for).
+    // Not for the wire: the phrases this session would show in a sentence
+    // (a gap, or a flashcard's answer side) had they one, due first (what
+    // a started session writes for).
     clozeWanted: wantedFor(mode, waiting, items, { length, left, nReviews, nNew }),
     // How many of the bank's phrases wait for a sentence (the cloze mode's count).
     clozeWaiting: waiting.length,
@@ -315,15 +321,21 @@ const REVISION_RE = /^[0-9a-f]{16}$/;
  *  revision to answer against, and the drill. A flashcard or speak-it card
  *  carries both sides (the page shows one and hides the other until it is
  *  answered; it is the learner's own bank, which the Library shows
- *  anyway). A listening card carries neither: the words are what the
- *  learner must hear, so they come only with the answer's reply (and the
- *  audio from /api/practice/audio/:phraseId); its `choices` (or null: type
- *  the answer) are the meanings to pick from. */
+ *  anyway). A flashcard also carries the phrase used in a sentence when
+ *  the phrase has one (`sentence`: the pick a cloze card of the same
+ *  version would make), for its answer side only: it holds the words, so
+ *  the page never shows it before the card is revealed or answered. A
+ *  listening card carries neither side nor a sentence: the words are what
+ *  the learner must hear, so they come only with the answer's reply (and
+ *  the audio from /api/practice/audio/:phraseId); its `choices` (or null:
+ *  type the answer) are the meanings to pick from. */
 function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices = null) {
   const listening = drill === "listening";
   // A cloze card carries the sentence around the gap and the meaning (the
   // hint), never the words: those come with the answer's reply.
-  const cloze = drill === "cloze" ? pickCloze(phrase.cloze, `${phrase.id}:${cardVersion(card)}`) : null;
+  const seed = `${phrase.id}:${cardVersion(card)}`;
+  const cloze = drill === "cloze" ? pickCloze(phrase.cloze, seed) : null;
+  const sentence = drill === "flashcard" ? pickCloze(phrase.cloze, seed) : null;
   return {
     phraseId: phrase.id,
     skill,
@@ -333,6 +345,7 @@ function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices =
     meaning: listening ? "" : phrase.meaning,
     choices: listening ? choices : null,
     cloze: cloze ? clozeView(cloze) : null,
+    sentence: sentence ? sentenceView(sentence) : null,
     lang: phrase.lang ?? "",
     starred: !!phrase.starred,
     version: cardVersion(card),

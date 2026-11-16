@@ -24,7 +24,8 @@ declare module "*/scripts/practice.mjs" {
     createdAt?: Date | string | null;
     alternates?: string[];
     cards: { skill: string; due: Date | string; reps: number; state: number; last_review?: Date | string | null }[];
-    /** Its usable cloze sentences (the cloze and mixed modes). */
+    /** Its usable cloze sentences (the cloze and mixed modes, and a
+     *  started flashcards session). */
     cloze?: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }[];
     /** No sentence yet, and one is worth a model call. */
     clozeNeeded?: boolean;
@@ -184,6 +185,13 @@ declare module "*/scripts/cloze.mjs" {
   export function clozeView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {
     id: string;
     before: string;
+    after: string;
+    origin: "example" | "generated";
+  };
+  export function sentenceView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {
+    id: string;
+    before: string;
+    blank: string;
     after: string;
     origin: "example" | "generated";
   };

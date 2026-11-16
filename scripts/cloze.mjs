@@ -2,7 +2,8 @@
 // modes, "As built (phase 7c: cloze)"). Where a phrase's blank is in a
 // sentence, whether a sentence may be used at all (one of the learner's own
 // session lines, or one a model wrote), the model call's prompt and how its
-// reply is read, and which of a phrase's sentences a card shows. No I/O and
+// reply is read, and which of a phrase's sentences a card shows (a cloze
+// card as a gap, a flashcard whole on its answer side). No I/O and
 // no clock reads; scripts/db/cloze.ts reads and writes the rows and
 // web/server/practice.ts runs the model.
 //
@@ -416,6 +417,14 @@ export function pickCloze(items, seed) {
 export function clozeView(item) {
   const s = String(item.sentence ?? "");
   return { id: item.id, before: s.slice(0, item.blankStart), after: s.slice(item.blankEnd), origin: item.origin };
+}
+
+/** A sentence as a flashcard's answer side shows it: whole, the phrase's
+ *  words (`blank`) to be marked. Only for a card whose words are on the
+ *  wire anyway (practice.mjs queueItem), never a cloze or listening card. */
+export function sentenceView(item) {
+  const s = String(item.sentence ?? "");
+  return { id: item.id, before: s.slice(0, item.blankStart), blank: s.slice(item.blankStart, item.blankEnd), after: s.slice(item.blankEnd), origin: item.origin };
 }
 
 /** The sentence with a neutral gap, for the grader: no length or letters given. */

@@ -2095,17 +2095,19 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   level (the profile's `level`; B1 if it names none), with length caps
   per level.
 - **What pays, and when.** Only **starting a session** (the queue route,
-  in the cloze or mixed mode) writes sentences, and only for the phrases
-  that session would ask as a gap (`practice.mjs` `clozeWanted`). The
+  in the cloze, mixed or flashcards mode) writes sentences, and only for
+  the phrases that session would show in one (`practice.mjs`
+  `clozeWanted`: a gap, or a flashcard's answer side, below). The
   invariant: a started session never asks for more phrases than it has
   unfilled places, nor past today's limits. In the cloze mode that is at
   most its length less every card already in it (due and new alike), due
   first, with due phrases up to the reviews left and new ones up to the
   new cards left, after what the session itself takes. In Mixed it is
   only the session's own produce cards asked aloud for want of a
-  sentence; they already hold places in it. `cloze.test.mjs` checks this
-  over a grid of lengths, ready and waiting new and due counts, and
-  limits. So a session of N cards makes at most ⌈N/10⌉ calls, one after
+  sentence; they already hold places in it. In Flashcards it is only the
+  session's own cards with no sentence to show, likewise. `cloze.test.mjs`
+  checks this over a grid of the three modes, lengths, ready and waiting
+  new and due counts, and limits. So a session of N cards makes at most ⌈N/10⌉ calls, one after
   another. The counts the tab shows
   (`GET /api/practice`) never start a call, and neither does the page's
   poll while sentences are written (every 4 s, counts only). The calls run
@@ -2201,6 +2203,28 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   usable sentence, said aloud otherwise. A phrase asked aloud for want of
   a sentence gets sentences written for next time. The cloze mode alone asks only
   phrases with a sentence and lists the rest as waiting, due first.
+- **Flashcards: the phrase in a sentence** (bead `ld-dsh`, added later;
+  no migration). A flashcard's answer side (Reveal on a recognize card,
+  or the grade on either) shows the phrase used in a sentence under its
+  meaning, from the same `cloze_items`: the same pick (`pickCloze`, the
+  learner's own line first, seeded by phrase and card version, so the
+  card shows one sentence until it is answered), whole, the phrase's
+  words marked, readings as the Readings switch says, "from one of your
+  sessions" for a session line, and "Bad sentence?" to flag it (the same
+  route; it is then gone from the card and from every later card and gap).
+  The queue item carries it as `sentence: {id, before, blank, after,
+  origin}` (`cloze.mjs` `sentenceView`), only on a `flashcard` drill (in
+  Mixed too, where sentences are read anyway), never on a listening,
+  speak-it or cloze item. A flashcard already carries both sides, so the
+  sentence holds nothing the item doesn't; the page just never renders it
+  before the answer side (on a produce card it holds the words asked
+  for). Only a started flashcards session reads the sentences (the counts
+  don't need them and don't touch `cloze_items`), and it asks generation
+  for its own cards with none that are worth a call (`clozeNeeded`),
+  under the same ledger and daily cap; a card without a sentence is asked
+  all the same and shows none (no placeholder, no waiting), and the
+  sentence appears in a later session once written. No translation of the
+  sentence (it would need a column). Hidden for kids, like the tab.
 - **Reader role.** `cloze_items` and `cloze_calls` have no grant to the
   content agent's read-only role and no policy: the agent's bank tools
   don't read them (0005 cleared the default privileges that could have
@@ -2223,7 +2247,8 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   microphone (`ld-e2d`).
 - **Tests.** `cloze.test.mjs` (the pure rules: the blank, scripts, Han
   repeats, session lines, the key, the prompt and reply, picking, the
-  queue in cloze and mixed, the answer body, the grader's wording),
+  queue in cloze, mixed and flashcards (a flashcard's sentence), the
+  answer body, the grader's wording),
   `cloze.http.test.mjs` (the real plugin with a stand-in `claude`: items
   from session lines, background generation once, failures, tombstones,
   answers, 409s, flagging, a spoken answer, mixed, Mandarin, deletes,
@@ -2231,7 +2256,9 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   across a restart, the cap holding through an edit loop, a phrase's
   delete, expired marks and failed calls, a mark's expiry, an alternate
   sent to the grader,
-  Japanese ー, no Korean calls, the separate background slot),
+  Japanese ー, no Korean calls, the separate background slot; a
+  flashcard's sentence, its session-only generation, the counts reading
+  nothing, a flagged sentence no longer attached),
   `cloze.pg.test.mjs` (stale and fresh loads racing an edit on PostgreSQL
   17: the new key's flagged row survives), `db-migration-0006.test.mjs` and `migration-0006.pg.test.mjs`
   (0005 with data → 0006: rows kept but the cloze one, schema as a fresh
