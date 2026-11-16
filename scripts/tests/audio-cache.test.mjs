@@ -12,13 +12,13 @@ import { REPO_ROOT } from "../content.mjs";
 import { audioDir, audioKey, cacheLimitBytes, cachedAudio, evict, readCached, writeCached } from "../audio-cache.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-audio-"));
-const BASE = { provider: "elevenlabs", voice: "v1", model: "eleven_flash_v2_5", format: "mp3_44100_128", locale: "es-MX", speed: 1, text: "¿Cuánto cuesta?" };
+const BASE = { owner: "user-1", provider: "elevenlabs", voice: "v1", model: "eleven_flash_v2_5", format: "mp3_44100_128", locale: "es-MX", speed: 1, text: "¿Cuánto cuesta?" };
 
 test("audioKey: 64 hex, stable, and changed by every input that changes the audio", () => {
   const k = audioKey(BASE);
   assert.match(k, /^[0-9a-f]{64}$/);
   assert.equal(audioKey({ ...BASE }), k);
-  for (const [field, value] of [["provider", "azure"], ["voice", "v2"], ["model", "eleven_v3"], ["format", "wav"], ["locale", "es-ES"], ["speed", 1.25], ["text", "¿Cuánto cuesta? "]]) {
+  for (const [field, value] of [["owner", "user-2"], ["provider", "azure"], ["voice", "v2"], ["model", "eleven_v3"], ["format", "wav"], ["locale", "es-ES"], ["speed", 1.25], ["text", "¿Cuánto cuesta? "]]) {
     assert.notEqual(audioKey({ ...BASE, [field]: value }), k, field);
   }
   // No concatenation ambiguity: ("ab","c") is not ("a","bc").
@@ -67,14 +67,19 @@ test("evict: over the bound, the least recently used go until under 90%; a hit c
   // 500 bytes over a 350 bound: down to ≤ 315, so two go, the least
   // recently used: keys 1 and 2 (key 0 was just read).
   assert.deepEqual(left, [`${keys[0]}.mp3`, `${keys[3]}.mp3`, `${fifth}.mp3`].sort());
-  // A stale temp file goes, a fresh one stays; other files are never touched.
-  fs.writeFileSync(path.join(dir, ".old.tmp"), "x");
-  fs.utimesSync(path.join(dir, ".old.tmp"), t0 - 7200, t0 - 7200);
-  fs.writeFileSync(path.join(dir, ".new.tmp"), "x");
+  // A stale temp file of the cache's own goes, a fresh one stays; other
+  // files, an old .tmp of anyone else's among them, are never touched.
+  const own = (k, tag) => `.${k}.123.${tag}.tmp`;
+  fs.writeFileSync(path.join(dir, own(keys[1], "old")), "x");
+  fs.utimesSync(path.join(dir, own(keys[1], "old")), t0 - 7200, t0 - 7200);
+  fs.writeFileSync(path.join(dir, own(keys[2], "new")), "x");
+  fs.writeFileSync(path.join(dir, ".foreign.tmp"), "x");
+  fs.utimesSync(path.join(dir, ".foreign.tmp"), t0 - 7200, t0 - 7200);
   fs.writeFileSync(path.join(dir, "notes.txt"), "keep me");
   evict({ dir, limit: 10 });
-  assert.ok(!fs.existsSync(path.join(dir, ".old.tmp")));
-  assert.ok(fs.existsSync(path.join(dir, ".new.tmp")));
+  assert.ok(!fs.existsSync(path.join(dir, own(keys[1], "old"))));
+  assert.ok(fs.existsSync(path.join(dir, own(keys[2], "new"))));
+  assert.ok(fs.existsSync(path.join(dir, ".foreign.tmp")));
   assert.ok(fs.existsSync(path.join(dir, "notes.txt")));
 });
 
@@ -97,12 +102,22 @@ test("cachedAudio: one synthesis for a miss, even two at once; the next is a hit
   const shared = audioKey({ ...BASE, text: "cancelled first" });
   const cancelled = cachedAudio(shared, async () => {
     await new Promise((r) => setTimeout(r, 20));
-    throw new Error("cancelled");
+    throw Object.assign(new Error("cancelled"), { status: 499 });
   }, { dir });
   const waiter = cachedAudio(shared, async () => ({ audio: Buffer.from("OWN"), type: "audio/mpeg" }), { dir });
   await assert.rejects(cancelled, /cancelled/);
   const own = await waiter;
   assert.deepEqual([own.audio.toString(), own.cached], ["OWN", false]);
+  // Any other failure is every waiter's answer: one call, not one each.
+  const down = audioKey({ ...BASE, text: "provider down" });
+  let tries = 0;
+  const failing = async () => {
+    tries++;
+    await new Promise((r) => setTimeout(r, 20));
+    throw Object.assign(new Error("provider down"), { status: 502 });
+  };
+  const all = await Promise.allSettled(Array.from({ length: 5 }, () => cachedAudio(down, failing, { dir })));
+  assert.deepEqual([tries, all.every((r) => r.status === "rejected" && /provider down/.test(r.reason.message))], [1, true]);
   const bad = audioKey({ ...BASE, text: "fails" });
   await assert.rejects(cachedAudio(bad, async () => { throw new Error("provider down"); }, { dir }), /provider down/);
   assert.equal(readCached(bad, { dir }), null);

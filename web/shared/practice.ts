@@ -72,6 +72,11 @@ export interface PracticeStatsReply {
   stats: PracticeStats;
   /** The language: the bank's target language and variant, and the native one. */
   language: { targetLanguage: string; targetVariant: string; locale: string | null; nativeLanguage: string };
+  /** Why the drills that need a voice can't run here, or null for each when
+   *  they can: `audio` (listening: no voice picked for the language, no
+   *  key) and `speech` (speak-it: no speech-to-text key). GET /api/practice
+   *  checks; the queue reply sends null (not checked). */
+  setup: { audio: string | null; speech: string | null } | null;
 }
 
 /** GET /api/practice/queue?length=&direction=&tz= */

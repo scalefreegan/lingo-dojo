@@ -79,8 +79,19 @@ test("close: accent difference typed, with a note", () => {
   assert.deepEqual(m("papá", "papa"), { verdict: "close", note: "check the accent" });
 });
 
-test("spoken: an accent-only difference is exact", () => {
-  assert.deepEqual(m("cancion", "canción", { spoken: true }), { verdict: "exact" });
+test("spoken: an accent the recogniser heard differently is close, with how it was heard; only same-sound pairs are exact", () => {
+  // The recogniser writes the accent it heard: a stress or vowel error.
+  assert.deepEqual(m("cancion", "canción", { spoken: true }), { verdict: "close", note: 'heard as "cancion": check the accent' });
+  for (const [said, want, lang] of [["hablo", "habló", "es"], ["papa", "papá", "es"], ["esta", "está", "es"], ["avó", "avô", "pt"], ["πότε", "ποτέ", "el"]]) {
+    assert.equal(m(said, want, { spoken: true, lang }).verdict, "close", `${said} for ${want}`);
+  }
+  // French words that sound the same either way: exact, word for word.
+  assert.deepEqual(m("ou est la gare", "où est la gare", { spoken: true, lang: "fr-FR" }), { verdict: "exact" });
+  assert.deepEqual(m("a la plage", "à la plage", { spoken: true, lang: "fr" }), { verdict: "exact" });
+  assert.equal(m("ou est la gare", "où est la gare", { spoken: true, lang: "es" }).verdict, "close", "only where listed");
+  assert.equal(m("cafe", "café", { spoken: true, lang: "fr" }).verdict, "close", "café is not a same-sound pair");
+  // Punctuation, case and ¿ ¡ stay lenient.
+  assert.deepEqual(m("cuánto cuesta", "¿Cuánto cuesta?", { spoken: true }), { verdict: "exact" });
   // but a real error stays an error when spoken
   assert.equal(m("cancione", "canción", { spoken: true }).verdict, "close");
   assert.equal(m("pelota", "canción", { spoken: true }).verdict, "miss");
@@ -206,9 +217,10 @@ test("accents beyond Latin: Greek, Cyrillic ё, Arabic, Hebrew", () => {
   const CLOSE = { verdict: "close", note: "check the accent" };
   const EXACT = { verdict: "exact" };
   assert.deepEqual(typed("ειναι", "είναι", "el"), CLOSE);
-  assert.deepEqual(spoken("ειναι", "είναι", "el"), EXACT);
-  assert.deepEqual(spoken("ιδιαιτερα", "ιδιαίτερα", "el"), EXACT);
-  assert.deepEqual(spoken("παιδια", "παϊδιά", "el"), EXACT); // dialytika and tonos
+  // Greek tonos marks the stress: heard without it is close.
+  assert.equal(spoken("ειναι", "είναι", "el").verdict, "close");
+  assert.equal(spoken("ιδιαιτερα", "ιδιαίτερα", "el").verdict, "close");
+  assert.equal(spoken("παιδια", "παϊδιά", "el").verdict, "close"); // dialytika and tonos
   assert.equal(spoken("παιδι", "παιδιά", "el").verdict, "miss");
   assert.deepEqual(typed("еж", "ёж", "ru"), CLOSE);
   assert.deepEqual(spoken("все", "всё", "ru"), EXACT);

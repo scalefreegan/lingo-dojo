@@ -185,6 +185,18 @@ export default function PracticeView() {
   }
 
   const s = info?.stats;
+  // What the mode needs that this setup can't give, said before a session
+  // rather than card by card. Listening or speak-it alone can't start;
+  // mixed can (its flashcards still work, and a card that can't be played
+  // can be skipped).
+  const setup = info?.setup;
+  const needsAudio = prefs.mode === "listening" || prefs.mode === "mixed";
+  const needsSpeech = prefs.mode === "speak" || prefs.mode === "mixed";
+  const setupProblems = [
+    ...(needsAudio && setup?.audio ? [`Listening can't play phrases: ${setup.audio.replace(/\.\s*$/, "")}.`] : []),
+    ...(needsSpeech && setup?.speech ? [`Speak-it can't hear answers: ${setup.speech.replace(/\.\s*$/, "")}.`] : []),
+  ];
+  const blocked = (prefs.mode === "listening" && !!setup?.audio) || (prefs.mode === "speak" && !!setup?.speech);
   return (
     <div className="flex flex-col gap-3" data-testid="practice">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -213,6 +225,14 @@ export default function PracticeView() {
             ))}
           </div>
           <p className={`${fine} text-fg-3`}>{MODES.find((m) => m.value === prefs.mode)?.hint}</p>
+          {setupProblems.length > 0 && (
+            <div className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-setup">
+              {setupProblems.map((p) => (
+                <p key={p}>{p}</p>
+              ))}
+              <p className={`${fine} mt-1 text-fg-2`}>Voices and speech-to-text are set in the Go tab's voice settings.</p>
+            </div>
+          )}
         </fieldset>
         <fieldset className="flex flex-col gap-1.5">
           <legend className={`${fine} mb-1 font-medium text-fg-2`}>How many cards</legend>
@@ -241,7 +261,7 @@ export default function PracticeView() {
           </fieldset>
         )}
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="primary" onClick={() => void start()} disabled={loading || !s}>
+          <Button variant="primary" onClick={() => void start()} disabled={loading || !s || blocked}>
             {loading ? "Starting…" : "Start"}
           </Button>
           {s && (
@@ -525,6 +545,8 @@ function usePhraseAudio(phraseId: string) {
     let el: HTMLAudioElement | null = null;
     phraseAudio(phraseId, ctrl.signal).then(
       ({ blob }) => {
+        // The card went while the audio came: nothing to play, no URL to leak.
+        if (ctrl.signal.aborted) return;
         made = URL.createObjectURL(blob);
         el = new Audio(made);
         el.onplay = () => setPlaying(true);
@@ -557,7 +579,7 @@ function usePhraseAudio(phraseId: string) {
 function PlayButton({ audio, label }: { audio: ReturnType<typeof usePhraseAudio>; label: string }) {
   return (
     <Button onClick={audio.play} disabled={!audio.ready} aria-label={label} data-testid="practice-play">
-      <span aria-hidden="true">{audio.playing ? "🔊" : "▶"}</span> {audio.ready ? label : "Loading audio…"}
+      <span aria-hidden="true">{audio.playing ? "🔊" : "▶"}</span> {audio.ready ? label : audio.error ? "No audio" : "Loading audio…"}
     </Button>
   );
 }
@@ -579,17 +601,25 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
         </p>
         <PlayButton audio={audio} label={result ? "Play again" : "Replay"} />
       </div>
-      {audio.error && (
-        <p className="rounded-md bg-err-soft p-3 text-sm text-err" role="alert" data-testid="practice-audio-error">
-          The phrase couldn't be played: {audio.error}
-        </p>
+      {audio.error && !result && (
+        // Nothing heard is nothing to answer: no choices, no typing, no
+        // "I don't know" (that would record a lapse). Skip records nothing.
+        <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-err" role="alert" data-testid="practice-audio-error">
+          <p>The phrase couldn't be played: {audio.error}</p>
+          <p className="text-fg-2">Voices are set in the Go tab's voice settings. Nothing is recorded for this card.</p>
+          <div>
+            <Button onClick={() => onNext(null)} data-testid="practice-skip">
+              Skip this card
+            </Button>
+          </div>
+        </div>
       )}
-      {!result && !typing && item.choices && (
+      {!result && !audio.error && !typing && item.choices && (
         <div className="flex flex-col gap-2">
           <p className={`${fine} text-fg-2`}>What does it mean?</p>
           <div role="group" aria-label="Meanings" className="grid grid-cols-1 gap-1.5 sm:grid-cols-2" data-testid="practice-choices">
             {item.choices.map((c) => (
-              <Button key={c} className="justify-start text-left break-words whitespace-normal" disabled={busy} onClick={() => void answer.submit({ choice: c })}>
+              <Button key={c} className="justify-start text-left break-words whitespace-normal" disabled={busy || !audio.ready} onClick={() => void answer.submit({ choice: c })}>
                 {c}
               </Button>
             ))}
@@ -601,9 +631,9 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
           </div>
         </div>
       )}
-      {!result && typing && (
-        <TypedAnswer label={`What did you hear? Type what it means in ${nativeName}, or the words.`} busy={busy} onCheck={(a) => void answer.submit({ answer: a })}>
-          <Button onClick={() => void answer.submit({ answer: "" })} disabled={busy}>
+      {!result && !audio.error && typing && (
+        <TypedAnswer label={`What did you hear? Type what it means in ${nativeName}, or the words.`} busy={busy || !audio.ready} onCheck={(a) => void answer.submit({ answer: a })}>
+          <Button onClick={() => void answer.submit({ answer: "" })} disabled={busy || !audio.ready}>
             I don't know
           </Button>
         </TypedAnswer>
@@ -615,6 +645,7 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
 
 type SpeakState =
   | { step: "idle" }
+  | { step: "opening" }
   | { step: "recording"; rec: Recording; level: number }
   | { step: "hearing" }
   | { step: "heard"; text: string }
@@ -643,32 +674,57 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
   const { busy, result } = answer;
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+  // Bumped when the card goes: anything awaited across it (the microphone
+  // opening, a recording being read) sees it changed and lets go instead of
+  // recording, or paying for a transcription, for a card no longer there.
+  const genRef = useRef(0);
+  // True while the microphone is opening (the permission prompt can be up):
+  // a second Record then must not open a second one.
+  const openingRef = useRef(false);
   // Leaving the card (Next, End, another tab) lets go of the microphone
   // and any transcription still running.
   useEffect(
     () => () => {
+      genRef.current++;
       recRef.current?.cancel();
+      recRef.current = null;
       ctrlRef.current?.abort();
     },
     [],
   );
 
   async function record() {
+    if (recRef.current || openingRef.current) return;
     setProblem(null);
     answer.setError(null);
+    const gen = genRef.current;
+    openingRef.current = true;
+    setState({ step: "opening" });
+    let mine: Recording | null = null;
     try {
-      const rec = await startRecording({
+      mine = await startRecording({
         silenceMs: 1500,
         maxMs: 20_000,
         idleMs: 10_000,
         onLevel: (level) => setState((s) => (s.step === "recording" ? { ...s, level } : s)),
-        onAutoStop: () => void stop(),
+        // Only the recording that is current may end it.
+        onAutoStop: () => {
+          if (mine && recRef.current === mine) void stop();
+        },
       });
-      recRef.current = rec;
-      setState({ step: "recording", rec, level: 0 });
+      if (gen !== genRef.current) {
+        // The card went while the microphone opened: close it at once.
+        mine.cancel();
+        return;
+      }
+      recRef.current = mine;
+      setState({ step: "recording", rec: mine, level: 0 });
     } catch (e) {
+      if (gen !== genRef.current) return;
       setProblem(micError(e));
       setState({ step: "idle" });
+    } finally {
+      openingRef.current = false;
     }
   }
 
@@ -676,15 +732,19 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
     const rec = recRef.current;
     if (!rec) return;
     recRef.current = null;
+    const gen = genRef.current;
     setState({ step: "hearing" });
     let wav: Blob | null;
     try {
       ({ wav } = await rec.stop());
     } catch (e) {
+      if (gen !== genRef.current) return;
       setProblem(`The recording couldn't be read (${errText(e)}). Try again.`);
       setState({ step: "idle" });
       return;
     }
+    // Gone while the recording was read: no transcription for it.
+    if (gen !== genRef.current) return;
     if (!wav) {
       setProblem("Nothing was recorded. Press Record, say it, then stop.");
       setState({ step: "idle" });
@@ -735,8 +795,8 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
                   ■ Stop
                 </Button>
               ) : (
-                <Button variant="primary" onClick={() => void record()} disabled={state.step === "hearing"} data-testid="practice-record">
-                  {state.step === "hearing" ? "Listening…" : "● Record"}
+                <Button variant="primary" onClick={() => void record()} disabled={state.step === "hearing" || state.step === "opening"} data-testid="practice-record">
+                  {state.step === "hearing" ? "Listening…" : state.step === "opening" ? "Starting the microphone…" : "● Record"}
                 </Button>
               )}
               {state.step === "recording" && (

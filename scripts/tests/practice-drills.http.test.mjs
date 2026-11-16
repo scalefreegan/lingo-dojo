@@ -34,6 +34,7 @@ const audioDir = path.join(dataDir, "audio");
 /* ElevenLabs, stubbed: speech is "MP3:<voice>:<text>"; a transcription
  * answers `stt.reply` (or fails with `stt.status`) and keeps the form. */
 const synths = [];
+const tts = { delayMs: 0 };
 const stt = { reply: "", status: 200, forms: [] };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -43,6 +44,7 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname.startsWith("/v1/text-to-speech/")) {
     const { text, model_id } = JSON.parse(init.body);
     synths.push({ voice, text, model_id });
+    if (tts.delayMs) await new Promise((r) => setTimeout(r, tts.delayMs));
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
   }
   if (url.pathname === "/v1/speech-to-text") {
@@ -77,6 +79,7 @@ beforeEach(() => {
   fake.answer(ACCEPT);
   stt.reply = "";
   stt.status = 200;
+  tts.delayMs = 0;
 });
 
 let n = 0;
@@ -144,23 +147,54 @@ test("phrase audio: the user's voice for the language, synthesized once, then se
   const first = await sam.call("GET", `/api/practice/audio/${id}`);
   assert.equal(first.status, 200, first.text);
   assert.equal(first.headers.get("content-type"), "audio/mpeg");
-  assert.equal(first.headers.get("x-audio-cache"), "miss");
+  assert.equal(first.headers.get("x-audio-cache"), null, "a hit or miss is never told to the client");
   assert.match(first.headers.get("cache-control"), /no-store/);
   assert.equal(first.text, `MP3:voice-user${n}:la vuelta`);
   assert.equal(synths.length, before + 1);
   const files = fs.readdirSync(audioDir).filter((f) => f.endsWith(".mp3"));
   assert.ok(files.length >= 1 && files.every((f) => /^[0-9a-f]{64}\.mp3$/.test(f)), "named by the key, in the temp data dir");
   const again = await sam.call("GET", `/api/practice/audio/${id}`);
-  assert.deepEqual([again.status, again.headers.get("x-audio-cache"), again.text], [200, "hit", first.text]);
+  assert.deepEqual([again.status, again.text], [200, first.text]);
   assert.equal(synths.length, before + 1, "no second synthesis");
   // Another voice is another file (and another synthesis).
   await sam.call("PUT", "/api/voice/settings", { voices: { elevenlabs: { "es-MX": { "narrator:female": "other-voice" } } } });
   const other = await sam.call("GET", `/api/practice/audio/${id}`);
-  assert.deepEqual([other.headers.get("x-audio-cache"), other.text], ["miss", "MP3:other-voice:la vuelta"]);
+  assert.deepEqual([other.text, synths.length], ["MP3:other-voice:la vuelta", before + 2]);
   // Editing the words is new audio, never the old.
   await sam.call("PATCH", `/api/phrases/${id}`, { text: "la vuelta, por favor" });
   const edited = await sam.call("GET", `/api/practice/audio/${id}`);
-  assert.deepEqual([edited.headers.get("x-audio-cache"), edited.text], ["miss", "MP3:other-voice:la vuelta, por favor"]);
+  assert.deepEqual([edited.text, synths.length], ["MP3:other-voice:la vuelta, por favor", before + 3]);
+});
+
+test("phrase audio is cached per account: the same words in the same voice for another user are their own synthesis", async () => {
+  const sam = await someone();
+  const robin = await someone();
+  const voice = { voices: { elevenlabs: { "es-MX": { "narrator:female": "shared-voice" } } } };
+  await sam.call("PUT", "/api/voice/settings", voice);
+  await robin.call("PUT", "/api/voice/settings", voice);
+  const a = await add(sam, [["el tren", "the train"]]);
+  const b = await add(robin, [["el tren", "the train"]]);
+  const before = synths.length;
+  assert.equal((await sam.call("GET", `/api/practice/audio/${a["el tren"].id}`)).status, 200);
+  assert.equal((await sam.call("GET", `/api/practice/audio/${a["el tren"].id}`)).status, 200);
+  assert.equal(synths.length, before + 1);
+  const theirs = await robin.call("GET", `/api/practice/audio/${b["el tren"].id}`);
+  assert.deepEqual([theirs.status, theirs.text, synths.length], [200, "MP3:shared-voice:el tren", before + 2], "no shared file to time or probe");
+});
+
+test("paid calls per user are bounded: a third miss at once is a 429, never a third synthesis", async () => {
+  const sam = await someone();
+  const p = await add(sam, [["uno", "one"], ["dos", "two"], ["tres", "three"]]);
+  tts.delayMs = 150;
+  const before = synths.length;
+  const replies = await Promise.all(Object.values(p).map((x) => sam.call("GET", `/api/practice/audio/${x.id}`)));
+  const statuses = replies.map((r) => r.status).sort();
+  assert.deepEqual(statuses, [200, 200, 429]);
+  assert.equal(synths.length, before + 2);
+  // The slots free up after.
+  tts.delayMs = 0;
+  const late = Object.values(p).find((x, i) => replies[i].status === 429);
+  assert.equal((await sam.call("GET", `/api/practice/audio/${late.id}`)).status, 200);
 });
 
 test("phrase audio is only for this language's own phrases: another account's id, a bad id, no voice set", async () => {
@@ -187,6 +221,12 @@ test("phrase audio is only for this language's own phrases: another account's id
   const none = await fresh.call("GET", `/api/practice/audio/${f["la vuelta"].id}`);
   assert.equal(none.status, 400);
   assert.match(none.body.error, /voice settings/);
+  // The mode picker is told the same before a session.
+  const stats = await fresh.call("GET", `/api/practice?tz=${TZ}&mode=listening`);
+  assert.equal(stats.status, 200);
+  assert.match(stats.body.setup.audio, /voice settings/);
+  assert.equal(stats.body.setup.speech, null);
+  assert.deepEqual((await robin.call("GET", `/api/practice?tz=${TZ}`)).body.setup, { audio: null, speech: null });
 });
 
 test("a listening choice: right is Good and wrong is Again at once (no model check), recorded on the listen card as mode listening, words in the reply", async () => {
@@ -210,6 +250,28 @@ test("a listening choice: right is Good and wrong is Again at once (no model che
   // Today's progress counts them; the listen cards are no longer new.
   const s = (await sam.call("GET", `/api/practice?tz=${TZ}&mode=listening`)).body.stats;
   assert.deepEqual([s.done.new, s.new], [2, 3]);
+});
+
+test("a choice is trusted only if the card offered it: drawn again on the server; none offered is a 400, one never offered a 409, and nothing is recorded", async () => {
+  const sam = await someone();
+  const p = await add(sam, PAIRS);
+  const [item] = (await queue(sam, "&mode=listening&length=5")).body.items;
+  const forged = await answer(sam, item, { choice: "something I made up" });
+  assert.equal(forged.status, 409, forged.text);
+  assert.equal((await reviewsOf(item.phraseId)).length, 0);
+  // The page's choices are the server's: the same draw again.
+  const again = (await queue(sam, "&mode=listening&length=5")).body.items.find((i) => i.phraseId === item.phraseId);
+  assert.deepEqual(again.choices, item.choices);
+  // A bank too small for choices: the card is typed, and a choice is a 400.
+  const robin = await someone();
+  const r = await add(robin, PAIRS.slice(0, 1));
+  const [typed] = (await queue(robin, "&mode=listening&length=5")).body.items;
+  assert.equal(typed.choices, null);
+  const picked = await answer(robin, typed, { choice: r["la vuelta"].meaning });
+  assert.equal(picked.status, 400);
+  assert.match(picked.body.error, /no choices/);
+  assert.equal((await reviewsOf(typed.phraseId)).length, 0);
+  assert.ok(p);
 });
 
 test("a listening answer's stale protocol: a resend replays, another submit at that version is a 409, an edit since is a 409, an override regrades", async () => {
@@ -307,6 +369,17 @@ test("speak-it failures record nothing: nothing heard, an empty answer, a provid
   assert.doesNotMatch(failed.text, /test-key/);
   const noAudio = await sam.call("POST", "/api/practice/transcribe", new Uint8Array(0), { "Content-Type": "audio/wav" });
   assert.equal(noAudio.status, 400);
+  // Only the recorder's WAV, by any of its names; anything else is a 415 before any provider call.
+  const calls = stt.forms.length;
+  stt.status = 200;
+  for (const type of ["text/plain", "application/json", "audio/webm", "multipart/form-data; boundary=x", ""]) {
+    const r = await sam.call("POST", "/api/practice/transcribe", new Uint8Array([82, 73, 70, 70]), type ? { "Content-Type": type } : {});
+    assert.equal(r.status, 415, type);
+  }
+  assert.equal(stt.forms.length, calls, "no transcription for a refused type");
+  for (const type of ["audio/wave", "audio/x-wav", "Audio/WAV; codecs=1"]) {
+    assert.equal((await sam.call("POST", "/api/practice/transcribe", new Uint8Array([82, 73, 70, 70]), { "Content-Type": type })).status, 200, type);
+  }
   for (const phrase of Object.values(p)) assert.equal((await reviewsOf(phrase.id)).length, 0);
   // Typed instead: a produce flashcard (mode flashcard), same card and version.
   const typed = await answer(sam, item, { drill: "flashcard", answer: Object.values(p).find((x) => x.id === item.phraseId).text });

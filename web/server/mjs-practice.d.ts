@@ -34,7 +34,11 @@ declare module "*/scripts/practice.mjs" {
   export const CHOICES: number;
   export function drillsFor(mode?: PracticeMode, direction?: PracticeDirection): [PracticeSkill, PracticeDrill][];
   export function readMode(v: unknown): PracticeMode;
-  export function listenChoices(phrase: CandidatePhrase, bank: CandidatePhrase[], opts?: { nativeLocale?: string; rand?: () => number }): string[] | null;
+  export function listenChoices(phrase: CandidatePhrase, bank: CandidatePhrase[], opts?: { nativeLocale?: string; seed?: string; rand?: () => number }): string[] | null;
+  export function offeredChoices(phrase: CandidatePhrase, bank: CandidatePhrase[], opts: { version: string; nativeLocale?: string }): string[] | null;
+  export function sameChoice(meaning: string | null | undefined, pick: string): boolean;
+  export function seededRand(seed: string): () => number;
+  export function choiceSeed(phraseId: string, version: string, revision: string): string;
   export const SESSION_LENGTHS: number[];
   export const DEFAULT_LENGTH: number;
   export const DAILY_LIMITS: { new: number; reviews: number };
@@ -64,7 +68,6 @@ declare module "*/scripts/practice.mjs" {
       mode?: PracticeMode;
       limits?: { new: number; reviews: number };
       nativeLocale?: string;
-      rand?: () => number;
     },
   ): { items: PracticeItem[]; stats: PracticeStats };
   export interface AnswerInput {
@@ -133,7 +136,7 @@ declare module "*/scripts/audio-cache.mjs" {
   export const DEFAULT_CACHE_MB: number;
   export function audioDir(env?: Record<string, string | undefined>): string;
   export function cacheLimitBytes(env?: Record<string, string | undefined>): number;
-  export function audioKey(input: { provider: string; voice: string; model?: string; format?: string; locale?: string; speed?: number; text: string }): string;
+  export function audioKey(input: { owner?: string; provider: string; voice: string; model?: string; format?: string; locale?: string; speed?: number; text: string }): string;
   export function readCached(key: string, opts?: { dir?: string }): { audio: Buffer; type: string } | null;
   export function writeCached(key: string, audio: Buffer | Uint8Array, type: string, opts?: { dir?: string; limit?: number }): boolean;
   export function evict(opts?: { dir?: string; limit?: number; keep?: string | null; now?: number }): string[];

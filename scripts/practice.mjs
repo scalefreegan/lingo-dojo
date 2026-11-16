@@ -199,7 +199,7 @@ export const readMode = (v) => (PRACTICE_MODES.includes(v) ? v : "flashcards");
  */
 export function buildQueue(
   phrases,
-  { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", mode = "flashcards", limits = DAILY_LIMITS, nativeLocale = "", rand = Math.random },
+  { now, done = { new: 0, reviews: 0 }, length = DEFAULT_LENGTH, direction = "mixed", mode = "flashcards", limits = DAILY_LIMITS, nativeLocale = "" },
 ) {
   const { reviews, fresh } = candidates(phrases, { now, direction, mode });
   const left = remaining(done, limits);
@@ -214,7 +214,7 @@ export function buildQueue(
     items.push(takeNew ? fresh[f++] : reviews[r++]);
   }
   return {
-    items: items.map((c) => queueItem(c, c.drill === "listening" ? listenChoices(c.phrase, phrases, { nativeLocale, rand }) : null)),
+    items: items.map((c) => queueItem(c, c.drill === "listening" ? offeredChoices(c.phrase, phrases, { version: cardVersion(c.card), nativeLocale }) : null)),
     stats: {
       due: reviews.length,
       new: fresh.length,
@@ -288,35 +288,136 @@ function meaningKeys(meaning, nativeLocale) {
   return keys;
 }
 
+/** Words that carry no meaning of their own in an English meaning: two
+ *  meanings sharing only these ("how are you", "how much") aren't alike. */
+const EN_STOPWORDS = new Set(
+  "a an the to of in on at for and or but is are am was were be been it its i you he she we they me him her us them my your his our their this that these those do does did not no yes with by from as so if then there here what how where when who why which".split(" "),
+);
+
+/** Levenshtein distance, stopping early once it is past `max`. */
+function editDistance(a, b, max = 3) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      best = Math.min(best, cur[j]);
+    }
+    if (best > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+/** A meaning's content words: its words, less English stopwords, at least
+ *  three letters. */
+function contentWords(keys, nativeLocale) {
+  const out = new Set();
+  for (const k of keys) {
+    for (const w of k.split(" ")) {
+      if (w.length >= 3 && !(isEnglish(nativeLocale) && EN_STOPWORDS.has(w))) out.add(w);
+    }
+  }
+  return out;
+}
+
+/** Two content words that are one word in practice: equal, an ending away
+ *  ("thank" / "thanks", "beach" / "beaches": one the start of the other and
+ *  at most two letters longer, so "good" / "goodbye" stay apart), or one
+ *  letter off. */
+const relatedWords = (x, y) =>
+  x === y ||
+  (Math.min(x.length, y.length) >= 4 && (((x.startsWith(y) || y.startsWith(x)) && Math.abs(x.length - y.length) <= 2) || editDistance(x, y, 1) <= 1));
+
+/**
+ * Whether two meanings are too alike to stand side by side as choices: a
+ * form in common (meaningKeys, so both would grade as right), one inside
+ * the other ("bye" / "goodbye"), within two edits of each other, or a
+ * content word in common ("thanks" / "thank you", "how much is it" /
+ * "how much money").
+ */
+function tooAlike(a, b, nativeLocale) {
+  const ka = meaningKeys(a, nativeLocale);
+  const kb = meaningKeys(b, nativeLocale);
+  if (!ka.size || !kb.size) return true;
+  for (const x of ka) {
+    for (const y of kb) {
+      if (x === y) return true;
+      if (Math.min(x.length, y.length) >= 3 && (x.includes(y) || y.includes(x))) return true;
+      if (Math.min(x.length, y.length) >= 4 && editDistance(x, y, 2) <= 2) return true;
+    }
+  }
+  const wa = contentWords(ka, nativeLocale);
+  for (const y of contentWords(kb, nativeLocale)) for (const x of wa) if (relatedWords(x, y)) return true;
+  return false;
+}
+
+/** A deterministic rand from a string (mulberry32 over a sha256 of it): the
+ *  queue and the answer route draw the same choices for the same card. */
+export function seededRand(seed) {
+  let s = createHash("sha256").update(String(seed)).digest().readUInt32LE(0);
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** The seed of a listening card's choices: the phrase, its card version
+ *  and its revision, so a card shows the same choices until it is answered
+ *  or edited, and the answer route can draw them again to check a pick. */
+export const choiceSeed = (phraseId, version, revision) => `${phraseId}:${version}:${revision}`;
+
+/** A choice as the wire and the answer check carry it: one line, as
+ *  readAnswerInput cleans a picked choice. */
+const choiceText = (s) => clean(s).replace(CONTROLS_OR_BREAKS, " ").trim();
+
+/** Whether a picked choice (as readAnswerInput cleaned it) is `meaning`. */
+export const sameChoice = (meaning, pick) => !!meaning && choiceText(meaning) === pick;
+
 /**
  * A listening card's meanings to pick from: the phrase's own and
- * CHOICES - 1 others drawn at random from the same bank, in random order.
- * A distractor must be a practisable phrase's meaning that shares no form
- * (meaningKeys) with the right one or with another distractor: two
- * choices that both grade as right, or that read the same, would make the
- * pick a coin toss. Null when the bank has too few such meanings: the
- * learner types the answer instead. `rand` is injectable for tests.
+ * CHOICES - 1 others from the same bank, in an order drawn from `seed`
+ * (choiceSeed; the bank is taken in id order first, so the same bank and
+ * seed always give the same choices). A distractor must be a practisable
+ * phrase's meaning not too alike (tooAlike) the right one or another
+ * distractor: two choices that could both be right, or read nearly the
+ * same, make the pick a coin toss. Null when the bank has too few such
+ * meanings: the learner types the answer instead. `rand` overrides the
+ * seed in tests.
  */
-export function listenChoices(phrase, bank, { nativeLocale = "", rand = Math.random } = {}) {
-  const taken = meaningKeys(phrase.meaning, nativeLocale);
-  const pool = (bank ?? []).filter((p) => p.id !== phrase.id && practisable(p));
+export function listenChoices(phrase, bank, { nativeLocale = "", seed = "", rand = seededRand(seed) } = {}) {
+  const pool = (bank ?? [])
+    .filter((p) => p.id !== phrase.id && practisable(p))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   // Fisher-Yates over a copy, then take the first usable ones.
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
+  const right = choiceText(phrase.meaning);
   const picked = [];
   for (const p of pool) {
     if (picked.length === CHOICES - 1) break;
-    const keys = meaningKeys(p.meaning, nativeLocale);
-    if (!keys.size || [...keys].some((k) => taken.has(k))) continue;
-    for (const k of keys) taken.add(k);
-    picked.push(String(p.meaning));
+    const m = choiceText(p.meaning);
+    if ([right, ...picked].some((other) => tooAlike(m, other, nativeLocale))) continue;
+    picked.push(m);
   }
   if (picked.length < CHOICES - 1) return null;
   const at = Math.floor(rand() * CHOICES);
-  picked.splice(at, 0, String(phrase.meaning));
+  picked.splice(at, 0, right);
   return picked;
+}
+
+/** The choices a listening card of `phrase` at card `version` offers (or
+ *  null): what the queue sends, and what the answer route draws again to
+ *  accept only a pick that was offered. */
+export function offeredChoices(phrase, bank, { version, nativeLocale = "" }) {
+  return listenChoices(phrase, bank, { nativeLocale, seed: choiceSeed(phrase.id, version, phraseRevision(phrase)) });
 }
 
 /* ---------------------------------- answers ---------------------------------- */

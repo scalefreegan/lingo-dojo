@@ -5,17 +5,19 @@
 //
 //   <dir>/<sha256 of everything that changes the audio>.<mp3|wav>
 //
-// The key covers the provider, the voice, the model, the output format, the
-// locale the text is said in, the speed and the text itself: change any of
-// them and it is another file, never a stale one. The directory is
-// LINGO_AUDIO_DIR, else <LINGO_DATA_DIR or data/>/audio (data/ is
-// gitignored), read per call so a test can point it at a temp dir.
+// The key covers the user it was made for, the provider, the voice, the
+// model, the output format, the locale the text is said in, the speed and
+// the text itself: change any of them and it is another file, never a stale
+// one. The directory is LINGO_AUDIO_DIR, else <LINGO_DATA_DIR or
+// data/>/audio (data/ is gitignored), read per call so a test can point it
+// at a temp dir.
 //
 // Safety. A file name is only ever a 64-hex key this module computed plus
 // an extension from a fixed list: nothing a client sends becomes a path.
 // The route that serves it (web/server/practice.ts) takes a phrase id the
-// active language profile owns, never a hash or text, so the shared cache
-// can't be used to read another learner's phrases. Writes are atomic (a
+// active language profile owns, never a hash or text, and files are per
+// user, so the cache can't be used to read, or time, another account's
+// phrases. Writes are atomic (a
 // temp file in the same directory, then rename), so a reader never sees a
 // half-written file. Two requests for the same missing key share one
 // synthesis (in this process).
@@ -31,8 +33,10 @@ import path from "node:path";
 import { REPO_ROOT } from "./content.mjs";
 
 /** Bumped when what a key means changes, so old files are simply missed. */
-const KEY_VERSION = 1;
+const KEY_VERSION = 2;
 const KEY_RE = /^[0-9a-f]{64}$/;
+/** writeCached's temp files: .<key>.<pid>.<random>.tmp */
+const TMP_RE = /^\.[0-9a-f]{64}\.\d+\.[0-9a-z]+\.tmp$/;
 /** Content types the cache stores, and the extension each is kept under. */
 const EXT_BY_TYPE = { "audio/mpeg": "mp3", "audio/wav": "wav" };
 const TYPE_BY_EXT = Object.fromEntries(Object.entries(EXT_BY_TYPE).map(([t, e]) => [e, t]));
@@ -56,12 +60,15 @@ export function cacheLimitBytes(env = process.env) {
 }
 
 /**
- * The cache key: sha256 over every input that changes the audio. `speed`
- * is 1 until the app has a speed setting; it is in the key already so
- * adding one never serves audio made at another speed.
+ * The cache key: sha256 over every input that changes the audio, and the
+ * `owner` (the user it was made for): a file is never shared between
+ * accounts, so neither a reply nor its timing can tell one account that
+ * another has had the same text said. `speed` is 1 until the app has a
+ * speed setting; it is in the key already so adding one never serves audio
+ * made at another speed.
  */
-export function audioKey({ provider, voice, model = "", format = "", locale = "", speed = 1, text }) {
-  const parts = [KEY_VERSION, String(provider ?? ""), String(voice ?? ""), String(model ?? ""), String(format ?? ""), String(locale ?? ""), Number(speed) || 1, String(text ?? "")];
+export function audioKey({ owner = "", provider, voice, model = "", format = "", locale = "", speed = 1, text }) {
+  const parts = [KEY_VERSION, String(owner ?? ""), String(provider ?? ""), String(voice ?? ""), String(model ?? ""), String(format ?? ""), String(locale ?? ""), Number(speed) || 1, String(text ?? "")];
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
@@ -142,6 +149,8 @@ export function evict({ dir = audioDir(), limit = cacheLimitBytes(), keep = null
     }
     if (!st.isFile()) continue;
     if (name.endsWith(".tmp")) {
+      // Only this module's own temp files (writeCached's name), never any other .tmp.
+      if (!TMP_RE.test(name)) continue;
       if (now - st.mtimeMs > STALE_TMP_MS) {
         fs.rmSync(file, { force: true });
         removed.push(name);
@@ -171,6 +180,10 @@ export function evict({ dir = audioDir(), limit = cacheLimitBytes(), keep = null
  *  audio waits for the first instead of paying for it again. */
 const inflight = new Map();
 
+/** A synthesis stopped because its requester went away: the server's 499
+ *  (web/server/voice.ts call/sayToWav) or a bare AbortError. */
+const isCancelled = (e) => e?.status === 499 || e?.name === "AbortError";
+
 /**
  * The audio for `key`: from the cache (`cached: true`), else `make()`
  * (which returns `{ audio, type }`), stored, then returned. A failed
@@ -183,9 +196,12 @@ export async function cachedAudio(key, make, opts = {}) {
   if (running) {
     try {
       return { ...(await running), cached: true };
-    } catch {
-      // The first request failed or was cancelled (its browser gave up,
-      // which aborts its synthesis): this one makes its own.
+    } catch (e) {
+      // The first request was cancelled (its browser gave up, which aborts
+      // its synthesis): this one makes its own. Any other failure (the
+      // provider down, a bad key) is this request's answer too: retrying
+      // would pay, or wait out a timeout, once per waiter.
+      if (!isCancelled(e)) throw e;
       if (inflight.get(key) === running) inflight.delete(key);
       return cachedAudio(key, make, opts);
     }

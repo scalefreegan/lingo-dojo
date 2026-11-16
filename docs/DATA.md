@@ -1361,9 +1361,17 @@ a session length picker (5 / 10 / 20 items).
   holds. This grades as `exact` → Good.
 - **Close.** The answer equals the target once accents are stripped, or is
   within edit distance 1 for answers of at least 6 characters. This grades as
-  `close` → Hard, with "check the accent" or a highlighted letter. For spoken
-  answers, accent-only differences count as exact, since STT chooses the
-  spelling.
+  `close` → Hard, with "check the accent" or a highlighted letter. A spoken
+  answer is held to the same rule: the recogniser writes the accent it
+  heard, so "hablo" for "habló", "papa" for "papá", "esta" for "está",
+  Portuguese "avó" for "avô" or Greek "πότε" for "ποτέ" is a stress or vowel
+  heard wrong, `close` with `heard as "…": check the accent`. Exact only
+  where the marks don't change the sound: those ordinary writing leaves out
+  (Arabic tashkeel, Hebrew niqqud, Russian ё) and a short per-language list
+  of same-sound words (`SAME_SOUND` in `scripts/match.mjs`: French où/ou,
+  à/a, là/la…; Spanish's diacritical accent, qué/que, cuánto/cuanto, tú/tu,
+  sí/si…), word for word. Any language not listed is strict. Case,
+  punctuation and ¿ ¡ are ignored as for typed answers.
 - **Miss.** One claude call (Haiku, no tools) gets the question, the expected
   answer and the learner's answer. It returns `{ accepted, rating_hint, note }`:
   `accepted` covers a valid synonym, another correct phrasing or a correct
@@ -1554,12 +1562,20 @@ holds; this adds two drills and a mode picker.
   the page (or in its network log) before the answer, and Mandarin
   readings show only with the result. It carries `choices`: the meaning
   and three others from the same bank (`listenChoices`: practisable
-  phrases whose meaning shares no comparable form, as `localMatch` compares
-  meanings, with the right one or another choice), in random order; `null`
-  when the bank has fewer than three such meanings, and the page asks for
-  a typed answer. A **choice** (`{choice}`) is right only as an exact
-  meaning match (`choiceMatch`): Good, or Again, with no model call and no
-  near miss. A **typed** answer (`{answer}`) is checked as the words heard
+  phrases whose meaning is not too like the right one or another choice:
+  no comparable form in common, as `localMatch` compares meanings, neither
+  inside the other ("bye" / "goodbye"), not within two edits, no content
+  word in common ("thanks" / "thank you"; English stopwords don't count));
+  `null` when the bank has fewer than three such meanings, and the page
+  asks for a typed answer. The draw is **deterministic**
+  (`offeredChoices`): seeded by the phrase id, the card's version and the
+  phrase's revision, over the bank in id order, so the same card shows the
+  same choices until it is answered or edited. A **choice** (`{choice}`)
+  is checked against that draw, made again on the server: a choice on a
+  card that offered none is a 400; one that isn't among them (nor, if the
+  bank has grown since, any phrase's meaning in it) is a 409; neither is
+  recorded. A choice is right only as an exact meaning match
+  (`choiceMatch`): Good, or Again, with no model call and no near miss. A **typed** answer (`{answer}`) is checked as the words heard
   (a dictation, against the words and alternates) and then as the meaning
   (`listenMatch`); a miss goes to the grader with the heard-phrase wording
   (`graderPrompt({heard: true})`: "they were not shown it", any spelling
@@ -1575,7 +1591,8 @@ holds; this adds two drills and a mode picker.
   blocked or missing microphone, an empty recording, nothing heard
   (`text: ""`), a provider failure (502) or a mishearing never becomes a
   review, and the server refuses an empty `speak` answer (400). The match
-  is `spoken` (match.mjs: an accent-only difference is exact); a miss goes
+  is `spoken` (§Grading: a heard accent difference is close, a same-sound
+  one exact); a miss goes
   to the grader told it is a transcript. An accepted transcript is **not**
   kept as an alternate (its spelling is the recogniser's). "Type it
   instead" (or "I don't know") answers the same produce card as a typed
@@ -1593,25 +1610,44 @@ holds; this adds two drills and a mode picker.
   locale's first voice; a paid provider with none set is a 400 that says
   where to pick one). Another language's or account's phrase id is a 404
   like any unknown id. The audio goes through `scripts/audio-cache.mjs`:
-  - **Key:** sha256 over provider, voice, model (ElevenLabs), output
-    format, locale, speed (1: there is no speed setting yet) and text.
-    Any change is a new file; editing a phrase's words is new audio.
+  - **Key:** sha256 over the user, provider, voice, model (ElevenLabs),
+    output format (`SPEECH_FORMATS` in `scripts/voice.mjs`, the one its
+    requests use), locale, speed (1: there is no speed setting yet) and
+    text. Any change is a new file; editing a phrase's words is new audio.
   - **Where:** `LINGO_AUDIO_DIR`, else `<LINGO_DATA_DIR or data/>/audio`
     (gitignored), files `<key>.mp3` (ElevenLabs, Azure) or `<key>.wav`
     (macOS `say`), mode 0600 in a 0700 directory. A file name is only ever
     a computed key; nothing from the client becomes a path.
   - **Writes** go to a temp file in the same directory, then rename.
     Concurrent misses for one key share one synthesis in the process (a
-    waiter whose first request was cancelled makes its own).
+    waiter whose first request was cancelled makes its own; any other
+    failure is every waiter's answer, not a retry each).
   - **Bound:** `LINGO_AUDIO_CACHE_MB` (default 256). After a write that
     takes it over, the least recently used files go (a hit touches the
-    mtime) until it is under 90%; temp files over an hour old go too.
-  - **Isolation:** the cache is shared across users (two learners with the
-    same voice and phrase share one file, which is the point), but the
-    route only takes a phrase id the active language owns, so it can't be
-    used to read or probe anyone else's phrases.
-  - The reply is `Cache-Control: private, no-store` with
-    `X-Audio-Cache: hit|miss`.
+    mtime) until it is under 90%; the cache's own temp files
+    (`.<key>.<pid>.<random>.tmp`) over an hour old go too, and nothing else.
+  - **Isolation:** files are per user (the user id is in the key), and
+    the route only takes a phrase id the active language owns: nothing in
+    a reply, or its timing, tells one account what another has had said.
+    Two learners of one login share files, as they share its voices.
+  - The reply is `Cache-Control: private, no-store`. Hit or miss is logged
+    on the server, never sent.
+  - **Paid calls** (an audio miss, a transcription) run at most two at
+    once per user; a third is a 429. The Go tab's routes don't share the
+    bound yet (bead ld-e6q).
+  - **macOS voices:** with no voice picked, the locale's first installed
+    one; with none installed for the locale, a 400 (rather than `say`
+    reading the words in the Mac's own language, and caching that).
+  - **Before a session**, `GET /api/practice` answers `setup: { audio,
+    speech }`: why phrases can't be played (no voice picked, no key, no
+    locale) or answers can't be transcribed (no key), or null each. The
+    mode picker says so, and won't start listening or speak-it alone
+    that can't run. A listening card whose audio fails anyway shows why
+    and where to fix it, with only Skip (nothing recorded); its choices
+    wait for the audio.
+- **Transcribe input.** Only the recorder's WAV (`audio/wav`,
+  `audio/wave`, `audio/x-wav`; anything else is a 415 before any provider
+  call), at most 8 MiB (413).
 - **Tests.** `practice-drills.test.mjs` (the pure rules: modes and
   drills, one card per phrase, hidden words, choices, the answer body,
   listen and choice matching, the grader's wording), `audio-cache.test.mjs`

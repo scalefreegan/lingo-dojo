@@ -7,7 +7,7 @@ import { assemble } from "../../scripts/assemble.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
-  ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
+  SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
   ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
@@ -406,7 +406,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
 function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buffer> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-say-"));
   const out = path.join(dir, "line.wav");
-  const args = ["--file-format=WAVE", "--data-format=LEI16@24000", "-o", out];
+  const args = ["--file-format=WAVE", `--data-format=${VOICE_SPEECH_FORMATS.system}`, "-o", out];
   if (voice) args.unshift("-v", voice);
   return new Promise<Buffer>((resolve, reject) => {
     const p = spawn("say", args, { stdio: ["pipe", "ignore", "pipe"], signal });
@@ -511,14 +511,15 @@ export interface Speech {
   type: "audio/mpeg" | "audio/wav";
 }
 
-/** The output format each provider is asked for (scripts/voice.mjs request
- *  shapes, and sayToWav): part of the phrase audio cache's key, so a change
- *  of format is a new file rather than a stale one. */
-export const SPEECH_FORMATS: Record<TtsProvider, string> = {
-  elevenlabs: "mp3_44100_128",
-  azure: "audio-24khz-96kbitrate-mono-mp3",
-  system: "wav-LEI16@24000",
-};
+/** The output format each provider is asked for: scripts/voice.mjs's, the
+ *  one its requests and sayToWav use (part of the phrase audio cache key). */
+export const SPEECH_FORMATS: Readonly<Record<TtsProvider, string>> = VOICE_SPEECH_FORMATS;
+
+/** The keys `provider` needs for speech-to-text, or the 400 that says where
+ *  to put them (the Practice tab's speak-it check before a session). */
+export function sttReady(provider: SttProvider): void {
+  keysFor(provider);
+}
 
 /**
  * One line of speech from `provider` in `voice` (one call, no retry in
@@ -570,7 +571,12 @@ export async function practiceVoice(settings: VoiceSettings, locale: string): Pr
   keysFor(provider);
   let voice = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", null);
   if (!voice && provider === "system") voice = (await systemVoicesFor(locale).catch(() => []))[0]?.id ?? "";
-  if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for this language first (Go tab → voice settings)`);
+  // Without one, `say` would read the words in the Mac's own language, and
+  // that audio would be cached: refuse instead.
+  if (!voice && provider === "system") {
+    throw new HttpError(400, `no macOS voice is installed for ${locale}: add one in System Settings → Accessibility → Spoken Content, or pick another voice provider`);
+  }
+  if (!voice) throw new HttpError(400, `pick an ${NAMES[provider]} voice for this language first (Go tab → voice settings)`);
   return { provider, voice, model: provider === "elevenlabs" ? settings.elevenModel : "" };
 }
 

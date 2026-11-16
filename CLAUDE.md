@@ -28,7 +28,8 @@ routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
 `web/src/components/PracticeView.tsx`), with the listening and speak-it
 drills and a mode picker (phase 7b: the phrase played from
 `/api/practice/audio/:phraseId` through the on-disk audio cache
-`scripts/audio-cache.mjs`, `data/audio/` or `LINGO_AUDIO_DIR`; a speak-it
+`scripts/audio-cache.mjs`, `data/audio/` or `LINGO_AUDIO_DIR`, files per user; a
+listening choice checked against the server's own seeded draw; a speak-it
 recording transcribed by `/api/practice/transcribe` with no keyterms; each
 answer's drill is its review's mode). A practice answer locks its phrase
 then its card; it names the card's version, the phrase's revision and a

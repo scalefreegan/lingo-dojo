@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { newCard, review } from "../fsrs.mjs";
 import { graderPrompt } from "../match.mjs";
 import {
-  CHOICES, buildQueue, candidates, choiceMatch, drillsFor, graderQuestion, listenChoices, listenMatch, localMatch, readAnswerInput, readMode,
+  CHOICES, buildQueue, candidates, choiceMatch, drillsFor, graderQuestion, listenChoices, listenMatch, localMatch, offeredChoices, readAnswerInput, readMode, seededRand,
 } from "../practice.mjs";
 
 const NOW = new Date("2026-11-15T18:00:00Z");
@@ -70,8 +70,8 @@ test("candidates by mode: one card per phrase however many are due; mixed reads 
 });
 
 test("a listening item carries no words or meaning, only the choices; other drills carry both and no choices", () => {
-  const bank = Array.from({ length: 6 }, () => phrase());
-  const q = buildQueue(bank, { now: NOW, mode: "listening", length: 5, rand: seq(0.3, 0.7, 0.1, 0.9) });
+  const bank = ["the bill", "a kilo", "goodbye", "the market", "how much", "tomorrow"].map((meaning) => phrase({ meaning }));
+  const q = buildQueue(bank, { now: NOW, mode: "listening", length: 5 });
   assert.equal(q.items.length, 5);
   for (const item of q.items) {
     assert.deepEqual([item.drill, item.skill, item.text, item.meaning], ["listening", "listen", "", ""]);
@@ -108,6 +108,49 @@ test("listenChoices: distractors from the same bank that can't also be right; to
   assert.deepEqual([at(0), at(0.99)], [0, 3]);
 });
 
+test("listenChoices: no distractor that is nearly the right meaning (inside it, a few letters off, a content word shared)", () => {
+  const others = ["the bill", "a kilo", "tomorrow", "the market"].map((meaning) => phrase({ meaning }));
+  const alike = (right, near) => {
+    const target = phrase({ meaning: right });
+    const bank = [target, phrase({ meaning: near }), ...others];
+    for (let i = 0; i < 20; i++) {
+      const got = listenChoices(target, bank, { nativeLocale: "en-US", seed: `s${i}` });
+      assert.ok(got && !got.includes(near), `${near} beside ${right}`);
+    }
+  };
+  alike("goodbye", "bye");
+  alike("bye", "goodbye");
+  alike("thanks", "thank you");
+  alike("thank you", "thanks a lot");
+  alike("how much is it?", "how much money");
+  alike("the beach", "the beaches");
+  // A shared start isn't a shared word: "good morning" can stand by "goodbye".
+  const gm = phrase({ meaning: "good morning" });
+  const gmBank = [gm, phrase({ meaning: "goodbye" }), phrase({ meaning: "the bill" }), phrase({ meaning: "a kilo" })];
+  assert.ok(listenChoices(gm, gmBank, { nativeLocale: "en-US", seed: "x" }).includes("goodbye"));
+  // Stopwords alone don't make two meanings alike.
+  const target = phrase({ meaning: "how are you" });
+  const bank = [target, phrase({ meaning: "where is it" }), phrase({ meaning: "what time" }), phrase({ meaning: "the bill" })];
+  assert.equal(listenChoices(target, bank, { nativeLocale: "en-US", seed: "x" }).length, CHOICES);
+  // Fewer than three left once the alike ones go: typed instead.
+  const few = phrase({ meaning: "thanks" });
+  assert.equal(listenChoices(few, [few, phrase({ meaning: "thank you" }), phrase({ meaning: "many thanks" }), ...others.slice(0, 2)], { nativeLocale: "en-US", seed: "x" }), null);
+});
+
+test("offeredChoices: the same card (phrase, version, revision) and bank always draw the same choices, whatever order the bank comes in", () => {
+  const bank = ["the bill", "a kilo", "goodbye", "the market", "tomorrow", "the beach", "the station"].map((meaning) => phrase({ meaning }));
+  const target = bank[0];
+  const a = offeredChoices(target, bank, { version: "0:", nativeLocale: "en-US" });
+  const b = offeredChoices(target, [...bank].reverse(), { version: "0:", nativeLocale: "en-US" });
+  assert.deepEqual(a, b);
+  const q = buildQueue(bank, { now: NOW, mode: "listening", length: 7, nativeLocale: "en-US" });
+  assert.deepEqual(q.items.find((i) => i.phraseId === target.id).choices, a);
+  // Another version: drawn afresh (deterministic too).
+  const seeds = new Set(Array.from({ length: 8 }, (_, i) => JSON.stringify(offeredChoices(target, bank, { version: `${i}:x`, nativeLocale: "en-US" }))));
+  assert.ok(seeds.size > 1, "the draw depends on the card version");
+  assert.deepEqual(seededRand("k")(), seededRand("k")());
+});
+
 test("readAnswerInput: the drill names the review's mode and its skill; a choice only for listening; speak-it needs what was heard", () => {
   const ok = { phraseId: uuid(), version: "0:", revision: "0123456789abcdef", submitId: "0b5d6f7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b" };
   const bad = (body, re) => assert.match(readAnswerInput({ ...ok, ...body }).error ?? "", re, JSON.stringify(body));
@@ -142,10 +185,12 @@ test("listenMatch: the words heard (a dictation) or the meaning; choiceMatch: th
   assert.deepEqual(choiceMatch({ choice: "the changes", meaning: "the change", nativeLocale: "en-US" }), { verdict: "miss" });
 });
 
-test("speak-it matching: an accent the recogniser left out is exact, typed it is close", () => {
+test("speak-it matching: a same-sound accent (cuánto/cuanto) is exact spoken, close typed; a heard stress accent is close either way", () => {
   const base = { skill: "produce", text: "¿Cuánto cuesta?", meaning: "How much is it?", targetLocale: "es-MX" };
   assert.equal(localMatch({ ...base, answer: "cuanto cuesta", spoken: true }).verdict, "exact");
   assert.equal(localMatch({ ...base, answer: "cuanto cuesta" }).verdict, "close");
+  const stress = localMatch({ ...base, text: "Hablo español", answer: "habló español", spoken: true });
+  assert.deepEqual(stress, { verdict: "close", note: 'heard as "habló español": check the accent' });
 });
 
 test("graderQuestion and graderPrompt: a heard phrase and a spoken answer say so; a flashcard's prompt is as before", () => {
