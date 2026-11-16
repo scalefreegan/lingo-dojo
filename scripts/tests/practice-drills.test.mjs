@@ -180,6 +180,23 @@ test("listenMatch: the words heard (a dictation) or the meaning; choiceMatch: th
   assert.deepEqual(listenMatch({ ...base, answer: "change" }), { verdict: "exact", as: "meaning" });
   assert.equal(listenMatch({ ...base, answer: "la vueltaa" }).verdict, "close");
   assert.deepEqual(listenMatch({ ...base, answer: "the money back" }), { verdict: "miss", as: "meaning" });
+  // Both readings are checked; the better verdict wins.
+  const fr = { text: "université", meaning: "university", targetLocale: "fr-FR", nativeLocale: "en-US" };
+  assert.deepEqual(listenMatch({ ...fr, answer: "university" }), { verdict: "exact", as: "meaning" }, "a right meaning near the words is not a typo");
+  assert.deepEqual(listenMatch({ ...fr, answer: "université" }), { verdict: "exact", as: "words" }, "a right dictation near the meaning");
+  assert.deepEqual(listenMatch({ ...fr, answer: "universite" }), { verdict: "close", note: "as the words heard: check the accent", as: "words" }, "an accent off beats a letter off");
+  const univ = listenMatch({ ...fr, answer: "universitty" });
+  assert.deepEqual([univ.verdict, univ.as], ["close", "meaning"], "nearer to the meaning (one letter) than to the words (two)");
+  assert.match(univ.note, /^as the meaning: /);
+  const sp = { text: "la vuelta", meaning: "the change", targetLocale: "es-MX", nativeLocale: "en-US" };
+  assert.match(listenMatch({ ...sp, answer: "la vueltaa" }).note, /^as the words heard: /);
+  assert.match(listenMatch({ ...sp, answer: "the changes" }).note, /^as the meaning: /);
+  // A cognate spelled the same in both languages: exact (as the words).
+  assert.deepEqual(listenMatch({ text: "taxi", meaning: "taxi", answer: "Taxi", targetLocale: "es-MX", nativeLocale: "en-US" }), { verdict: "exact", as: "words" });
+  // A miss on both: one model check, which is told it is a heard phrase (either reading counts there).
+  assert.equal(listenMatch({ ...fr, answer: "school" }).verdict, "miss");
+  assert.deepEqual(graderQuestion({ skill: "listen", ...fr }), { question: "université", expected: "university", kind: "meaning", heard: true });
+  assert.match(graderPrompt({ ...graderQuestion({ skill: "listen", ...fr }), answer: "school", nativeLanguage: "English", targetVariant: "French" }), /spelling or romanization/);
   assert.deepEqual(choiceMatch({ choice: "the change", meaning: "the change", nativeLocale: "en-US" }), { verdict: "exact" });
   assert.deepEqual(choiceMatch({ choice: "the turn", meaning: "the change; the turn", nativeLocale: "en-US" }), { verdict: "exact" });
   assert.deepEqual(choiceMatch({ choice: "the changes", meaning: "the change", nativeLocale: "en-US" }), { verdict: "miss" });

@@ -548,14 +548,32 @@ export function localMatch({ skill, answer, text, meaning, alternates = [], targ
 
 /**
  * A typed answer to a listening card: the learner may write down the words
- * they heard or what they mean. The words first (as a produce card checks
- * them: a dictation), then the meaning (as a recognize card does). `as`
- * says which one matched; a miss goes to the model check as a meaning.
+ * they heard or what they mean. Both readings are checked, as a dictation
+ * (the words, as a produce card checks them) and as the meaning (as a
+ * recognize card does), and the better verdict wins: exact on either beats
+ * close on the other ("university" for French "université", meaning
+ * "university", is the right meaning, not a typo of the words); of two
+ * close ones, the nearer (an accent before a letter), the words on a tie.
+ * `as` says which reading it is, and the note is that reading's. A miss on
+ * both goes to the model check once, worded for a heard phrase (either
+ * reading counts there).
  */
 export function listenMatch({ answer, text, meaning, alternates = [], targetLocale = "", nativeLocale = "" }) {
-  const words = localMatch({ skill: "produce", answer, text, meaning, alternates, targetLocale });
-  if (words.verdict !== "miss") return { ...words, as: "words" };
-  return { ...localMatch({ skill: "recognize", answer, text, meaning, targetLocale, nativeLocale }), as: "meaning" };
+  const words = { ...localMatch({ skill: "produce", answer, text, meaning, alternates, targetLocale }), as: "words" };
+  const sense = { ...localMatch({ skill: "recognize", answer, text, meaning, targetLocale, nativeLocale }), as: "meaning" };
+  // A miss on both is reported as the meaning: the model check grades it so.
+  const best = closeness(sense) < closeness(words) || (sense.verdict === "miss" && words.verdict === "miss") ? sense : words;
+  // Say which reading a near miss was taken as: the learner may have meant the other.
+  if (best.verdict === "close" && best.note) return { ...best, note: `${best.as === "words" ? "as the words heard" : "as the meaning"}: ${best.note}` };
+  return best;
+}
+
+/** How far a local verdict is from right: exact, an accent off, a letter
+ *  off, a miss. */
+function closeness(m) {
+  if (m.verdict === "exact") return 0;
+  if (m.verdict === "close") return /accent/.test(m.note ?? "") ? 1 : 2;
+  return 3;
 }
 
 /**

@@ -1576,8 +1576,12 @@ holds; this adds two drills and a mode picker.
   bank has grown since, any phrase's meaning in it) is a 409; neither is
   recorded. A choice is right only as an exact meaning match
   (`choiceMatch`): Good, or Again, with no model call and no near miss. A **typed** answer (`{answer}`) is checked as the words heard
-  (a dictation, against the words and alternates) and then as the meaning
-  (`listenMatch`); a miss goes to the grader with the heard-phrase wording
+  (a dictation, against the words and alternates) and as the meaning
+  (`listenMatch`), and the better verdict wins: exact on either beats
+  close on the other ("university" for French "université" is the right
+  meaning, not a typo of the words); of two close ones the nearer (an
+  accent before a letter; the words on a tie), its note saying which
+  reading it was taken as. A miss on both goes once to the grader with the heard-phrase wording
   (`graderPrompt({heard: true})`: "they were not shown it", any spelling
   or romanization of the words counts). Replay is the page's own copy of
   the audio (no second request).
