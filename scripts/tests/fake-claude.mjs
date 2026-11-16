@@ -9,7 +9,9 @@
 // answered from its own files instead, so a voice test's run count never
 // includes the recap that ending a conversation starts: an empty recap by
 // default, `recap(text, delay)` to change it, "!fail" to exit 1 the way a
-// failed CLI run does, and `recapRuns()` counts them.
+// failed CLI run does, and `recapRuns()` counts them. A cloze generation
+// call (Practice's fill the gap) likewise: `cloze(text, delay)`,
+// `clozeRuns()`, `clozeArgs()`; by default `{"items": []}`.
 //
 //   const fake = fakeClaude();
 //   before(() => fake.install());  after(() => fake.restore());
@@ -36,6 +38,10 @@ export function fakeClaude() {
     recapDelay: path.join(bin, "recap-delay.txt"),
     recapRan: path.join(bin, "recap-ran"),
     recapArgs: path.join(bin, "recap-args.json"),
+    cloze: path.join(bin, "cloze.txt"),
+    clozeDelay: path.join(bin, "cloze-delay.txt"),
+    clozeRan: path.join(bin, "cloze-ran"),
+    clozeArgs: path.join(bin, "cloze-args.json"),
     replies: path.join(bin, "replies.json"),
     argsLog: path.join(bin, "args.jsonl"),
     mcp: path.join(bin, "mcp.json"),
@@ -46,20 +52,25 @@ export function fakeClaude() {
 const fs = require("fs");
 const files = ${JSON.stringify(files)};
 const args = process.argv.slice(2);
-const recap = args.some((a) => a.startsWith("You review one finished practice session"));
-fs.appendFileSync(recap ? files.recapRan : files.ran, "x");
-fs.writeFileSync(recap ? files.recapArgs : files.args, JSON.stringify(args));
-if (!recap) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
+// A recap or a cloze generation call is a side channel with its own files.
+const side = args.some((a) => a.startsWith("You review one finished practice session"))
+  ? "recap"
+  : args.some((a) => a.startsWith("You write fill-in-the-blank practice sentences"))
+    ? "cloze"
+    : null;
+fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
+fs.writeFileSync(side ? files[side + "Args"] : files.args, JSON.stringify(args));
+if (!side) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
 const mcpAt = args.indexOf("--mcp-config");
-if (!recap && mcpAt >= 0) fs.copyFileSync(args[mcpAt + 1], files.mcp);
-let text = fs.readFileSync(recap ? files.recap : files.reply, "utf8");
+if (!side && mcpAt >= 0) fs.copyFileSync(args[mcpAt + 1], files.mcp);
+let text = fs.readFileSync(side ? files[side] : files.reply, "utf8");
 // A sequence (answers()): the nth run since it was set takes the nth reply.
-if (!recap && fs.existsSync(files.replies)) {
+if (!side && fs.existsSync(files.replies)) {
   const list = JSON.parse(fs.readFileSync(files.replies, "utf8"));
   const n = fs.readFileSync(files.argsLog, "utf8").split("\\n").filter(Boolean).length;
   text = list[Math.min(n, list.length) - 1];
 }
-const delay = Number(fs.readFileSync(recap ? files.recapDelay : files.delay, "utf8")) || 0;
+const delay = Number(fs.readFileSync(side ? files[side + "Delay"] : files.delay, "utf8")) || 0;
 setTimeout(() => {
   if (text === "!fail") {
     process.stderr.write("something broke");
@@ -93,6 +104,14 @@ setTimeout(() => {
       fs.writeFileSync(files.recapDelay, String(delay));
     },
     recapRuns: () => count(files.recapRan),
+    /** The next cloze generation calls' reply (a JSON string, or "!fail"). */
+    cloze(text, delay = 0) {
+      fs.writeFileSync(files.cloze, text);
+      fs.writeFileSync(files.clozeDelay, String(delay));
+    },
+    clozeRuns: () => count(files.clozeRan),
+    /** The argv of the last cloze generation call. */
+    clozeArgs: () => (fs.existsSync(files.clozeArgs) ? JSON.parse(fs.readFileSync(files.clozeArgs, "utf8")) : null),
     /** The argv of the last extraction call. */
     recapArgs: () => (fs.existsSync(files.recapArgs) ? JSON.parse(fs.readFileSync(files.recapArgs, "utf8")) : null),
     /** The argv of the last run that wasn't a recap (no "claude"), or null before any. */
@@ -109,5 +128,6 @@ setTimeout(() => {
   };
   self.answer("NARRATOR-F: Hola.");
   self.recap(EMPTY_RECAP);
+  self.cloze(JSON.stringify({ items: [] }));
   return self;
 }

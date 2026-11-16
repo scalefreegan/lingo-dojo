@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
-import { answerCard, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
+import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
 import { startRecording, type Recording } from "../recorder";
 import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeStatsReply, PracticeVerdict,
@@ -20,7 +20,13 @@ import { Badge, Button, Card, inputClass } from "./ui";
  *    The words, and their readings for Mandarin, appear only after.
  *  - Speak it: the meaning shown, say the words; what the recogniser heard
  *    is shown before it is checked, so a mishearing can be recorded again.
- *  - Mixed: recognize as a flashcard, listen by ear, produce aloud.
+ *  - Fill the gap (cloze): a sentence with the phrase left out (from your
+ *    own sessions when one fits, else written for practice) and its
+ *    meaning as the hint; type or say the missing words. The gap shows no
+ *    length, and its words travel only with the grade. A bad sentence can
+ *    be flagged: it is never shown again.
+ *  - Mixed: recognize as a flashcard, listen by ear, produce aloud (or,
+ *    for a phrase with a sentence, every other time as a gap).
  * Every answer is graded by the server (a lenient match, then a model check
  * on a miss; a picked choice at once) and recorded; the grade can be
  * changed with Again / Hard / Good / Easy. */
@@ -34,7 +40,8 @@ const MODES: { value: PracticeMode; label: string; hint: string }[] = [
   { value: "flashcards", label: "Flashcards", hint: "Read and type, either way" },
   { value: "listening", label: "Listening", hint: "Hear it, pick or type what it means" },
   { value: "speak", label: "Speak it", hint: "See the meaning, say it aloud" },
-  { value: "mixed", label: "Mixed", hint: "All three" },
+  { value: "cloze", label: "Fill the gap", hint: "A sentence with the phrase missing: type or say it" },
+  { value: "mixed", label: "Mixed", hint: "A bit of everything" },
 ];
 
 const RATINGS: { value: PracticeRating; label: string; hint: string }[] = [
@@ -117,14 +124,33 @@ export default function PracticeView() {
     return () => ctrl.abort();
   }, [items, reload, prefs.mode, prefs.direction]);
 
+  // Sentences being written for a started session: ask for the counts
+  // again shortly, so they (and Start) catch up when they are in. The
+  // counts never start a call: only Start does.
+  const writing = !items && !!info?.cloze?.writing;
+  useEffect(() => {
+    if (!writing) return;
+    const t = setTimeout(() => setReload((n) => n + 1), 4000);
+    return () => clearTimeout(t);
+  }, [writing, info]);
+
   async function start() {
     setLoading(true);
     setError(null);
     try {
       const r = await practiceQueue(prefs.length, prefs.mode, prefs.direction);
-      setInfo(r);
+      // The queue doesn't check the voice setup: keep what the counts said.
+      setInfo((was) => ({ ...r, setup: r.setup ?? was?.setup ?? null }));
       if (!r.items.length) {
-        setError("Nothing to practise right now in this mode: no card is due, and no new one is left for today.");
+        setError(
+          r.cloze?.writing
+            ? "No sentence is ready yet: they are being written now. Start again in a moment."
+            : prefs.mode === "cloze" && r.cloze && !r.cloze.writable
+              ? "No gap card is ready: this language gets them only from lines of your own sessions."
+              : prefs.mode === "cloze" && r.cloze?.limited
+                ? "No sentence is ready, and today's sentences for this language are written: more tomorrow."
+                : "Nothing to practise right now in this mode: no card is due, and no new one is left for today.",
+        );
         return;
       }
       setItems(r.items);
@@ -154,6 +180,7 @@ export default function PracticeView() {
         languageName={languageName}
         nativeName={nativeName}
         locale={locale}
+        speechProblem={info?.setup?.speech ?? null}
         onNext={(answered) => {
           if (answered) {
             setDone((d) => [...d, { key: `${item.phraseId}:${item.skill}`, text: answered.expected.text, meaning: answered.expected.meaning, lang: item.lang, rating: answered.review.rating }]);
@@ -225,6 +252,21 @@ export default function PracticeView() {
             ))}
           </div>
           <p className={`${fine} text-fg-3`}>{MODES.find((m) => m.value === prefs.mode)?.hint}</p>
+          {(prefs.mode === "cloze" || prefs.mode === "mixed") && info?.cloze && !info.cloze.writable && (
+            <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-unwritten">
+              No gap sentences are written for {languageName || "this language"} yet (its words take endings, so a saved phrase rarely fits a sentence as it is). Lines from your own
+              sessions still make gap cards.
+            </p>
+          )}
+          {prefs.mode === "cloze" && info?.cloze?.writable && (info.cloze.writing || info.cloze.waiting > 0) && (
+            <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-waiting">
+              {info.cloze.writing
+                ? "Writing practice sentences for your next session…"
+                : info.cloze.limited
+                  ? `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet, and today's sentences for this language are written: more tomorrow.`
+                  : `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet: starting a session writes them for its cards.`}
+            </p>
+          )}
           {setupProblems.length > 0 && (
             <div className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-setup">
               {setupProblems.map((p) => (
@@ -267,7 +309,9 @@ export default function PracticeView() {
           {s && (
             <span className={`${fine} text-fg-3`}>
               {s.ready === 0
-                ? s.due + s.new === 0
+                ? prefs.mode === "cloze" && (info?.cloze?.waiting ?? 0) > 0
+                  ? "No sentence is ready yet."
+                  : s.due + s.new === 0
                   ? "Your bank has nothing to practise yet: words from your sessions, and phrases you star or add, show up here."
                   : s.due > 0
                     ? "Today's limit is reached. The day's limits reset at 4 a.m."
@@ -313,7 +357,7 @@ function Chip({ on, onClick, title, children }: { on: boolean; onClick: () => vo
 
 /* --------------------------------- one card -------------------------------- */
 
-type SubmitBody = Pick<PracticeAnswerRequest, "answer" | "choice" | "reveal" | "rating" | "drill">;
+type SubmitBody = Pick<PracticeAnswerRequest, "answer" | "choice" | "reveal" | "rating" | "drill" | "spoken">;
 
 /**
  * One card's answer: its submit id (a resend of it, a double click or a
@@ -339,6 +383,8 @@ function useAnswer(item: PracticeItem) {
       setResult(
         await answerCard({
           phraseId: item.phraseId, skill: item.skill, drill: item.drill, version: item.version, revision: item.revision, submitId,
+          // A cloze answer names the sentence it was shown.
+          ...(item.drill === "cloze" && item.cloze && (body.drill ?? item.drill) === "cloze" ? { clozeId: item.cloze.id } : {}),
           durationMs: Date.now() - shownAt.current, ...body,
         }),
       );
@@ -372,6 +418,8 @@ interface CardProps {
   languageName: string;
   nativeName: string;
   locale: string | null;
+  /** Why answers can't be said aloud here (no speech-to-text key), or null. */
+  speechProblem: string | null;
   answer: Answer;
   last: boolean;
   onNext: (answered: PracticeAnswerReply | null) => void;
@@ -407,7 +455,15 @@ function Session({
           <span className={`${fine} text-fg-3`}>{drillLabel(item, rest.languageName, rest.nativeName)}</span>
           {item.starred && <span className={`${fine} text-fg-3`} aria-label="starred">★</span>}
         </div>
-        {item.drill === "listening" ? <ListeningCard {...props} /> : item.drill === "speak" ? <SpeakCard {...props} /> : <FlashCard {...props} />}
+        {item.drill === "listening" ? (
+          <ListeningCard {...props} />
+        ) : item.drill === "speak" ? (
+          <SpeakCard {...props} />
+        ) : item.drill === "cloze" ? (
+          <ClozeCard {...props} />
+        ) : (
+          <FlashCard {...props} />
+        )}
         {answer.error && (
           <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-err" role="alert">
             <p>{answer.error}</p>
@@ -427,6 +483,7 @@ function drillLabel(item: PracticeItem, languageName: string, nativeName: string
   const target = languageName || "Target";
   if (item.drill === "listening") return `Listening · ${target} → ${nativeName}`;
   if (item.drill === "speak") return `Speak it · ${nativeName} → ${target}`;
+  if (item.drill === "cloze") return `Fill the gap · ${item.cloze?.origin === "example" ? "from one of your sessions" : target}`;
   return item.skill === "recognize" ? `${target} → ${nativeName}` : `${nativeName} → ${target}`;
 }
 
@@ -643,13 +700,12 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
   );
 }
 
-type SpeakState =
+type RecState =
   | { step: "idle" }
   | { step: "opening" }
   | { step: "recording"; rec: Recording; level: number }
   | { step: "hearing" }
-  | { step: "heard"; text: string }
-  | { step: "typing" };
+  | { step: "heard"; text: string };
 
 /** Why the microphone couldn't start, in words a learner can act on. */
 function micError(e: unknown): string {
@@ -661,17 +717,15 @@ function micError(e: unknown): string {
 }
 
 /**
- * Speak-it: the meaning shown, the learner says the words. The recording
- * is transcribed (with no hint of the expected answer), what was heard is
- * shown, and only Check records it: a mishearing can be recorded again,
- * and a blocked microphone, an empty recording or a failed transcription
- * never becomes a review. "Type it instead" makes it a typed produce
- * flashcard.
+ * A spoken answer: record (stop on a pause or by hand), transcribe with no
+ * hint of the expected answer, and hold what was heard until the card's
+ * Check sends it. A blocked microphone, an empty recording or a failed
+ * transcription is a `problem`, never an answer. Speak-it and a cloze said
+ * aloud share it.
  */
-function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
-  const [state, setState] = useState<SpeakState>({ step: "idle" });
+function useSpokenAnswer(answer: Answer) {
+  const [state, setState] = useState<RecState>({ step: "idle" });
   const [problem, setProblem] = useState<string | null>(null);
-  const { busy, result } = answer;
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
   // Bumped when the card goes: anything awaited across it (the microphone
@@ -765,65 +819,248 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
     }
   }
 
+  /** Back to nothing recorded (a recording going on is dropped). */
+  function reset() {
+    genRef.current++;
+    recRef.current?.cancel();
+    recRef.current = null;
+    ctrlRef.current?.abort();
+    setProblem(null);
+    setState({ step: "idle" });
+  }
+
+  return { state, problem, record, stop, reset };
+}
+
+type Spoken = ReturnType<typeof useSpokenAnswer>;
+
+/** Record / Stop with a level meter, and what was heard with Check and
+ *  Record again. `extra` goes beside Record (the drill's other ways out). */
+function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken; busy: boolean; lang?: string; onCheck: (heard: string) => void; extra?: ReactNode }) {
+  const { state, problem } = spoken;
+  return (
+    <>
+      {state.step === "heard" ? (
+        <div className="flex flex-col gap-2" data-testid="practice-heard">
+          <p className="rounded-xl bg-raised px-3 py-2 text-lg text-fg" lang={lang}>
+            Heard: “{state.text}”
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button autoFocus variant="primary" disabled={busy} onClick={() => onCheck(state.text)}>
+              {busy ? "Checking…" : "Check"}
+            </Button>
+            <Button disabled={busy} onClick={() => void spoken.record()}>
+              Record again
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {state.step === "recording" ? (
+            <Button variant="primary" onClick={() => void spoken.stop()} data-testid="practice-record">
+              ■ Stop
+            </Button>
+          ) : (
+            <Button variant="primary" onClick={() => void spoken.record()} disabled={state.step === "hearing" || state.step === "opening"} data-testid="practice-record">
+              {state.step === "hearing" ? "Listening…" : state.step === "opening" ? "Starting the microphone…" : "● Record"}
+            </Button>
+          )}
+          {state.step === "recording" && (
+            <div className="h-2 w-24 overflow-hidden rounded-full bg-raised" aria-hidden="true">
+              <div className="h-full bg-accent" style={{ width: `${Math.round(state.level * 100)}%` }} />
+            </div>
+          )}
+          {extra}
+        </div>
+      )}
+      {problem && (
+        <p className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-speak-problem">
+          {problem}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Speak-it: the meaning shown, the learner says the words. The recording
+ * is transcribed (with no hint of the expected answer), what was heard is
+ * shown, and only Check records it: a mishearing can be recorded again,
+ * and a blocked microphone, an empty recording or a failed transcription
+ * never becomes a review. "Type it instead" makes it a typed produce
+ * flashcard.
+ */
+function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
+  const spoken = useSpokenAnswer(answer);
+  const [typing, setTyping] = useState(false);
+  const { busy, result } = answer;
+  const idle = spoken.state.step === "idle";
   const target = languageName || "the language you're learning";
   return (
     <>
       <p className="font-[family-name:var(--font-display)] text-2xl font-semibold break-words text-fg sm:text-3xl" data-testid="practice-prompt">
         {item.meaning}
       </p>
-      {!result && state.step !== "typing" && (
+      {!result && !typing && (
         <div className="flex flex-col gap-2">
           <p className={`${fine} text-fg-2`}>Say it in {target}</p>
-          {state.step === "heard" ? (
-            <div className="flex flex-col gap-2" data-testid="practice-heard">
-              <p className="rounded-xl bg-raised px-3 py-2 text-lg text-fg" lang={item.lang || undefined}>
-                Heard: “{state.text}”
-              </p>
-              <div className="flex flex-wrap gap-2">
-                <Button autoFocus variant="primary" disabled={busy} onClick={() => void answer.submit({ answer: state.text })}>
-                  {busy ? "Checking…" : "Check"}
+          <SpokenControls
+            spoken={spoken}
+            busy={busy}
+            lang={item.lang || undefined}
+            onCheck={(heard) => void answer.submit({ answer: heard })}
+            extra={
+              <>
+                <Button variant="ghost" className="px-2 py-1 text-sm" disabled={!idle} onClick={() => setTyping(true)}>
+                  Type it instead
                 </Button>
-                <Button disabled={busy} onClick={() => void record()}>
-                  Record again
+                <Button variant="ghost" className="px-2 py-1 text-sm" disabled={!idle || busy} onClick={() => void answer.submit({ answer: "", drill: "flashcard" })}>
+                  I don't know
                 </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex flex-wrap items-center gap-2">
-              {state.step === "recording" ? (
-                <Button variant="primary" onClick={() => void stop()} data-testid="practice-record">
-                  ■ Stop
-                </Button>
-              ) : (
-                <Button variant="primary" onClick={() => void record()} disabled={state.step === "hearing" || state.step === "opening"} data-testid="practice-record">
-                  {state.step === "hearing" ? "Listening…" : state.step === "opening" ? "Starting the microphone…" : "● Record"}
-                </Button>
-              )}
-              {state.step === "recording" && (
-                <div className="h-2 w-24 overflow-hidden rounded-full bg-raised" aria-hidden="true">
-                  <div className="h-full bg-accent" style={{ width: `${Math.round(state.level * 100)}%` }} />
-                </div>
-              )}
-              <Button variant="ghost" className="px-2 py-1 text-sm" disabled={state.step !== "idle"} onClick={() => setState({ step: "typing" })}>
-                Type it instead
-              </Button>
-              <Button variant="ghost" className="px-2 py-1 text-sm" disabled={state.step !== "idle" || busy} onClick={() => void answer.submit({ answer: "", drill: "flashcard" })}>
-                I don't know
-              </Button>
-            </div>
-          )}
-          {problem && (
-            <p className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-speak-problem">
-              {problem}
-            </p>
-          )}
+              </>
+            }
+          />
         </div>
       )}
-      {!result && state.step === "typing" && (
+      {!result && typing && (
         // Typed, it is a produce flashcard: the review says so (mode flashcard).
         <TypedAnswer label={`Type it in ${target}`} lang={item.lang || undefined} busy={busy} onCheck={(a) => void answer.submit({ answer: a, drill: "flashcard" })} />
       )}
-      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} how={state.step === "typing" ? "wrote" : "said"} />}
+      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} how={typing ? "wrote" : "said"} />}
+    </>
+  );
+}
+
+/** The sentence around a gap: the context with its readings (Mandarin),
+ *  the gap a fixed-width box that gives no length away (and no reading:
+ *  it has no characters on the page to read). */
+function GapSentence({ before, after, locale, lang, filled }: { before: string; after: string; locale: string | null; lang?: string; filled?: string }) {
+  return (
+    <p className="font-[family-name:var(--font-display)] text-2xl leading-relaxed font-semibold break-words text-fg sm:text-3xl" lang={lang} dir="auto" data-testid={filled ? "practice-cloze-filled" : "practice-prompt"}>
+      <RubyText text={before} locale={locale} />
+      {filled ? (
+        <mark className="rounded bg-accent-soft px-1 text-accent">
+          <RubyText text={filled} locale={locale} />
+        </mark>
+      ) : (
+        <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+      )}
+      <RubyText text={after} locale={locale} />
+    </p>
+  );
+}
+
+/**
+ * Fill the gap (cloze): a sentence with the phrase left out, its meaning
+ * as the hint; the learner types the missing words, or says them (the
+ * speak-it recorder and rules: a transcript, held until Check). Graded as
+ * the phrase's words. A sentence that is wrong, unnatural or could take
+ * other words just as well can be flagged: it is never shown again, and
+ * the card is skipped with nothing recorded.
+ */
+function ClozeCard({ item, languageName, locale, speechProblem, answer, last, onNext }: CardProps) {
+  const spoken = useSpokenAnswer(answer);
+  const [saying, setSaying] = useState(false);
+  const [flag, setFlag] = useState<"idle" | "busy" | "done">("idle");
+  const [flagError, setFlagError] = useState<string | null>(null);
+  const { busy, result } = answer;
+  const cloze = item.cloze;
+  const target = languageName || "the language you're learning";
+  if (!cloze) return <p className="text-sm text-err">This card has no sentence: skip it.</p>;
+
+  async function flagIt() {
+    if (!cloze || flag !== "idle") return;
+    setFlag("busy");
+    setFlagError(null);
+    try {
+      await flagCloze(cloze.id);
+      spoken.reset();
+      setFlag("done");
+    } catch (e) {
+      setFlagError(errText(e));
+      setFlag("idle");
+    }
+  }
+
+  const flagRow = (
+    <div className="flex flex-col gap-1">
+      {flag === "done" ? (
+        <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-flagged">
+          Flagged: this sentence won't be shown again.
+        </p>
+      ) : (
+        <div>
+          <Button variant="ghost" className="px-2 py-1 text-sm" disabled={flag === "busy" || busy} onClick={() => void flagIt()} data-testid="practice-cloze-flag">
+            {flag === "busy" ? "Flagging…" : "Bad sentence?"}
+          </Button>
+        </div>
+      )}
+      {flagError && (
+        <p className="text-sm text-err" role="alert">
+          {flagError}
+        </p>
+      )}
+    </div>
+  );
+
+  return (
+    <>
+      {result?.cloze ? (
+        <GapSentence before={result.cloze.before} after={result.cloze.after} filled={result.cloze.blank} locale={locale} lang={item.lang || undefined} />
+      ) : (
+        <GapSentence before={cloze.before} after={cloze.after} locale={locale} lang={item.lang || undefined} />
+      )}
+      <p className="text-sm text-fg-2" data-testid="practice-cloze-hint">
+        <span className="text-fg-3">The missing words mean:</span> <span className="font-medium text-fg">{item.meaning}</span>
+      </p>
+      {!result && flag === "done" && (
+        // Flagged before answering: nothing is recorded; the card is skipped.
+        <>
+          {flagRow}
+          <div>
+            <Button variant="primary" autoFocus onClick={() => onNext(null)} data-testid="practice-skip">
+              {last ? "Finish" : "Next card"}
+            </Button>
+          </div>
+        </>
+      )}
+      {!result && flag !== "done" && !saying && (
+        <TypedAnswer label={`Fill the gap in ${target}`} lang={item.lang || undefined} busy={busy} onCheck={(a) => void answer.submit({ answer: a })}>
+          <Button onClick={() => setSaying(true)} disabled={busy || !!speechProblem} title={speechProblem ?? undefined} data-testid="practice-cloze-say">
+            Say it
+          </Button>
+          <Button variant="ghost" className="px-2 py-1 text-sm" onClick={() => void answer.submit({ answer: "" })} disabled={busy}>
+            I don't know
+          </Button>
+        </TypedAnswer>
+      )}
+      {!result && flag !== "done" && saying && (
+        <div className="flex flex-col gap-2">
+          <p className={`${fine} text-fg-2`}>Say the missing words in {target}</p>
+          <SpokenControls
+            spoken={spoken}
+            busy={busy}
+            lang={item.lang || undefined}
+            onCheck={(heard) => void answer.submit({ answer: heard, spoken: true })}
+            extra={
+              <Button
+                variant="ghost"
+                className="px-2 py-1 text-sm"
+                disabled={spoken.state.step !== "idle"}
+                onClick={() => {
+                  spoken.reset();
+                  setSaying(false);
+                }}
+              >
+                Type it instead
+              </Button>
+            }
+          />
+        </div>
+      )}
+      {!result && flag !== "done" && flagRow}
+      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} how={saying ? "said" : "wrote"} />}
+      {result && flagRow}
     </>
   );
 }

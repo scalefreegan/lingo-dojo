@@ -290,11 +290,12 @@ test("0005 applies on a 0004 database with data: the owner's rows untouched, the
   t.after(db.drop);
   const all = migrationsOnDisk();
   const at = all.findIndex((m) => m.sql.some((s) => s.includes("0005_bank_reader")));
-  assert.equal(at, all.length - 1, "0005 is the latest migration");
+  assert.ok(at > 0, "0005 is on disk");
   await applyMigrations(db.query, all.slice(0, at));
   const fx = await seedBank(db.query);
   const before = await db.query("select id, text, meaning from phrases order by id");
-  await applyMigrations(db.query, all);
+  // Through 0005 only: later migrations have their own tests.
+  await applyMigrations(db.query, all.slice(0, at + 1));
   assert.deepEqual(await db.query("select id, text, meaning from phrases order by id"), before);
   await asReader(db.query, readerRoleFor(db.name), fx.otherLanguage, async () => {
     assert.deepEqual((await db.query("select text from phrases order by text collate \"C\"")).map((r) => r.text), ["Markt", "Wie viel?"]);

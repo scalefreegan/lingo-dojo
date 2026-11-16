@@ -53,6 +53,19 @@
 // the migrating role SET ROLE to it, grants it SELECT on exactly
 // READER_COLUMNS and creates one policy per table for it alone.
 //
+// 0006_cloze (fill-in-the-blank practice, docs/DATA.md §Practice modes):
+//  1. Clears cloze_items first (CLEAR_0006). Nothing wrote the table before
+//     this migration, so it holds no row; one that some other tool left
+//     would have no phrase key for the new NOT NULL column, and the table
+//     is a cache the app refills (an example's item again from the line, a
+//     generated one at the cost of one call). Not a guard like 0003's: a
+//     cache isn't worth refusing to start over.
+//  2. Reordered (ORDER_0006): drizzle-kit adds cloze_items_example_fk
+//     before phrase_examples_id_phrase, the unique key it references.
+//  The reader role of 0005 gets nothing on cloze_items (the table's
+//  sentences are the learner's own session lines) or on the new
+//  cloze_calls (0005 cleared any default privilege that would grant it).
+//
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
 //                                          regenerating it (idempotent)
@@ -357,6 +370,33 @@ function bankReaderEdits(generated) {
   return joinStatements([...stmts, READER_0005]);
 }
 
+/* -------------------------------- 0006_cloze -------------------------------- */
+
+const MARK_0006 = "-- Hand-written (scripts/db/hand-edits.mjs, 0006 edit 1):";
+
+const CLEAR_0006 = `${MARK_0006} cloze_items is a cache nothing
+-- wrote before this migration; any row would have no phrase key (see the
+-- header of hand-edits.mjs).
+DELETE FROM "cloze_items";`;
+
+const ORDER_0006 = [
+  { name: "clear", insert: [CLEAR_0006] },
+  { name: "new tables", re: /^CREATE TABLE "cloze_calls" \(/ },
+  { name: "relaxed columns", re: /^ALTER TABLE "cloze_items" ALTER COLUMN "\w+" DROP NOT NULL;$/ },
+  // Not "new columns": reorder() takes that bucket's NOT NULL off for a
+  // backfill to set; this key is NOT NULL at once (the table is empty).
+  { name: "added columns", re: /^ALTER TABLE "cloze_items" ADD COLUMN / },
+  { name: "unique keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" UNIQUE\(/ },
+  { name: "foreign keys", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" FOREIGN KEY / },
+  { name: "checks", re: /^ALTER TABLE "\w+" ADD CONSTRAINT "\w+" CHECK / },
+  { name: "indexes", re: /^CREATE (UNIQUE )?INDEX "/ },
+];
+
+function clozeEdits(generated) {
+  if (generated.includes(MARK_0006)) return generated; // already applied
+  return reorder(generated, ORDER_0006, "0006");
+}
+
 /* ---------------------------------- all ------------------------------------ */
 
 const EDITS = {
@@ -364,6 +404,7 @@ const EDITS = {
   "0002_language_profiles": languageProfileEdits,
   "0003_phrase_bank_per_language": phraseBankEdits,
   "0005_bank_reader": bankReaderEdits,
+  "0006_cloze": clozeEdits,
 };
 
 /** The migration `tag` as committed, from drizzle-kit's output for it. */

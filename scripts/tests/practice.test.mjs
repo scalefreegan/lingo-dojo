@@ -114,7 +114,7 @@ test("buildQueue: reviews first claim the room, new fill the rest, spread among 
   assert.ok(!q.items.some((it, i) => i > 0 && it.kind === "new" && q.items[i - 1].kind === "new"));
   // Items carry what the page shows and the version to answer.
   const first = q.items.find((i) => i.kind === "review");
-  assert.deepEqual(Object.keys(first).sort(), ["choices", "drill", "kind", "lang", "meaning", "phraseId", "revision", "skill", "starred", "text", "version"]);
+  assert.deepEqual(Object.keys(first).sort(), ["choices", "cloze", "drill", "kind", "lang", "meaning", "phraseId", "revision", "skill", "starred", "text", "version"]);
   assert.equal(q.items.find((i) => i.kind === "new").version, "0:");
   assert.deepEqual(q.stats, { due: 6, new: 6, done: { new: 0, reviews: 0 }, limits: DAILY_LIMITS, left: DAILY_LIMITS, ready: 12 });
 
@@ -142,7 +142,7 @@ test("readAnswerInput: ids, skills, versions, lengths, NUL and control character
   assert.equal(r.error, undefined);
   assert.deepEqual(r.value, {
     phraseId: ok.phraseId, skill: "produce", drill: "flashcard", version: "0:", revision: "0123456789abcdef", submitId: SUBMIT, answer: "la vuelta", choice: false, reveal: false,
-    rating: null, durationMs: 4200, utcOffsetMinutes: -420,
+    rating: null, durationMs: 4200, utcOffsetMinutes: -420, clozeId: null, spoken: false,
   });
   const bad = (patch, re) => assert.match(readAnswerInput({ ...ok, ...patch }).error ?? "", re, JSON.stringify(patch));
   bad({ phraseId: "x" }, /phraseId/);

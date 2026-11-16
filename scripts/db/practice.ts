@@ -37,14 +37,16 @@
 
 import { and, desc, eq, inArray, isNotNull, ne, sql, type SQL } from "drizzle-orm";
 import { fromRow, masteryBand, review as fsrsReview, toRow, type CardState, type Rating } from "../../scripts/fsrs.mjs";
+import { clozeKey } from "../../scripts/cloze.mjs";
 import { cardVersion, phraseRevision, withAlternate, withoutAlternate, type CandidatePhrase, type Outcome } from "../../scripts/practice.mjs";
 import type { PracticeAnswerReply, PracticeDrill, PracticeSkill, PracticeVerdict } from "../../web/shared/practice.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { cards, phrases, reviews } from "./schema.ts";
+import { cards, clozeItems, phrases, reviews } from "./schema.ts";
 
 type PhraseRow = typeof phrases.$inferSelect;
 type CardRow = typeof cards.$inferSelect;
 type ReviewRow = typeof reviews.$inferSelect;
+type ClozeRow = typeof clozeItems.$inferSelect;
 
 export class PracticeError extends Error {
   code: "ENOENT" | "ECONFLICT";
@@ -57,7 +59,7 @@ export class PracticeError extends Error {
 const SKILLS: PracticeSkill[] = ["recognize", "produce", "listen"];
 /** The review modes a practice answer writes (reviews.mode): every one but
  *  a session's recap. A submit id or an override is looked up among these. */
-const DRILL_MODES: PracticeDrill[] = ["flashcard", "listening", "speak"];
+const DRILL_MODES: PracticeDrill[] = ["flashcard", "listening", "speak", "cloze"];
 
 /* ---------------------------------- reads ---------------------------------- */
 
@@ -126,14 +128,26 @@ function practisableOr409(phrase: PhraseRow): void {
 
 /* ---------------------------------- writes --------------------------------- */
 
-function reply(row: ReviewRow, card: CardRow, phrase: PhraseRow, extra: { alternateAdded: boolean; replayed: boolean }): PracticeAnswerReply {
+function reply(row: ReviewRow, card: CardRow, phrase: PhraseRow, extra: { alternateAdded: boolean; replayed: boolean }, cloze: ClozeRow | null = null): PracticeAnswerReply {
   const state = fromRow(card);
+  const s = cloze?.sentence;
   return {
     review: { id: Number(row.id), rating: row.rating as Rating, verdict: (row.verdict ?? "self") as PracticeVerdict, note: row.graderNote, answer: row.answer },
     card: { version: cardVersion(state), due: state.due, mastery: masteryBand(state), state: state.state, reps: state.reps, lapses: state.lapses },
     expected: { text: phrase.text ?? "", meaning: phrase.meaning ?? "" },
+    cloze:
+      s != null && cloze!.blankStart != null && cloze!.blankEnd != null
+        ? { before: s.slice(0, cloze!.blankStart), blank: s.slice(cloze!.blankStart, cloze!.blankEnd), after: s.slice(cloze!.blankEnd) }
+        : null,
     ...extra,
   };
+}
+
+/** A review's cloze item (card_before.cloze_id), if it was a cloze answer
+ *  and the item is still there: for the reply's sentence. */
+async function clozeOf(tx: Db, profile: LanguageProfileRef, row: ReviewRow): Promise<ClozeRow | null> {
+  const id = extrasOf(row).cloze_id;
+  return id ? ((await forLanguageProfile(tx, profile).get(clozeItems, eq(clozeItems.id, id))) ?? null) : null;
 }
 
 /** The phrase, then its card of `skill` (made if missing), both locked for
@@ -157,6 +171,8 @@ async function lockPhraseAndCard(tx: Db, profile: LanguageProfileRef, phraseId: 
 interface ReviewExtras {
   submit_id?: string;
   added_alternate?: string;
+  /** A cloze answer's sentence (cloze_items.id). */
+  cloze_id?: string;
 }
 const extrasOf = (row: ReviewRow): ReviewExtras => (row.cardBefore ?? {}) as ReviewExtras;
 
@@ -196,7 +212,22 @@ export interface AnswerWrite {
   keepAlternate: boolean;
   /** The target locale, for comparing alternates (CJK spacing). */
   targetLocale: string;
+  /** A cloze answer: the sentence it was shown, and the clozeKey the
+   *  phrase had when it was graded. Checked again under the lock. */
+  cloze?: { id: string; key: string } | null;
   now: Date;
+}
+
+/** The 409s for a cloze sentence that can't take an answer any more. */
+export const CLOZE_GONE = "this sentence was changed or removed since the card was shown; skip it";
+export const CLOZE_FLAGGED = "you flagged this sentence, so it can't be answered; skip it";
+
+/** Whether cloze item `row` can take an answer for `phraseId` at `key`:
+ *  null, or the 409's message. */
+export function clozeProblem(row: ClozeRow | undefined | null, phraseId: string, key: string): string | null {
+  if (!row || row.phraseId !== phraseId || row.sentence == null || row.phraseKey !== key) return CLOZE_GONE;
+  if (row.flaggedAt) return CLOZE_FLAGGED;
+  return null;
 }
 
 /**
@@ -215,7 +246,7 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
       // Only this very submit is a replay: another answer at the same
       // version (another tab) must not come back as if it were this one.
       const same = await reviewBySubmit(tx, profile, card.id, w.submitId);
-      if (same) return reply(same, card, phrase, { alternateAdded: false, replayed: true });
+      if (same) return reply(same, card, phrase, { alternateAdded: false, replayed: true }, await clozeOf(tx, profile, same));
       throw new PracticeError("ECONFLICT", "this card was practised somewhere else (another tab?) since it was shown; it has been skipped");
     }
     practisableOr409(phrase);
@@ -224,7 +255,15 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
     if (!w.outcome) throw new PracticeError("ECONFLICT", "this card changed while you answered; it has been skipped");
     const outcome = w.outcome;
     if (phraseRevision(phrase) !== w.revision) throw new PracticeError("ECONFLICT", EDITED);
-    const next = fsrsReview(before, outcome.rating, w.now, { utcOffsetMinutes: w.utcOffsetMinutes }).card;
+    // A cloze answer: its sentence still there, of this phrase's words and
+    // meaning, and not flagged (a flag or a fill since grading).
+    let cloze: ClozeRow | null = null;
+    if (w.drill === "cloze") {
+      cloze = (await mine.get(clozeItems, eq(clozeItems.id, w.cloze?.id ?? ""))) ?? null;
+      const problem = clozeProblem(cloze, phrase.id, clozeKey(phrase));
+      if (problem) throw new PracticeError("ECONFLICT", problem);
+    }
+    const next =fsrsReview(before, outcome.rating, w.now, { utcOffsetMinutes: w.utcOffsetMinutes }).card;
     const alternates = w.keepAlternate && w.answer ? withAlternate(phrase.alternates, w.answer, { text: phrase.text ?? "", lang: w.targetLocale }) : phrase.alternates;
     const alternateAdded = alternates.length !== phrase.alternates.length;
     const [updated] = await mine.update(cards, toRow(next), eq(cards.id, card.id));
@@ -237,7 +276,12 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
       graderNote: outcome.note,
       durationMs: w.durationMs,
       reviewedAt: w.now,
-      cardBefore: { ...before, submit_id: w.submitId, ...(alternateAdded ? { added_alternate: alternates[alternates.length - 1] } : {}) },
+      cardBefore: {
+        ...before,
+        submit_id: w.submitId,
+        ...(alternateAdded ? { added_alternate: alternates[alternates.length - 1] } : {}),
+        ...(cloze ? { cloze_id: cloze.id } : {}),
+      },
     });
     const [p] = await mine.update(
       phrases,
@@ -247,7 +291,7 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
       },
       eq(phrases.id, phrase.id),
     );
-    return reply(row, updated, p, { alternateAdded, replayed: false });
+    return reply(row, updated, p, { alternateAdded, replayed: false }, cloze);
   });
 }
 
@@ -287,7 +331,7 @@ export async function overrideReview(
     const { phrase, card } = await lockPhraseAndCard(tx, profile, cardRow.phraseId, cardRow.skill as PracticeSkill);
     const last = await latestReview(tx, profile, card.id);
     if (!last || Number(last.id) !== id) throw new PracticeError("ECONFLICT", "this card has been reviewed again since; only its latest answer can be changed");
-    if (last.rating === opts.rating) return reply(last, card, phrase, { alternateAdded: false, replayed: true });
+    if (last.rating === opts.rating) return reply(last, card, phrase, { alternateAdded: false, replayed: true }, await clozeOf(tx, profile, last));
     const before = fromRow(last.cardBefore as unknown as CardState);
     const restored = fsrsReview(before, opts.rating, last.reviewedAt, { utcOffsetMinutes: opts.utcOffsetMinutes }).card;
     const [updated] = await mine.update(cards, toRow(restored), eq(cards.id, card.id));
@@ -298,6 +342,6 @@ export async function overrideReview(
       const alternates = withoutAlternate(phrase.alternates, added, opts.targetLocale);
       if (alternates.length !== phrase.alternates.length) [p] = await mine.update(phrases, { alternates }, eq(phrases.id, phrase.id));
     }
-    return reply(row, updated, p, { alternateAdded: false, replayed: false });
+    return reply(row, updated, p, { alternateAdded: false, replayed: false }, await clozeOf(tx, profile, row));
   });
 }

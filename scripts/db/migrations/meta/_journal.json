@@ -43,6 +43,13 @@
       "when": 1794794462630,
       "tag": "0005_bank_reader",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794805582017,
+      "tag": "0006_cloze",
+      "breakpoints": true
     }
   ]
 }

@@ -84,6 +84,10 @@ declare module "*/scripts/match.mjs" {
     kind?: "target" | "meaning";
     heard?: boolean;
     spoken?: boolean;
+    /** A cloze answer: the sentence shown, its gap as "___". */
+    gapped?: string | null;
+    /** A cloze answer: the sentence as written, the expected answer in it. */
+    full?: string | null;
   }): string;
   export function parseGraderReply(text: unknown, opts?: { strict?: boolean }): { accepted: boolean; rating_hint: "good" | "hard"; note: string } | null;
 }
