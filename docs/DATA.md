@@ -2096,11 +2096,17 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   per level.
 - **What pays, and when.** Only **starting a session** (the queue route,
   in the cloze or mixed mode) writes sentences, and only for the phrases
-  that session would ask as a gap (`practice.mjs` `clozeWanted`): in the
-  cloze mode, the room the session has under its length and what is left
-  of today's limits, due first; in Mixed, the session's own produce cards
-  asked aloud for want of a sentence. So a session of N cards makes at
-  most ⌈N/10⌉ calls, one after another. The counts the tab shows
+  that session would ask as a gap (`practice.mjs` `clozeWanted`). The
+  invariant: a started session never asks for more phrases than it has
+  unfilled places, nor past today's limits. In the cloze mode that is at
+  most its length less every card already in it (due and new alike), due
+  first, with due phrases up to the reviews left and new ones up to the
+  new cards left, after what the session itself takes. In Mixed it is
+  only the session's own produce cards asked aloud for want of a
+  sentence; they already hold places in it. `cloze.test.mjs` checks this
+  over a grid of lengths, ready and waiting new and due counts, and
+  limits. So a session of N cards makes at most ⌈N/10⌉ calls, one after
+  another. The counts the tab shows
   (`GET /api/practice`) never start a call, and neither does the page's
   poll while sentences are written (every 4 s, counts only). The calls run
   **in the background** after the queue answers; the queue shows what

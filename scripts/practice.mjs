@@ -204,10 +204,16 @@ export function produceDrill(phrase, card) {
 /**
  * The phrases one session would ask as a gap if they had a sentence, no
  * more: the generation a started session pays for is cut to that session.
- * Mixed: the session's own produce cards asked aloud for want of one. The
- * cloze mode (which leaves such phrases out): the room the session has
- * left under its length and today's limits, filled from the waiting
- * phrases in queue order, due first.
+ * The invariant (cloze.test.mjs checks it over a grid):
+ *  - mixed: only the session's own produce cards, asked aloud for want of
+ *    a sentence. They already hold places in it, under its length and
+ *    today's limits, so nothing is wanted beyond the session.
+ *  - cloze (which leaves such phrases out): at most the places the session
+ *    left unfilled (its length less every card already in it, due and new
+ *    alike), and within today's limits less what the session already takes:
+ *    due phrases up to the reviews left, new ones up to the new cards left.
+ *    The places are filled from the waiting phrases in queue order, due
+ *    first.
  */
 function wantedFor(mode, waiting, items, { length, left, nReviews, nNew }) {
   if (mode === "mixed") {
@@ -215,9 +221,10 @@ function wantedFor(mode, waiting, items, { length, left, nReviews, nNew }) {
     return waiting.filter((w) => inSession.has(w.phrase.id)).map((w) => w.phrase);
   }
   if (mode !== "cloze") return [];
-  const dueRoom = Math.max(0, Math.min(left.reviews, length) - nReviews);
+  const unfilled = Math.max(0, length - nReviews - nNew);
+  const dueRoom = Math.max(0, Math.min(left.reviews - nReviews, unfilled));
   const due = waiting.filter((w) => w.kind === "review").slice(0, dueRoom);
-  const newRoom = Math.max(0, Math.min(left.new - nNew, length - nReviews - nNew - due.length));
+  const newRoom = Math.max(0, Math.min(left.new - nNew, unfilled - due.length));
   const fresh = waiting.filter((w) => w.kind === "new").slice(0, newRoom);
   return [...due, ...fresh].map((w) => w.phrase);
 }

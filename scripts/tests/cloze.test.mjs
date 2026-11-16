@@ -297,6 +297,71 @@ test("clozeWanted is one session's worth: its length, within what is left of tod
   for (const mode of ["flashcards", "listening", "speak"]) assert.deepEqual(buildQueue(bank, { now: NOW, mode, length: 20 }).clozeWanted, []);
 });
 
+test("clozeWanted over a grid: never more phrases than the session's unfilled places, never past today's limits, in cloze and mixed, new and due", () => {
+  const withS = (extra) => {
+    const p = phrase(extra);
+    p.cloze = [item(`Pedimos ${p.text} al mesero.`, p.text)];
+    return p;
+  };
+  const many = (n, make) => Array.from({ length: n }, make);
+  const limits = { new: 8, reviews: 12 };
+  const COUNTS = [0, 2, 5, 13];
+  let cases = 0;
+  for (const mode of ["cloze", "mixed"]) {
+    // In mixed a produce card is new once the phrase was read and heard;
+    // due once it was reviewed (an odd rep count: asked aloud even with a
+    // sentence, so a ready due card is a session place either way).
+    const read = mode === "mixed" ? [card("recognize", 3), card("listen", 3)] : [];
+    const kinds = {
+      readyNew: (o) => withS({ cards: [...read], ...o }),
+      waitingNew: (o) => phrase({ cards: [...read], clozeNeeded: true, ...o }),
+      readyDue: (o) => withS({ cards: [...read, card("produce", -1, 1)], ...o }),
+      waitingDue: (o) => phrase({ cards: [...read, card("produce", -1, 1)], clozeNeeded: true, ...o }),
+    };
+    for (const rn of COUNTS) for (const wn of COUNTS) for (const rd of COUNTS) for (const wd of COUNTS) {
+      const bank = { readyNew: many(rn, kinds.readyNew), waitingNew: many(wn, kinds.waitingNew), readyDue: many(rd, kinds.readyDue), waitingDue: many(wd, kinds.waitingDue) };
+      const kindOf = new Map(Object.entries(bank).flatMap(([k, ps]) => ps.map((p) => [p.id, k])));
+      const all = Object.values(bank).flat();
+      for (const length of [5, 10, 20])
+        for (const done of [{ new: 0, reviews: 0 }, { new: 5, reviews: 9 }, { new: 8, reviews: 12 }]) {
+          const q = buildQueue(all, { now: NOW, mode, length, done, limits });
+          const at = `${mode} length ${length} ready/waiting new ${rn}/${wn} due ${rd}/${wd} done ${done.new}/${done.reviews}`;
+          const left = { new: limits.new - done.new, reviews: limits.reviews - done.reviews };
+          const inSession = q.items.map((i) => kindOf.get(i.phraseId));
+          const sessionNew = inSession.filter((k) => k.endsWith("New")).length;
+          const sessionDue = inSession.length - sessionNew;
+          const wanted = q.clozeWanted.map((p) => kindOf.get(p.id));
+          const wantedNew = wanted.filter((k) => k === "waitingNew").length;
+          const wantedDue = wanted.filter((k) => k === "waitingDue").length;
+          assert.equal(new Set(q.clozeWanted.map((p) => p.id)).size, wanted.length, at);
+          assert.equal(wantedNew + wantedDue, wanted.length, `only phrases waiting for a sentence: ${at}`);
+          assert.ok(q.items.length <= length && sessionNew <= left.new && sessionDue <= left.reviews, `the session itself: ${at}`);
+          if (mode === "cloze") {
+            assert.ok(wanted.length <= length - q.items.length, `no more than the unfilled places: ${at}`);
+            assert.ok(sessionNew + wantedNew <= left.new, `new limit: ${at}`);
+            assert.ok(sessionDue + wantedDue <= left.reviews, `review limit: ${at}`);
+            // And not needlessly fewer: the places are filled, due first.
+            const unfilled = length - q.items.length;
+            const expectDue = Math.min(wd, left.reviews - sessionDue, unfilled);
+            assert.equal(wantedDue, expectDue, `due fill: ${at}`);
+            assert.equal(wantedNew, Math.min(wn, left.new - sessionNew, unfilled - expectDue), `new fill: ${at}`);
+          } else {
+            // Mixed: only cards of this session, asked aloud for want of a sentence.
+            const ids = new Set(q.items.filter((i) => i.skill === "produce" && i.drill === "speak").map((i) => i.phraseId));
+            assert.ok(q.clozeWanted.every((p) => ids.has(p.id)), `only the session's own cards: ${at}`);
+            assert.equal(wanted.length, q.items.filter((i) => kindOf.get(i.phraseId).startsWith("waiting")).length, `every one of them: ${at}`);
+          }
+          cases++;
+        }
+    }
+  }
+  assert.equal(cases, 2 * 3 * 4 ** 4 * 3);
+  // Codex's case: five ready new cards fill a session of five; five due
+  // phrases waiting for a sentence get no call.
+  const full = buildQueue([...many(5, () => withS()), ...many(5, () => phrase({ cards: [card("produce", -1, 1)], clozeNeeded: true }))], { now: NOW, mode: "cloze", length: 5 });
+  assert.deepEqual([full.items.length, full.clozeWanted.length, full.clozeWaiting], [5, 0, 5]);
+});
+
 test("mixed: produce is a gap every other time when the phrase has a sentence, said aloud otherwise; read first; one card per phrase", () => {
   const withS = (extra) => {
     const p = phrase(extra);
