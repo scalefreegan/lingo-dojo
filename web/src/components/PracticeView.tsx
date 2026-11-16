@@ -5,7 +5,7 @@ import { startRecording, type Recording } from "../recorder";
 import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
 } from "../types";
-import { RubyText, RubyToggle } from "./Ruby";
+import { MarkedText, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* Practice over the active language's phrase bank (docs/DATA.md §Practice
@@ -639,11 +639,7 @@ function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: Practi
         </Button>
       </div>
       <p className="text-base leading-relaxed break-words text-fg" lang={lang} dir="auto" data-testid="practice-sentence-text">
-        <RubyText text={sentence.before} locale={locale} />
-        <mark className="rounded bg-accent-soft px-1 text-accent">
-          <RubyText text={sentence.blank} locale={locale} />
-        </mark>
-        <RubyText text={sentence.after} locale={locale} />
+        <MarkedText before={sentence.before} marked={sentence.blank} after={sentence.after} locale={locale} markClassName="rounded bg-accent-soft px-1 text-accent" />
       </p>
       {flag.error && (
         <p className="text-sm text-err" role="alert">
@@ -1001,19 +997,21 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
 
 /** The sentence around a gap: the context with its readings (Mandarin),
  *  the gap a fixed-width box that gives no length away (and no reading:
- *  it has no characters on the page to read). */
+ *  it has no characters on the page to read). Filled (the answer is out),
+ *  it is read as one sentence, so the words beside the gap keep their
+ *  context (MarkedText). */
 function GapSentence({ before, after, locale, lang, filled }: { before: string; after: string; locale: string | null; lang?: string; filled?: string }) {
   return (
     <p className="font-[family-name:var(--font-display)] text-2xl leading-relaxed font-semibold break-words text-fg sm:text-3xl" lang={lang} dir="auto" data-testid={filled ? "practice-cloze-filled" : "practice-prompt"}>
-      <RubyText text={before} locale={locale} />
       {filled ? (
-        <mark className="rounded bg-accent-soft px-1 text-accent">
-          <RubyText text={filled} locale={locale} />
-        </mark>
+        <MarkedText before={before} marked={filled} after={after} locale={locale} markClassName="rounded bg-accent-soft px-1 text-accent" />
       ) : (
-        <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+        <>
+          <RubyText text={before} locale={locale} />
+          <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+          <RubyText text={after} locale={locale} />
+        </>
       )}
-      <RubyText text={after} locale={locale} />
     </p>
   );
 }

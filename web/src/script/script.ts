@@ -104,6 +104,21 @@ export function splitHan(text: string): Piece[] {
   return out;
 }
 
+/** Parts of one sentence (the words before a marked phrase, the phrase,
+ *  the rest) as the one text they make and each part's [start, end) in
+ *  it. Readings are taken over the whole text and drawn per range: read
+ *  apart, a character beside the phrase loses its word (了 after 天黑 is
+ *  le in 天黑了, liǎo alone; 得 after 跑 is de, not dé). */
+export function joinParts(parts: string[]): { text: string; ranges: [number, number][] } {
+  const ranges: [number, number][] = [];
+  let text = "";
+  for (const p of parts) {
+    ranges.push([text.length, text.length + p.length]);
+    text += p;
+  }
+  return { text, ranges };
+}
+
 /** The distinct Chinese characters in `text`, in first-seen order. */
 export function hanChars(text: string): string[] {
   const seen: string[] = [];

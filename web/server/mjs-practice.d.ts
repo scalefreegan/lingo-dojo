@@ -182,6 +182,7 @@ declare module "*/scripts/cloze.mjs" {
     opts: { phrases: { text: string; meaning?: string }[]; locale: string; level: string; nativeLanguage?: string },
   ): { ok: true; sentences: { sentence: string; start: number; end: number }[][]; dropped: number; error?: undefined } | { ok: false; error: string };
   export function pickCloze<T extends { id: string; origin: string }>(items: T[] | null | undefined, seed: string): T | null;
+  export function pickSentence<T extends { id: string; origin: string }>(items: T[] | null | undefined, seed: string): T | null;
   export function clozeView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {
     id: string;
     before: string;

@@ -412,6 +412,21 @@ export function pickCloze(items, seed) {
   return pool[h % pool.length];
 }
 
+/**
+ * Which item a flashcard's answer side shows: not the one a cloze card of
+ * the same card version would pick (pickCloze), when the phrase has
+ * another, so a gap isn't a sentence the learner has just read whole (in
+ * Mixed, the phrase's next card can be that gap). Among the others, the
+ * same rule (own lines first) with a salted seed; with only one item, that
+ * one. Deterministic per seed. Null for none.
+ */
+export function pickSentence(items, seed) {
+  const gap = pickCloze(items, seed);
+  if (!gap) return null;
+  const rest = (items ?? []).filter((i) => i && i.id !== gap.id);
+  return rest.length ? pickCloze(rest, `${seed}:sentence`) : gap;
+}
+
 /** A cloze item as the page shows it: the sentence around the blank. The
  *  blank's words stay on the server until the answer. */
 export function clozeView(item) {

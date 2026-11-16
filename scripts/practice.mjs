@@ -10,7 +10,7 @@ import { createHash } from "node:crypto";
 import { RATINGS, ratingForVerdict } from "./fsrs.mjs";
 import { matchAnswer, normalizeAnswer } from "./match.mjs";
 import { LIMITS, clean, isUuid } from "./phrases.mjs";
-import { clozeView, pickCloze, sentenceView } from "./cloze.mjs";
+import { clozeView, pickCloze, pickSentence, sentenceView } from "./cloze.mjs";
 
 /** The skills a card exercises: recognize (see the words, give the
  *  meaning), produce (see the meaning, give the words) and listen (hear the
@@ -322,8 +322,10 @@ const REVISION_RE = /^[0-9a-f]{16}$/;
  *  carries both sides (the page shows one and hides the other until it is
  *  answered; it is the learner's own bank, which the Library shows
  *  anyway). A flashcard also carries the phrase used in a sentence when
- *  the phrase has one (`sentence`: the pick a cloze card of the same
- *  version would make), for its answer side only: it holds the words, so
+ *  the phrase has one (`sentence`: cloze.mjs pickSentence, another than a
+ *  cloze card of the same version would pick when there is another, so a
+ *  later gap isn't the sentence just read), for its answer side only: it
+ *  holds the words, so
  *  the page never shows it before the card is revealed or answered. A
  *  listening card carries neither side nor a sentence: the words are what
  *  the learner must hear, so they come only with the answer's reply (and
@@ -335,7 +337,7 @@ function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices =
   // hint), never the words: those come with the answer's reply.
   const seed = `${phrase.id}:${cardVersion(card)}`;
   const cloze = drill === "cloze" ? pickCloze(phrase.cloze, seed) : null;
-  const sentence = drill === "flashcard" ? pickCloze(phrase.cloze, seed) : null;
+  const sentence = drill === "flashcard" ? pickSentence(phrase.cloze, seed) : null;
   return {
     phraseId: phrase.id,
     skill,
