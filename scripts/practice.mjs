@@ -190,7 +190,7 @@ export function candidates(phrases, { now, direction = "mixed", mode = "flashcar
   fresh.sort(newOrder);
   waitingDue.sort((a, b) => ms(a.card.due) - ms(b.card.due) || newOrder(a, b));
   waitingNew.sort(newOrder);
-  return { reviews, fresh, waiting: [...waitingDue, ...waitingNew].map((w) => w.phrase) };
+  return { reviews, fresh, waiting: [...waitingDue, ...waitingNew] };
 }
 
 /** Mixed mode's drill for a produce card: a gap in one of the phrase's
@@ -199,6 +199,27 @@ export function candidates(phrases, { now, direction = "mixed", mode = "flashcar
  *  sentences is practised both ways. */
 export function produceDrill(phrase, card) {
   return phrase.cloze?.length && (Number(card?.reps) || 0) % 2 === 0 ? "cloze" : "speak";
+}
+
+/**
+ * The phrases one session would ask as a gap if they had a sentence, no
+ * more: the generation a started session pays for is cut to that session.
+ * Mixed: the session's own produce cards asked aloud for want of one. The
+ * cloze mode (which leaves such phrases out): the room the session has
+ * left under its length and today's limits, filled from the waiting
+ * phrases in queue order, due first.
+ */
+function wantedFor(mode, waiting, items, { length, left, nReviews, nNew }) {
+  if (mode === "mixed") {
+    const inSession = new Set(items.map((c) => c.phrase.id));
+    return waiting.filter((w) => inSession.has(w.phrase.id)).map((w) => w.phrase);
+  }
+  if (mode !== "cloze") return [];
+  const dueRoom = Math.max(0, Math.min(left.reviews, length) - nReviews);
+  const due = waiting.filter((w) => w.kind === "review").slice(0, dueRoom);
+  const newRoom = Math.max(0, Math.min(left.new - nNew, length - nReviews - nNew - due.length));
+  const fresh = waiting.filter((w) => w.kind === "new").slice(0, newRoom);
+  return [...due, ...fresh].map((w) => w.phrase);
 }
 
 /** How much of today's limits is left, given what today's practice has
@@ -249,8 +270,11 @@ export function buildQueue(
   }
   return {
     items: items.map((c) => queueItem(c, c.drill === "listening" ? offeredChoices(c.phrase, phrases, { version: cardVersion(c.card), nativeLocale }) : null)),
-    // Not for the wire: the phrases to write cloze sentences for, due first.
-    clozeWanted: waiting,
+    // Not for the wire: the phrases this session would ask as a gap had
+    // they a sentence, due first (what a started session writes for).
+    clozeWanted: wantedFor(mode, waiting, items, { length, left, nReviews, nNew }),
+    // How many of the bank's phrases wait for a sentence (the cloze mode's count).
+    clozeWaiting: waiting.length,
     stats: {
       due: reviews.length,
       new: fresh.length,
@@ -645,10 +669,12 @@ export function choiceMatch({ choice, meaning, nativeLocale = "" }) {
  *  A listening card's question is the words the learner heard (`heard`);
  *  a speak-it answer is a transcript (`spoken`), so spelling and
  *  punctuation are the recogniser's, not the learner's. */
-export function graderQuestion({ skill, text, meaning, drill = "flashcard", spoken = drill === "speak", gapped = null }) {
+export function graderQuestion({ skill, text, meaning, drill = "flashcard", spoken = drill === "speak", gapped = null, full = null }) {
   // A cloze answer fills a gap: the grader sees the sentence with a
-  // neutral gap (cloze.mjs gapped) and the meaning given as the hint.
-  if (skill === "produce") return { question: meaning, expected: text, kind: "target", ...(spoken ? { spoken: true } : {}), ...(drill === "cloze" && gapped ? { gapped } : {}) };
+  // neutral gap (cloze.mjs gapped), the meaning given as the hint, and the
+  // whole sentence as written, to judge what else fits it.
+  if (skill === "produce")
+    return { question: meaning, expected: text, kind: "target", ...(spoken ? { spoken: true } : {}), ...(drill === "cloze" && gapped ? { gapped, ...(full ? { full } : {}) } : {}) };
   return { question: text, expected: meaning, kind: "meaning", ...(skill === "listen" ? { heard: true } : {}) };
 }
 

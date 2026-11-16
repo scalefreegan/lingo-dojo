@@ -541,11 +541,14 @@ reviews         id (bigserial), card_id, learner_id, language_profile_id, mode
 cloze_items     id, phrase_id, learner_id, language_profile_id, phrase_key,
                 sentence, blank_start, blank_end (all three null: a
                 generated "nothing usable" mark), hint (unused),
-                origin (example|generated), example_id, flagged_at,
+                origin (example|generated), example_id, call_id (a
+                generated row's call: the daily cap), flagged_at,
                 created_at
                 fk (example_id, phrase_id) → phrase_examples, cascade;
                 unique (example_id, phrase_key) where example_id is set;
-                unique (phrase_id, phrase_key, sentence) where generated
+                unique (phrase_id, phrase_key, sentence) where generated;
+                unique (language_profile_id, phrase_id, phrase_key) where
+                no sentence
                 (migration 0006; see "As built (phase 7c)")
 ```
 
@@ -2064,12 +2067,16 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   speak-it recorder and rules, a transcript held until Check, disabled
   without a speech-to-text key), or picks "I don't know" (an empty answer:
   Again). It reviews the `produce` card; the review's `mode` is `cloze`,
-  and its `card_before` names the sentence (`cloze_id`). Graded as the
-  phrase's words, as a produce flashcard is (exact, close, then the grader
-  on a miss); the grader sees the sentence with a neutral `___` and the
-  meaning ("Meaning given for the gap"), so it can accept another fit.
-  A cloze answer never saves an alternate (a word that fits one sentence
-  isn't another way to say the phrase). The result shows the whole
+  and its `card_before` names the sentence (`cloze_id`). Matched locally
+  against the phrase's own words only (exact or close, the usual
+  leniency); anything else, a saved alternate included, goes to the
+  grader, since an alternate is another way to say the phrase, not always
+  a word that fits this sentence (`Wagen` for `Auto` in "Das ___ steht vor
+  meinem Haus"). The grader sees the sentence with a neutral `___`, the
+  whole sentence as written with the expected answer, and the meaning
+  ("Meaning given for the gap"), so it can accept another fit. A cloze
+  answer never saves an alternate (a word that fits one sentence isn't
+  another way to say the phrase). The result shows the whole
   sentence with the words filled in, readings on all of it for Chinese
   (before the answer, readings only on the context: the gap has none).
 - **Where sentences come from.** First the learner's own session lines
@@ -2077,28 +2084,57 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   of the dojo master's reply (`role = master`, not a browser copy), from
   one stretch of target-language segments (two target parts with native
   words between them aren't one sentence), within a length cap. The rest
-  are generated: one tool-less `claude -p` call (Sonnet, 120 s) writes two
+  are generated: a tool-less `claude -p` call (Sonnet, 120 s) writes two
   sentences each for a batch of up to 10 phrases, at the language's CEFR
   level (the profile's `level`; B1 if it names none), with length caps
-  per level. The call runs **in the background** after the queue answers:
-  the queue shows what exists, says how many phrases are waiting and
-  whether sentences are being written, and the page asks again every few
-  seconds while they are. One call at a time per language profile, inside
-  the user's paid slots (`web/server/paid.ts`, shared with audio and
-  transcription; a busy slot skips the call); a failed call waits ten
-  minutes before the next try. A failure only means no cloze for now.
+  per level.
+- **What pays, and when.** Only **starting a session** (the queue route,
+  in the cloze or mixed mode) writes sentences, and only for the phrases
+  that session would ask as a gap (`practice.mjs` `clozeWanted`): in the
+  cloze mode, the room the session has under its length and what is left
+  of today's limits, due first; in Mixed, the session's own produce cards
+  asked aloud for want of a sentence. So a session of N cards makes at
+  most ⌈N/10⌉ calls, one after another. The counts the tab shows
+  (`GET /api/practice`) never start a call, and neither does the page's
+  poll while sentences are written (every 4 s, counts only). The calls run
+  **in the background** after the queue answers; the queue shows what
+  exists. On top: at most **6 calls per language profile in any 24
+  hours** (`CLOZE_DAILY_CALLS`), counted from the rows the calls leave
+  (`cloze_items.call_id`), so a restart doesn't reset it; the tab says when
+  today's are used up. One run at a time per language profile, in the
+  user's single **background** paid slot (`web/server/paid.ts`
+  `backgroundSlot`), apart from the two interactive slots audio and
+  transcription use, so writing never makes a card's audio or a speak-it
+  answer wait or fail; a busy background slot skips the run. A failed call
+  (the CLI, a limit, a timeout) stops the run and waits ten minutes (in
+  memory) before the next try. A failure only means no cloze for now.
+- **Languages not written for.** Korean, Turkish, Finnish, Hungarian and
+  Estonian (`cloze.mjs` `UNWRITTEN`): their words take endings (커피를), so
+  a bank phrase as saved rarely stands as a whole word in a sentence and a
+  paid call would keep almost nothing. No call is made; the tab says so;
+  the learner's own session lines are still used when one holds the
+  phrase verbatim. Inflected gaps are bead `ld-cn8`.
 - **Checks on every sentence** (`scripts/cloze.mjs`, pure), from a session
   or a model alike: the phrase's words appear **verbatim, exactly once**
   (case-insensitive, any run of spaces, curly or straight apostrophes;
-  whole words in spaced languages, never inside another word); the
+  whole words in spaced languages, by lookarounds on code points so a
+  letter outside the BMP is a letter; never inside another word); the
   sentence is in the language's own script (a table by language code;
-  any other language, the scripts its phrase uses), has context on both
-  sides or at least a few words beside the gap, fits the level's length,
-  is one line with control and bidi characters cleaned out. For Chinese
-  and Japanese the gap is a run of characters, and a sentence where any of
-  its Han characters appears again outside the gap is refused (it would
-  give the answer away). The model's reply is read strictly as the JSON
-  asked for; anything else is dropped and logged as a count.
+  any other language, the scripts its phrase uses), judged by
+  Script_Extensions so a letter scripts share counts for each of them
+  (the prolonged sound mark ー in コーヒー, the iteration mark 々, the
+  Arabic tatweel), with fullwidth Latin allowed in Chinese, Japanese and
+  Korean text; has context on both sides or at least a few words beside
+  the gap, fits the level's length, is one line with control and bidi
+  characters cleaned out. For Chinese and Japanese the gap is a run of
+  characters, and a sentence where any of its Han characters appears again
+  outside the gap is refused (it would give the answer away). A model's
+  sentence is also refused when it holds the phrase's meaning as written,
+  or, for an English speaker learning another language, when most of its
+  words outside the gap are common English words (`wrongLanguage`; real
+  language identification is bead `ld-d3j`). The model's reply is read
+  strictly as the JSON asked for; a sentence that fails is dropped and
+  counted in the log.
 - **Inflected forms are not accepted.** A sentence must hold the phrase
   exactly as saved: a conjugated verb or a plural is skipped, not blanked,
   so the expected answer is always the bank's own text. The prompt asks
@@ -2109,9 +2145,17 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   phrase's text and meaning (`clozeKey`), not `phraseRevision`: a new
   accepted alternate must not make sentences pay again. Rows with another
   key are deleted when the queue reads the phrase (its words or meaning
-  changed), and the phrase is asked for again. A generated call that gave
-  a phrase nothing usable leaves one row with no sentence, so the same
-  words and meaning never pay twice. A sentence a learner flags is kept
+  changed), and the phrase is asked for again; the delete only runs while
+  the phrase still has the words and meaning the request read (it joins
+  `phrases`), so a load holding a copy from before an edit can't delete
+  the new key's rows, a flag among them. A call that gave a phrase
+  nothing usable (or a reply that wasn't the JSON asked for, which was
+  paid all the same) leaves one row with no sentence (one per phrase and
+  key: `cloze_items_tried_once`, refreshed by a later try), so the same
+  words and meaning don't pay again; the mark lapses after 30 days, or
+  when the sentence rules change (`CLOZE_RULES_SINCE`: a mark made before
+  it no longer counts), so a fixed rule gives old phrases a card. A
+  sentence a learner flags is kept
   with `flagged_at` (so it is never written again) and never shown; a
   phrase whose only sentences are flagged gets one generation call if it
   never had one. Deleting a phrase takes its items (cascade); deleting an
@@ -2136,7 +2180,7 @@ this adds **Fill the gap** to the mode picker and to Mixed.
 - **Mixed.** Read before it is heard or produced, as in 7b; the produce
   card is a gap every other time (its reps even) when the phrase has a
   usable sentence, said aloud otherwise. A phrase asked aloud for want of
-  a sentence still gets sentences written. The cloze mode alone asks only
+  a sentence gets sentences written for next time. The cloze mode alone asks only
   phrases with a sentence and lists the rest as waiting, due first.
 - **Reader role.** `cloze_items` has no grant to the content agent's
   read-only role and no policy: the agent's bank tools don't read it.
@@ -2145,18 +2189,28 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   (`scripts/db/hand-edits.mjs`): `DELETE FROM "cloze_items"` first (the
   table existed since 0000 and nothing wrote it; a row would have no
   phrase key), then the statements ordered so a unique key comes before
-  the foreign key that needs it. Runs on PostgreSQL 17 and PGlite.
+  the foreign key that needs it. `call_id` names a generated row's call
+  (checked: set exactly on generated rows), indexed with `created_at` for
+  the daily cap. Runs on PostgreSQL 17 and PGlite.
+- **The page.** The gap sentence is `dir="auto"` (a gap at the start of a
+  Hebrew or Arabic sentence sits on the right), and the gap has no margin
+  of its own, so trailing punctuation follows it directly.
 - **Limits, known.** The script check can't tell two languages that share
-  a script apart (an English sentence passes as Spanish); the prompt and
-  the flag are the defence. A spoken cloze answer was tested over HTTP,
-  not in a browser with a real microphone.
+  a script apart beyond the English check above (a Portuguese sentence
+  passes as Spanish); the prompt and the flag are the defence (`ld-d3j`).
+  A spoken cloze answer was tested over HTTP, not in a browser with a real
+  microphone (`ld-e2d`).
 - **Tests.** `cloze.test.mjs` (the pure rules: the blank, scripts, Han
   repeats, session lines, the key, the prompt and reply, picking, the
   queue in cloze and mixed, the answer body, the grader's wording),
   `cloze.http.test.mjs` (the real plugin with a stand-in `claude`: items
   from session lines, background generation once, failures, tombstones,
   answers, 409s, flagging, a spoken answer, mixed, Mandarin, deletes,
-  kids), `db-migration-0006.test.mjs` and `migration-0006.pg.test.mjs`
+  kids; the counts never paying, ⌈N/10⌉ calls per session, the daily cap
+  across a restart, a mark's expiry, an alternate sent to the grader,
+  Japanese ー, no Korean calls, the separate background slot),
+  `cloze.pg.test.mjs` (stale and fresh loads racing an edit on PostgreSQL
+  17: the new key's flagged row survives), `db-migration-0006.test.mjs` and `migration-0006.pg.test.mjs`
   (0005 with data → 0006: rows kept but the cloze one, schema as a fresh
   build, the reader kept out), and the 0006 hand-edit pin in
   `db-migrations.test.mjs`.

@@ -30,7 +30,8 @@ fs.writeFileSync(process.env.LINGO_ENV_FILE, "");
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]) delete process.env[k];
 
 const { apiPlugins } = await import("../../web/server/api.ts");
-const { settleClozeFills } = await import("../../web/server/cloze.ts");
+const { resetClozeMemory, settleClozeFills } = await import("../../web/server/cloze.ts");
+const { BackgroundBusy, backgroundSlot, paidSlot } = await import("../../web/server/paid.ts");
 
 const fake = fakeClaude();
 const ACCEPT = JSON.stringify({ accepted: true, rating_hint: "good", note: "That fits the gap too." });
@@ -121,7 +122,7 @@ test("a session line of the dojo master's is the gap; the gap's words never trav
   assert.deepEqual([it.skill, it.drill, it.text, it.meaning, it.choices], ["produce", "cloze", "", "the change", null]);
   assert.deepEqual([it.cloze.before, it.cloze.after, it.cloze.origin], ["Aquí tiene ", ", señora.", "example"]);
   assert.doesNotMatch(r.text, /vuelta/i, "not in the item, the sentence or anywhere in the reply");
-  assert.deepEqual(r.body.cloze, { waiting: 0, writing: false });
+  assert.deepEqual(r.body.cloze, { waiting: 0, writing: false, writable: true, limited: false });
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), 0, "a phrase with its own line costs no call");
   const rows = await itemsOf(p["la vuelta"].id);
@@ -180,7 +181,7 @@ test("generated sentences: one call for the batch in the background, checked, ke
   assert.deepEqual((await itemsOf(p["adiós"].id)).map((x) => [x.origin, x.sentence]), [["generated", null]]);
   const next = await queue(sam);
   assert.deepEqual(next.body.items.map((i) => i.phraseId).sort(), [p["la cuenta"].id, p["¿Cuánto cuesta?"].id].sort());
-  assert.deepEqual(next.body.cloze, { waiting: 0, writing: false });
+  assert.deepEqual(next.body.cloze, { waiting: 0, writing: false, writable: true, limited: false });
   assert.doesNotMatch(next.text, /la cuenta|cuánto cuesta/i);
   await settleClozeFills();
   assert.equal(fake.clozeRuns(), runs0 + 1, "no second call: not for the kept ones, not for the one that got nothing");
@@ -396,4 +397,167 @@ test("kids learners don't practise: the cloze queue and the flag route are 403",
   const pip = await someone([KID]);
   assert.equal((await queue(pip)).status, 403);
   assert.equal((await pip.call("POST", `/api/practice/cloze/${crypto.randomUUID()}/flag`, {})).status, 403);
+});
+
+/** `n` phrases with made-up words, added straight to the bank (fast). */
+async function many(who, n, tag) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push([`palabra${tag}${i}`, `word ${tag} ${i}`]);
+  return Object.values(await add(who, out));
+}
+
+test("the counts never pay: viewing the tab and its poll start no call; a started session of N asks for at most ceil(N/10)", async () => {
+  const sam = await someone();
+  await many(sam, 45, "a");
+  const runs0 = fake.clozeRuns();
+  for (let i = 0; i < 6; i++) {
+    const s = await stats(sam);
+    assert.deepEqual([s.status, s.body.cloze.waiting, s.body.cloze.writing], [200, 45, false]);
+  }
+  for (const mode of ["mixed", "cloze"]) assert.equal((await sam.call("GET", `/api/practice?tz=${TZ}&mode=${mode}`)).status, 200);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0, "no call from the counts");
+  // Start a session of 20: two calls of ten, one after the other.
+  fake.cloze(JSON.stringify({ items: [] }), 50);
+  const r = await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=20`);
+  assert.deepEqual([r.status, r.body.items.length, r.body.cloze.writing], [200, 0, true]);
+  // The page polls the counts while it writes: that starts nothing more.
+  for (let i = 0; i < 3; i++) await stats(sam);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 2);
+  const tried = await q("select count(*)::int as n, count(distinct call_id)::int as calls from cloze_items c join phrases p on p.id = c.phrase_id where p.text like 'palabraa%'");
+  assert.deepEqual(tried, [{ n: 20, calls: 2 }], "twenty phrases tried, by two calls");
+  // A session of 5: one call for 5 phrases.
+  await sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=5`);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 3);
+  assert.equal(fake.clozeArgs().find((a) => a.startsWith("PHRASES")).split("\n").filter((l) => /^\d+\. /.test(l)).length, 5);
+});
+
+test("the daily cap: at most CLOZE_DAILY_CALLS calls per language in 24 hours, counted from the rows, so a restart doesn't reset it", async () => {
+  const sam = await someone();
+  await many(sam, 75, "b");
+  fake.cloze(JSON.stringify({ items: [] }));
+  const runs0 = fake.clozeRuns();
+  const start = () => sam.call("GET", `/api/practice/queue?tz=${TZ}&mode=cloze&length=20`);
+  for (let i = 0; i < 3; i++) {
+    await start();
+    await settleClozeFills();
+  }
+  assert.equal(fake.clozeRuns(), runs0 + 6);
+  const s = await stats(sam);
+  assert.deepEqual([s.body.cloze.limited, s.body.cloze.waiting], [true, 15]);
+  await start();
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 6, "capped");
+  // A restart forgets what memory held; the cap is in the rows.
+  resetClozeMemory();
+  await start();
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 6, "still capped after a restart");
+  // A day later the calls have aged out.
+  await q(`update cloze_items set created_at = now() - interval '25 hours' where call_id is not null and language_profile_id = (select language_profile_id from phrases where text = 'palabrab0')`);
+  await start();
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 8, "the last 15: a call of ten and one of five");
+  // Another language of someone else's isn't held back by it.
+  const ana = await someone();
+  await many(ana, 3, "c");
+  await queue(ana);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 9);
+});
+
+test("a nothing-usable mark expires after 30 days (and with a rules change): the phrase is tried again, the mark refreshed, never doubled", async () => {
+  const sam = await someone();
+  const [p] = await many(sam, 1, "d");
+  fake.cloze(JSON.stringify({ items: [] }));
+  const runs0 = fake.clozeRuns();
+  await queue(sam);
+  await settleClozeFills();
+  await queue(sam);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 1);
+  const [mark] = await itemsOf(p.id);
+  await q(`update cloze_items set created_at = now() - interval '31 days', call_id = gen_random_uuid() where id = $1`, [mark.id]);
+  assert.equal((await stats(sam)).body.cloze.waiting, 1);
+  await queue(sam);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0 + 2);
+  const rows = await itemsOf(p.id);
+  assert.equal(rows.length, 1, "one mark, refreshed");
+  assert.ok(Date.now() - new Date(rows[0].created_at).getTime() < 60_000);
+  // A reply that isn't the JSON asked for was paid: its phrases are marked too.
+  const [p2] = await many(sam, 1, "e");
+  fake.cloze("Sorry, I can't help with that.");
+  await queue(sam);
+  await settleClozeFills();
+  assert.deepEqual((await itemsOf(p2.id)).map((r) => [r.origin, r.sentence]), [["generated", null]]);
+});
+
+test("a saved alternate isn't matched against a sentence: it goes to the grader, which sees the whole sentence", async () => {
+  const kai = await someone([{ ...ADULT, name: "Kai", targetLanguage: "German", targetVariant: "Standard German (Germany)", level: "A2" }]);
+  const p = await add(kai, [["das Auto", "the car"]]);
+  await q(`update phrases set alternates = '["der Wagen"]'::jsonb where id = $1`, [p["das Auto"].id]);
+  await example(p["das Auto"], "Morgen steht das Auto vor meinem Haus.");
+  const [it] = (await queue(kai)).body.items;
+  assert.ok(it, "a gap card");
+  fake.answer(REJECT);
+  const runs0 = fake.runs();
+  const r = await answer(kai, it, { answer: "der Wagen" });
+  assert.deepEqual([r.status, r.body.review.verdict], [200, "wrong"]);
+  assert.equal(fake.runs(), runs0 + 1, "graded by the model, not matched as exact");
+  const prompt = fake.lastArgs().join("\n");
+  assert.match(prompt, /Sentence shown to the learner: Morgen steht ___ vor meinem Haus\./);
+  assert.match(prompt, /The sentence as written, with the expected answer: Morgen steht das Auto vor meinem Haus\./);
+  // The phrase's own words are still exact, with no model.
+  const p2 = await add(kai, [["der Bahnhof", "the station"]]);
+  await example(p2["der Bahnhof"], "Wir treffen uns am Abend vor der Bahnhof Halle.");
+  const it2 = (await queue(kai)).body.items.find((i) => i.phraseId === p2["der Bahnhof"].id);
+  assert.ok(it2, "a gap card for der Bahnhof");
+  {
+    const runs1 = fake.runs();
+    const ok = await answer(kai, it2, { answer: "der Bahnhof" });
+    assert.deepEqual([ok.body.review.verdict, fake.runs()], ["exact", runs1]);
+  }
+});
+
+test("Japanese: コーヒー (its ー shared by both kana) gets a gap; Korean gets no generation call at all", async () => {
+  const yui = await someone([{ ...ADULT, name: "Yui", targetLanguage: "Japanese", targetVariant: "Japanese", level: "A2" }]);
+  const p = await add(yui, [["コーヒー", "coffee"]]);
+  fake.cloze(reply(["毎朝、熱いコーヒーを飲みます。", "この店のコーヒーはおいしいです。"]));
+  await queue(yui);
+  await settleClozeFills();
+  assert.deepEqual((await itemsOf(p["コーヒー"].id)).map((r) => r.sentence).sort(), ["この店のコーヒーはおいしいです。", "毎朝、熱いコーヒーを飲みます。"].sort());
+  const [it] = (await queue(yui)).body.items;
+  assert.ok(it.cloze.after.length > 0);
+
+  const min = await someone([{ ...ADULT, name: "Min", targetLanguage: "Korean", targetVariant: "Korean (Seoul)", level: "A2" }]);
+  await add(min, [["커피", "coffee"]]);
+  const runs0 = fake.clozeRuns();
+  const r = await queue(min);
+  assert.deepEqual([r.status, r.body.cloze.writable, r.body.cloze.waiting, r.body.cloze.writing], [200, false, 0, false]);
+  await settleClozeFills();
+  assert.equal(fake.clozeRuns(), runs0);
+});
+
+test("paid slots: background writing has its own slot per user and never takes an interactive one; the 429 names what is busy", async () => {
+  let release;
+  const held = new Promise((r) => (release = r));
+  const bg = backgroundSlot("u1", () => held);
+  // A second background call for the same user is turned away, not queued.
+  await assert.rejects(backgroundSlot("u1", async () => 1), BackgroundBusy);
+  // Both interactive slots are still free.
+  let release2;
+  const held2 = new Promise((r) => (release2 = r));
+  const a = paidSlot("u1", () => held2);
+  const b = paidSlot("u1", () => held2, "transcriptions");
+  await assert.rejects(paidSlot("u1", async () => 1, "transcriptions"), /too many transcriptions at once/);
+  await assert.rejects(paidSlot("u1", async () => 1), /too many audio requests at once/);
+  // Another user's background slot is theirs.
+  assert.equal(await backgroundSlot("u2", async () => 2), 2);
+  release();
+  release2();
+  await Promise.all([bg, a, b]);
+  assert.equal(await backgroundSlot("u1", async () => 3), 3);
 });

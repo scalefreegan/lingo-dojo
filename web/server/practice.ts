@@ -14,7 +14,7 @@ import {
 import { localeFor } from "../../scripts/voice.mjs";
 import type { PracticeAnswerReply, PracticeFlagReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
 import type { LearnerCtx } from "./auth.ts";
-import { clozeWriting, fillCloze, withCloze } from "./cloze.ts";
+import { clozeStatus, fillCloze, withCloze } from "./cloze.ts";
 import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -88,11 +88,14 @@ function languageOf(ctx: LearnerCtx): PracticeStatsReply["language"] {
 /**
  * The queue (and its stats) for this request's day and filters. The cloze
  * and mixed modes read each phrase's cloze sentences first (made from its
- * session lines on the way: cloze.ts withCloze) and start writing
- * sentences for the ones they would ask with none, in the background
- * (fillCloze): the queue never waits for a model.
+ * session lines on the way: cloze.ts withCloze, no model). Only a session
+ * being started (`start`: the queue route, never the counts the tab shows
+ * or polls) has sentences written, and only for the phrases that session
+ * would ask as a gap (practice.mjs clozeWanted: its length, within what is
+ * left of today's limits), in the background (fillCloze, under the
+ * language's daily cap): the queue never waits for a model.
  */
-async function queue(req: IncomingMessage, ctx: LearnerCtx) {
+async function queue(req: IncomingMessage, ctx: LearnerCtx, start: boolean) {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   const now = new Date();
   const since = dayStart(now, readUtcOffset(q.get("tz")));
@@ -100,7 +103,7 @@ async function queue(req: IncomingMessage, ctx: LearnerCtx) {
   const [read, done] = await Promise.all([practiceCandidates(rawDb(), ctx.language), practiceDone(rawDb(), ctx.language, since)]);
   const usesCloze = mode === "cloze" || mode === "mixed";
   const phrases = usesCloze ? await withCloze(ctx, read) : read;
-  const { clozeWanted, ...built } = buildQueue(phrases, {
+  const { clozeWanted, clozeWaiting, ...built } = buildQueue(phrases, {
     now,
     done,
     length: readLength(q.get("length")),
@@ -108,8 +111,8 @@ async function queue(req: IncomingMessage, ctx: LearnerCtx) {
     direction: readDirection(q.get("direction")),
     nativeLocale: nativeLocale(ctx),
   });
-  if (clozeWanted.length) fillCloze(ctx, clozeWanted);
-  const cloze = usesCloze ? { waiting: mode === "cloze" ? clozeWanted.length : 0, writing: clozeWriting(ctx.language.id) } : null;
+  if (start && clozeWanted.length) await fillCloze(ctx, clozeWanted);
+  const cloze = usesCloze ? { waiting: mode === "cloze" ? clozeWaiting : 0, ...(await clozeStatus(ctx)) } : null;
   return { ...built, cloze };
 }
 
@@ -174,11 +177,13 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // Checked before any grading (no model call for a stale sentence), and
   // again under the write's lock.
   let gap: string | null = null;
+  let full: string | null = null;
   if (a.drill === "cloze" && !stale) {
     const item = await clozeItem(rawDb(), ctx.language, a.clozeId!);
     const problem = clozeProblem(item, phrase.id, clozeKey(phrase));
     if (problem) throw new HttpError(409, problem);
     gap = gapped(item!);
+    full = item!.sentence;
   }
   // No grade for a stale card: the write replays the stored review or
   // refuses (409), and never records one.
@@ -205,14 +210,18 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     } else if (a.skill === "listen") match = listenMatch({ answer: a.answer, ...graded, alternates: phrase.alternates, ...locales });
     // Speak-it (and a cloze said aloud): the recogniser wrote what it
     // heard, so an accent it heard differently is close, not exact
-    // (match.mjs `spoken`). A cloze gap is graded as the phrase's words:
-    // the gap is them verbatim (cloze.mjs findBlank).
-    else match = localMatch({ skill: a.skill, answer: a.answer, ...graded, alternates: phrase.alternates, ...locales, spoken: a.spoken });
+    // (match.mjs `spoken`). A cloze gap is matched locally against the
+    // phrase's own words only (the gap is them verbatim: cloze.mjs
+    // findBlank). A saved alternate is another way to say the phrase, not
+    // always a word that fits this sentence (Wagen for Auto in "Das ___
+    // steht vor meinem Haus"), so it goes to the grader, which sees the
+    // sentence.
+    else match = localMatch({ skill: a.skill, answer: a.answer, ...graded, alternates: a.drill === "cloze" ? [] : phrase.alternates, ...locales, spoken: a.spoken });
     let check: { grader: ReturnType<typeof parseGraderReply>; failed: boolean } = { grader: null, failed: false };
     // A picked choice is right or wrong as it stands: no model check.
     if (!a.choice && needsGrader(match, a.answer)) {
       check = await runGrader(res, {
-        ...graderQuestion({ skill: a.skill, ...graded, drill: a.drill, spoken: a.spoken, gapped: gap }),
+        ...graderQuestion({ skill: a.skill, ...graded, drill: a.drill, spoken: a.spoken, gapped: gap, full }),
         answer: a.answer,
         nativeLanguage: ctx.learner.nativeLanguage || "English",
         targetVariant: ctx.language.targetVariant || ctx.language.targetLanguage,
@@ -314,7 +323,7 @@ async function transcribe(req: IncomingMessage, res: ServerResponse, ctx: Learne
   const audio = await readAudio(req);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
   const locale = targetLocale(ctx);
-  const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime: "audio/wav", locales: locale ? [locale] : [] }));
+  const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime: "audio/wav", locales: locale ? [locale] : [] }), "transcriptions");
   sendJson(res, 200, { text: text.trim() } satisfies PracticeTranscribeReply);
 }
 
@@ -324,13 +333,15 @@ export async function handlePractice(req: IncomingMessage, res: ServerResponse, 
   const parts = subPath(req).split("/").filter(Boolean);
   if (parts.length === 0) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { stats, cloze } = await queue(req, ctx);
+    // The counts (also what the page polls while sentences are written)
+    // never start a generation call.
+    const { stats, cloze } = await queue(req, ctx, false);
     const [audio, speech] = await Promise.all([audioProblem(ctx), speechProblem(ctx)]);
     return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech }, cloze } satisfies PracticeStatsReply);
   }
   if (parts.length === 1 && parts[0] === "queue") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    const { items, stats, cloze } = await queue(req, ctx);
+    const { items, stats, cloze } = await queue(req, ctx, true);
     return sendJson(res, 200, { items, stats, language: languageOf(ctx), setup: null, cloze } satisfies PracticeQueueReply);
   }
   if (parts.length === 3 && parts[0] === "cloze" && parts[2] === "flag") {

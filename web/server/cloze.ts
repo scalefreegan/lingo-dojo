@@ -1,56 +1,90 @@
+import crypto from "node:crypto";
 import os from "node:os";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { CLOZE_BATCH, clozeKey, clozePrompt, parseClozeReply } from "../../scripts/cloze.mjs";
-import { clozeStates, storeGenerated } from "../../scripts/db/cloze.ts";
+import { CLOZE_BATCH, CLOZE_DAILY_CALLS, clozeKey, clozePrompt, clozeWritable, parseClozeReply } from "../../scripts/cloze.mjs";
+import { clozeCallsSince, clozeStates, storeGenerated } from "../../scripts/db/cloze.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { CandidatePhrase } from "../../scripts/practice.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
-import { paidSlot } from "./paid.ts";
-import { HttpError } from "./sse.ts";
+import { BackgroundBusy, backgroundSlot } from "./paid.ts";
 
 // Cloze sentences for the Practice tab (docs/DATA.md §Practice modes, "As
 // built (phase 7c: cloze)"). The queue reads what each phrase has
-// (scripts/db/cloze.ts clozeStates: its own session lines first); for the
-// phrases it would ask with none, one tool-less `claude -p` call writes
-// sentences for a batch of up to CLOZE_BATCH, in the background:
+// (scripts/db/cloze.ts clozeStates: its own session lines first, no
+// model). Only a session being started (the queue route in the cloze or
+// mixed mode, never the counts or the page's poll) has sentences written,
+// and only for the phrases that session would ask as a gap
+// (practice.mjs clozeWanted: at most its length), by tool-less
+// `claude -p` calls of up to CLOZE_BATCH phrases each, in the background:
 //  - never in the queue's way: the queue answers with the sentences that
-//    exist (a phrase without one waits, or is said aloud in mixed), and
-//    the page asks again for the rest;
+//    exist (a phrase without one waits, or is said aloud in mixed); the
+//    page may poll the counts while a call runs, and that starts nothing;
+//  - at most CLOZE_DAILY_CALLS calls per language profile in any 24 hours,
+//    counted from the rows the calls leave (cloze_items.call_id), so a
+//    restart doesn't reset it;
+//  - one run at a time per language profile, its calls one after another,
+//    each in the user's single background slot (paid.ts), apart from the
+//    interactive slots audio and transcription use; a busy slot skips the
+//    run (the next session started tries again), and a failed call stops
+//    the run and waits RETRY_AFTER_MS before the next try;
 //  - no transaction or row lock is held while the model writes; the rows
 //    are inserted after, one phrase at a time;
-//  - one call at a time per language profile, inside one of the user's
-//    paid slots (paid.ts, shared with phrase audio and transcription); a
-//    busy slot skips the call (the next queue tries again), and a failed
-//    one waits RETRY_AFTER_MS before the next try;
 //  - the reply is model output: parsed strictly as the JSON asked for,
-//    cleaned and capped, and every sentence checked (cloze.mjs
-//    checkSentence) before it is kept; a phrase the reply gave nothing
-//    usable is marked as tried, so it never pays twice for the same words
-//    and meaning. A failure only means no cloze for the phrase now.
+//    cleaned and capped, and every sentence checked (cloze.mjs) before it
+//    is kept; a phrase the reply gave nothing usable (or a reply that
+//    wasn't the JSON asked for, which was paid all the same) is marked as
+//    tried, so the same words and meaning don't pay again for 30 days. A
+//    failure only means no cloze for the phrase now.
 
 /** Sentences are worth a stronger model than a yes/no grade: once per
  *  phrase, and the learner reads them over and over. */
 const CLOZE_MODEL = "claude-sonnet-5-5";
 const CALL_TIMEOUT_SEC = 120;
-/** After a failed call (the CLI, a limit, an unreadable reply). */
+/** After a failed call (the CLI, a limit, a timeout). */
 export const RETRY_AFTER_MS = 10 * 60_000;
+const DAY_MS = 86_400_000;
 
-/** The call going on per language profile. */
+/** The run going on per language profile. */
 const filling = new Map<string, Promise<void>>();
 /** Per language profile: when a call may be tried again after a failure. */
 const retryAt = new Map<string, number>();
 
-/** Resolves when every call started so far has finished (the tests). */
+/** Resolves when every run started so far has finished (the tests). */
 export async function settleClozeFills(): Promise<void> {
   while (filling.size) await Promise.allSettled([...filling.values()]);
+}
+
+/** Forget the in-memory backoff (the tests: a restart). */
+export function resetClozeMemory(): void {
+  retryAt.clear();
 }
 
 /** Whether sentences are being written for this language now. */
 export const clozeWriting = (profileId: string): boolean => filling.has(profileId);
 
 const targetLocale = (ctx: LearnerCtx) => localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+const profileOf = (ctx: LearnerCtx): LanguageProfileRef => ({ id: ctx.language.id, learnerId: ctx.language.learnerId });
+const callsToday = (profile: LanguageProfileRef) => clozeCallsSince(rawDb(), profile, new Date(Date.now() - DAY_MS));
+
+/**
+ * What the page says about sentences for this language: being written
+ * now, written at all (a language whose words take endings isn't:
+ * cloze.mjs UNWRITTEN), and today's calls used up.
+ */
+export async function clozeStatus(ctx: LearnerCtx): Promise<{ writing: boolean; writable: boolean; limited: boolean }> {
+  const writable = clozeWritable(targetLocale(ctx));
+  let limited = false;
+  if (writable) {
+    try {
+      limited = (await callsToday(profileOf(ctx))) >= CLOZE_DAILY_CALLS;
+    } catch (e) {
+      console.error("[lingo-dojo] cloze: today's calls couldn't be counted:", e);
+    }
+  }
+  return { writing: clozeWriting(ctx.language.id), writable, limited };
+}
 
 /**
  * `phrases` with their cloze state (`cloze`: usable items; `clozeNeeded`:
@@ -72,16 +106,18 @@ export async function withCloze(ctx: LearnerCtx, phrases: CandidatePhrase[]): Pr
 }
 
 /**
- * Start writing sentences for the first CLOZE_BATCH of `wanted` (the
- * queue's order: due first), unless a call is already going for this
- * language or the last one failed less than RETRY_AFTER_MS ago. Returns at
- * once; the call happens after the request.
+ * Start writing sentences for `wanted` (a started session's phrases, in
+ * its order: due first), in batches of CLOZE_BATCH, one call after
+ * another, while today's calls last; unless a run is already going for
+ * this language or the last call failed less than RETRY_AFTER_MS ago.
+ * Resolves once the run is started (or not); the calls happen after the
+ * request.
  */
-export function fillCloze(ctx: LearnerCtx, wanted: CandidatePhrase[]): void {
-  const batch = wanted.filter((p) => p.text && p.meaning).slice(0, CLOZE_BATCH);
+export async function fillCloze(ctx: LearnerCtx, wanted: CandidatePhrase[]): Promise<void> {
+  const list = wanted.filter((p) => p.text && p.meaning);
   const id = ctx.language.id;
-  if (!batch.length || filling.has(id) || (retryAt.get(id) ?? 0) > Date.now()) return;
-  const profile: LanguageProfileRef = { id, learnerId: ctx.language.learnerId };
+  if (!list.length || filling.has(id) || (retryAt.get(id) ?? 0) > Date.now() || !clozeWritable(targetLocale(ctx))) return;
+  const profile = profileOf(ctx);
   const opts = {
     userId: ctx.user.id,
     locale: targetLocale(ctx),
@@ -89,7 +125,15 @@ export function fillCloze(ctx: LearnerCtx, wanted: CandidatePhrase[]): void {
     targetVariant: ctx.language.targetVariant || ctx.language.targetLanguage || "the target language",
     nativeLanguage: ctx.learner.nativeLanguage || "English",
   };
-  const run = write(profile, batch, opts)
+  const run = (async () => {
+    for (let i = 0; i < list.length; i += CLOZE_BATCH) {
+      if ((await callsToday(profile)) >= CLOZE_DAILY_CALLS) {
+        console.log("[lingo-dojo] cloze: today's calls for this language are used up");
+        return;
+      }
+      if (!(await write(profile, list.slice(i, i + CLOZE_BATCH), opts))) return;
+    }
+  })()
     .catch((e) => {
       retryAt.set(id, Date.now() + RETRY_AFTER_MS);
       console.error("[lingo-dojo] cloze: writing sentences failed:", e);
@@ -100,34 +144,40 @@ export function fillCloze(ctx: LearnerCtx, wanted: CandidatePhrase[]): void {
   filling.set(id, run);
 }
 
-/** One call for `batch`, then its rows. */
+/** One call for `batch`, then its rows; false when the background slot
+ *  was busy (the run stops; nothing was paid). */
 async function write(
   profile: LanguageProfileRef,
   batch: CandidatePhrase[],
   opts: { userId: string; locale: string; level: string; targetVariant: string; nativeLanguage: string },
-): Promise<void> {
+): Promise<boolean> {
   const sent = batch.map((p) => ({ id: p.id, text: p.text ?? "", meaning: p.meaning ?? "", key: clozeKey(p) }));
   const { system, user } = clozePrompt({ phrases: sent, targetVariant: opts.targetVariant, nativeLanguage: opts.nativeLanguage, level: opts.level, locale: opts.locale });
   let text: string;
   try {
-    text = await paidSlot(opts.userId, async () => {
+    text = await backgroundSlot(opts.userId, async () => {
       const { result } = startClaude({ prompt: user, systemPrompt: system, model: CLOZE_MODEL, cwd: os.tmpdir(), tools: "none", maxTurns: 1, timeoutSec: CALL_TIMEOUT_SEC });
       return (await result).text;
     });
   } catch (e) {
-    // Both paid slots busy (audio, a transcription): not a failure, the
-    // next queue tries again.
-    if (e instanceof HttpError && e.status === 429) return;
+    // Another language of this user's is writing: not a failure.
+    if (e instanceof BackgroundBusy) return false;
     const msg = String((e as Error)?.message || e);
     throw new Error(failureHint(msg) || msg);
   }
-  const parsed = parseClozeReply(text, { phrases: sent, locale: opts.locale, level: opts.level });
-  if (!parsed.ok) throw new Error(`the reply wasn't usable (${parsed.error})`);
-  if (parsed.dropped) console.warn(`[lingo-dojo] cloze: ${parsed.dropped} sentence(s) from the model failed the checks and were dropped`);
+  const callId = crypto.randomUUID();
+  const parsed = parseClozeReply(text, { phrases: sent, locale: opts.locale, level: opts.level, nativeLanguage: opts.nativeLanguage });
+  // A reply that isn't the JSON asked for was paid all the same: its
+  // phrases are marked as tried (and the call counts toward the cap).
+  const sentences = parsed.ok ? parsed.sentences : sent.map(() => []);
+  if (!parsed.ok) console.warn(`[lingo-dojo] cloze: the reply wasn't usable (${parsed.error}); its phrases are marked as tried`);
+  else if (parsed.dropped) console.warn(`[lingo-dojo] cloze: ${parsed.dropped} sentence(s) from the model failed the checks and were dropped`);
   const kept = await storeGenerated(
     rawDb(),
     profile,
-    sent.map((p, i) => ({ phraseId: p.id, phraseKey: p.key, sentences: parsed.sentences[i] })),
+    callId,
+    sent.map((p, i) => ({ phraseId: p.id, phraseKey: p.key, sentences: sentences[i] })),
   );
   console.log(`[lingo-dojo] cloze: ${kept} sentence(s) kept for ${sent.length} phrase(s)`);
+  return true;
 }

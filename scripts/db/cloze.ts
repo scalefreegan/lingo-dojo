@@ -13,10 +13,10 @@
 //
 // Erasable TypeScript only, like practice.ts: the tests import it as is.
 
-import { and, eq, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
-import { checkExample, clozeKey, clozeable } from "../../scripts/cloze.mjs";
+import { and, eq, gt, inArray, isNotNull, ne, sql, type SQL } from "drizzle-orm";
+import { checkExample, clozeKey, clozeable, clozeWritable, triedStill } from "../../scripts/cloze.mjs";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { clozeItems, phraseExamples, turns } from "./schema.ts";
+import { clozeItems, phraseExamples, phrases as phrases_, turns } from "./schema.ts";
 
 type ClozeRow = typeof clozeItems.$inferSelect;
 
@@ -67,15 +67,29 @@ export async function clozeStates(
   db: Db,
   profile: LanguageProfileRef,
   phrases: ClozePhrase[],
-  opts: { locale: string; level: string },
+  opts: { locale: string; level: string; now?: Date },
 ): Promise<Map<string, ClozeState>> {
   const mine = forLanguageProfile(db, profile);
   const key = new Map(phrases.map((p) => [p.id, clozeKey(p)]));
   let rows = await mine.list(clozeItems);
-  const stale = rows.filter((r) => key.has(r.phraseId) && key.get(r.phraseId) !== r.phraseKey).map((r) => r.id);
-  if (stale.length) {
-    await mine.remove(clozeItems, inArray(clozeItems.id, stale));
-    rows = rows.filter((r) => !stale.includes(r.id));
+  // Items of another key go, but only while the phrase still has the words
+  // and meaning this request read: a request holding a copy from before an
+  // edit must not delete the new key's rows (a flag with them).
+  const stalePhrases = phrases.filter((p) => rows.some((r) => r.phraseId === p.id && r.phraseKey !== key.get(p.id)));
+  if (stalePhrases.length) {
+    const gone = new Set<string>();
+    for (const p of stalePhrases) {
+      const removed = await mine.remove(
+        clozeItems,
+        and(
+          eq(clozeItems.phraseId, p.id),
+          ne(clozeItems.phraseKey, key.get(p.id)!),
+          sql`exists (select 1 from ${phrases_} p where p.id = ${p.id} and p.text is not distinct from ${p.text} and p.meaning is not distinct from ${p.meaning})`,
+        ) as SQL,
+      );
+      for (const r of removed) gone.add(r.id);
+    }
+    rows = rows.filter((r) => !gone.has(r.id));
   }
   // Examples, for phrases with no usable item of their own lines yet.
   const ownItem = new Set(rows.filter((r) => r.origin === "example" && usable(r)).map((r) => r.phraseId));
@@ -106,12 +120,17 @@ export async function clozeStates(
     if (made) rows = await mine.list(clozeItems);
   }
   const out = new Map<string, ClozeState>();
+  const now = opts.now ?? new Date();
+  const writable = clozeWritable(opts.locale);
   for (const p of phrases) {
     const k = key.get(p.id);
     const mineNow = rows.filter((r) => r.phraseId === p.id && r.phraseKey === k);
     const items = mineNow.filter(usable).map(choice);
-    const called = mineNow.some((r) => r.origin === "generated");
-    out.set(p.id, { items, needed: !items.length && !called && !!p.text && clozeable(p.text, opts.locale) });
+    // A call was made for these words and meaning: it left sentences (kept
+    // or flagged), or a "nothing usable" mark that still holds (cloze.mjs
+    // triedStill: 30 days, and made under the current rules).
+    const called = mineNow.some((r) => r.origin === "generated" && (r.sentence != null || triedStill(r.createdAt, now)));
+    out.set(p.id, { items, needed: writable && !items.length && !called && !!p.text && clozeable(p.text, opts.locale) });
   }
   return out;
 }
@@ -134,18 +153,24 @@ export interface Generated {
  * one edited meanwhile keeps rows of its old key, which the next fill
  * clears. Returns how many sentences were kept.
  */
-export async function storeGenerated(db: Db, profile: LanguageProfileRef, results: Generated[]): Promise<number> {
+export async function storeGenerated(db: Db, profile: LanguageProfileRef, callId: string, results: Generated[]): Promise<number> {
   const mine = forLanguageProfile(db, profile);
   let kept = 0;
   for (const g of results) {
     try {
       if (!g.sentences.length) {
-        await mine.insert(clozeItems, { phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated", sentence: null, blankStart: null, blankEnd: null });
+        // One mark per phrase and key: a later try (the old one expired)
+        // refreshes it, so it holds from now and counts for this call.
+        await mine.upsert(
+          clozeItems,
+          { phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated", callId, sentence: null, blankStart: null, blankEnd: null },
+          { target: [clozeItems.phraseId, clozeItems.phraseKey], targetWhere: sql`${clozeItems.sentence} is null`, set: { callId, createdAt: sql`now()` } },
+        );
         continue;
       }
       const rows = await mine.insertOrIgnore(
         clozeItems,
-        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, sentence: s.sentence, blankStart: s.start, blankEnd: s.end })),
+        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, callId, sentence: s.sentence, blankStart: s.start, blankEnd: s.end })),
       );
       kept += Array.isArray(rows) ? rows.length : 0;
     } catch (err) {
@@ -153,6 +178,18 @@ export async function storeGenerated(db: Db, profile: LanguageProfileRef, result
     }
   }
   return kept;
+}
+
+/** How many generation calls this language made since `since`, counted
+ *  from the rows they left (each call's sentences and marks share its
+ *  call_id): the daily cap survives a restart. */
+export async function clozeCallsSince(db: Db, profile: LanguageProfileRef, since: Date): Promise<number> {
+  const mine = forLanguageProfile(db, profile);
+  const [row] = await db
+    .select({ n: sql<number>`count(distinct ${clozeItems.callId})::int` })
+    .from(clozeItems)
+    .where(mine.where(clozeItems, and(isNotNull(clozeItems.callId), gt(clozeItems.createdAt, since)) as SQL));
+  return Number(row?.n) || 0;
 }
 
 /** One of this language's cloze items by id, or undefined. */

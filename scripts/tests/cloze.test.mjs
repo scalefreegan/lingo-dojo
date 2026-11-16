@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { newCard, review } from "../fsrs.mjs";
 import { graderPrompt } from "../match.mjs";
 import {
-  CLOZE_BATCH, LEVEL_MAX, SENTENCES_PER_PHRASE, cefr, checkExample, checkSentence, clozeKey, clozePrompt, clozeView, clozeable, findBlank, gapped, inScripts, parseClozeReply,
+  CLOZE_BATCH, CLOZE_DAILY_CALLS, CLOZE_RULES_SINCE, LEVEL_MAX, SENTENCES_PER_PHRASE, TRIED_DAYS, cefr, clozeWritable, triedStill, wrongLanguage, checkExample, checkSentence, clozeKey, clozePrompt, clozeView, clozeable, findBlank, gapped, inScripts, parseClozeReply,
   pickCloze, scriptsFor,
 } from "../cloze.mjs";
 import { buildQueue, candidates, drillsFor, graderQuestion, phraseRevision, produceDrill, readAnswerInput, readMode } from "../practice.mjs";
@@ -104,6 +104,56 @@ test("scripts: a listed language's own, else the phrase's; digits and punctuatio
   assert.equal(cefr("A2 (rusty)"), "A2");
   assert.equal(cefr(""), "B1");
   assert.equal(cefr("advanced"), "B1");
+});
+
+test("scripts by Script_Extensions: shared letters (ー 々 ـ) count for their scripts; fullwidth Latin in CJK text; romaji still refused", () => {
+  const ja = scriptsFor("ja-JP", "コーヒー");
+  assert.deepEqual(ja, ["Han", "Hiragana", "Katakana"]);
+  assert.equal(inScripts("毎朝コーヒーを飲みます。", ja), true);
+  assert.equal(inScripts("人々はＴシャツを買います。", ja), true, "々 and fullwidth Latin");
+  assert.equal(inScripts("毎朝 coffee を飲みます。", ja), false);
+  assert.ok(checkSentence("毎朝、熱いコーヒーを飲みます。", { text: "コーヒー", locale: "ja-JP", max: LEVEL_MAX.B1 }).sentence);
+  assert.equal(inScripts("كتـــاب جميل جدا", scriptsFor("ar-EG", "كتاب")), true, "tatweel");
+  assert.equal(inScripts("ㅤ커피 주세요", scriptsFor("ko-KR", "커피")), true, "a Hangul filler");
+  assert.equal(inScripts("这个 ｂｕｙ 多少钱", scriptsFor("zh-CN", "多少钱")), true);
+  assert.equal(inScripts("这个 duoshao 钱", scriptsFor("zh-CN", "多少钱")), false);
+  // An unlisted language takes its phrase's scripts, by the same rule.
+  assert.deepEqual(scriptsFor("xx-YY", "コーヒー").sort(), ["Hiragana", "Katakana"]);
+});
+
+test("findBlank: a letter outside the BMP next to the phrase is a letter, not a boundary", () => {
+  // 𝐚 (U+1D41A) is one letter, two UTF-16 code units.
+  assert.equal(findBlank("Bebo 𝐚café cada mañana con leche.", "café", "es-MX"), null);
+  assert.equal(findBlank("Bebo café𝐚 cada mañana con leche.", "café", "es-MX"), null);
+  assert.ok(findBlank("Bebo café 𝐚 cada mañana con leche.", "café", "es-MX"));
+});
+
+test("wrongLanguage: the meaning written in, or mostly English words around the gap, for an English speaker learning another language", () => {
+  const at = (s, text) => findBlank(s, text, "es-MX");
+  const opts = { meaning: "the bill", nativeLanguage: "English", locale: "es-MX" };
+  const s1 = "Can you bring me la cuenta right now please?";
+  assert.match(wrongLanguage(s1, at(s1, "la cuenta"), opts), /English/);
+  const s2 = "Mesero, the bill, la cuenta por favor.";
+  assert.match(wrongLanguage(s2, at(s2, "la cuenta"), opts), /meaning/);
+  const s3 = "Mesero, ¿nos trae la cuenta cuando pueda?";
+  assert.equal(wrongLanguage(s3, at(s3, "la cuenta"), opts), null);
+  // Not for English as the target, nor another native language's stoplist.
+  assert.equal(wrongLanguage("Could you bring the check now please?", { start: 20, end: 25 }, { meaning: "la cuenta", nativeLanguage: "Spanish", locale: "en-US" }), null);
+  assert.equal(wrongLanguage(s1, at(s1, "la cuenta"), { ...opts, nativeLanguage: "German", meaning: "die Rechnung" }), null);
+  // Dropped from a reply.
+  const r = parseClozeReply(JSON.stringify({ items: [{ n: 1, sentences: [s1, s3] }] }), { phrases: [{ text: "la cuenta", meaning: "the bill" }], locale: "es-MX", level: "B1", nativeLanguage: "English" });
+  assert.deepEqual(r.sentences[0].map((s) => s.sentence), [s3]);
+});
+
+test("triedStill and clozeWritable: a nothing-usable mark lasts 30 days and only under the current rules; no sentences written for languages whose words take endings", () => {
+  const since = new Date(CLOZE_RULES_SINCE);
+  const made = new Date(since.getTime() + DAY);
+  assert.equal(triedStill(made, new Date(made.getTime() + 29 * DAY)), true);
+  assert.equal(triedStill(made, new Date(made.getTime() + (TRIED_DAYS + 1) * DAY)), false);
+  assert.equal(triedStill(new Date(since.getTime() - 1000), made), false, "made under older rules");
+  for (const l of ["ko-KR", "tr-TR", "fi-FI", "hu-HU", "et-EE"]) assert.equal(clozeWritable(l), false, l);
+  for (const l of ["es-MX", "zh-CN", "ja-JP", "de-DE", "ar-EG"]) assert.equal(clozeWritable(l), true, l);
+  assert.equal(CLOZE_DAILY_CALLS, 6);
 });
 
 test("checkExample: the dojo master's own reply, one stretch of target words, else not used", () => {
@@ -207,7 +257,7 @@ test("the cloze mode: produce cards with a sentence, none without; waiting lists
   assert.equal(readMode("cloze"), "cloze");
   const c = candidates([ready, due, fresh, tried], { now: NOW, mode: "cloze" });
   assert.deepEqual([...c.reviews, ...c.fresh].map((x) => [x.phrase.id, x.skill, x.drill]), [[ready.id, "produce", "cloze"]]);
-  assert.deepEqual(c.waiting.map((p) => p.id), [due.id, fresh.id]);
+  assert.deepEqual(c.waiting.map((w) => w.phrase.id), [due.id, fresh.id]);
   // A one-skill mode doesn't wait for recognize (like speak-it alone).
   const q = buildQueue([ready, due, fresh], { now: NOW, mode: "cloze" });
   assert.equal(q.items.length, 1);
@@ -218,6 +268,33 @@ test("the cloze mode: produce cards with a sentence, none without; waiting lists
   assert.deepEqual(q.clozeWanted.map((p) => p.id), [due.id, fresh.id]);
   // Other modes carry no cloze.
   assert.equal(buildQueue([ready], { now: NOW, mode: "speak" }).items[0].cloze, null);
+});
+
+test("clozeWanted is one session's worth: its length, within what is left of today's limits, never the whole bank", () => {
+  const bank = Array.from({ length: 45 }, () => phrase({ clozeNeeded: true }));
+  const dueOnes = Array.from({ length: 8 }, () => phrase({ cards: [card("produce", -1)], clozeNeeded: true }));
+  for (const length of [5, 10, 20]) {
+    const q = buildQueue([...bank, ...dueOnes], { now: NOW, mode: "cloze", length });
+    assert.equal(q.items.length, 0);
+    assert.equal(q.clozeWanted.length, length, `length ${length}`);
+    assert.equal(q.clozeWaiting, 53, "the count still names them all");
+    // Due first.
+    assert.deepEqual(q.clozeWanted.slice(0, Math.min(8, length)).map((p) => p.id), dueOnes.slice(0, Math.min(8, length)).map((p) => p.id));
+  }
+  // Today's new cards nearly used up: the new ones wanted stop there.
+  const late = buildQueue(bank, { now: NOW, mode: "cloze", length: 20, done: { new: 17, reviews: 0 } });
+  assert.equal(late.clozeWanted.length, 3);
+  const none = buildQueue(bank, { now: NOW, mode: "cloze", length: 20, done: { new: 20, reviews: 0 } });
+  assert.equal(none.clozeWanted.length, 0);
+  // Cards with sentences take their room first.
+  const ready = Array.from({ length: 4 }, () => {
+    const p = phrase();
+    p.cloze = [item(`Pedimos ${p.text} al mesero.`, p.text)];
+    return p;
+  });
+  assert.equal(buildQueue([...ready, ...bank], { now: NOW, mode: "cloze", length: 10 }).clozeWanted.length, 6);
+  // Flashcards, listening and speak-it write nothing.
+  for (const mode of ["flashcards", "listening", "speak"]) assert.deepEqual(buildQueue(bank, { now: NOW, mode, length: 20 }).clozeWanted, []);
 });
 
 test("mixed: produce is a gap every other time when the phrase has a sentence, said aloud otherwise; read first; one card per phrase", () => {
@@ -238,11 +315,15 @@ test("mixed: produce is a gap every other time when the phrase has a sentence, s
   assert.deepEqual(by[again.id], ["produce", "speak"]);
   assert.deepEqual(by[twice.id], ["produce", "cloze"]);
   assert.deepEqual(by[bare.id], ["produce", "speak"]);
-  assert.deepEqual(m.waiting.map((p) => p.id), [bare.id], "a phrase said aloud for want of a sentence gets one written");
+  assert.deepEqual(m.waiting.map((w) => w.phrase.id), [bare.id], "a phrase said aloud for want of a sentence gets one written");
   assert.equal(produceDrill({ cloze: [] }, null), "speak");
   const q = buildQueue([unread, read, again, twice, bare], { now: NOW, mode: "mixed", length: 20 });
   assert.equal(new Set(q.items.map((i) => i.phraseId)).size, q.items.length);
   assert.equal(q.stats.due + q.stats.new, 5);
+  assert.deepEqual(q.clozeWanted.map((p) => p.id), [bare.id], "only a card this session asks aloud");
+  // Not in this session (a session of one card, the due one): nothing wanted.
+  const one = buildQueue([again, bare], { now: NOW, mode: "mixed", length: 5, done: { new: 20, reviews: 0 } });
+  assert.deepEqual([one.items.map((i) => i.phraseId), one.clozeWanted], [[again.id], []]);
 });
 
 test("readAnswerInput: a cloze answer names its sentence; said aloud it can't be empty; neither goes with another drill", () => {

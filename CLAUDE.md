@@ -33,7 +33,10 @@ listening choice checked against the server's own seeded draw; a speak-it
 recording transcribed by `/api/practice/transcribe` with no keyterms; each
 answer's drill is its review's mode) and fill the gap (phase 7c, migration
 0006: cloze sentences from the learner's own session lines, else written
-in the background by one tool-less claude call per batch, each checked by
+in the background by tool-less claude calls only for a started session's
+cards (never from the counts or a poll), at most 6 calls per language a
+day counted from the rows, in a background paid slot apart from audio
+and transcription, each checked by
 the pure rules in `scripts/cloze.mjs`, the phrase verbatim and once; rows
 in `scripts/db/cloze.ts`, the call in `web/server/cloze.ts`; a cloze
 answer also names its sentence, `clozeId`), and recall in sessions (phase 6:

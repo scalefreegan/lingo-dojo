@@ -124,8 +124,9 @@ export default function PracticeView() {
     return () => ctrl.abort();
   }, [items, reload, prefs.mode, prefs.direction]);
 
-  // Sentences being written for the gap drill: ask again shortly, so the
-  // counts (and Start) catch up when they are in.
+  // Sentences being written for a started session: ask for the counts
+  // again shortly, so they (and Start) catch up when they are in. The
+  // counts never start a call: only Start does.
   const writing = !items && !!info?.cloze?.writing;
   useEffect(() => {
     if (!writing) return;
@@ -141,7 +142,15 @@ export default function PracticeView() {
       // The queue doesn't check the voice setup: keep what the counts said.
       setInfo((was) => ({ ...r, setup: r.setup ?? was?.setup ?? null }));
       if (!r.items.length) {
-        setError("Nothing to practise right now in this mode: no card is due, and no new one is left for today.");
+        setError(
+          r.cloze?.writing
+            ? "No sentence is ready yet: they are being written now. Start again in a moment."
+            : prefs.mode === "cloze" && r.cloze && !r.cloze.writable
+              ? "No gap card is ready: this language gets them only from lines of your own sessions."
+              : prefs.mode === "cloze" && r.cloze?.limited
+                ? "No sentence is ready, and today's sentences for this language are written: more tomorrow."
+                : "Nothing to practise right now in this mode: no card is due, and no new one is left for today.",
+        );
         return;
       }
       setItems(r.items);
@@ -243,11 +252,19 @@ export default function PracticeView() {
             ))}
           </div>
           <p className={`${fine} text-fg-3`}>{MODES.find((m) => m.value === prefs.mode)?.hint}</p>
-          {prefs.mode === "cloze" && info?.cloze && info.cloze.waiting > 0 && (
+          {(prefs.mode === "cloze" || prefs.mode === "mixed") && info?.cloze && !info.cloze.writable && (
+            <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-unwritten">
+              No gap sentences are written for {languageName || "this language"} yet (its words take endings, so a saved phrase rarely fits a sentence as it is). Lines from your own
+              sessions still make gap cards.
+            </p>
+          )}
+          {prefs.mode === "cloze" && info?.cloze?.writable && (info.cloze.writing || info.cloze.waiting > 0) && (
             <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-waiting">
               {info.cloze.writing
-                ? `Writing practice sentences for ${info.cloze.waiting} more phrase${info.cloze.waiting === 1 ? "" : "s"}…`
-                : `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet; they are written when you start (or come back in a moment).`}
+                ? "Writing practice sentences for your next session…"
+                : info.cloze.limited
+                  ? `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet, and today's sentences for this language are written: more tomorrow.`
+                  : `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet: starting a session writes them for its cards.`}
             </p>
           )}
           {setupProblems.length > 0 && (
@@ -919,14 +936,14 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
  *  it has no characters on the page to read). */
 function GapSentence({ before, after, locale, lang, filled }: { before: string; after: string; locale: string | null; lang?: string; filled?: string }) {
   return (
-    <p className="font-[family-name:var(--font-display)] text-2xl leading-relaxed font-semibold break-words text-fg sm:text-3xl" lang={lang} data-testid={filled ? "practice-cloze-filled" : "practice-prompt"}>
+    <p className="font-[family-name:var(--font-display)] text-2xl leading-relaxed font-semibold break-words text-fg sm:text-3xl" lang={lang} dir="auto" data-testid={filled ? "practice-cloze-filled" : "practice-prompt"}>
       <RubyText text={before} locale={locale} />
       {filled ? (
         <mark className="rounded bg-accent-soft px-1 text-accent">
           <RubyText text={filled} locale={locale} />
         </mark>
       ) : (
-        <span className="mx-1 inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
+        <span className="inline-block w-[4.5em] translate-y-1 border-b-2 border-fg-3 align-baseline" role="img" aria-label="the missing words" data-testid="practice-gap" />
       )}
       <RubyText text={after} locale={locale} />
     </p>

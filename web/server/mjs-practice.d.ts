@@ -74,7 +74,7 @@ declare module "*/scripts/practice.mjs" {
       limits?: { new: number; reviews: number };
       nativeLocale?: string;
     },
-  ): { items: PracticeItem[]; stats: PracticeStats; clozeWanted: CandidatePhrase[] };
+  ): { items: PracticeItem[]; stats: PracticeStats; clozeWanted: CandidatePhrase[]; clozeWaiting: number };
   export interface AnswerInput {
     phraseId: string;
     skill: PracticeSkill;
@@ -116,13 +116,14 @@ declare module "*/scripts/practice.mjs" {
     nativeLocale?: string;
   }): { verdict: "exact" | "close" | "miss"; note?: string; as: "words" | "meaning" };
   export function choiceMatch(input: { choice: string; meaning: string; nativeLocale?: string }): { verdict: "exact" | "miss" };
-  export function graderQuestion(input: { skill: PracticeSkill; text: string; meaning: string; drill?: PracticeDrill; spoken?: boolean; gapped?: string | null }): {
+  export function graderQuestion(input: { skill: PracticeSkill; text: string; meaning: string; drill?: PracticeDrill; spoken?: boolean; gapped?: string | null; full?: string | null }): {
     question: string;
     expected: string;
     kind: "target" | "meaning";
     heard?: boolean;
     spoken?: boolean;
     gapped?: string;
+    full?: string;
   };
   export interface Outcome {
     verdict: PracticeVerdict;
@@ -154,6 +155,13 @@ declare module "*/scripts/cloze.mjs" {
   export const MIN_CONTEXT_CHARS: number;
   export const LEVEL_MAX: Record<"A1" | "A2" | "B1" | "B2" | "C1" | "C2", Level>;
   export const EXAMPLE_MAX: Level;
+  export const CLOZE_DAILY_CALLS: number;
+  export const TRIED_DAYS: number;
+  export const CLOZE_RULES_SINCE: string;
+  export const UNWRITTEN: Set<string>;
+  export function triedStill(createdAt: Date | string, now: Date | string): boolean;
+  export function clozeWritable(locale: string | null | undefined): boolean;
+  export function wrongLanguage(sentence: string, blank: { start: number; end: number }, opts: { meaning: string; nativeLanguage: string; locale: string | null | undefined }): string | null;
   export function cefr(level: unknown): "A1" | "A2" | "B1" | "B2" | "C1" | "C2";
   export function clozeKey(phrase: { text: string | null; meaning: string | null } | null | undefined): string;
   export function scriptsFor(locale: string | null | undefined, text: string | null | undefined): string[];
@@ -170,7 +178,7 @@ declare module "*/scripts/cloze.mjs" {
   export function clozePrompt(opts: { phrases: { text: string; meaning: string }[]; targetVariant: string; nativeLanguage: string; level: string; locale: string }): { system: string; user: string };
   export function parseClozeReply(
     text: unknown,
-    opts: { phrases: { text: string }[]; locale: string; level: string },
+    opts: { phrases: { text: string; meaning?: string }[]; locale: string; level: string; nativeLanguage?: string },
   ): { ok: true; sentences: { sentence: string; start: number; end: number }[][]; dropped: number; error?: undefined } | { ok: false; error: string };
   export function pickCloze<T extends { id: string; origin: string }>(items: T[] | null | undefined, seed: string): T | null;
   export function clozeView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {

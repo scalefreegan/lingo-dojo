@@ -1,5 +1,5 @@
 {
-  "id": "ba36e982-7851-4ac9-a78c-171b112fd73a",
+  "id": "9702fa41-ec0c-4bf0-9f25-c0253af8c279",
   "prevId": "db28232e-b029-4e9a-94da-f96b5a570271",
   "version": "7",
   "dialect": "postgresql",
@@ -517,6 +517,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "call_id": {
+          "name": "call_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "flagged_at": {
           "name": "flagged_at",
           "type": "timestamp with time zone",
@@ -611,6 +617,56 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "cloze_items_tried_once": {
+          "name": "cloze_items_tried_once",
+          "columns": [
+            {
+              "expression": "language_profile_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "phrase_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "phrase_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"cloze_items\".\"sentence\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "cloze_items_calls_idx": {
+          "name": "cloze_items_calls_idx",
+          "columns": [
+            {
+              "expression": "language_profile_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"cloze_items\".\"call_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -674,7 +730,7 @@
         },
         "cloze_items_sentence": {
           "name": "cloze_items_sentence",
-          "value": "(\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_start\" is null) and (\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_end\" is null) and (\"cloze_items\".\"sentence\" is not null or \"cloze_items\".\"origin\" = 'generated') and (\"cloze_items\".\"example_id\" is not null) = (\"cloze_items\".\"origin\" = 'example')"
+          "value": "(\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_start\" is null) and (\"cloze_items\".\"sentence\" is null) = (\"cloze_items\".\"blank_end\" is null) and (\"cloze_items\".\"sentence\" is not null or \"cloze_items\".\"origin\" = 'generated') and (\"cloze_items\".\"example_id\" is not null) = (\"cloze_items\".\"origin\" = 'example') and (\"cloze_items\".\"call_id\" is not null) = (\"cloze_items\".\"origin\" = 'generated')"
         }
       },
       "isRLSEnabled": false

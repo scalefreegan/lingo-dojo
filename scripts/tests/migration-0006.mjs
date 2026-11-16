@@ -76,7 +76,8 @@ export async function migrateAndCheck0006(query, fresh, role) {
   assert.equal(await bankReaderProblem(query, role), null, "sound at 0006");
   assert.deepEqual(await query(`select has_table_privilege($1, 'cloze_items', 'select') as can`, [role]), [{ can: false }]);
 
-  const cloze = `insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+  // A generated row names its call (call_id), as the app writes it.
+  const cloze = `insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end, call_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, case when $5::text = 'generated' then gen_random_uuid() end)`;
   // An example's item, once per key; a generated one, and its "nothing usable" tombstone.
   await query(cloze, [P, L, LP, "k1", "example", E, SENTENCE, 11, 20]);
   await assert.rejects(query(cloze, [P, L, LP, "k1", "example", E, SENTENCE, 11, 20]), /cloze_items_example_once/);
@@ -84,6 +85,16 @@ export async function migrateAndCheck0006(query, fresh, role) {
   await query(cloze, [P, L, LP, "k1", "generated", null, "No olvide la vuelta en la mesa.", 10, 19]);
   await assert.rejects(query(cloze, [P, L, LP, "k1", "generated", null, "No olvide la vuelta en la mesa.", 10, 19]), /cloze_items_generated_once/);
   await query(cloze, [P, L, LP, "k1", "generated", null, null, null, null]);
+  // One mark per phrase and key; a generated row names its call, an example's doesn't.
+  await assert.rejects(query(cloze, [P, L, LP, "k1", "generated", null, null, null, null]), /cloze_items_tried_once/);
+  await assert.rejects(
+    query(`insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, sentence, blank_start, blank_end) values ($1, $2, $3, 'k5', 'generated', 'Otra vez la vuelta, por favor.', 10, 19)`, [P, L, LP]),
+    /cloze_items_sentence/,
+  );
+  await assert.rejects(
+    query(`insert into cloze_items (phrase_id, learner_id, language_profile_id, phrase_key, origin, example_id, sentence, blank_start, blank_end, call_id) values ($1, $2, $3, 'k5', 'example', $4, $5, 11, 20, gen_random_uuid())`, [P, L, LP, E, SENTENCE]),
+    /cloze_items_sentence/,
+  );
   // The rules: no blank without a sentence, no sentence-less example, an example's link exactly when it is one.
   await assert.rejects(query(cloze, [P, L, LP, "k3", "generated", null, "Algo.", null, null]), /cloze_items_sentence/);
   await assert.rejects(query(cloze, [P, L, LP, "k3", "example", E, null, null, null]), /cloze_items_sentence/);

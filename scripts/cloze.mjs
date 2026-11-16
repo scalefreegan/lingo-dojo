@@ -31,6 +31,24 @@ export const CLOZE_BATCH = 10;
 export const SENTENCES_PER_PHRASE = 2;
 /** A sentence a model wrote is kept at most this long (characters). */
 export const MAX_GENERATED = 200;
+/** Generation calls one language profile may make in any 24 hours,
+ *  counted from the rows they leave (cloze_items.call_id), so a restart
+ *  doesn't reset it: at most this many times CLOZE_BATCH phrases a day. */
+export const CLOZE_DAILY_CALLS = 6;
+/** A "nothing usable" mark stops paying for a phrase this long, then the
+ *  phrase may be tried again (a model, or the rules, may do better). */
+export const TRIED_DAYS = 30;
+/** When the sentence rules last changed: a mark made before it no longer
+ *  counts, so a rule fixed later gives old phrases a card. Move it forward
+ *  with any change to checkSentence, findBlank or the scripts. */
+export const CLOZE_RULES_SINCE = "2026-11-15T00:00:00Z";
+
+/** Whether a "nothing usable" mark made at `createdAt` still holds at `now`. */
+export function triedStill(createdAt, now) {
+  const t = new Date(createdAt).getTime();
+  return t >= Date.parse(CLOZE_RULES_SINCE) && new Date(now).getTime() - t < TRIED_DAYS * 86_400_000;
+}
+
 /** A phrase longer than this is a sentence already, not a gap to fill. */
 export const MAX_BLANK_WORDS = 6;
 export const MAX_BLANK_CHARS = 10;
@@ -95,12 +113,29 @@ const SCRIPTS = {
   th: ["Thai"], lo: ["Lao"], km: ["Khmer"], my: ["Myanmar"], ka: ["Georgian"], hy: ["Armenian"], am: ["Ethiopic"],
 };
 const KNOWN_SCRIPTS = [...new Set(["Latin", ...Object.values(SCRIPTS).flat()])];
-const SCRIPT_RE = Object.fromEntries(KNOWN_SCRIPTS.map((s) => [s, new RegExp(`\\p{Script=${s}}`, "u")]));
+// Script_Extensions, not Script: a letter several scripts share is
+// Script=Common but names them in scx (the Japanese prolonged sound mark ー
+// is Hiragana and Katakana's, the Arabic tatweel ـ Arabic's), so コーヒー
+// is all Katakana.
+const SCRIPT_RE = Object.fromEntries(KNOWN_SCRIPTS.map((s) => [s, new RegExp(`\\p{scx=${s}}`, "u")]));
+const SHARED = /[\p{Script=Common}\p{Script=Inherited}]/u;
+/** Fullwidth Latin letters (Ｔシャツ), at home in Chinese, Japanese and Korean text. */
+const FULLWIDTH_LATIN = /[Ａ-Ｚａ-ｚ]/u;
 
 /** The script of one letter, among the ones named above; "" for any other. */
 function scriptOf(ch) {
   for (const s of KNOWN_SCRIPTS) if (SCRIPT_RE[s].test(ch)) return s;
   return "";
+}
+
+/** Whether letter `ch` may stand in a sentence written in `scripts`: one
+ *  of their letters (by Script_Extensions), or a shared letter that names
+ *  none of the scripts above (a modifier letter like ʼ), or fullwidth
+ *  Latin in Chinese, Japanese or Korean text. */
+function letterFits(ch, scripts, cjk) {
+  if (scripts.some((s) => SCRIPT_RE[s]?.test(ch))) return true;
+  if (SHARED.test(ch) && !scriptOf(ch)) return true;
+  return cjk && FULLWIDTH_LATIN.test(ch);
 }
 
 /** The scripts a sentence in `locale` may use, given its phrase `text`. */
@@ -116,10 +151,22 @@ export function scriptsFor(locale, text) {
 /** Whether every letter of `sentence` is in one of `scripts`. Digits,
  *  punctuation and spaces are any language's. */
 export function inScripts(sentence, scripts) {
-  const ok = new Set(scripts);
-  for (const ch of String(sentence ?? "")) if (/\p{L}/u.test(ch) && !ok.has(scriptOf(ch))) return false;
+  const cjk = scripts.some((s) => s === "Han" || s === "Hangul" || s === "Hiragana");
+  for (const ch of String(sentence ?? "")) if (/\p{L}/u.test(ch) && !letterFits(ch, scripts, cjk)) return false;
   return true;
 }
+
+/**
+ * Languages a model is not asked to write sentences for: spaced languages
+ * that attach endings to a word (Korean particles: 커피를; Turkish,
+ * Finnish, Hungarian and Estonian cases), where a bank phrase as saved
+ * rarely stands as a whole word in a real sentence, so a paid call would
+ * keep almost nothing (bead ld-cn8: inflected gaps). Their own session
+ * lines are still used when one holds the phrase verbatim.
+ */
+export const UNWRITTEN = new Set(["ko", "tr", "fi", "hu", "et"]);
+/** Whether sentences are written for `locale`'s language. */
+export const clozeWritable = (locale) => !UNWRITTEN.has(languageOf(locale));
 
 /* --------------------------------- the blank ------------------------------- */
 
@@ -136,7 +183,7 @@ const pattern = (core) =>
   escape(core)
     .replace(/\s+/g, "\\s+")
     .replace(APOSTROPHES, "['’ʼ]");
-const WORDISH = /[\p{L}\p{N}\p{M}]/u;
+const WORDISH = "[\\p{L}\\p{N}\\p{M}]";
 const HAN = /\p{Script=Han}/u;
 
 /** Whether `locale` is written without spaces (Chinese, Japanese, Thai…). */
@@ -154,17 +201,12 @@ export function findBlank(sentence, text, locale) {
   const s = String(sentence ?? "").normalize("NFC");
   const core = blankCore(text);
   if (!s || !core || !/\p{L}/u.test(core)) return null;
-  const re = new RegExp(pattern(core), "giu");
   const spaced = !isUnspaced(locale);
-  const hits = [];
-  let any = 0;
-  for (const m of s.matchAll(re)) {
-    any++;
-    const start = m.index;
-    const end = start + m[0].length;
-    if (spaced && ((start > 0 && WORDISH.test(s[start - 1])) || (end < s.length && WORDISH.test(s[end])))) continue;
-    hits.push({ start, end });
-  }
+  const any = [...s.matchAll(new RegExp(pattern(core), "giu"))].length;
+  // Whole words: lookarounds on code points (the u flag), so a letter
+  // outside the BMP next to the phrase is a letter, not a boundary.
+  const whole = spaced ? new RegExp(`(?<!${WORDISH})${pattern(core)}(?!${WORDISH})`, "giu") : new RegExp(pattern(core), "giu");
+  const hits = [...s.matchAll(whole)].map((m) => ({ start: m.index, end: m.index + m[0].length }));
   // Exactly once, and not also inside another word ("kilo" in "kilos").
   if (hits.length !== 1 || any !== 1) return null;
   const [{ start, end }] = hits;
@@ -208,6 +250,33 @@ export function checkSentence(raw, { text, locale, max, maxChars = BANK_LIMITS.s
     if (wordCount(sentence, locale) > max.words) return { reason: "too long for the level" };
   }
   return { sentence, ...blank };
+}
+
+/** English words that are not also common words of another language
+ *  written in Latin letters (no "is", "was", "in", "a", "no", "me"). */
+const ENGLISH_STOP = new Set(
+  "the and are you your with this that have has it's my we they what how please here there would could should does been she his our their from not but very about just can now where when which who some any much many these those into out get got want like need thank thanks yes".split(" "),
+);
+
+/**
+ * A model's sentence that is likely in the wrong language although its
+ * script fits (bead ld-d3j; real language identification is left there):
+ * it holds the phrase's meaning as written (the translation, not the
+ * language), or, for a learner whose native language is English learning
+ * another, most of its words outside the gap are English. Returns a reason
+ * or null.
+ */
+export function wrongLanguage(sentence, { start, end }, { meaning, nativeLanguage, locale }) {
+  const m = oneLine(meaning).normalize("NFC").replace(OUTER, "").toLowerCase();
+  const rest = `${sentence.slice(0, start)} ${sentence.slice(end)}`;
+  if (m.length >= 4 && /\p{L}/u.test(m) && rest.toLowerCase().includes(m)) return "it holds the meaning, not the language";
+  if (/^english\b/i.test(String(nativeLanguage ?? "")) && languageOf(locale) !== "en") {
+    const words = rest.toLowerCase().match(/\p{L}+(?:['’]\p{L}+)?/gu) ?? [];
+    const english = words.filter((w) => ENGLISH_STOP.has(w.replace("’", "'"))).length;
+    if (words.length >= 3 && english * 2 >= words.length) return "it reads as English";
+    if (english >= 2 && english * 3 >= words.length) return "it reads as English";
+  }
+  return null;
 }
 
 /* --------------------------- the learner's own lines ------------------------- */
@@ -293,10 +362,11 @@ export function clozePrompt({ phrases, targetVariant, nativeLanguage, level, loc
  * `sentences[i]` is the checked sentences (checkSentence, at the level's
  * length) for `phrases[i]` (an empty list: none was usable, or the model
  * gave none), or `{ ok: false, error }` when the reply isn't the JSON
- * asked for (a failed call: nothing is marked as tried). Each phrase keeps
+ * asked for (the call was paid all the same: the caller marks every
+ * phrase of it as tried, like one that gave nothing). Each phrase keeps
  * at most SENTENCES_PER_PHRASE distinct sentences; anything else is dropped.
  */
-export function parseClozeReply(text, { phrases, locale, level }) {
+export function parseClozeReply(text, { phrases, locale, level, nativeLanguage = "" }) {
   const raw = extractJsonObject(text);
   if (!raw || !Array.isArray(raw.items)) return { ok: false, error: "no items list in the reply" };
   const max = LEVEL_MAX[cefr(level)];
@@ -312,7 +382,7 @@ export function parseClozeReply(text, { phrases, locale, level }) {
     for (const s of it.sentences.slice(0, SENTENCES_PER_PHRASE * 2)) {
       if (list.length >= SENTENCES_PER_PHRASE) break;
       const c = checkSentence(s, { text: phrases[n - 1].text, locale, max, maxChars: MAX_GENERATED });
-      if (c.reason || list.some((x) => x.sentence === c.sentence)) {
+      if (c.reason || wrongLanguage(c.sentence, c, { meaning: phrases[n - 1].meaning, nativeLanguage, locale }) || list.some((x) => x.sentence === c.sentence)) {
         dropped++;
         continue;
       }

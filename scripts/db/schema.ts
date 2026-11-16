@@ -692,6 +692,10 @@ export const clozeItems = pgTable(
     /** The example it was made from (origin 'example'): deleting the
      *  example (its turn dropped) deletes the item. */
     exampleId: uuid("example_id"),
+    /** The generation call a generated row came from (origin 'generated'
+     *  only): the language's calls in a day are counted from these
+     *  (cloze.mjs CLOZE_DAILY_CALLS), so a restart doesn't reset the cap. */
+    callId: uuid("call_id"),
     flaggedAt: tz("flagged_at"),
     createdAt: createdAt(),
   },
@@ -703,7 +707,7 @@ export const clozeItems = pgTable(
     // its example.
     check(
       "cloze_items_sentence",
-      sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example')`,
+      sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example') and (${t.callId} is not null) = (${t.origin} = 'generated')`,
     ),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "cloze_items_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
@@ -715,5 +719,10 @@ export const clozeItems = pgTable(
     // key: two fills at once insert each once.
     uniqueIndex("cloze_items_example_once").on(t.exampleId, t.phraseKey).where(sql`${t.exampleId} is not null`),
     uniqueIndex("cloze_items_generated_once").on(t.phraseId, t.phraseKey, t.sentence).where(sql`${t.origin} = 'generated' and ${t.sentence} is not null`),
+    // One "nothing usable" mark per phrase and key: a later try refreshes it
+    // (an upsert, whose target always leads with the owner: owned.ts).
+    uniqueIndex("cloze_items_tried_once").on(t.languageProfileId, t.phraseId, t.phraseKey).where(sql`${t.sentence} is null`),
+    // The daily cap counts one language's recent calls.
+    index("cloze_items_calls_idx").on(t.languageProfileId, t.createdAt).where(sql`${t.callId} is not null`),
   ],
 );

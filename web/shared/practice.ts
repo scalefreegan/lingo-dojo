@@ -97,10 +97,13 @@ export interface PracticeStatsReply {
    *  checks; the queue reply sends null (not checked). */
   setup: { audio: string | null; speech: string | null } | null;
   /** The cloze and mixed modes: `waiting`, the cloze mode's phrases left
-   *  out because their sentences aren't written yet; `writing`, whether a
-   *  call is writing some now (ask again in a moment). Null in the other
-   *  modes. */
-  cloze: { waiting: number; writing: boolean } | null;
+   *  out because they have no sentence yet; `writing`, whether a call is
+   *  writing some now (the counts may be asked again; only starting a
+   *  session writes more); `writable`, whether sentences are written for
+   *  this language at all (not for one whose words take endings: only
+   *  the learner's own session lines); `limited`, today's calls for this
+   *  language are used up. Null in the other modes. */
+  cloze: { waiting: number; writing: boolean; writable: boolean; limited: boolean } | null;
 }
 
 /** GET /api/practice/queue?length=&direction=&tz= */
