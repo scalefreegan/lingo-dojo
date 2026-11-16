@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, asc, desc, eq, gte, notInArray, sql, type SQL } from "drizzle-orm";
-import { effectiveProfile } from "../../scripts/assemble.mjs";
+import { RANDOM_SCENE_TITLE, effectiveProfile } from "../../scripts/assemble.mjs";
 import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs";
 import {
   CONVERSATION_ID_RE, IDLE_END_MS, MAX_PAGE, MAX_TURN_PAGE, PAGE_SIZE, TURN_PAGE, conversationTitle, itemFromRow, planTurnWrite, readPage,
@@ -17,7 +17,9 @@ import type {
   PackInput, VoiceHistoryItem, VoicePlanItem,
 } from "../shared/wire.ts";
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
+import { withDrawnScene } from "../shared/scenes.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
+import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
 import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
 import { sessionReview } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -27,7 +29,7 @@ import { readVoiceSettings } from "./store.ts";
 // stored for its learner's language, turn by turn, and listed in the
 // Library's History (each language has its own).
 //
-//   POST   /api/conversations             {mode, pack, title?} → {conversation}  (201)
+//   POST   /api/conversations             {mode, pack, title?, drawn?} → {conversation}  (201); a random scene is drawn here
 //   GET    /api/conversations             ?offset=&limit= → {conversations, nextOffset}, newest first
 //   GET    /api/conversations/:id         ?from=&limit= → {conversation, turns, nextFrom, plan, locale}
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
@@ -212,6 +214,7 @@ function summary(c: Conversation, last: Date | string | null): ConversationSumma
     title: c.title,
     mode: c.mode,
     scenarioId: c.scenarioId,
+    randomScene: drawnScenario(c) != null,
     nativeLanguage: c.nativeLanguage,
     targetLanguage: c.targetLanguage,
     targetVariant: c.targetVariant,
@@ -348,14 +351,82 @@ function isPack(v: unknown): v is PackInput {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
+const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
+
+/** How many of the language's latest conversations a random draw looks at
+ *  for scenes to steer clear of; scenes.ts drawScene keeps the first few
+ *  distinct ones in the pool (at most RECENT_SCENES). Quick scenes have no
+ *  scenario, so this looks past them. */
+const RECENT_LOOKBACK = 20;
+
+/** The scenario ids of the language's latest conversations, newest first
+ *  (null for a quick scene). */
+async function recentScenes(profile: LanguageProfileRef): Promise<(string | null)[]> {
+  const rows = await rawDb()
+    .select({ scenarioId: conversations.scenarioId })
+    .from(conversations)
+    .where(profileRows(profile).where(conversations))
+    .orderBy(desc(conversations.startedAt), desc(conversations.id))
+    .limit(RECENT_LOOKBACK);
+  return rows.map((r) => r.scenarioId);
+}
+
+/** The scenario a conversation's random scene drew (its snapshot's
+ *  `random_draw`), or null when it wasn't a random scene. */
+export function drawnScenario(conv: Pick<Conversation, "packSnapshot">): string | null {
+  const draw = (conv.packSnapshot as { random_draw?: { drawn?: unknown } } | null)?.random_draw;
+  return typeof draw?.drawn === "string" ? draw.drawn : null;
+}
+
+/**
+ * The pack a voice turn plays. A random scene's pack (the Go tab sends the
+ * draft as it is) plays the scenario its conversation drew when it was
+ * created, every turn, so nothing redraws; a turn may not play a random
+ * scene with no conversation to hold its draw (the conversation couldn't be
+ * made, or the session started with another scene), since drawing happens
+ * only when a conversation is made. (The client sends an unsaved turn with
+ * its session's drawn scene in place, scenes.ts unsavedTurnPack, so this
+ * refuses only a session that never drew one.) Any other pack is played
+ * as sent.
+ */
+export function playedPack(pack: PackInput, conv: Pick<Conversation, "packSnapshot"> | null): PackInput {
+  if (!randomSceneOf(pack)) return pack;
+  const drawn = conv ? drawnScenario(conv) : null;
+  if (!drawn) {
+    throw new HttpError(
+      409,
+      conv
+        ? "This session started with another scene, so it has no random scene drawn. Restart to draw one."
+        : "No scene has been drawn for this random scene yet: one is drawn when the session is saved, and saving it failed. Try again, or Restart.",
+    );
+  }
+  return withDrawnScene(pack, drawn);
+}
+
 async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
-  // `review` in a snapshot is the server's (below), never the client's.
-  const { review: _ignored, ...pack } = body.pack as PackInput & { review?: unknown };
+  // `review` and `random_draw` in a snapshot are the server's (below), never the client's.
+  const { review: _ignored, random_draw: _alsoIgnored, ...sent } = body.pack as PackInput & { review?: unknown; random_draw?: unknown };
+  const random = randomSceneOf(sent);
   await endIdle(ctx.user.id);
   const library = loadContent(modeRoot(mode));
+  // A random scene is drawn here, once, as the conversation is made: every
+  // later turn plays the scenario this snapshot records (voice.ts
+  // playedPack), so a resume, a reload or a retried turn never redraws.
+  // From here on the pack is exactly as if the learner had picked the scene.
+  let pack: PackInput = sent;
+  let randomDraw: Record<string, unknown> | null = null;
+  if (random) {
+    const target = str(effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(sent).overrides).target_language);
+    const keep = typeof body.drawn === "string" && body.drawn.length <= 200 ? body.drawn : null;
+    // Recent scenes always go in: a kept scene ignores them, but one no
+    // longer in the pool falls through to a fresh draw that must avoid them.
+    const draw = drawOrRefuse(library, target, random, { recent: await recentScenes(ctx.language), keep });
+    pack = withDrawnScene(sent, draw.scene.id);
+    randomDraw = { collections: random.collections, pool: draw.pool.map((s) => s.id), drawn: draw.scene.id, ...(draw.kept ? { kept: true } : {}) };
+  }
   const scenarioId = typeof pack.scenario === "string" && pack.scenario ? pack.scenario : null;
   const scenario = scenarioId ? library.scenarios.find((s) => s.id === scenarioId) : undefined;
   // The review block's phrases, chosen once for the whole session
@@ -368,14 +439,17 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // pack's overrides, a moved target language dropping the profile's
   // variant), kept so History's locales never follow a later profile edit.
   const langs = effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(pack).overrides);
-  const str = (v: unknown) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
   const [row] = await profileRows(ctx.language).insert(conversations, {
     // What was played, frozen: the pack changes later, and History shows
     // what this session was. With the review it was given (`review`), which
-    // is as much a part of what was played as the units.
-    packSnapshot: { ...(pack as unknown as Record<string, unknown>), ...(review ? { review } : {}) },
+    // is as much a part of what was played as the units, and for a random
+    // scene the draw (`random_draw`: the pool's collections and scenario ids,
+    // and the one drawn), the pack itself naming the drawn scenario.
+    packSnapshot: { ...(pack as unknown as Record<string, unknown>), ...(randomDraw ? { random_draw: randomDraw } : {}), ...(review ? { review } : {}) },
     scenarioId,
-    title: conversationTitle({ title: body.title, pack, scenarioTitle }),
+    // The Go tab names a random scene "Random scene" until it is drawn; the
+    // conversation is named after the scene it got.
+    title: conversationTitle({ title: random && body.title === RANDOM_SCENE_TITLE ? "" : body.title, pack, scenarioTitle }),
     mode,
     nativeLanguage: str(langs.native_language),
     targetLanguage: str(langs.target_language),

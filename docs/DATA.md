@@ -373,7 +373,8 @@ every row.
 ```
 packs           id, learner_id, language_profile_id, folder ('' or one
                 kebab segment), slug, title, created, scenario,
-                quick_scenario, units jsonb, overrides jsonb, notes,
+                quick_scenario, random_scene jsonb, units jsonb,
+                overrides jsonb, notes,
                 updated_at, deleted_at
                 unique (language_profile_id, folder, slug) where deleted_at is null
 pack_folders    learner_id, language_profile_id, name, created_at;
@@ -388,6 +389,17 @@ learner's local date. `pack_folders` was added because the Library lists
 empty folders, which `packs.folder` alone can't express. `seq` on
 `pack_revisions` and `agent_messages` gives the true order: `at`/`ts` is
 `now()`, the transaction's start, so rows written in one transaction tie.
+
+`random_scene` (migration `0007_random_scene`, nullable, old rows null) is a
+pack that draws its scene when a session starts: `{ collections: string[] }`,
+`[]` for every scene that fits (docs/CONTENT.md "Random scene"). It is its
+own column rather than a key of `overrides`, which feed the Learner block.
+`contentOf` in `scripts/db/packs.ts` validates it (`readRandomScene` in
+`web/shared/scenes.ts`: an object, at most 50 trimmed, de-duplicated names
+of at most 120 characters, none only spaces; anything else is a 400) and clears `scenario`
+and `quick_scenario` when it is set. Revisions snapshot it with the rest,
+so restore and undelete bring it back; the wire `Pack.random_scene` is
+always present (`null` when not random).
 
 The wire `Pack.id` stays `folder/slug`, so the Library and Scene tabs keep
 working unchanged. Git used to make every pack change undoable. Here
@@ -492,6 +504,27 @@ turns           id, conversation_id, learner_id, language_profile_id, idx, role 
 `pack_snapshot` freezes what was played, since packs change later. `turns`
 stores the same shapes `VoiceHistoryItem` already has, so a stored conversation
 can be shown with the existing transcript components.
+
+A random scene is drawn when its conversation is made, so the snapshot is
+the drawn pack (`scenario` set, `random_scene` null) plus
+`random_draw: { collections, pool: [scenario ids], drawn, kept? }` (`kept`
+when the conversation kept the scene an earlier one of the same live voice
+session drew, that one having ended while the session stayed open: leaving
+Go, two idle hours, another device's End. Restart and Close forget the
+scene. The client's `drawn` is honoured while it is in the pool, even when
+it is the most recent scene; otherwise the draw is fresh and still avoids
+recent scenes, and if unsaved turns were played as the earlier scene, the
+new conversation is recorded under the newly drawn scene while holding
+those turns, as a picked scene changed mid-session always has). The server writes `random_draw` and `review`; a client's own are
+dropped. `scenario_id` and the title are the drawn scenario's; the wire
+`ConversationSummary.randomScene` is true for such a row. A turn whose pack
+is still random reads its scene from this snapshot (`playedPack` in
+`web/server/conversations.ts`) and never redraws; with no conversation, or
+one that wasn't random, it is a 409. (A turn the client must run unsaved
+sends the pack with the session's drawn scene already in place, so it is
+not random and runs as any picked scene does.) Avoiding recent scenes reads the
+language profile's last 20 conversations' `scenario_id`. No migration: the
+snapshot is jsonb.
 
 Added by migration `0001_conversation_languages_from_client` (phase 3 review):
 `native_language`, `target_language` (with `target_variant`, the session's

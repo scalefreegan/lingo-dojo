@@ -35,7 +35,8 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
   "A palenque outside Santiago Matatlán: tasting mezcal with the maestro".
 - **Profile** — who the learner is: native language, target language and variant,
   level, goals.
-- **Pack** — one concrete selection: a scenario (or a free-text quick scenario),
+- **Pack** — one concrete selection: a scenario (or a free-text quick scenario, or a
+  random scene drawn from a pool of library scenarios when the session starts),
   one or more units per slot, profile overrides, free notes. Saved as YAML.
 - **Export** — the assembled markdown prompt rendered from a pack.
 - **Dojo master** — the voice agent that receives the prompt. Lingo Dojo never
@@ -45,7 +46,10 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 
 1. Open the app (Dock icon or `npm run dev`, http://localhost:38400), log in,
    and pick who's practicing (the first visit creates the admin account).
-2. Pick a scenario from the library, or type a quick scenario in a text box.
+2. Pick a scenario from the library, type a quick scenario in a text box, or
+   choose Random scene (optionally narrowed to some collections): the server
+   draws one that fits the target language when the session starts, steering
+   clear of the last few played, and the Go tab then shows which.
 3. For each slot, choose units (radio for `one`, checkboxes for `any`). Defaults
    come pre-selected from each unit's `default: true`.
 4. Optionally override target language / level for this pack and add free notes.

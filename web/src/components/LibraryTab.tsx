@@ -300,7 +300,11 @@ function PackRow({
   const [title, setTitle] = useState(p.title);
   const [busy, setBusy] = useState(false);
   const { stem } = splitPackId(p.id);
-  const scenario = p.scenario
+  const scenario = p.random_scene
+    ? p.random_scene.collections.length
+      ? `Random scene (${p.random_scene.collections.map((c) => c || "Other scenes").join(", ")})`
+      : "Random scene"
+    : p.scenario
     ? (content.scenarios.find((s) => s.id === p.scenario)?.title ?? p.scenario)
     : p.quick_scenario
       ? "Quick scenario"

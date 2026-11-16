@@ -92,7 +92,7 @@ test("PUT creates, GET lists and reads, PUT again replaces, DELETE is soft: each
   const id = "2026-10-20-plaza-chat";
   const put = await call("PUT", `/api/packs/${id}`, { ...pack, id: "ignored", folder: "ignored", extra: "dropped" });
   assert.equal(put.status, 200, put.text);
-  assert.deepEqual(put.body, { pack: { ...pack, id, folder: "" } }, "the reply is the row as stored; no commit field");
+  assert.deepEqual(put.body, { pack: { ...pack, random_scene: null, id, folder: "" } }, "the reply is the row as stored (random_scene null: not a random scene); no commit field");
   assert.deepEqual((await call("GET", "/api/packs")).body.packs.map((p) => p.id), [id]);
   assert.equal((await call("GET", `/api/packs/${id}`)).body.pack.overrides.level, "B2");
 

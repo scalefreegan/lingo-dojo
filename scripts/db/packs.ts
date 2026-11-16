@@ -44,13 +44,14 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, sql, type SQL } from "d
 // Spelled from the repo root so it matches the typed declaration in
 // web/server/mjs.d.ts (an ambient module is matched by pattern).
 import { ID_RE, PACK_ID_RE, normalizePack, renamedStem, splitPackId } from "../../scripts/content.mjs";
+import { readRandomScene } from "../../web/shared/scenes.ts";
 import type { DeletedPack, Pack, PackAction, PackRevision, Problem } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { packFolders, packRevisions, packs } from "./schema.ts";
 
 type PackRow = typeof packs.$inferSelect;
 /** A pack's content columns (everything a revision restores). */
-type Content = Pick<PackRow, "title" | "created" | "scenario" | "quickScenario" | "units" | "overrides" | "notes">;
+type Content = Pick<PackRow, "title" | "created" | "scenario" | "quickScenario" | "randomScene" | "units" | "overrides" | "notes">;
 
 export class PackError extends Error {
   code: "EINVAL" | "ENOENT" | "EEXIST" | "ENOTEMPTY" | "ESTATE";
@@ -74,7 +75,7 @@ export const joinPackId = (folder: string, slug: string) => (folder ? `${folder}
 export function toPack(row: PackRow): Pack {
   return {
     id: joinPackId(row.folder, row.slug), folder: row.folder, title: row.title, created: row.created, scenario: row.scenario,
-    quick_scenario: row.quickScenario, units: row.units, overrides: row.overrides, notes: row.notes,
+    quick_scenario: row.quickScenario, random_scene: row.randomScene ?? null, units: row.units, overrides: row.overrides, notes: row.notes,
   };
 }
 
@@ -113,9 +114,16 @@ function contentOf(raw: unknown): Content {
   const p = normalizePack(raw);
   const title = p.title.trim();
   if (!title) throw new PackError("EINVAL", "a pack needs a title");
+  // A random scene is checked strictly (normalizePack reads a malformed one
+  // as "not random"): a body that says random in a way that isn't
+  // understood is refused, never saved as something else. A random pack
+  // names no scene of its own, so the other two are cleared, not kept unused.
+  const random = readRandomScene((raw as Record<string, unknown> | null)?.random_scene);
+  if ("error" in random) throw new PackError("EINVAL", random.error);
+  const randomScene = random.value;
   const content: Content = {
-    title, created: p.created || new Date().toISOString(), scenario: p.scenario, quickScenario: p.quick_scenario, units: p.units,
-    overrides: p.overrides as Record<string, unknown>, notes: p.notes,
+    title, created: p.created || new Date().toISOString(), scenario: randomScene ? "" : p.scenario, quickScenario: randomScene ? "" : p.quick_scenario,
+    randomScene, units: p.units, overrides: p.overrides as Record<string, unknown>, notes: p.notes,
   };
   if (hasNul(content)) throw new PackError("EINVAL", "a pack can't contain a NUL character (\\u0000)");
   return content;

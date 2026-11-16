@@ -185,13 +185,26 @@ export interface PackInput {
   title: string;
   /** ISO timestamp with offset, e.g. 2026-10-19T09:30:00-06:00. */
   created: string;
-  /** A scenario id, or "" when quick_scenario is used. */
+  /** A scenario id, or "" when quick_scenario or random_scene is used. */
   scenario: string;
   quick_scenario: string;
+  /** A random scene: the configuration is the pack's, the scenario is
+   *  drawn from this pool when a session starts (docs/CONTENT.md "Random
+   *  scene"). Absent or null: not random. A saved pack always carries the
+   *  key (null when not random). */
+  random_scene?: RandomScene | null;
   /** Unit ids; order within a slot follows this list. */
   units: string[];
   overrides: Overrides;
   notes: string;
+}
+
+/** A random scene's pool: the library scenarios that fit the session's
+ *  target language, narrowed to these collections when any are named ("" is
+ *  the scenes in no collection). A name the library no longer has is
+ *  ignored; nothing left is an empty pool, an error (web/shared/scenes.ts). */
+export interface RandomScene {
+  collections: string[];
 }
 
 /** A saved pack, the active learner's: its content plus its id — `<slug>`
@@ -200,6 +213,7 @@ export interface PackInput {
 export interface Pack extends PackInput {
   id: string;
   folder: string;
+  random_scene: RandomScene | null;
 }
 
 /** GET /api/packs — the active learner's packs sorted by id (top-level ones
@@ -358,6 +372,9 @@ export interface ExportResult {
   path: string;
   stats: Stats;
   warnings: string[];
+  /** A random scene's pack: the scene drawn for this export, from a pool of
+   *  `pool` scenes. Absent for any other pack. */
+  drawn?: { id: string; title: string; pool: number };
 }
 
 /** Every non-2xx reply. */
@@ -816,6 +833,13 @@ export interface ConversationCreateRequest {
   pack: PackInput;
   /** The scene title the Go tab shows. */
   title?: string;
+  /** A random scene's pack only: the scenario an earlier conversation of
+   *  the same live voice session drew, sent when that conversation ended
+   *  while the session stayed open (leaving the Go tab, two idle hours,
+   *  another device's End), so the session keeps its scene. Restart and
+   *  Close forget it: the next Start draws again. Kept when it is still in
+   *  the pool; otherwise the server draws afresh, avoiding recent scenes. */
+  drawn?: string;
 }
 
 /** One conversation, as History lists it. Times are ISO strings. */
@@ -823,7 +847,12 @@ export interface ConversationSummary {
   id: string;
   title: string;
   mode: Mode;
+  /** The scenario played: the one picked, or the one drawn for a random
+   *  scene; null for a quick scene. */
   scenarioId: string | null;
+  /** The scenario was drawn at random when the session started (the pack
+   *  was a random scene); the snapshot keeps the pool it came from. */
+  randomScene: boolean;
   /** The session's languages, as they were when it started (the learner's
    *  profile under the pack's overrides); "" for none. */
   nativeLanguage: string;

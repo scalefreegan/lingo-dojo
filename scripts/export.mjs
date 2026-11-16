@@ -9,11 +9,14 @@
 // content/kids/ for kids mode; a pack path inside content/kids/ picks kids
 // mode by itself. The pack can be any path, and its id is its filename stem.
 // Warnings go to stderr and do not fail the run, matching the app; an
-// unreadable or invalid pack exits 1.
+// unreadable or invalid pack exits 1, and so does a random scene whose pool
+// is empty. A random scene's pack has its scene drawn here, and the first
+// line of output names it.
 
 import path from "node:path";
 import { MODES, exportsDirFor, isMode, loadContent, loadPackFile, modeRoot, writeExport, ID_RE } from "./content.mjs";
-import { assemble } from "./assemble.mjs";
+import { assemble, effectiveProfile } from "./assemble.mjs";
+import { drawRandomScene, emptyPoolMessage, scenesWord, withDrawnScene } from "../web/shared/scenes.ts";
 
 const USAGE = "usage: node scripts/export.mjs [--mode adult|kids] content/packs/<id>.yaml";
 
@@ -65,9 +68,26 @@ function main(argv) {
   const errors = content.problems.filter((p) => p.level === "error");
   if (errors.length) console.error(`note: ${errors.length} content file(s) failed to load; run the app to see them`);
 
-  const { markdown, warnings, stats } = assemble(content, pack, mode);
+  // A random scene is drawn here, once per export, from the same pool a
+  // session would draw from (no recent-session history offline), and the
+  // output says which one it was.
+  let played = pack;
+  let drew = null;
+  if (pack.random_scene) {
+    const target = String(effectiveProfile(content.profile, pack.overrides).target_language ?? "").trim();
+    const draw = drawRandomScene(content.scenarios, content.languages, target, pack.random_scene, { rand: Math.random });
+    if (!draw) {
+      console.error(`error: ${emptyPoolMessage(pack.random_scene, target)}`);
+      return 1;
+    }
+    played = withDrawnScene(pack, draw.scene.id);
+    drew = `Random scene: drew "${draw.scene.title}" (${draw.scene.id}) from ${scenesWord(draw.pool.length)}`;
+  }
+
+  const { markdown, warnings, stats } = assemble(content, played, mode);
   for (const w of warnings) console.error(`warning: ${w}`);
   const out = writeExport(pack.id, markdown, exportsDirFor(mode));
+  if (drew) console.log(drew);
   console.log(out);
   console.log(`${stats.words} words, ~${stats.tokens} tokens`);
   return 0;

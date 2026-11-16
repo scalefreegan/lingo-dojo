@@ -4,6 +4,12 @@
  * (docs/CONTENT.md: "order within a slot follows the pack"). */
 
 import type { ContentReply, Language, LanguageInfo, Pack, PackInput, PickerKey, Profile, Scenario, Slot, Unit } from "./types";
+// The one rule for which scenes fit a language, shared with the assembler
+// and the server's draw (a runtime import, so spelled with its extension:
+// the draft tests run this file under Node).
+import { foreignLanguage, randomPool } from "../shared/scenes.ts";
+
+export { foreignLanguage };
 
 export type OverrideKey = PickerKey;
 /** The Profile popover's fields, in display order. The level picker's
@@ -26,11 +32,16 @@ export interface Draft {
   sourceId: string | null;
   /** Kept from a loaded pack so an overwrite doesn't rewrite its date. */
   created: string;
-  /** "library" uses `scenario`; "quick" uses `quickScenario`. Both are kept
-   *  so flipping between them doesn't lose what was typed. */
-  scenarioMode: "library" | "quick";
+  /** "library" uses `scenario`; "quick" uses `quickScenario`; "random"
+   *  draws a library scenario from `randomCollections`' pool when a session
+   *  starts. All three are kept so flipping between them doesn't lose what
+   *  was picked or typed. */
+  scenarioMode: "library" | "quick" | "random";
   scenario: string;
   quickScenario: string;
+  /** The Random card's pool: collection names ([] = every scene that fits
+   *  the target language). Saved as `random_scene.collections`. */
+  randomCollections: string[];
   /** Unit ids, pack order. */
   units: string[];
   overrides: Record<OverrideKey, string>;
@@ -134,6 +145,7 @@ export function newDraft(content: ContentReply): Draft {
     scenarioMode: "library",
     scenario: "",
     quickScenario: "",
+    randomCollections: [],
     units,
     overrides: emptyOverrides(),
     location: "",
@@ -269,11 +281,13 @@ export function draftToPack(draft: Draft, minutes: number | null = draft.minutes
   // stays, so the assembler's warning about it is seen.
   if (minutes != null) overrides.minutes = minutes;
   const quick = draft.scenarioMode === "quick";
+  const random = draft.scenarioMode === "random";
   return {
     title: draft.title,
     created: draft.created,
-    scenario: quick ? "" : draft.scenario,
+    scenario: quick || random ? "" : draft.scenario,
     quick_scenario: quick ? draft.quickScenario : "",
+    random_scene: random ? { collections: [...draft.randomCollections] } : null,
     units: draft.units,
     overrides,
     notes: draft.notes,
@@ -294,13 +308,15 @@ export function packToDraft(pack: Pack): Draft {
     else extraOverrides[k] = v;
   }
   const quick = !pack.scenario && !!pack.quick_scenario;
+  const random = pack.random_scene ?? null;
   return {
     title: pack.title,
     sourceId: pack.id,
     created: pack.created,
-    scenarioMode: quick ? "quick" : "library",
+    scenarioMode: random ? "random" : quick ? "quick" : "library",
     scenario: pack.scenario,
     quickScenario: pack.quick_scenario,
+    randomCollections: random ? [...random.collections] : [],
     units: [...pack.units],
     overrides,
     location,
@@ -312,24 +328,26 @@ export function packToDraft(pack: Pack): Draft {
 
 /* ------------------------------ collections ------------------------------ */
 
-/** The language a collection was written for, when that isn't the session's
- *  target: its scenarios all carry a `language` ("es-MX") whose prefix is
- *  another language's code. A collection with any language-neutral
- *  scenario, or a target with no code in languages.yaml, is never foreign —
- *  dimming is a hint, so it errs toward not dimming. Returns the language's
- *  name for the badge ("Spanish"), or the raw code when languages.yaml
- *  doesn't list it. */
-export function foreignLanguage(items: Scenario[], languages: Language[], target: string): string | null {
-  const targetCode = languages.find((l) => l.name === target)?.code;
-  if (!targetCode || items.length === 0) return null;
-  const codes = new Set<string>();
-  for (const s of items) {
-    if (!s.language) return null;
-    codes.add(s.language.split(/[-_]/)[0].toLowerCase());
-  }
-  if (codes.has(targetCode)) return null;
-  const first = [...codes][0];
-  return languages.find((l) => l.code === first)?.name ?? first;
+// foreignLanguage (a collection written for another language than the
+// session's target, dimmed on the Scene tab) lives in ../shared/scenes.ts
+// beside the random scene's pool, so the two can't disagree; re-exported
+// above.
+
+/** The random scene's pool as the draft stands (the Scene tab's count, the
+ *  summary bar, Start): the scenes that fit the session's target language,
+ *  narrowed to the chosen collections. The server draws from the same
+ *  pool (web/shared/scenes.ts). Empty for a draft that isn't random. */
+export function draftPool(content: ContentReply, draft: Draft): Scenario[] {
+  if (draft.scenarioMode !== "random") return [];
+  const target = sessionValues(draft, content.profile).target_language;
+  return randomPool(content.scenarios, content.languages, target, { collections: draft.randomCollections });
+}
+
+/** Choose or drop one collection in the Random card's pool, keeping the
+ *  order they were chosen in. */
+export function togglePoolCollection(draft: Draft, name: string): Draft {
+  const has = draft.randomCollections.includes(name);
+  return { ...draft, scenarioMode: "random", randomCollections: has ? draft.randomCollections.filter((c) => c !== name) : [...draft.randomCollections, name] };
 }
 
 /* --------------------------------- ids ---------------------------------- */
@@ -451,7 +469,9 @@ export function loadRememberedDraft(languageId: string): Draft | null {
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<Draft>;
     if (!Array.isArray(d.units) || typeof d.overrides !== "object" || d.overrides === null) return null;
-    return { ...newDraftShape(), ...d, overrides: { ...emptyOverrides(), ...d.overrides }, minutes: validMinutes(d.minutes) == null ? null : d.minutes } as Draft;
+    const randomCollections = Array.isArray(d.randomCollections) ? d.randomCollections.filter((c): c is string => typeof c === "string") : [];
+    const scenarioMode = d.scenarioMode === "quick" || d.scenarioMode === "random" ? d.scenarioMode : "library";
+    return { ...newDraftShape(), ...d, scenarioMode, randomCollections, overrides: { ...emptyOverrides(), ...d.overrides }, minutes: validMinutes(d.minutes) == null ? null : d.minutes } as Draft;
   } catch {
     return null;
   }
@@ -476,6 +496,7 @@ function newDraftShape(): Draft {
     scenarioMode: "library",
     scenario: "",
     quickScenario: "",
+    randomCollections: [],
     units: [],
     overrides: emptyOverrides(),
     location: "",

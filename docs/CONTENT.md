@@ -219,7 +219,9 @@ the file's shape and the fields a saved pack has.
 title: Palenque visit, gentle corrections
 created: 2026-10-19T09:30:00-06:00
 scenario: oaxaca-palenque        # a scenario id, OR:
-quick_scenario: ""               # free text used instead of a scenario file
+quick_scenario: ""               # free text used instead of a scenario file, OR:
+# random_scene:                  # a scene drawn when the session starts (below)
+#   collections: [Daily life]    # [] or absent = every scene that fits
 units:                           # unit ids; order within a slot follows the pack
   - intro-native
   - warmup-vocab
@@ -256,6 +258,51 @@ pack only (a `minutes` key in `profile.yaml` does nothing) and never appears
 in the Learner block. Absent means no limit, and the export is exactly what
 it would be without the feature. With it, the assembler adds a Time budget
 section (see the algorithm below).
+
+### Random scene: `random_scene`
+
+A pack may leave the scene to chance: `random_scene: { collections: [...] }`
+keeps its units, length, location and notes, and a library scenario is
+drawn when a session starts. The **pool** is every scenario of the mode's
+library that fits the learner's target language (the same rule that dims a
+scene on the Scene tab: `fitsTarget` in `web/shared/scenes.ts`), narrowed
+to the named collections when there are any (`""` names the scenes in no
+collection). A collection the library no longer has is ignored; if nothing
+is left the pool is empty, which is an error (the Scene tab says why and
+Start is blocked), never a silent fallback to another scene. The pool never
+crosses libraries: a kids pack draws only kids scenes. At most 50 names of
+at most 120 characters each; anything else (a string, a number, a list of
+non-strings, a name of only spaces: only a literal `""` means no collection) is refused by the app (400) and ignored with a warning in a
+pack file. A random pack names no `scenario` or `quick_scenario` (saving
+one clears them; a file with both warns and stays random).
+
+The draw happens on the server, once, when the voice session's conversation
+is made (`POST /api/conversations`; `web/server/randomScene.ts`). It steers
+clear of the language profile's last `min(5, pool size − 1)` distinct
+scenarios, so a pool of one still draws its scene. From then on the drawn
+scenario is treated exactly as if it had been picked: the conversation's
+snapshot records it (docs/DATA.md §Conversations), every turn plays it (the
+draft sent with a turn is still random; the server reads the scene from the
+conversation, never redraws), its phrases go to the bank, and recall, the
+recap, casting, `{{location}}` and the title all use it. Restart, and Close
+then Start, make a new conversation and so a new draw. When a conversation
+ends while its voice session stays open (leaving the Go tab, two idle
+hours, another device's End), the session's next conversation keeps the
+scene while it is still in the pool (even though it is now a recent
+scene), else draws afresh. A turn that has to
+run unsaved (its conversation couldn't be made) plays the session's drawn
+scene; with nothing drawn yet it is refused (409). If unsaved turns were
+played as the earlier scene and the pool then changed so that scene is no
+longer in it, the next conversation is recorded under the newly drawn
+scene while holding those turns, as a picked scene changed mid-session
+always has. There is no reroll.
+
+The preview, word counts and `POST /api/assemble` do not draw: the
+Scenario section is a placeholder naming the pool's size ("Random scene"
+is the heading's title), with a warning when the pool is empty. Copy is
+disabled for a random scene (a copied prompt would have no scene). The
+export (`npm run export`, the Go tab's Export file) draws its own scene at
+export time and says which (the CLI's first line; the route's `drawn`).
 
 The filename is `<created date YYYY-MM-DD>-<slug of title>.yaml`. Packs may be
 grouped one level deep in subfolders of `content/packs/` (`content/packs/oaxaca/`).
@@ -334,7 +381,10 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
    different language drops the profile's `target_variant` unless the pack
    overrides that too.
 2. Resolve the scenario: by id, or `quick_scenario` text as an ad hoc scenario with
-   title "Quick scenario".
+   title "Quick scenario", or for a `random_scene` pack a placeholder titled
+   "Random scene" whose Scenario section names the pool's size (the draw
+   is the caller's: a session or an export assembles the pack with the drawn
+   scenario in place, `withDrawnScene` in `web/shared/scenes.ts`).
 3. Walk `schema.slots` in order. For each slot, take the pack's units with that
    slot, in pack order. Apply cardinality: `one` with >1 is a warning (keep the
    first); `required` with 0 is a warning and a placeholder line.

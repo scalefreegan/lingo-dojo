@@ -55,3 +55,47 @@ test("warnings go to stderr and do not fail the export; a bad pack exits 1", () 
   assert.equal(usage.status, 2);
   assert.match(usage.stderr, /usage:/);
 });
+
+test("a random scene's pack: one scene is drawn from its pool at export time and named in the output; the file is that scene's prompt", () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-exports-"));
+  const packFile = write(out, "2026-10-22-random.yaml", "title: Random\nrandom_scene:\n  collections: []\nunits: [intro-native]\n");
+  const r = cli([packFile], out);
+  assert.equal(r.status, 0, r.stderr);
+  const [drew, printedPath, statsLine] = r.stdout.trim().split("\n");
+  const m = /^Random scene: drew "(.+)" \((market|plaza)\) from 2 scenes$/.exec(drew);
+  assert.ok(m, drew);
+  assert.equal(printedPath, path.join(out, "2026-10-22-random.md"));
+  assert.match(statsLine, /^\d+ words, ~\d+ tokens$/);
+  const markdown = fs.readFileSync(printedPath, "utf8");
+  assert.ok(markdown.startsWith(`# Lingo Dojo session: ${m[1]}\n`));
+  assert.ok(!markdown.includes("Random scene"), "the export has the drawn scene, no placeholder");
+  // Byte for byte the prompt of the same scene picked.
+  const content = loadContent(FIXTURE);
+  assert.equal(markdown, assemble(content, { title: "Random", scenario: m[2], units: ["intro-native"] }).markdown);
+});
+
+test("a random scene with an empty pool exits 1 and writes nothing; a malformed one is warned about and exported as no scene", () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-exports-"));
+  const empty = write(out, "2026-10-22-empty.yaml", "title: Empty\nrandom_scene:\n  collections: [Gone]\nunits: [intro-native]\n");
+  const r = cli([empty], out);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /error: The random scene's pool is empty/);
+  assert.ok(!fs.existsSync(path.join(out, "2026-10-22-empty.md")));
+
+  const bad = write(out, "2026-10-22-bad-random.yaml", "title: Bad\nrandom_scene: everything\nunits: [intro-native]\n");
+  const b = cli([bad], out);
+  assert.equal(b.status, 0, b.stderr);
+  assert.match(b.stderr, /warning: .*random_scene must be an object.*ignored \(not a random scene\)/);
+  assert.match(b.stderr, /warning: No scenario selected\./);
+});
+
+test("kids mode: a random scene draws from the kids library only", () => {
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-exports-"));
+  const packFile = write(out, "2026-10-22-kids-random.yaml", "title: Kids random\nrandom_scene: {}\nunits: [intro-game]\n");
+  for (let i = 0; i < 4; i++) {
+    const r = cli(["--mode", "kids", packFile], out);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.split("\n")[0], 'Random scene: drew "The farm" (farm) from 1 scene');
+    assert.equal(r.stdout.split("\n")[1], path.join(out, "kids", "2026-10-22-kids-random.md"));
+  }
+});

@@ -50,6 +50,13 @@
       "when": 1794805582017,
       "tag": "0006_cloze",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794848742716,
+      "tag": "0007_random_scene",
+      "breakpoints": true
     }
   ]
 }

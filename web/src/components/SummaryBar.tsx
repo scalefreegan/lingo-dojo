@@ -4,7 +4,7 @@ import type { AssembleResult, ContentReply, PackInput } from "../types";
 import { changedSlots, type Draft } from "../draft";
 import { useCopyStatus } from "../useCopyStatus";
 import { Button } from "./ui";
-import type { Tab } from "./shared";
+import { RANDOM_COPY_HINT, type Tab } from "./shared";
 
 /* The sticky strip below the top bar, visible on every tab: where the pack
  * stands (scene, units, what's changed, length, warnings) and the one thing
@@ -16,6 +16,8 @@ export default function SummaryBar({
   draft,
   pack,
   sceneTitle,
+  poolSize = null,
+  blocked = null,
   result,
   pending,
   onTab,
@@ -25,6 +27,10 @@ export default function SummaryBar({
   draft: Draft;
   pack: PackInput;
   sceneTitle: string;
+  /** A random scene's pool size (null when the scene isn't random). */
+  poolSize?: number | null;
+  /** Why the session can't start (an empty random pool), or null. */
+  blocked?: string | null;
   result: AssembleResult | null;
   pending: boolean;
   onTab: (t: Tab) => void;
@@ -39,7 +45,14 @@ export default function SummaryBar({
   return (
     <div className="sticky top-12 z-20 flex items-center gap-3 border-b border-line bg-panel px-4 py-2 text-sm sm:pr-10">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
-        <span className="max-w-full truncate font-medium text-fg sm:max-w-[40%]">{sceneTitle || "No scene"}</span>
+        <span className="max-w-full truncate font-medium text-fg sm:max-w-[40%]" data-testid="summary-scene">
+          {sceneTitle || "No scene"}
+          {poolSize != null && (
+            <span className={`font-normal ${poolSize ? "text-fg-3" : "text-err"}`} data-testid="summary-pool">
+              {" "}· {poolSize ? `${poolSize} in pool` : "empty pool"}
+            </span>
+          )}
+        </span>
         <span className="text-fg-3">
           {pack.units.length} unit{pack.units.length === 1 ? "" : "s"}
         </span>
@@ -60,13 +73,15 @@ export default function SummaryBar({
         type="button"
         className="shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
         onClick={() => copy(markdown)}
-        disabled={!markdown}
+        // A random scene has no scene until one is drawn: the preview's
+        // prompt would paste without one (Export file draws one).
+        disabled={!markdown || poolSize != null}
         aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
-        title="Copy the prompt, to paste into ChatGPT or Claude voice instead"
+        title={poolSize != null ? RANDOM_COPY_HINT : "Copy the prompt, to paste into ChatGPT or Claude voice instead"}
       >
         {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
       </button>
-      <Button variant="primary" className="shrink-0" onClick={onPractice} disabled={!markdown}>
+      <Button variant="primary" className="shrink-0" onClick={onPractice} disabled={!markdown || !!blocked} title={blocked ?? undefined}>
         <Mochi size={20} /> Practice
       </Button>
     </div>

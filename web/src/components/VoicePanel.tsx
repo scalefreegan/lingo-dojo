@@ -20,6 +20,7 @@ import type {
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, turnsSettled } from "../conversationLife";
+import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -59,10 +60,19 @@ export default function VoicePanel({
   title = "",
   canStar = false,
   onReview,
+  blocked = null,
+  onDrawn,
 }: {
   mode: Mode;
   pack: PackInput;
   langs: VoiceLanguages;
+  /** Why the session can't start (an empty random pool): Start is off and
+   *  says so. null when it can. */
+  blocked?: string | null;
+  /** A random scene's draw: the scenario the server drew when this
+   *  session's conversation was made, null again at Restart and Close. A
+   *  state setter: stable. */
+  onDrawn?: (scenarioId: string | null) => void;
   /** What the saved conversation is called in History (the scene shown). */
   title?: string;
   /** Bumped by every pick in the Go tab's "How long do you have?". */
@@ -100,7 +110,24 @@ export default function VoicePanel({
       </section>
     );
   }
-  return <VoiceSession mode={mode} pack={pack} langs={langs} active={active} minutesPick={minutesPick} title={title} canStar={canStar} onReview={onReview} onClose={() => setOpen(false)} />;
+  return (
+    <VoiceSession
+      mode={mode}
+      pack={pack}
+      langs={langs}
+      active={active}
+      minutesPick={minutesPick}
+      title={title}
+      canStar={canStar}
+      onReview={onReview}
+      blocked={blocked}
+      onDrawn={onDrawn}
+      onClose={() => {
+        onDrawn?.(null);
+        setOpen(false);
+      }}
+    />
+  );
 }
 
 /** The saved conversation a session writes to: its id, the transcript index
@@ -108,7 +135,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -306,6 +333,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // for it, so the turn is stored in the conversation it was sent for.
   const convRef = useRef<SavedConversation | null>(null);
   const creating = useRef<Promise<SavedConversation | null> | null>(null);
+  // A random scene's scenario, as the server drew it for this session's
+  // first conversation. A later conversation of the same session (the
+  // first ended while the session stayed open: Go left, two idle hours,
+  // another device's End) asks to keep it, so the scene doesn't change
+  // mid-transcript, and a turn that must run unsaved plays it. Restart
+  // forgets it, and Close unmounts the session, so the next Start draws
+  // again.
+  const drawnRef = useRef<string | null>(null);
   const sessionEpoch = useRef(0);
   const unsavedFrom = useRef<number | null>(null);
   const inFlight = useRef(new Map<string, Promise<unknown>>());
@@ -631,10 +666,17 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const epoch = sessionEpoch.current;
     const page = getPageLearner() ?? { learnerId: "", languageId: "" };
     const start = Math.min(unsavedFrom.current ?? here, here);
-    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current }).then(
+    const keep = keepDrawn(turnPack, drawnRef.current);
+    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current, ...keep }).then(
       ({ conversation }) => {
         const c = { id: conversation.id, start, page };
         if (creating.current === made) creating.current = null;
+        // The scene a random draw gave this session (the server's draw;
+        // the turns play it from the conversation), for the Go tab to show.
+        if (conversation.randomScene && conversation.scenarioId && epoch === sessionEpoch.current) {
+          drawnRef.current = conversation.scenarioId;
+          onDrawn?.(conversation.scenarioId);
+        }
         const fate = conversationFate({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life });
         if (fate === "drop") {
           // Restart, End or Close came first: no turn will use it.
@@ -928,7 +970,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
         const elapsedMs = Date.now() - (startedAtRef.current ?? Date.now());
-        const body: VoiceTurnRequest = { mode, pack: turnPack, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
+        // With no conversation the server can't know a random scene's draw
+        // (it lives in the snapshot): an unsaved turn plays the scene this
+        // session drew, as a picked one; the next conversation keeps it.
+        const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
+        const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
         const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
         if (c) {
           inFlight.current.set(c.id, req);
@@ -1432,6 +1478,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     sessionEpoch.current += 1;
     closeConversation();
     unsavedFrom.current = null;
+    // A random scene is drawn again for the next session.
+    drawnRef.current = null;
+    onDrawn?.(null);
     setSaving(null);
     setEnded(false);
     setRecapId(null);
@@ -1607,9 +1656,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
 
       {canStart && !started && (
         <div className="flex flex-col gap-2">
-          <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => void runTurn("")} disabled={busy} data-testid="voice-start">
+          <Button variant="primary" className="justify-center self-stretch px-5 py-2.5 text-base sm:self-start" onClick={() => void runTurn("")} disabled={busy || !!blocked} data-testid="voice-start">
             {phase === "thinking" ? "Starting…" : "Start session"}
           </Button>
+          {blocked && (
+            <p role="alert" className="text-sm text-err" data-testid="voice-start-blocked">
+              {blocked}
+            </p>
+          )}
           <p className="text-sm text-fg-3 sm:text-xs">
             The dojo master speaks first. {settings?.turn === "pause" ? `Your turn ends after ${(settings.silenceMs / 1000).toFixed(1)} s of quiet.` : "Tap the wave to answer, and ■ when you're done."}
             {!sttReady && " No speech-to-text provider is set up, so type your answers."}

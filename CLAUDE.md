@@ -56,6 +56,12 @@ grants and row-level security on `app.learner_id` and
 unaffected). A practice answer locks its phrase
 then its card; it names the card's version, the phrase's revision and a
 submit id (a resend replays, anything else stale is a 409).
+A pack may be a random scene (migration 0007: `packs.random_scene`, a
+validated `{ collections }` pool; pure rules in `web/shared/scenes.ts`,
+the draw in `web/server/randomScene.ts`): the server draws the scenario
+only when a conversation is made, avoiding the language's recent scenes,
+records it in `pack_snapshot.random_draw`, and every turn plays that one
+(`playedPack`); preview and assemble never draw, an export draws its own.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
