@@ -90,7 +90,50 @@ on sayFailure(msg)
 end sayFailure
 
 on openDashboard()
-	do shell script "open " & quoted form of dashUrl
+	-- Prefer focusing a tab already on this app over opening a new one: plain
+	-- `open` hands off to the default browser (Chrome), which always makes a
+	-- fresh tab, scattering sessions every time the Dock icon is clicked.
+	-- Match by URL PREFIX, not equality, so a tab mid-navigation (e.g.
+	-- dashUrl & "/practice") still counts as "this app's tab" and is
+	-- refocused instead of duplicated. First use prompts for Automation
+	-- access to Chrome (System Settings > Privacy & Security > Automation) —
+	-- the same one-time dance as the server helper's Documents prompt.
+	try
+		tell application "Google Chrome"
+			set targetWinIndex to 0
+			set targetTabIndex to 0
+			set winCount to count of windows
+			repeat with wi from 1 to winCount
+				set tabCount to count of tabs of window wi
+				repeat with ti from 1 to tabCount
+					if (URL of tab ti of window wi) starts with dashUrl then
+						set targetWinIndex to wi
+						set targetTabIndex to ti
+						exit repeat
+					end if
+				end repeat
+				if targetWinIndex > 0 then exit repeat
+			end repeat
+			if targetWinIndex > 0 then
+				try
+					set minimized of window targetWinIndex to false
+				end try
+				set active tab index of window targetWinIndex to targetTabIndex
+				set index of window targetWinIndex to 1
+			else if winCount > 0 then
+				tell window 1 to make new tab with properties {URL:dashUrl}
+			else
+				make new window
+				set URL of active tab of window 1 to dashUrl
+			end if
+			activate
+		end tell
+	on error errMsg
+		-- Chrome missing, Automation access not yet granted, or some other
+		-- AppleScript failure talking to it: fall back to the old behavior
+		-- rather than silently doing nothing.
+		do shell script "open " & quoted form of dashUrl
+	end try
 end openDashboard
 
 -- shared by run and reopen: true when the server is up (started or adopted)
