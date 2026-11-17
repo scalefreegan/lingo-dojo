@@ -287,6 +287,13 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
 Every session is saved for the active learner's current language, turn by turn, and listed in
 the Library tab's **History** (docs/DATA.md §Conversations has the tables).
 
+A scene played before builds on its last attempt (docs/DATA.md §Revisit):
+for adults, every turn's system prompt ends with a **Building on last time**
+section (the earlier recap's summary, corrections and kept phrases, between
+`[LAST TIME IN THIS SCENE]` and `[END OF LAST TIME]`), and the Go tab says
+which session it builds on. History's **Practice again** loads a session's
+pack, as played, into the Go tab.
+
 - **Start.** The session's first turn makes a conversation
   (`POST /api/conversations`) with the pack as played, the scene's title,
   the target variant, the model and the session length. Each turn then

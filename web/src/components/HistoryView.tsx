@@ -1,20 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, deleteConversation, getConversation, listConversations } from "../api";
+import { ApiError, deleteConversation, getConversation, getOverview, listConversations, listScenes } from "../api";
 import { sessionGlosses, useLineTranslations } from "../transcript";
-import type { ConversationSummary, ConversationTurnsReply, VoiceGloss, VoiceHistoryItem } from "../types";
+import type { ConversationSummary, ConversationTurnsReply, OverviewReply, SceneGroup, VoiceGloss, VoiceHistoryItem } from "../types";
 import { inBankLanguage } from "./shared";
 import { RubyToggle } from "./Ruby";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
-import { Badge, Button } from "./ui";
+import { Badge, Button, Card } from "./ui";
 
 /* History, in the Library tab: the active learner's saved voice sessions
- * (docs/DATA.md §Conversations), newest first, a page at a time. Opening one
- * shows its transcript read-only in the live session's own components, with
- * its glosses tappable as they were; there is no audio to replay. Delete is
- * for good (it asks first). */
+ * (docs/DATA.md §Conversations), grouped by scene (§Revisit): each scene
+ * once, the one played most recently first, a page at a time, with how many
+ * times it was played; expanding a scene lists its sessions. Practice again
+ * loads a session's pack, exactly as played, into the Go tab, and the next
+ * session builds on that attempt. Above the list (adults), a card for the
+ * last 7 days and the digest written once a day. Opening a session shows its
+ * transcript read-only in the live session's own components, with its
+ * glosses tappable as they were; there is no audio to replay. Delete is for
+ * good (it asks first). */
 
 const PAGE = 20;
+/** While today's digest is being written, ask again this often, this long. */
+const DIGEST_POLL_MS = 5000;
+const DIGEST_POLL_FOR_MS = 3 * 60_000;
 const small = "px-2 py-1 text-sm sm:text-xs";
 const fine = "text-sm sm:text-xs";
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
@@ -33,23 +41,36 @@ function length(c: ConversationSummary): string {
 }
 
 const turnsLabel = (n: number) => `${n} turn${n === 1 ? "" : "s"}`;
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** `bankLanguage`: the active language's target language, so a saved
- *  session's ☆ Star is offered only when it was in that language. */
-export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown } = {}) {
-  const [items, setItems] = useState<ConversationSummary[]>([]);
+type Props = {
+  /** The active language's target language, so a saved session's ☆ Star
+   *  is offered only when it was in that language. */
+  bankLanguage?: unknown;
+  /** A kids learner: no week card, no digest. */
+  kids?: boolean;
+  /** Practice again: the session's pack into the Go tab (App). */
+  onPracticeAgain?: (c: ConversationSummary) => Promise<void>;
+};
+
+export default function HistoryView({ bankLanguage, kids = false, onPracticeAgain }: Props = {}) {
+  const [groups, setGroups] = useState<SceneGroup[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [open, setOpen] = useState<ConversationSummary | null>(null);
+  // Bumped to list again from the top (after a delete).
+  const [round, setRound] = useState(0);
+  const [loaded, setLoaded] = useState(PAGE);
 
-  // The first page on opening; state is only set from the reply.
+  // The first page(s) on opening, and again after a delete; state is only
+  // set from the reply.
   useEffect(() => {
     let live = true;
-    listConversations(0, PAGE).then(
+    listScenes(0, loaded).then(
       (r) => {
         if (!live) return;
-        setItems(r.conversations);
+        setGroups(r.scenes);
         setNext(r.nextOffset);
         setLoading(false);
       },
@@ -62,16 +83,19 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
     return () => {
       live = false;
     };
-  }, []);
+    // `loaded` is read as of the round: Show older doesn't list again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [round]);
 
-  /** "Show older": the next page, after what is listed. */
+  /** "Show older": the next page of scenes, after what is listed. */
   async function more(offset: number) {
     setLoading(true);
     setError(null);
     try {
-      const r = await listConversations(offset, PAGE);
-      setItems((was) => [...was, ...r.conversations.filter((c) => !was.some((x) => x.id === c.id))]);
+      const r = await listScenes(offset, PAGE);
+      setGroups((was) => [...was, ...r.scenes.filter((g) => !was.some((x) => x.sceneKey === g.sceneKey))]);
       setNext(r.nextOffset);
+      setLoaded(offset + PAGE);
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -87,21 +111,20 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
       setError(`Could not delete it: ${errText(e)}`);
       return false;
     }
-    setItems((was) => was.filter((x) => x.id !== c.id));
-    // The list moved up by one: the next page starts one earlier.
-    setNext((n) => (n == null ? n : n - 1));
+    // A scene's count and latest session may both change: list again.
+    setRound((n) => n + 1);
     return true;
   }
 
-  const opened = openId ? items.find((c) => c.id === openId) : undefined;
-  if (openId) {
+  if (open) {
     return (
       <ConversationView
-        id={openId}
+        id={open.id}
         bankLanguage={bankLanguage}
-        onBack={() => setOpenId(null)}
+        onBack={() => setOpen(null)}
+        onPracticeAgain={onPracticeAgain}
         onDelete={async () => {
-          if (opened && (await remove(opened))) setOpenId(null);
+          if (await remove(open)) setOpen(null);
         }}
       />
     );
@@ -109,35 +132,15 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
 
   return (
     <div className="flex flex-col gap-3" data-testid="history">
+      {!kids && <WeekCard />}
       <h2 className="text-sm font-medium text-fg">Past sessions</h2>
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">{error}</p>}
-      {!loading && !error && items.length === 0 ? (
+      {!loading && !error && groups.length === 0 ? (
         <p className="text-sm text-fg-3">None yet. A voice session on the Go tab is saved here as you practise.</p>
       ) : (
         <ul className="overflow-hidden rounded-lg border border-line" aria-label="Past sessions">
-          {items.map((c) => (
-            <li key={c.id} className="flex flex-col gap-1 border-b border-line px-4 py-2 last:border-b-0 sm:flex-row sm:items-center sm:gap-3" data-testid={`conversation-${c.id}`}>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm text-fg">{c.title}</span>
-                  {c.randomScene && <Badge tone="accent" title="The scene was drawn at random when the session started">random</Badge>}
-                  {!c.endedAt && <Badge tone="accent" title="Still open: it ends with End, leaving Go, or two hours after its last turn">open</Badge>}
-                  {c.recapStatus === "failed" && <Badge tone="warn" title="Open it to retry the recap">no recap</Badge>}
-                </div>
-                <div className={`truncate ${fine} text-fg-3`}>
-                  {when(c.startedAt)} · {length(c)} · {turnsLabel(c.turnCount)}
-                </div>
-                {c.summary && <p className={`mt-0.5 ${fine} text-fg-2`}>{c.summary}</p>}
-              </div>
-              <div className="-ml-2 flex shrink-0 items-center gap-1 sm:ml-0">
-                <Button variant="ghost" className={small} onClick={() => setOpenId(c.id)}>
-                  Open
-                </Button>
-                <Button variant="ghost" className={`${small} text-err`} onClick={() => void remove(c)} aria-label={`Delete ${c.title}`}>
-                  Delete
-                </Button>
-              </div>
-            </li>
+          {groups.map((g) => (
+            <SceneRow key={g.sceneKey} group={g} onOpen={setOpen} onDelete={remove} onPracticeAgain={onPracticeAgain} />
           ))}
         </ul>
       )}
@@ -151,9 +154,230 @@ export default function HistoryView({ bankLanguage }: { bankLanguage?: unknown }
   );
 }
 
+/** Practice again, with its own busy and error state (the pack is fetched
+ *  first). */
+function PracticeAgainButton({ c, onPracticeAgain }: { c: ConversationSummary; onPracticeAgain?: (c: ConversationSummary) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!onPracticeAgain) return null;
+  return (
+    <>
+      <Button
+        variant="ghost"
+        className={`${small} text-accent`}
+        disabled={busy}
+        title="Load this session's scene into Go; the next session builds on how this one went"
+        data-testid={`practice-again-${c.id}`}
+        onClick={async () => {
+          setBusy(true);
+          setError(null);
+          try {
+            await onPracticeAgain(c);
+          } catch (e) {
+            setError(errText(e));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Loading…" : "Practice again"}
+      </Button>
+      {error && <span className={`${fine} text-err`}>Couldn't load it: {error}</span>}
+    </>
+  );
+}
+
+function Badges({ c }: { c: ConversationSummary }) {
+  return (
+    <>
+      {c.randomScene && <Badge tone="accent" title="The scene was drawn at random when the session started">random</Badge>}
+      {!c.endedAt && <Badge tone="accent" title="Still open: it ends with End, leaving Go, or two hours after its last turn">open</Badge>}
+      {c.recapStatus === "failed" && <Badge tone="warn" title="Open it to retry the recap">no recap</Badge>}
+      {c.buildsOn && <Badge title={`Built on the session of ${when(c.buildsOn.startedAt)}`}>again</Badge>}
+    </>
+  );
+}
+
+/** One scene: its latest session, how many it has, and (expanded) all of
+ *  them. A scene played once is just that session. */
+function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
+  group: SceneGroup;
+  onOpen: (c: ConversationSummary) => void;
+  onDelete: (c: ConversationSummary) => Promise<boolean>;
+  onPracticeAgain?: (c: ConversationSummary) => Promise<void>;
+}) {
+  const c = group.latest;
+  const many = group.attempts > 1;
+  const [expanded, setExpanded] = useState(false);
+  const [items, setItems] = useState<ConversationSummary[] | null>(null);
+  const [next, setNext] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function page(offset: number) {
+    setError(null);
+    try {
+      const r = await listConversations(offset, PAGE, group.sceneKey);
+      setItems((was) => [...(offset ? (was ?? []) : []), ...r.conversations]);
+      setNext(r.nextOffset);
+    } catch (e) {
+      setError(errText(e));
+    }
+  }
+
+  return (
+    <li className="flex flex-col border-b border-line last:border-b-0" data-testid={`scene-${group.sceneKey}`}>
+      <div className="flex flex-col gap-1 px-4 py-2 sm:flex-row sm:items-center sm:gap-3" data-testid={`conversation-${c.id}`}>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm text-fg">{c.title}</span>
+            <Badges c={c} />
+          </div>
+          <div className={`truncate ${fine} text-fg-3`}>
+            {many ? `${plural(group.attempts, "session")} · last ${when(c.startedAt)}` : `${when(c.startedAt)} · ${length(c)} · ${turnsLabel(c.turnCount)}`}
+          </div>
+          {c.summary && <p className={`mt-0.5 ${fine} text-fg-2`}>{c.summary}</p>}
+        </div>
+        <div className="-ml-2 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
+          <PracticeAgainButton c={c} onPracticeAgain={onPracticeAgain} />
+          <Button variant="ghost" className={small} onClick={() => onOpen(c)}>
+            {many ? "Open latest" : "Open"}
+          </Button>
+          {many ? (
+            <Button
+              variant="ghost"
+              className={small}
+              aria-expanded={expanded}
+              data-testid={`scene-toggle-${group.sceneKey}`}
+              onClick={() => {
+                const was = expanded;
+                setExpanded(!was);
+                if (!was && items == null) void page(0);
+              }}
+            >
+              {expanded ? "Hide" : `All ${group.attempts}`}
+            </Button>
+          ) : (
+            <Button variant="ghost" className={`${small} text-err`} onClick={() => void onDelete(c)} aria-label={`Delete ${c.title}`}>
+              Delete
+            </Button>
+          )}
+        </div>
+      </div>
+      {many && expanded && (
+        <div className="border-t border-line bg-raised/40 pl-4">
+          {error && <p className={`${fine} p-2 text-err`}>{error}</p>}
+          {items == null && !error && <p className={`${fine} p-2 text-fg-3`}>Loading…</p>}
+          <ul aria-label={`Sessions of ${c.title}`}>
+            {(items ?? []).map((x) => (
+              <li key={x.id} className="flex flex-col gap-1 border-b border-line py-2 pr-4 pl-3 last:border-b-0 sm:flex-row sm:items-center sm:gap-3" data-testid={`conversation-${x.id}`}>
+                <div className="min-w-0 flex-1">
+                  <div className={`flex items-center gap-2 ${fine} text-fg-2`}>
+                    <span className="truncate">{when(x.startedAt)} · {length(x)} · {turnsLabel(x.turnCount)}</span>
+                    <Badges c={x} />
+                  </div>
+                  {x.summary && <p className={`mt-0.5 ${fine} text-fg-3`}>{x.summary}</p>}
+                </div>
+                <div className="-ml-2 flex shrink-0 flex-wrap items-center gap-1 sm:ml-0">
+                  <PracticeAgainButton c={x} onPracticeAgain={onPracticeAgain} />
+                  <Button variant="ghost" className={small} onClick={() => onOpen(x)}>
+                    Open
+                  </Button>
+                  <Button variant="ghost" className={`${small} text-err`} onClick={() => void onDelete(x)} aria-label={`Delete ${x.title} of ${when(x.startedAt)}`}>
+                    Delete
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {next != null && (
+            <Button variant="ghost" className={`${small} my-1`} onClick={() => void page(next)}>
+              Show older
+            </Button>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** The last 7 days, counted, and the digest written once a day (the server
+ *  starts today's when the card asks and it is due; the card asks again
+ *  while it is being written). */
+function WeekCard() {
+  const [data, setData] = useState<OverviewReply | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const began = Date.now();
+    const ask = () =>
+      getOverview().then(
+        (r) => {
+          if (!live) return;
+          setData(r);
+          if (r.digest?.status === "pending" && Date.now() - began < DIGEST_POLL_FOR_MS) timer = setTimeout(ask, DIGEST_POLL_MS);
+        },
+        (e) => {
+          if (live) setError(errText(e));
+        },
+      );
+    void ask();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  if (error) return <p className={`${fine} text-fg-3`}>The week's summary couldn't be loaded: {error}</p>;
+  const stats = data?.stats;
+  const digest = data?.digest;
+  if (!stats) return null;
+  if (!stats.sessions && !digest?.text) return null;
+  return (
+    <Card className="flex flex-col gap-2" data-testid="week-card">
+      <h2 className="text-sm font-medium text-fg">Your last 7 days</h2>
+      <p className="text-sm text-fg-2 tabular-nums" data-testid="week-stats">
+        {plural(stats.sessions, "session")} · {stats.minutes} min · {plural(stats.scenes, "scene")} · {plural(stats.kept, "phrase")} kept
+      </p>
+      {stats.recurring.length > 0 && (
+        <div className={`${fine} text-fg-2`} data-testid="week-recurring">
+          <span className="text-fg-3">Keeps coming back: </span>
+          {stats.recurring.map((r, i) => (
+            <span key={r.better}>
+              {i > 0 && "; "}
+              <span className="text-fg">{r.better}</span> <span className="text-fg-3">(×{r.count})</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {digest && (digest.text || digest.status === "pending") && (
+        <div className="flex flex-col gap-1 border-t border-line pt-2" data-testid="week-digest">
+          {digest.text && <p className="text-sm text-fg">{digest.text}</p>}
+          <p className={`${fine} text-fg-3`}>
+            {digest.status === "pending"
+              ? digest.text
+                ? "A newer note is being written…"
+                : "Writing your note for the week…"
+              : `Written ${digest.writtenAt ? when(digest.writtenAt) : ""} from ${plural(digest.sessions, "session")}${
+                  digest.status === "failed" ? " · today's update couldn't be written" : digest.status === "stale" ? " · newer sessions since; it is rewritten once a day" : ""
+                }`}
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /** One saved conversation, read-only: every page of its turns, then the
  *  transcript as the session showed it. */
-function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; bankLanguage?: unknown; onBack: () => void; onDelete: () => void }) {
+function ConversationView({ id, bankLanguage, onBack, onDelete, onPracticeAgain }: {
+  id: string;
+  bankLanguage?: unknown;
+  onBack: () => void;
+  onDelete: () => void;
+  onPracticeAgain?: (c: ConversationSummary) => Promise<void>;
+}) {
   const [data, setData] = useState<{ head: ConversationTurnsReply; entries: VoiceHistoryItem[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<{ at: string; gloss: VoiceGloss } | null>(null);
@@ -192,6 +416,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
           ← History
         </Button>
         <span className="flex-1" />
+        {c && <PracticeAgainButton c={c} onPracticeAgain={onPracticeAgain} />}
         <Button variant="ghost" className={`${small} text-err`} onClick={onDelete} disabled={!c}>
           Delete
         </Button>
@@ -207,6 +432,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete }: { id: string; 
               {c.plannedMinutes != null && ` · planned ${c.plannedMinutes} min`}
               {(c.targetVariant || c.targetLanguage) && ` · ${c.targetVariant || c.targetLanguage}`}
               {c.randomScene && " · random scene"}
+              {c.buildsOn && ` · built on the session of ${when(c.buildsOn.startedAt)}`}
               {!c.endedAt && " · still open"}
             </p>
           </div>

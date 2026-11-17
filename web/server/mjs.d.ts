@@ -360,6 +360,49 @@ declare module "*/scripts/conversations.mjs" {
   export function readPage(params: URLSearchParams, o: { size: number; max: number; key?: string }): { limit: number; start: number };
 }
 
+declare module "*/scripts/revisit.mjs" {
+  type Pack = { scenario?: unknown; quick_scenario?: unknown } | null | undefined;
+  type Kept = { text: string; meaning: string; phraseId: string | null };
+  type Correction = { said: string; better: string };
+  type Kind = import("../shared/wire.ts").RecapEvent["kind"];
+  /** What a session carries from its last attempt (pack_snapshot.revisit);
+   *  a kids one has only `from`, `startedAt`, `title` and `kept`. */
+  export type Revisit = { from: string; startedAt: string; title: string; kept: Kept[] } & (
+    | { summary: string; corrections: Correction[]; events: { phrase: string; kind: Kind }[] }
+    | { summary?: never; corrections?: never; events?: never }
+  );
+  export const WEEK_MS: number;
+  export const DIGEST_SESSIONS: number;
+  export function quickNorm(text: unknown): string;
+  export function sceneKey(pack: Pack, conversationId?: string | null): string | null;
+  export function linkable(key: unknown): boolean;
+  export function carryFrom(
+    prev: { id: string; startedAt: Date | string; title: string; summary?: string | null; extraction?: unknown },
+    mode: import("../shared/wire.ts").Mode,
+  ): Revisit;
+  export function storedRevisit(snapshot: unknown): Revisit | null;
+  export function mergeReview(keptIds: string[], chosen: string[], max: number): string[];
+  export function revisitBlock(revisit: Revisit | null): string;
+  export function lastTimeSection(revisit: Revisit | null): string;
+  export function parseLastTime(raw: unknown, count: number): Map<number, "fixed" | "repeated" | "not_tried">;
+  export function compareAttempts(
+    revisit: Revisit | null,
+    events: { phrase: string; kind: Kind }[],
+    lastTime: Map<number, string>,
+  ): Omit<import("../shared/wire.ts").RecapVsLast, "from"> & { from: string } | null;
+  export function weekStats(
+    rows: { startedAt: Date | string; endedAt: Date | string | null; lastTurnAt: Date | string | null; sceneKey: string; extraction: unknown }[],
+    now?: Date,
+  ): NonNullable<import("../shared/wire.ts").OverviewReply["stats"]>;
+  export function digestPrompt(o: {
+    sessions: { title: string; startedAt: Date | string; summary: string | null; extraction: unknown }[];
+    nativeLanguage: string;
+    targetVariant: string;
+    now?: Date;
+  }): { system: string; user: string };
+  export function parseDigest(text: string): string | null;
+}
+
 declare module "*.mjs";
 
 declare module "*/scripts/public-host.mjs" {

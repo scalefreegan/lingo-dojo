@@ -54,6 +54,7 @@ import {
   bigserial,
   boolean,
   check,
+  date,
   doublePrecision,
   foreignKey,
   index,
@@ -353,6 +354,14 @@ export const conversations = pgTable(
     extractionAttempts: integer("extraction_attempts").notNull().default(0),
     /** Why the last run failed, for the log and the recap card. */
     extractionError: text("extraction_error"),
+    // Revisit (DATA.md §Revisit, migration 0008): which sessions were the
+    // same scene (scripts/revisit.mjs sceneKey: `s:<scenario>`,
+    // `q:<md5 of a quick scenario>`, `c:<own id>`), and the earlier attempt
+    // this one built on. The link only says where the carry-over came from
+    // (the carry-over itself is frozen in pack_snapshot.revisit), so
+    // deleting that session nulls it and nothing else.
+    sceneKey: text("scene_key"),
+    previousConversationId: uuid("previous_conversation_id"),
   },
   (t) => [
     check("conversations_mode", sql`${t.mode} in ('adult', 'kids')`),
@@ -363,6 +372,11 @@ export const conversations = pgTable(
     unique("conversations_id_profile").on(t.id, t.languageProfileId),
     index("conversations_learner_started_idx").on(t.learnerId, t.startedAt),
     index("conversations_profile_started_idx").on(t.languageProfileId, t.startedAt),
+    // The earlier attempt, always in the same language. ON DELETE SET NULL
+    // ("previous_conversation_id") in the migration (hand-edits.mjs).
+    foreignKey({ name: "conversations_previous_fk", columns: [t.previousConversationId, t.languageProfileId], foreignColumns: [t.id, t.languageProfileId] }).onDelete("set null"),
+    // History by scene, and a scene's latest attempt.
+    index("conversations_profile_scene_idx").on(t.languageProfileId, t.sceneKey, t.startedAt),
   ],
 ).enableRLS();
 
@@ -754,5 +768,37 @@ export const clozeCalls = pgTable(
     foreignKey({ name: "cloze_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
     // The daily cap counts one language's recent calls.
     index("cloze_calls_profile_idx").on(t.languageProfileId, t.createdAt),
+  ],
+);
+
+/* ------------------------------ recent digests ----------------------------- */
+
+/** The once-a-day written digest of a language's recent sessions (DATA.md
+ *  §Revisit, migration 0008). One row per language per day, claimed by its
+ *  insert before the model is called: the unique key is the daily cap, and
+ *  a row that failed still counts. The reader role (0005) gets nothing on
+ *  it. */
+export const recentDigests = pgTable(
+  "recent_digests",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** The server's calendar day it was written for. */
+    day: date("day", { mode: "string" }).notNull(),
+    status: text("status").$type<"running" | "done" | "failed">().notNull().default("running"),
+    /** The run holding it, to tell a live run from one a restart killed. */
+    claim: uuid("claim"),
+    text: text("text"),
+    /** The newest session start it covered, and how many sessions. */
+    through: tz("through"),
+    sessions: integer("sessions").notNull().default(0),
+    createdAt: createdAt(),
+    finishedAt: tz("finished_at"),
+  },
+  (t) => [
+    check("recent_digests_status", sql`${t.status} in ('running', 'done', 'failed')`),
+    foreignKey({ name: "recent_digests_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    unique("recent_digests_profile_day").on(t.languageProfileId, t.day),
   ],
 );

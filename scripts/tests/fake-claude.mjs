@@ -11,7 +11,8 @@
 // default, `recap(text, delay)` to change it, "!fail" to exit 1 the way a
 // failed CLI run does, and `recapRuns()` counts them. A cloze generation
 // call (Practice's fill the gap) likewise: `cloze(text, delay)`,
-// `clozeRuns()`, `clozeArgs()`; by default `{"items": []}`.
+// `clozeRuns()`, `clozeArgs()`; by default `{"items": []}`. History's daily
+// digest likewise: `digest(text, delay)`, `digestRuns()`, `digestArgs()`.
 //
 //   const fake = fakeClaude();
 //   before(() => fake.install());  after(() => fake.restore());
@@ -38,6 +39,10 @@ export function fakeClaude() {
     recapDelay: path.join(bin, "recap-delay.txt"),
     recapRan: path.join(bin, "recap-ran"),
     recapArgs: path.join(bin, "recap-args.json"),
+    digest: path.join(bin, "digest.txt"),
+    digestDelay: path.join(bin, "digest-delay.txt"),
+    digestRan: path.join(bin, "digest-ran"),
+    digestArgs: path.join(bin, "digest-args.json"),
     cloze: path.join(bin, "cloze.txt"),
     clozeDelay: path.join(bin, "cloze-delay.txt"),
     clozeRan: path.join(bin, "cloze-ran"),
@@ -57,7 +62,9 @@ const side = args.some((a) => a.startsWith("You review one finished practice ses
   ? "recap"
   : args.some((a) => a.startsWith("You write fill-in-the-blank practice sentences"))
     ? "cloze"
-    : null;
+    : args.some((a) => a.startsWith("You write a short weekly progress note"))
+      ? "digest"
+      : null;
 fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
 fs.writeFileSync(side ? files[side + "Args"] : files.args, JSON.stringify(args));
 if (!side) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
@@ -110,6 +117,14 @@ setTimeout(() => {
       fs.writeFileSync(files.clozeDelay, String(delay));
     },
     clozeRuns: () => count(files.clozeRan),
+    /** The next digest calls' reply (History's weekly note), or "!fail". */
+    digest(text, delay = 0) {
+      fs.writeFileSync(files.digest, text);
+      fs.writeFileSync(files.digestDelay, String(delay));
+    },
+    digestRuns: () => count(files.digestRan),
+    /** The argv of the last digest call. */
+    digestArgs: () => (fs.existsSync(files.digestArgs) ? JSON.parse(fs.readFileSync(files.digestArgs, "utf8")) : null),
     /** The argv of the last cloze generation call. */
     clozeArgs: () => (fs.existsSync(files.clozeArgs) ? JSON.parse(fs.readFileSync(files.clozeArgs, "utf8")) : null),
     /** The argv of the last extraction call. */
@@ -129,5 +144,6 @@ setTimeout(() => {
   self.answer("NARRATOR-F: Hola.");
   self.recap(EMPTY_RECAP);
   self.cloze(JSON.stringify({ items: [] }));
+  self.digest(JSON.stringify({ digest: "You practised a lot this week." }));
   return self;
 }

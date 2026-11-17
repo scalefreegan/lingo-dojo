@@ -55,7 +55,7 @@ import { keepExample, planExtraction, type Extraction, type StoredTurn } from ".
 import { fromRow, review, toRow, type CardState } from "../../scripts/fsrs.mjs";
 import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, phraseMetrics } from "../../scripts/phrases.mjs";
-import type { MasteryBand, RecapEvent } from "../../web/shared/wire.ts";
+import type { MasteryBand, RecapEvent, RecapVsLast } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, lockById, lockInNormOrder, recount, retrying, settleUnseen, stronger } from "./phrases.ts";
 import { cards, conversations, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
@@ -76,6 +76,9 @@ export interface StoredRecap {
   dropped: number;
   /** The session was in the bank's language: its phrases went in. */
   inBank: boolean;
+  /** Compared with the attempt it built on (scripts/revisit.mjs
+   *  compareAttempts; DATA.md §Revisit); absent when it built on none. */
+  vsLast?: RecapVsLast | null;
 }
 
 /* ---------------------------------- claim ---------------------------------- */
@@ -177,7 +180,7 @@ export async function recapPhrases(db: Db, profile: LanguageProfileRef, ids: str
 export async function applyExtraction(
   db: Db,
   profile: LanguageProfileRef,
-  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[] },
+  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[]; vsLast?: RecapVsLast | null },
 ): Promise<StoredRecap | null> {
   return retrying(() =>
     db.transaction(async (tx) => {
@@ -197,6 +200,7 @@ export async function applyExtraction(
         corrections: value.corrections,
         dropped: opts.dropped,
         inBank: false,
+        ...(opts.vsLast ? { vsLast: opts.vsLast } : {}),
       };
       if (opts.bankLocale != null) recap = await writeBank(tx, profile, conv, { ...opts, bankLocale: opts.bankLocale }, recap);
       await mine.update(

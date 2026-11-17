@@ -4,6 +4,8 @@ import os from "node:os";
 import { asc, eq } from "drizzle-orm";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { extractionPrompt, learnerSpoke, parseExtraction, sessionTranscript } from "../../scripts/extraction.mjs";
+import { extractJsonObject } from "../../scripts/json-reply.mjs";
+import { compareAttempts, lastTimeSection, parseLastTime, storedRevisit } from "../../scripts/revisit.mjs";
 import { bankLocale } from "../../scripts/phrases.mjs";
 import { languageProfileOwner } from "../../scripts/db/accounts.ts";
 import {
@@ -155,7 +157,13 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     // its events as for any phrase. A pack without a recall unit offered
     // none: the phrases due then, as before.
     const offered = locale == null ? null : await offeredFor(profile, conv);
+    // Built on an earlier attempt (docs/DATA.md §Revisit): the recap also
+    // judges last time's corrections, and compares (adults; a kids revisit
+    // carries no corrections, and storedRevisit says so).
+    const revisit = storedRevisit(conv.packSnapshot);
+    const lastTime = lastTimeSection(revisit);
     const { system, user } = extractionPrompt({
+      lastTime,
       transcript: sessionTranscript(rows),
       nativeLanguage: conv.nativeLanguage || owner.nativeLanguage || "English",
       targetVariant: conv.targetVariant || conv.targetLanguage || owner.targetLanguage || "the target language",
@@ -188,9 +196,11 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
         continue;
       }
       if (parsed.dropped) console.warn(`[lingo-dojo] recap of conversation ${conv.id}: ${parsed.dropped} malformed item(s) dropped`);
+      const judged = parseLastTime(extractJsonObject(text)?.last_time, revisit?.corrections?.length ?? 0);
+      const vsLast = compareAttempts(revisit, parsed.value.events, judged);
       // null: the claim was taken over (this run was presumed dead); the
       // run that has it now writes.
-      await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows });
+      await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows, vsLast });
       return;
     }
     await fail(why || REASON.none, logged || why || REASON.none);
@@ -244,6 +254,9 @@ async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<Se
           ? "the recap was interrupted (the server restarted)"
           : (shownReason(c.extractionError) ?? "the recap couldn't be made"),
     extractedAt: c.extractedAt ? new Date(c.extractedAt).toISOString() : null,
+    // The earlier session's id only while it still exists (the link
+    // column nulls on its delete); the comparison itself stays.
+    vsLast: stored?.vsLast ? { ...stored.vsLast, from: c.previousConversationId } : null,
   };
 }
 

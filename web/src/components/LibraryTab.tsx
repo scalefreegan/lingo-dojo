@@ -4,7 +4,7 @@ import HistoryView from "./HistoryView";
 import PhraseBankView from "./PhraseBankView";
 import { clearBankRequest, onOpenBank, peekBankRequest } from "../bankLink";
 import { slugify, splitPackId, unitCount } from "../draft";
-import type { ContentReply, DeletedPack, Mode, Pack } from "../types";
+import type { ContentReply, ConversationSummary, DeletedPack, Mode, Pack } from "../types";
 import { Badge, Button, FolderSelect, inputClass } from "./ui";
 import type { PackActions } from "./shared";
 
@@ -23,6 +23,8 @@ type LibraryProps = PackActions & {
   onRestored: (p: Pack) => Promise<void>;
   /** A restore was refused as stale (409): re-list the packs. */
   onStale: () => Promise<void>;
+  /** History's Practice again: that session's pack into the Go tab. */
+  onPracticeAgain: (c: ConversationSummary) => Promise<void>;
 };
 
 /* Library tab: two views. Saved packs, every one grouped by folder ("No
@@ -64,7 +66,7 @@ export default function LibraryTab(props: LibraryProps) {
         </button>
       </div>
       {view === "history" ? (
-        <HistoryView bankLanguage={props.content.profile?.target_language} />
+        <HistoryView bankLanguage={props.content.profile?.target_language} kids={props.mode === "kids"} onPracticeAgain={props.onPracticeAgain} />
       ) : view === "bank" ? (
         <PhraseBankView key={bankAsk.n} initialQuery={bankAsk.q} />
       ) : (
@@ -84,6 +86,7 @@ function PacksView({
   mode,
   onRestored,
   onStale,
+  onPracticeAgain: _practiceAgain,
   ...row
 }: LibraryProps) {
   // null = closed; otherwise the name being typed.

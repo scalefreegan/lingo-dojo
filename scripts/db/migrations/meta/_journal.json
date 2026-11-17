@@ -57,6 +57,13 @@
       "when": 1794848742716,
       "tag": "0007_random_scene",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794931444478,
+      "tag": "0008_revisit",
+      "breakpoints": true
     }
   ]
 }
