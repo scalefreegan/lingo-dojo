@@ -98,42 +98,71 @@ on openDashboard()
 	-- refocused instead of duplicated. First use prompts for Automation
 	-- access to Chrome (System Settings > Privacy & Security > Automation) —
 	-- the same one-time dance as the server helper's Documents prompt.
+	-- handled: true once Chrome has focused or opened a tab, so an error
+	-- after that point never falls back into a second, duplicate tab
+	set handled to false
 	try
 		tell application "Google Chrome"
-			set targetWinIndex to 0
+			-- activate FIRST: raising a window while Chrome is in the background
+			-- can leave the previous window key; and if Chrome was not running,
+			-- this restores its session, so a restored tab is found, not duplicated
+			activate
+			-- remember the window by id, not index: Chrome numbers windows front
+			-- to back, so un-minimizing one renumbers the rest
+			set targetWinId to missing value
 			set targetTabIndex to 0
-			set winCount to count of windows
-			repeat with wi from 1 to winCount
-				set tabCount to count of tabs of window wi
+			repeat with w in (every window)
+				set tabCount to count of tabs of w
 				repeat with ti from 1 to tabCount
-					if (URL of tab ti of window wi) starts with dashUrl then
-						set targetWinIndex to wi
+					if (URL of tab ti of w) starts with dashUrl then
+						set targetWinId to id of w
 						set targetTabIndex to ti
 						exit repeat
 					end if
 				end repeat
-				if targetWinIndex > 0 then exit repeat
+				if targetWinId is not missing value then exit repeat
 			end repeat
-			if targetWinIndex > 0 then
+			if targetWinId is not missing value then
+				set targetWin to window id targetWinId
+				set active tab index of targetWin to targetTabIndex
+				set handled to true
 				try
-					set minimized of window targetWinIndex to false
+					set minimized of targetWin to false
 				end try
-				set active tab index of window targetWinIndex to targetTabIndex
-				set index of window targetWinIndex to 1
-			else if winCount > 0 then
-				tell window 1 to make new tab with properties {URL:dashUrl}
+				set index of targetWin to 1
 			else
-				make new window
-				set URL of active tab of window 1 to dashUrl
+				-- a new tab goes in a normal, visible window: an incognito one
+				-- would not have the app's login, a minimized one shows nothing
+				set hostWinId to missing value
+				repeat with w in (every window)
+					if (mode of w is "normal") and (minimized of w is false) then
+						set hostWinId to id of w
+						exit repeat
+					end if
+				end repeat
+				if hostWinId is missing value then
+					make new window
+					set URL of active tab of window 1 to dashUrl
+					set handled to true
+				else
+					tell window id hostWinId to make new tab with properties {URL:dashUrl}
+					set handled to true
+					set index of window id hostWinId to 1
+				end if
 			end if
-			activate
 		end tell
-	on error errMsg
-		-- Chrome missing, Automation access not yet granted, or some other
-		-- AppleScript failure talking to it: fall back to the old behavior
-		-- rather than silently doing nothing.
-		do shell script "open " & quoted form of dashUrl
+	on error errMsg number errNum
+		-- log why, since from the outside a refusal looks exactly like "it
+		-- still opens a new tab"
+		try
+			do shell script "echo " & quoted form of ("[launcher] Chrome tab focus failed (" & errNum & "): " & errMsg) & " >> ~/Library/Logs/LingoDojo.log"
+		end try
+		if errNum is -1743 then
+			display notification "Allow Lingo Dojo to control Google Chrome (System Settings > Privacy & Security > Automation) so a click returns to its open tab." with title "Lingo Dojo"
+		end if
 	end try
+	-- Chrome unreachable or Automation refused: the old behavior, never nothing
+	if not handled then do shell script "open " & quoted form of dashUrl
 end openDashboard
 
 -- shared by run and reopen: true when the server is up (started or adopted)
