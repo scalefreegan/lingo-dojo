@@ -493,7 +493,8 @@ conversations   id, learner_id, language_profile_id, pack_snapshot jsonb, scenar
                 summary, extraction jsonb, extracted_at,
                 extraction_status (none|running|done|failed|skipped),
                 extraction_claim, extraction_started_at,
-                extraction_attempts, extraction_error
+                extraction_attempts, extraction_error,
+                scene_key, previous_conversation_id   (0008, §Revisit)
 turns           id, conversation_id, learner_id, language_profile_id, idx, role (learner|master),
                 text, lines jsonb, glosses jsonb, choices jsonb, stage,
                 cast_notes jsonb, from_client boolean, duration_ms, cost_usd,
@@ -2790,6 +2791,118 @@ Access in System Settings, or keep the checkout elsewhere.
   recaps, and each practice mode are verified in the real app with Playwright
   before a bead closes (CLAUDE.md).
 
+## Revisit
+
+Added 2026-11-17 (bead `ld-qxw`, migration `0008_revisit`). The learner can
+practise a past scene again from History, and any session of a scene played
+before builds on its last attempt. Decisions (interview, 2026-11-17):
+Practice again loads the snapshot as played; the last attempt's kept
+phrases, corrections and a briefing all carry over; History groups by
+scene, with a 7-day card and a model-written digest once a day; the recap
+compares with last time; a session links to the last attempt however it
+was started; kids get grouping, Practice again and kept words only.
+
+**Same scene** (`scene_key`, `scripts/revisit.mjs` `sceneKey`): `s:<scenario
+id>` for a library scene, picked or drawn by a random scene (the drawn one),
+whichever pack it came from; `q:<md5>` for a quick scenario, of its text
+with whitespace runs made one space, trimmed, lower-cased; `c:<own id>` for
+anything else (never linked). Written at creation; 0008's backfill gives the
+old rows the same key in SQL (`hand-edits.mjs` 0008, checked against the JS
+in `migration-0008.mjs`, its whitespace class spelling out the Unicode
+spaces JavaScript's `\s` matches; `lower()` follows the server's
+LC_CTYPE, so under a C locale a non-ASCII capital can split an old group). Readers fall back to `c:<id>` for a null.
+
+**The previous attempt** (`web/server/revisit.ts` `previousAttempt`), chosen
+once when the conversation is made: the session `ConversationCreateRequest.previous`
+names (Practice again's) when it is this language's, this scene's, played
+in the same target language (`conversations.target_language`: a pack whose
+overrides move it is not a retry), ended, with `extraction_status =
+'done'`; else the scene's latest such session.
+None for a `c:` key, a scene never played, or one whose recaps all failed,
+were skipped or are still being written. `previous_conversation_id` records
+it, composite key `(previous_conversation_id, language_profile_id)` to
+`conversations (id, language_profile_id)`, `ON DELETE SET NULL
+("previous_conversation_id")`: a delete nulls the link only. A failed read
+is logged and the session starts fresh; an insert refused because that
+session was deleted meanwhile (another tab; `revisit.ts` `lostPrevious`) is
+made again without the link, the carry-over kept, as the delete would have
+left it.
+
+**What it carries** is frozen into `pack_snapshot.revisit` (`carryFrom`;
+the server's key, a client's dropped, like `review` and `random_draw`):
+`{from, startedAt, title, kept: [{text, meaning, phraseId}]}`, plus for
+adults `summary`, `corrections: [{said, better}]` and `events: [{phrase,
+kind}]`, each capped (`CARRY`). Read back through the same caps
+(`storedRevisit`), so later edits, a recap made again or a delete of the
+earlier session never change a session's briefing or comparison. Three uses:
+
+- **Review.** The kept phrases' bank ids go first in the review block
+  (`sessionReview`'s `first`, through `reviewFromIds`, so only phrases the
+  bank still has usable), then the usual choice, within `REVIEW_MAX`. Only
+  when the pack has a recall unit and is in the bank's language, as before.
+- **Briefing** (adults). Every turn of a saved conversation appends
+  `revisitBlock` to the system prompt: instructions (mention it once,
+  briefly; set up moments to retry each correction; work the kept phrases
+  in; vary the details) and the data between `[LAST TIME IN THIS SCENE]`
+  and `[END OF LAST TIME]`, every stored string through `recall.mjs`
+  `bankText` (no square, curly or angle brackets: a learner's words quoted
+  in a correction can't close the block or open a fake one), said to be data. It lists the kept
+  phrases too, so a pack with no recall unit still gets them. An unsaved
+  turn has no conversation and no briefing.
+- **Comparison** (adults). The recap's prompt lists last time's
+  corrections, numbered (`lastTimeSection`), and asks for `last_time:
+  [{n, result: fixed|repeated|not_tried}]` (read by `parseLastTime`:
+  unknown results and out-of-range numbers ignored). `compareAttempts`
+  stores `extraction.vsLast = {from, startedAt, fixed, still, untried,
+  improved, slipped}`: the corrections by the model's judgement; phrases by
+  rule, a phrase both sessions judged on the same skill (`fsrs.mjs`
+  `ratingForSessionEvent`) rated higher (improved) or lower (slipped) now.
+  `SessionRecap.vsLast` gives `from` as the link column, null once the
+  earlier session is gone. The card's "Since last time" shows it.
+
+**History by scene.** `GET /api/conversations/scenes?offset=&limit=` →
+`{scenes: [{sceneKey, attempts, latest}], nextOffset}`, the scene played
+most recently first; `GET /api/conversations?scene=<key>` lists one
+scene's (compared on the column itself, so the index serves it). Index `conversations_profile_scene_idx (language_profile_id,
+scene_key, started_at)`. `ConversationSummary` carries `sceneKey` and
+`buildsOn: {id | null, startedAt}`. `GET /api/conversations/:id` carries
+`pack`, the snapshot without the server's keys, which Practice again loads
+into the Go tab as an unsaved draft (App `practiceAgain`); its id rides
+along as `previous` until a conversation builds on something.
+
+**Overview** (adults; kids get `{stats: null, digest: null}`). `GET
+/api/conversations/overview`:
+
+- `stats` (`weekStats`, no model): sessions started in the last 7 days,
+  their minutes (History's length rule), distinct scenes, the recaps' kept
+  phrases, and corrections whose `better` (by `normKey`) came up in two
+  sessions or more (at most 5).
+- `digest`: written once a day per language by one tool-less `claude -p`
+  (`digestPrompt`: the week's done recaps, at most 20, newest first, as
+  delimited data; `parseDigest`: `{"digest": "…"}`, at most 1200
+  characters). Table `recent_digests (id, learner_id, language_profile_id,
+  day date, status running|done|failed, claim, text, through, sessions,
+  created_at, finished_at)`, unique `(language_profile_id, day)`: the
+  request that finds a digest due (a recap finished, `extracted_at`, after
+  the last done digest's `through`, the newest recap it read, so a Retry
+  that lands late counts; no row today) inserts today's row first, and only the
+  insert that lands starts the call, so the unique key is the cap and a
+  failed day still counts. Never retried the same day. `status` on the
+  wire: `pending` (today's running in this server), `failed` (today's
+  failed or was interrupted, and newer sessions wait), `stale` (newer
+  sessions since; today's already tried), `current`. The card asks again
+  every 5 s for up to 3 min while pending. The reader role (0005) gets
+  nothing on `recent_digests`, nor on the two new columns.
+
+Code: pure `scripts/revisit.mjs`; server `web/server/revisit.ts`
+(previous attempt, overview, digest run), `conversations.ts` (create,
+scenes, `?scene=`), `voice.ts` (briefing), `extraction.ts` (comparison),
+`recall.ts` (`sessionReview`'s `first`); client `HistoryView.tsx` (scene
+rows, the week card, Practice again), `SessionRecap.tsx` (Since last time),
+`GoTab.tsx` (the "Building on your session of …" line). Tests:
+`revisit.test.mjs`, `revisit.http.test.mjs`, `db-migration-0008.test.mjs`,
+`migration-0008.pg.test.mjs`.
+
 ## Docs to update as phases land
 
 - `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user
@@ -2819,6 +2932,7 @@ Access in System Settings, or keep the checkout elsewhere.
 | 9 | Backups | 2 |
 | 10 | Tailscale serve: allowed host, origin test (built); verify login and a voice turn from a second device (owner) | 1 |
 | 11 | Session length: picker, Time budget section, per-turn clock, +5 min | none (can ship first) |
+| 12 | Revisit (`ld-qxw`, migration 0008): History by scene, Practice again, building on the last attempt, the recap's comparison, the week card and daily digest. **Built** (see "Revisit") | 5, 6 |
 
 Phases 5–8 can run in parallel once 4 lands.
 

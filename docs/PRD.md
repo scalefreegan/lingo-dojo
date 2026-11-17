@@ -65,8 +65,10 @@ Decided 2026-10-19 in the intake interview (all answers below are final for v1):
 - A feedback loop from the session (debrief saved, progress tracked). The
   in-app voice session itself landed 2026-11-09. Its transcript has been
   saved since 2026-11-15 (a conversation per session, listed in the
-  Library's History, docs/DATA.md §Conversations); the recap, the phrase
-  bank and progress tracking built on it are still to come.
+  Library's History, docs/DATA.md §Conversations), with a recap, the phrase
+  bank, and since 2026-11-17 History by scene: Practice again, building on
+  the last attempt, a comparison with it, a 7-day card and a daily digest
+  (docs/DATA.md §Revisit).
 - In-app rich editing of unit bodies (agent or editor does that; follow-up bead).
 - JSON bundle export for a programmatic voice pipeline (follow-up bead).
 - Mimir/Obsidian export (follow-up bead).

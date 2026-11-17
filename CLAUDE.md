@@ -62,6 +62,16 @@ the draw in `web/server/randomScene.ts`): the server draws the scenario
 only when a conversation is made, avoiding the language's recent scenes,
 records it in `pack_snapshot.random_draw`, and every turn plays that one
 (`playedPack`); preview and assemble never draw, an export draws its own.
+Revisit (migration 0008, docs/DATA.md §Revisit; pure rules in
+`scripts/revisit.mjs`, server `web/server/revisit.ts`): `conversations.scene_key`
+groups History by scene; a new session of a scene played before links to its
+last attempt with a done recap (`previous_conversation_id`, SET NULL; Practice
+again's `previous` preferred) and freezes what it carries in
+`pack_snapshot.revisit` (kept phrases first in the review; for adults a
+briefing in every turn's system prompt and a `vsLast` comparison in the
+recap); `/api/conversations/scenes` and `/overview` (the 7-day card and a
+digest written by one tool-less call per language per day, capped by
+`recent_digests`' unique day row).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

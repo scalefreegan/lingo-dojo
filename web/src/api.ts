@@ -16,7 +16,7 @@
 
 import type {
   AssembleResult, ChatCommit, ChatDone, ChatError, ChatHeartbeat, ChatHistoryReply, ChatReply, ChatRequest, ChatStart,
-  ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, ExportRequest, ExportResult, FolderDeleteReply, LanguageHeader, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
+  ContentReply, ConversationCreateRequest, ConversationReply, ConversationTurnsReply, ConversationsReply, ErrorCode, ErrorReply, OverviewReply, ScenesReply, ExportRequest, ExportResult, FolderDeleteReply, LanguageHeader, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, FolderReply, FolderRequest, LearnerReply, LearnerRequest, LoginRequest, MeReply, Mode,
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
@@ -503,15 +503,29 @@ export function createConversation(body: ConversationCreateRequest, signal?: Abo
   return req<ConversationReply>("/api/conversations", { ...json(body), signal });
 }
 
-/** GET /api/conversations: History, newest first, a page at a time. */
-export function listConversations(offset = 0, limit = 20): Promise<ConversationsReply> {
-  const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+/** GET /api/conversations: History, newest first, a page at a time;
+ *  with `scene`, only that scene's sessions. */
+export function listConversations(offset = 0, limit = 20, scene?: string): Promise<ConversationsReply> {
+  const q = new URLSearchParams({ offset: String(offset), limit: String(limit), ...(scene ? { scene } : {}) });
   return req<ConversationsReply>(`/api/conversations?${q}`);
 }
 
-/** GET /api/conversations/:id: one page of its turns, from idx `from`. */
-export function getConversation(id: string, from = 0, signal?: AbortSignal): Promise<ConversationTurnsReply> {
-  return req<ConversationTurnsReply>(`/api/conversations/${encodeURIComponent(id)}?from=${from}`, { signal });
+/** GET /api/conversations/scenes: History by scene, the latest played first. */
+export function listScenes(offset = 0, limit = 20): Promise<ScenesReply> {
+  const q = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return req<ScenesReply>(`/api/conversations/scenes?${q}`);
+}
+
+/** GET /api/conversations/overview: the 7-day card and the daily digest. */
+export function getOverview(): Promise<OverviewReply> {
+  return req<OverviewReply>("/api/conversations/overview");
+}
+
+/** GET /api/conversations/:id: one page of its turns, from idx `from`
+ *  (`limit` turns at most; the server's page when absent). */
+export function getConversation(id: string, from = 0, signal?: AbortSignal, limit?: number): Promise<ConversationTurnsReply> {
+  const q = new URLSearchParams({ from: String(from), ...(limit ? { limit: String(limit) } : {}) });
+  return req<ConversationTurnsReply>(`/api/conversations/${encodeURIComponent(id)}?${q}`, { signal });
 }
 
 export function deleteConversation(id: string): Promise<{ deleted: true }> {

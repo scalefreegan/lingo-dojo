@@ -14,7 +14,7 @@ import {
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
-  LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
@@ -62,6 +62,8 @@ export default function VoicePanel({
   onReview,
   blocked = null,
   onDrawn,
+  previous = null,
+  onBuildsOn,
 }: {
   mode: Mode;
   pack: PackInput;
@@ -73,6 +75,13 @@ export default function VoicePanel({
    *  session's conversation was made, null again at Restart and Close. A
    *  state setter: stable. */
   onDrawn?: (scenarioId: string | null) => void;
+  /** Practice again: the History session this draft was loaded from, sent
+   *  when the conversation is made (docs/DATA.md §Revisit). */
+  previous?: string | null;
+  /** The earlier attempt a new conversation builds on (null when it builds
+   *  on none) with `made` true, each time one is made; null again at
+   *  Restart and Close. A stable callback. */
+  onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void;
   /** What the saved conversation is called in History (the scene shown). */
   title?: string;
   /** Bumped by every pick in the Go tab's "How long do you have?". */
@@ -122,8 +131,11 @@ export default function VoicePanel({
       onReview={onReview}
       blocked={blocked}
       onDrawn={onDrawn}
+      previous={previous}
+      onBuildsOn={onBuildsOn}
       onClose={() => {
         onDrawn?.(null);
+        onBuildsOn?.(null);
         setOpen(false);
       }}
     />
@@ -135,7 +147,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -310,7 +322,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const budgetRef = useRef(budget);
   const packRef = useRef(pack);
   const titleRef = useRef(title);
+  const previousRef = useRef(previous);
   useEffect(() => {
+    previousRef.current = previous;
     budgetRef.current = budget;
     packRef.current = pack;
     titleRef.current = title;
@@ -667,10 +681,12 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const page = getPageLearner() ?? { learnerId: "", languageId: "" };
     const start = Math.min(unsavedFrom.current ?? here, here);
     const keep = keepDrawn(turnPack, drawnRef.current);
-    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current, ...keep }).then(
+    const made: Promise<SavedConversation | null> = createConversation({ mode, pack: turnPack, title: titleRef.current, ...keep, ...(previousRef.current ? { previous: previousRef.current } : {}) }).then(
       ({ conversation }) => {
         const c = { id: conversation.id, start, page };
         if (creating.current === made) creating.current = null;
+        // Whether it builds on an earlier attempt, for the Go tab's line.
+        if (epoch === sessionEpoch.current) onBuildsOn?.(conversation.buildsOn, true);
         // The scene a random draw gave this session (the server's draw;
         // the turns play it from the conversation), for the Go tab to show.
         if (conversation.randomScene && conversation.scenarioId && epoch === sessionEpoch.current) {
@@ -1481,6 +1497,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     // A random scene is drawn again for the next session.
     drawnRef.current = null;
     onDrawn?.(null);
+    onBuildsOn?.(null);
     setSaving(null);
     setEnded(false);
     setRecapId(null);

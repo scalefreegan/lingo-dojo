@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
+  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getConversation, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
   updateLanguage,
 } from "./api";
-import type { AssembleResult, AuthUser, ContentReply, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
+import type { AssembleResult, AuthUser, ContentReply, ConversationSummary, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
   draftPool, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
   rememberDraft, sessionValues, splitPackId, type Draft,
@@ -386,8 +386,31 @@ export default function App({
     return null;
   }
 
+  // Practice again (docs/DATA.md §Revisit): the History session the draft
+  // was loaded from, sent with the next conversation so it builds on that
+  // attempt; cleared once one has, or when another pack is loaded.
+  // `scene`: the draft's scene when it was loaded; picking another scene
+  // leaves the request unsent (revisitShown), and the server would ignore
+  // it anyway (another scene's session isn't built on).
+  const [revisit, setRevisit] = useState<{ id: string; startedAt: string; scene: string } | null>(null);
+  const revisitUsed = useCallback(() => setRevisit(null), []);
+
+  /** Practice again: the pack exactly as that session played it (a random
+   *  scene: the scene it drew) into the Go tab, unsaved, ready to Start or
+   *  tweak. Its own saved pack, if any, is left alone. */
+  async function practiceAgain(c: ConversationSummary): Promise<void> {
+    const { pack: played } = await getConversation(c.id, 0, undefined, 1);
+    const d = packToDraft({ ...played, id: "", folder: "", random_scene: played.random_scene ?? null });
+    const draft: Draft = { ...d, title: played.title || c.title, sourceId: null, created: "" };
+    setDraft(content ? withBackfill(content, draft) : draft);
+    setSaveRequest(null);
+    setRevisit({ id: c.id, startedAt: c.startedAt, scene: draftScene(draft) });
+    setTab("go");
+  }
+
   /** Load jumps to Scene: that's where the loaded pack's scenario shows up. */
   function load(p: Pack) {
+    setRevisit(null);
     // A pack saved before a slot was added (recall) plays its default: shown
     // ticked in Customize, saved only if the learner saves.
     setDraft(content ? withBackfill(content, packToDraft(p)) : packToDraft(p));
@@ -399,6 +422,7 @@ export default function App({
    *  gets its own name (in the same folder, until the form says otherwise) —
    *  jumps to Go, where that save form now lives. */
   function clone(p: Pack) {
+    setRevisit(null);
     const title = `${p.title} (copy)`;
     const d = packToDraft(p);
     setDraft({ ...(content ? withBackfill(content, d) : d), title, sourceId: null, created: "" });
@@ -415,6 +439,7 @@ export default function App({
 
   function startNew() {
     if (!content) return;
+    setRevisit(null);
     setDraft(newDraft(content));
     setSaveRequest(null);
     setTab("scene");
@@ -509,6 +534,8 @@ export default function App({
                 langs={voiceLangs}
                 practiceRequest={practiceRequest}
                 onPracticeOpened={() => setPracticeRequest(false)}
+                revisit={revisit && revisit.scene === draftScene(draft) ? revisit : null}
+                onRevisitUsed={revisitUsed}
               />
             </div>
             {tab === "practice" && mode === "adult" && <PracticeView />}
@@ -521,6 +548,7 @@ export default function App({
                 currentId={draft.sourceId}
                 onLoad={load}
                 onClone={clone}
+                onPracticeAgain={practiceAgain}
                 onMove={move}
                 onRename={rename}
                 onDelete={remove}
@@ -572,4 +600,9 @@ function ProblemsStrip({ problems }: { problems: Problem[] }) {
       </ul>
     </details>
   );
+}
+
+/** Which scene a draft plays, as Practice again remembers it. */
+function draftScene(d: Draft): string {
+  return d.scenarioMode === "quick" ? `q:${d.quickScenario.trim()}` : d.scenarioMode === "random" ? "random" : `s:${d.scenario}`;
 }

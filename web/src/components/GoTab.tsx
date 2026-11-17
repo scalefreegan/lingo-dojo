@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { exportPack, type VoiceLanguages } from "../api";
 import { splitPackId, unitCount } from "../draft";
-import type { AssembleResult, ContentReply, ExportResult, PackInput, RecallReview } from "../types";
+import type { AssembleResult, ContentReply, ConversationSummary, ExportResult, PackInput, RecallReview } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { RubyText } from "./Ruby";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
@@ -39,6 +39,8 @@ export default function GoTab({
   practiceRequest = false,
   active = true,
   onPracticeOpened,
+  revisit = null,
+  onRevisitUsed,
 }: {
   content: ContentReply;
   pack: PackInput;
@@ -73,6 +75,12 @@ export default function GoTab({
   /** False while another tab is showing (Go stays mounted, hidden). */
   active?: boolean;
   onPracticeOpened?: () => void;
+  /** Practice again from History: the session this draft came from (sent
+   *  when the next conversation is made). null otherwise. */
+  revisit?: { id: string; startedAt: string } | null;
+  /** A conversation was made (or the session restarted): Practice again's
+   *  request has been used. Stable. */
+  onRevisitUsed?: () => void;
 }) {
   const [copyStatus, copy] = useCopyStatus();
   // Counts picks in "How long do you have?", the same length again included:
@@ -101,6 +109,20 @@ export default function GoTab({
   const random = poolSize != null;
   const [drawnId, setDrawnId] = useState<string | null>(null);
   const drawn = random && drawnId ? content.scenarios.find((s) => s.id === drawnId) : undefined;
+  // The earlier attempt the running session builds on (docs/DATA.md
+  // §Revisit), as the server linked it when the conversation was made.
+  const [buildsOn, setBuildsOn] = useState<ConversationSummary["buildsOn"]>(null);
+  const onBuildsOn = useCallback(
+    (b: ConversationSummary["buildsOn"], made = false) => {
+      setBuildsOn(b);
+      // Used by the first conversation made, whatever the server linked it
+      // to (nothing, when that session's recap isn't done): the line then
+      // says what the session really builds on, never a promise left over.
+      if (made) onRevisitUsed?.();
+    },
+    [onRevisitUsed],
+  );
+  const kids = content.mode === "kids";
 
   async function doExport() {
     setExporting(true);
@@ -155,6 +177,17 @@ export default function GoTab({
               A scene is drawn from the {scenesWord(poolSize ?? 0)} in the pool when you start, steering clear of your last few.
             </p>
           ))}
+        {(buildsOn || revisit) && (
+          // Practice again, or a scene played before: what this session
+          // takes from last time, so the learner knows why it comes up.
+          <p className="text-sm text-accent" data-testid="builds-on" aria-live="polite">
+            {buildsOn
+              ? kids
+                ? `Bringing back words from your last time here (${day(buildsOn.startedAt)}).`
+                : `Building on your session of ${day(buildsOn.startedAt)}: its corrections and phrases are in the dojo master's notes.`
+              : `Practising again: builds on your session of ${day(revisit!.startedAt)} when you start.`}
+          </p>
+        )}
         <p className="text-sm text-fg-2">{learnerLine || "Learner not set"}</p>
         <p className="text-sm text-fg-3 tabular-nums">
           {unitCount(pack.units)} unit{unitCount(pack.units) === 1 ? "" : "s"}
@@ -187,7 +220,7 @@ export default function GoTab({
       {/* The main event: the session here, with native voices. */}
       {/* A random scene's conversation is named after the scene drawn
           (the server's), not "Random scene". */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} previous={revisit?.id ?? null} onBuildsOn={onBuildsOn} />
 
       <div className={narrow}>
 
@@ -445,4 +478,9 @@ function NotesDisclosure({ notes, onChange }: { notes: string; onChange: (notes:
       />
     </label>
   );
+}
+
+/** "Nov 15", in the browser's own locale. */
+function day(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }

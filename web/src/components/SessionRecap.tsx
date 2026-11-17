@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, getRecap, retryRecap } from "../api";
 import { openBank } from "../bankLink";
-import type { MasteryBand, RecapEvent, SessionRecap as Recap } from "../types";
+import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from "../types";
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
 import { Badge, Button } from "./ui";
@@ -267,6 +267,7 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
               </ul>
             </div>
           )}
+          {!kids && recap.vsLast && <SinceLastTime vs={recap.vsLast} locale={locale} />}
           {!recap.inBank && <p className="text-xs text-fg-3">This session was in another language than this phrase bank's, so nothing went into it.</p>}
           {recap.inBank && !kids && recap.events.some((e) => e.reviewed) && (
             <p className="text-xs text-fg-3">How you did on these phrases is in your phrase bank's practice schedule.</p>
@@ -274,5 +275,46 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
         </>
       )}
     </section>
+  );
+}
+
+/** "Since last time" (docs/DATA.md §Revisit): the session built on an
+ *  earlier attempt of the scene, and the recap compared the two. Nothing
+ *  when the comparison found nothing to say. */
+function SinceLastTime({ vs, locale }: { vs: RecapVsLast; locale: string | null }) {
+  const said = (t: string) => (
+    <span className="font-medium text-fg" lang={locale ?? undefined}>
+      <RubyText text={t} locale={locale} />
+    </span>
+  );
+  if (!vs.fixed.length && !vs.still.length && !vs.improved.length && !vs.slipped.length) return null;
+  const date = new Date(vs.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return (
+    <div data-testid="recap-vs-last">
+      <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">Since last time ({date})</h4>
+      <ul className="mt-1 flex flex-col gap-0.5 text-sm text-fg-2">
+        {vs.fixed.map((c, i) => (
+          <li key={`f${i}`}>
+            <span className="text-accent">✓ Fixed:</span> {said(c.better)} <span className="text-fg-3">(not "{c.said}")</span>
+          </li>
+        ))}
+        {vs.still.map((c, i) => (
+          <li key={`s${i}`}>
+            <span className="text-warn">↻ Still tripping:</span> {said(c.better)} <span className="text-fg-3">(you said "{c.said}" again)</span>
+          </li>
+        ))}
+        {vs.improved.map((m, i) => (
+          <li key={`i${i}`}>
+            <span className="text-accent">↑</span> {said(m.phrase)}: <span className="text-fg-3">{KIND[m.was]} → {KIND[m.now]}</span>
+          </li>
+        ))}
+        {vs.slipped.map((m, i) => (
+          <li key={`d${i}`}>
+            <span className="text-fg-3">↓</span> {said(m.phrase)}: <span className="text-fg-3">{KIND[m.was]} → {KIND[m.now]}</span>
+          </li>
+        ))}
+      </ul>
+      {vs.untried > 0 && <p className="mt-0.5 text-xs text-fg-3">{vs.untried} of last time's corrections didn't come up.</p>}
+    </div>
   );
 }

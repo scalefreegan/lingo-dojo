@@ -66,6 +66,12 @@
 //  sentences are the learner's own session lines) or on the new
 //  cloze_calls (0005 cleared any default privilege that would grant it).
 //
+// 0008_revisit (practise a scene again, docs/DATA.md §Revisit):
+//  1. conversations_previous_fk deletes with SET NULL
+//     ("previous_conversation_id"), as in 0000: deleting the earlier attempt
+//     nulls the link and keeps the session's language.
+//  2. A backfill (BACKFILL_0008) gives every existing session its scene key.
+//
 //   node scripts/db/hand-edits.mjs [tag]   re-applies them to that migration
 //                                          (default 0000_init) after
 //                                          regenerating it (idempotent)
@@ -110,7 +116,10 @@ const BANK_SET_NULL = {
   phrase_sightings_turn_profile_fk: "turn_id",
 };
 
-export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL, ...BANK_SET_NULL };
+/** 0008's: the earlier attempt a session built on, in the same language. */
+const REVISIT_SET_NULL = { conversations_previous_fk: "previous_conversation_id" };
+
+export const SET_NULL_COLUMNS = { ...INITIAL_SET_NULL, ...PROFILE_SET_NULL, ...BANK_SET_NULL, ...REVISIT_SET_NULL };
 
 function setNull(sql, keys) {
   let out = sql;
@@ -397,6 +406,35 @@ function clozeEdits(generated) {
   return reorder(generated, ORDER_0006, "0006");
 }
 
+/* ------------------------------- 0008_revisit ------------------------------ */
+
+const MARK_0008 = "-- Hand-written (scripts/db/hand-edits.mjs, 0008 edit 2):";
+
+// scripts/revisit.mjs sceneKey, in SQL, for the sessions already there: a
+// library scenario (picked or drawn: the snapshot names the drawn one) by
+// its id, a quick scenario by the md5 of its text with whitespace runs made
+// one space, trimmed and lower-cased, anything else its own key. The class
+// spells out what JavaScript's \s matches beyond Postgres's (no-break and
+// other Unicode spaces, common in pasted text); lower() still follows the
+// server's LC_CTYPE, so a non-ASCII capital can split an old group under a
+// C locale, never link the wrong sessions.
+const BACKFILL_0008 = `${MARK_0008} every existing session gets
+-- its scene key (scripts/revisit.mjs sceneKey); none has an earlier attempt.
+UPDATE "conversations" SET "scene_key" = CASE
+  WHEN coalesce(btrim("scenario_id"), '') <> '' THEN 's:' || btrim("scenario_id")
+  WHEN btrim(regexp_replace(coalesce("pack_snapshot"->>'quick_scenario', ''), '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+', ' ', 'g')) <> ''
+    THEN 'q:' || md5(lower(btrim(regexp_replace("pack_snapshot"->>'quick_scenario', '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+', ' ', 'g'))))
+  ELSE 'c:' || "id"::text
+END;`;
+
+/** 0008 (revisit): the earlier-attempt key deletes with SET NULL (col),
+ *  and the backfill comes last, after the column and its index exist. */
+function revisitEdits(generated) {
+  if (generated.includes(MARK_0008)) return generated; // already applied
+  const stmts = generated.split(BREAK).map((s) => s.trim()).filter(Boolean);
+  return joinStatements([...stmts.map((s) => setNull(s, s.includes("conversations_previous_fk") ? REVISIT_SET_NULL : {})), BACKFILL_0008]);
+}
+
 /* ---------------------------------- all ------------------------------------ */
 
 const EDITS = {
@@ -405,6 +443,7 @@ const EDITS = {
   "0003_phrase_bank_per_language": phraseBankEdits,
   "0005_bank_reader": bankReaderEdits,
   "0006_cloze": clozeEdits,
+  "0008_revisit": revisitEdits,
 };
 
 /** The migration `tag` as committed, from drizzle-kit's output for it. */

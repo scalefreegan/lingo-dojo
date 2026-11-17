@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { and, asc, desc, eq, gte, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, notInArray, sql, type SQL } from "drizzle-orm";
 import { RANDOM_SCENE_TITLE, effectiveProfile } from "../../scripts/assemble.mjs";
 import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs";
 import {
@@ -11,16 +11,19 @@ import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecor
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { storedReviewIds } from "../../scripts/recall.mjs";
+import { carryFrom, linkable, sceneKey, storedRevisit } from "../../scripts/revisit.mjs";
+import { randomUUID } from "node:crypto";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
   ConversationCreateRequest, ConversationReply, ConversationSummary, ConversationTurn, ConversationTurnsReply, ConversationsReply, ErrorCode,
-  PackInput, VoiceHistoryItem, VoicePlanItem,
+  PackInput, ScenesReply, VoiceHistoryItem, VoicePlanItem,
 } from "../shared/wire.ts";
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
 import { withDrawnScene } from "../shared/scenes.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
 import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
 import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
+import { handleOverview, lostPrevious, previousAttempt } from "./revisit.ts";
 import { sessionReview } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
@@ -30,7 +33,9 @@ import { readVoiceSettings } from "./store.ts";
 // Library's History (each language has its own).
 //
 //   POST   /api/conversations             {mode, pack, title?, drawn?} → {conversation}  (201); a random scene is drawn here
-//   GET    /api/conversations             ?offset=&limit= → {conversations, nextOffset}, newest first
+//   GET    /api/conversations             ?offset=&limit=&scene= → {conversations, nextOffset}, newest first (one scene's with `scene`)
+//   GET    /api/conversations/scenes      ?offset=&limit= → {scenes, nextOffset}: History by scene (revisit)
+//   GET    /api/conversations/overview    → {stats, digest}: the 7-day card and the daily digest (revisit.ts)
 //   GET    /api/conversations/:id         ?from=&limit= → {conversation, turns, nextFrom, plan, locale}
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
 //   GET    /api/conversations/:id/recap   → {recap}  (extraction.ts)
@@ -226,8 +231,24 @@ function summary(c: Conversation, last: Date | string | null): ConversationSumma
     turnCount: c.turnCount,
     summary: c.summary,
     recapStatus: recapStatus(c),
+    sceneKey: keyOf(c),
+    buildsOn: buildsOn(c),
   };
 }
+
+/** A row's scene key; a row written without one (none should be: the
+ *  migration filled the old ones) is a scene of its own. */
+const keyOf = (c: Pick<Conversation, "id" | "sceneKey">) => c.sceneKey ?? `c:${c.id}`;
+
+/** The attempt a session built on, from its frozen carry-over (the link
+ *  column is null once that session is deleted; the date stays). */
+function buildsOn(c: Conversation): ConversationSummary["buildsOn"] {
+  const r = storedRevisit(c.packSnapshot);
+  return r ? { id: c.previousConversationId, startedAt: r.startedAt } : null;
+}
+
+/** The scene key as SQL, the same fallback as keyOf. */
+const SCENE = sql<string>`coalesce(${conversations.sceneKey}, 'c:' || ${conversations.id}::text)`;
 
 /** A voice turn's conversationId as a lowercase uuid, or the 404 that sends
  *  the Go tab to start a new conversation; null when the turn names none. */
@@ -407,8 +428,9 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
   if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
-  // `review` and `random_draw` in a snapshot are the server's (below), never the client's.
-  const { review: _ignored, random_draw: _alsoIgnored, ...sent } = body.pack as PackInput & { review?: unknown; random_draw?: unknown };
+  // `review`, `random_draw` and `revisit` in a snapshot are the server's
+  // (below), never the client's: Practice again sends a snapshot back.
+  const { review: _ignored, random_draw: _alsoIgnored, revisit: _andThis, ...sent } = body.pack as PackInput & { review?: unknown; random_draw?: unknown; revisit?: unknown };
   const random = randomSceneOf(sent);
   await endIdle(ctx.user.id);
   const library = loadContent(modeRoot(mode));
@@ -429,24 +451,49 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   }
   const scenarioId = typeof pack.scenario === "string" && pack.scenario ? pack.scenario : null;
   const scenario = scenarioId ? library.scenarios.find((s) => s.id === scenarioId) : undefined;
-  // The review block's phrases, chosen once for the whole session
-  // (docs/DATA.md §Recall): every turn, the Go tab and the recap read these
-  // ids back, so a star or a review mid-session doesn't change the list.
-  // Not stored when the bank couldn't be read: the first turn chooses.
-  const review = await sessionReview(ctx.language, { ...library, profile: learnerProfile(ctx.learner, ctx.language) }, pack, mode);
-  const scenarioTitle = scenario?.title ?? null;
+  // Revisit (docs/DATA.md §Revisit): a scene played before builds on its
+  // last attempt with a finished recap (Practice again: the session it was
+  // pressed on, when that is this scene and has one). What it carries is
+  // frozen into the snapshot now, like the review: the briefing, the review
+  // and the recap's comparison never change under a later edit or delete.
+  const id = randomUUID();
+  const key = sceneKey(pack, id) as string;
+  const previous = typeof body.previous === "string" && CONVERSATION_ID_RE.test(body.previous) ? body.previous.toLowerCase() : null;
   // The session's languages, as the prompt sees them (the profile under the
   // pack's overrides, a moved target language dropping the profile's
   // variant), kept so History's locales never follow a later profile edit.
   const langs = effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(pack).overrides);
-  const [row] = await profileRows(ctx.language).insert(conversations, {
+  const prev = linkable(key) ? await previousAttempt(ctx.language, key, previous, str(langs.target_language)).catch((e) => {
+    // The session goes on without it, as with an unreadable bank.
+    console.error("[lingo-dojo] revisit: reading the last attempt failed; starting fresh:", e);
+    return null;
+  }) : null;
+  const revisit = prev ? carryFrom(prev, mode) : null;
+  const keptIds = (revisit?.kept ?? []).map((k: { phraseId: string | null }) => k.phraseId).filter((x: string | null): x is string => !!x);
+  // The review block's phrases, chosen once for the whole session
+  // (docs/DATA.md §Recall): every turn, the Go tab and the recap read these
+  // ids back, so a star or a review mid-session doesn't change the list.
+  // Not stored when the bank couldn't be read: the first turn chooses. The
+  // last attempt's kept phrases come first.
+  const review = await sessionReview(ctx.language, { ...library, profile: learnerProfile(ctx.learner, ctx.language) }, pack, mode, keptIds);
+  const scenarioTitle = scenario?.title ?? null;
+  const values = {
+    id,
     // What was played, frozen: the pack changes later, and History shows
     // what this session was. With the review it was given (`review`), which
-    // is as much a part of what was played as the units, and for a random
+    // is as much a part of what was played as the units, for a random
     // scene the draw (`random_draw`: the pool's collections and scenario ids,
-    // and the one drawn), the pack itself naming the drawn scenario.
-    packSnapshot: { ...(pack as unknown as Record<string, unknown>), ...(randomDraw ? { random_draw: randomDraw } : {}), ...(review ? { review } : {}) },
+    // and the one drawn), the pack itself naming the drawn scenario, and
+    // what it carried from its last attempt (`revisit`).
+    packSnapshot: {
+      ...(pack as unknown as Record<string, unknown>),
+      ...(randomDraw ? { random_draw: randomDraw } : {}),
+      ...(review ? { review } : {}),
+      ...(revisit ? { revisit } : {}),
+    },
     scenarioId,
+    sceneKey: key,
+    previousConversationId: prev?.id ?? null,
     // The Go tab names a random scene "Random scene" until it is drawn; the
     // conversation is named after the scene it got.
     title: conversationTitle({ title: random && body.title === RANDOM_SCENE_TITLE ? "" : body.title, pack, scenarioTitle }),
@@ -456,7 +503,15 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     targetVariant: str(langs.target_variant),
     model: (await readVoiceSettings(ctx.user.id)).model,
     plannedMinutes: readMinutes(pack.overrides?.minutes).minutes,
-  });
+  };
+  // The earlier attempt deleted since it was chosen (another tab): made
+  // without the link, as the delete would have left it (revisit.ts lostPrevious).
+  const [row] = await profileRows(ctx.language)
+    .insert(conversations, values)
+    .catch((e) => {
+      if (!values.previousConversationId || !lostPrevious(e)) throw e;
+      return profileRows(ctx.language).insert(conversations, { ...values, previousConversationId: null });
+    });
   // The scenario's lists into the bank (DATA.md §Phrase capture): its
   // vocab as phrases, its English `phrases:` as pending ones. Not part of
   // the conversation's creation: a failure here is logged, and the session
@@ -473,12 +528,18 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
 
 async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   await endIdle(ctx.user.id);
-  const { limit, start } = readPage(new URL(req.url ?? "/", "http://localhost").searchParams, { size: PAGE_SIZE, max: MAX_PAGE });
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const { limit, start } = readPage(params, { size: PAGE_SIZE, max: MAX_PAGE });
+  // `scene`: one scene's sessions (History's expanded group).
+  const scene = params.get("scene");
+  if (scene != null && (!scene || scene.length > 200)) throw new HttpError(400, "scene must be a scene key");
   // One more than asked, to know whether there is a next page.
   const rows = await rawDb()
     .select({ c: conversations, lastTurnAt })
     .from(conversations)
-    .where(profileRows(ctx.language).where(conversations))
+    // Every row has its key (written at creation; 0008 filled the old ones),
+    // so the plain column is compared and the scene index serves it.
+    .where(profileRows(ctx.language).where(conversations, scene ? eq(conversations.sceneKey, scene) : undefined))
     .orderBy(desc(conversations.startedAt), desc(conversations.id))
     .limit(limit + 1)
     .offset(start);
@@ -486,6 +547,46 @@ async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx):
     conversations: rows.slice(0, limit).map((r) => summary(r.c, r.lastTurnAt)),
     nextOffset: rows.length > limit ? start + limit : null,
   } satisfies ConversationsReply);
+}
+
+/** History by scene: each scene once, the one played most recently first,
+ *  with how many sessions it has and the latest of them. */
+async function scenes(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const { limit, start } = readPage(new URL(req.url ?? "/", "http://localhost").searchParams, { size: PAGE_SIZE, max: MAX_PAGE });
+  const mine = profileRows(ctx.language);
+  const last = sql<Date>`max(${conversations.startedAt})`;
+  const groups = await rawDb()
+    .select({ key: SCENE, attempts: sql<number>`count(*)::int`, last })
+    .from(conversations)
+    .where(mine.where(conversations))
+    .groupBy(SCENE)
+    .orderBy(desc(last), SCENE)
+    .limit(limit + 1)
+    .offset(start);
+  const page = groups.slice(0, limit);
+  const keys = page.map((g) => g.key);
+  // The latest session of each scene on the page, in one read.
+  const latest = keys.length
+    ? await rawDb()
+        .selectDistinctOn([SCENE], { c: conversations, lastTurnAt })
+        .from(conversations)
+        .where(mine.where(conversations, inArray(conversations.sceneKey, keys)))
+        .orderBy(SCENE, desc(conversations.startedAt), desc(conversations.id))
+    : [];
+  const byKey = new Map(latest.map((r) => [keyOf(r.c), r]));
+  sendJson(res, 200, {
+    scenes: page.flatMap((g) => {
+      const r = byKey.get(g.key);
+      return r ? [{ sceneKey: g.key, attempts: Number(g.attempts), latest: summary(r.c, r.lastTurnAt) }] : [];
+    }),
+    nextOffset: groups.length > limit ? start + limit : null,
+  } satisfies ScenesReply);
+}
+
+/** A snapshot as a pack to play again: the server's own keys left out. */
+function playablePack(snapshot: Record<string, unknown>): PackInput {
+  const { review: _r, random_draw: _d, revisit: _v, ...pack } = snapshot ?? {};
+  return pack as unknown as PackInput;
 }
 
 async function get(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
@@ -515,6 +616,7 @@ async function get(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, i
     // as it is now.
     locale: localeFor(conv.targetLanguage, conv.targetVariant),
     nativeLocale: localeFor(conv.nativeLanguage),
+    pack: playablePack(conv.packSnapshot),
   } satisfies ConversationTurnsReply);
 }
 
@@ -553,6 +655,11 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
     if (req.method === "GET") return list(req, res, ctx);
     if (req.method === "POST") return create(req, res, ctx);
     return methodNotAllowed(res, "GET, POST");
+  }
+  if (parts.length === 1 && (parts[0] === "scenes" || parts[0] === "overview")) {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    await endIdle(ctx.user.id);
+    return parts[0] === "scenes" ? scenes(req, res, ctx) : handleOverview(res, ctx);
   }
   const [id, action, ...rest] = parts;
   if (rest.length || (action !== undefined && action !== "end" && action !== "recap")) return sendJson(res, 404, { error: "no such route" });

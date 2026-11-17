@@ -21,6 +21,7 @@ import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.t
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 import { conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
+import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -378,10 +379,13 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const clock = clockLine({ minutes: pack.overrides?.minutes, elapsedMs: body.elapsedMs, plan, stage: lastStage, mode });
     // The session's narrator gender, drawn by the client at session start,
     // unless the pack's own narrator unit fixes it.
+    // A session that builds on an earlier attempt of this scene (docs/DATA.md
+    // §Revisit) carries a briefing on it, frozen when it began; adults only.
     const systemPrompt =
       voiceSystemPrompt(markdown, mode) +
       (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
-      planDirective(plan);
+      planDirective(plan) +
+      (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "");
     const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
       const { result } = startClaude({
         prompt: voiceTurnPrompt(history, message, clock, notes),

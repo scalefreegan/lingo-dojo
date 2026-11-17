@@ -5,7 +5,8 @@ import type { LanguageProfile } from "../../scripts/db/accounts.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { recallBank, recallDetails, recallPhrases, type RecallPhrase } from "../../scripts/db/phrases.ts";
 import { bankLocale } from "../../scripts/phrases.mjs";
-import { lookupBlock, lookupRecord, retrieve, retrievalBlock, reviewFromIds, searchLookup, selectReview, storedReviewIds } from "../../scripts/recall.mjs";
+import { REVIEW_MAX, lookupBlock, lookupRecord, retrieve, retrievalBlock, reviewFromIds, searchLookup, selectReview, storedReviewIds } from "../../scripts/recall.mjs";
+import { mergeReview } from "../../scripts/revisit.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
 import type { ContentReply, Mode, PhraseSummary, RecallItem, RecallReview } from "../shared/wire.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
@@ -98,10 +99,18 @@ export async function reviewFor(language: LanguageProfile, content: Content, pac
  *  the phrase ids chosen now, [] when it has nothing to revisit (no recall
  *  unit, another language, an empty bank), or null when the bank couldn't
  *  be read (nothing stored: its first turn chooses instead). */
-export async function sessionReview(language: LanguageProfile, content: Content, pack: Pack, mode: Mode): Promise<{ phraseIds: string[] } | null> {
+/** `first`: phrase ids to put ahead of the usual choice (a revisit's kept
+ *  phrases, docs/DATA.md §Revisit), each only while the bank still has it
+ *  usable; the list stays within the mode's cap. */
+export async function sessionReview(
+  language: LanguageProfile, content: Content, pack: Pack, mode: Mode, first: string[] = [],
+): Promise<{ phraseIds: string[] } | null> {
   if (!picksRecall(content, pack) || !inBank(language, content, pack)) return { phraseIds: [] };
   const bank = await readBank(language);
-  return bank ? { phraseIds: chooseReview(bank, content, pack, mode, new Date()).map((p) => p.id) } : null;
+  if (!bank) return null;
+  const chosen = chooseReview(bank, content, pack, mode, new Date()).map((p) => p.id);
+  if (!first.length) return { phraseIds: chosen };
+  return { phraseIds: mergeReview(reviewFromIds(bank, first).map((p) => p.id), chosen, REVIEW_MAX[mode === "kids" ? "kids" : "adult"]) };
 }
 
 /** The bank's words for a turn's matching (recallPhrases), or null when

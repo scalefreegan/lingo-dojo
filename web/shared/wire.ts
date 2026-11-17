@@ -829,6 +829,10 @@ export interface VoiceTurnReply {
 /** POST /api/conversations: the session's first turn is about to run. */
 export interface ConversationCreateRequest {
   mode: Mode;
+  /** Practice again: the session this one was started from, built on when
+   *  it is the same scene with a finished recap; otherwise (or absent) the
+   *  scene's latest attempt with one is (docs/DATA.md §Revisit). */
+  previous?: string;
   /** The pack as the first turn plays it (its minutes are the session length). */
   pack: PackInput;
   /** The scene title the Go tab shows. */
@@ -873,6 +877,12 @@ export interface ConversationSummary {
   summary: string | null;
   /** Where its recap is (SessionRecap.status). */
   recapStatus: RecapStatus;
+  /** Which sessions were the same scene (scripts/revisit.mjs sceneKey):
+   *  History groups by it. */
+  sceneKey: string;
+  /** The earlier attempt this session built on (docs/DATA.md §Revisit),
+   *  when it built on one; `id` is null once that session is deleted. */
+  buildsOn: { id: string | null; startedAt: string } | null;
 }
 
 /** A conversation's post-session recap (docs/DATA.md §Post-session
@@ -913,6 +923,23 @@ export interface SessionRecap {
   /** Why the last try failed (status "failed"). */
   error: string | null;
   extractedAt: string | null;
+  /** Compared with the attempt this session built on (adults); null when
+   *  it built on none. */
+  vsLast: RecapVsLast | null;
+}
+
+/** The recap's "since last time" (scripts/revisit.mjs compareAttempts). */
+export interface RecapVsLast {
+  /** The earlier session (null once deleted, at read) and its start. */
+  from: string | null;
+  startedAt: string;
+  /** Last time's corrections now right / wrong again; `untried` never came up. */
+  fixed: { said: string; better: string }[];
+  still: { said: string; better: string }[];
+  untried: number;
+  /** A phrase both sessions judged on one skill, rated higher / lower now. */
+  improved: { phrase: string; was: RecapEvent["kind"]; now: RecapEvent["kind"] }[];
+  slipped: { phrase: string; was: RecapEvent["kind"]; now: RecapEvent["kind"] }[];
 }
 
 export interface RecapReply {
@@ -952,6 +979,48 @@ export interface ConversationTurnsReply {
   locale: string | null;
   /** The session's native locale, for the translate buttons' label. */
   nativeLocale: string | null;
+  /** The pack as played (a random scene: the scene it drew), for Practice
+   *  again; the server's own keys (review, random_draw, revisit) left out. */
+  pack: PackInput;
+}
+
+/** GET /api/conversations/scenes: History by scene, the scene played most
+ *  recently first, a page at a time. */
+export interface SceneGroup {
+  sceneKey: string;
+  /** Sessions of this scene in this language. */
+  attempts: number;
+  /** The latest of them. */
+  latest: ConversationSummary;
+}
+
+export interface ScenesReply {
+  scenes: SceneGroup[];
+  nextOffset: number | null;
+}
+
+/** GET /api/conversations/overview: History's last-7-days card and the
+ *  once-a-day written digest. Null parts for a kids learner. */
+export interface OverviewReply {
+  stats: {
+    sessions: number;
+    minutes: number;
+    scenes: number;
+    kept: number;
+    /** A correction whose better form came up in two sessions or more. */
+    recurring: { said: string; better: string; count: number }[];
+  } | null;
+  digest: {
+    /** The newest one written (any day), or null when none has been. */
+    text: string | null;
+    writtenAt: string | null;
+    /** How many sessions it read. */
+    sessions: number;
+    /** "pending" while today's is being written. "failed": today's
+     *  couldn't be (tried once a day). "stale": newer sessions since, and
+     *  today's has been tried. "current" otherwise. */
+    status: "pending" | "failed" | "stale" | "current";
+  } | null;
 }
 
 /** POST /api/voice/speak → audio bytes (audio/mpeg, or audio/wav for

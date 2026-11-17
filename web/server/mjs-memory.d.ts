@@ -107,6 +107,8 @@ declare module "*/scripts/extraction.mjs" {
     /** The phrases are the review block the session offered (not just due). */
     offered?: boolean;
     kids?: boolean;
+    /** revisit.mjs lastTimeSection: last attempt's corrections to judge. */
+    lastTime?: string;
   }): { system: string; user: string };
   export function parseExtraction(text: unknown): { ok: true; value: Extraction; dropped: number } | { ok: false; error: string };
   /** A stored turn as the extraction helpers read it. */
