@@ -413,13 +413,17 @@ const MARK_0008 = "-- Hand-written (scripts/db/hand-edits.mjs, 0008 edit 2):";
 // scripts/revisit.mjs sceneKey, in SQL, for the sessions already there: a
 // library scenario (picked or drawn: the snapshot names the drawn one) by
 // its id, a quick scenario by the md5 of its text with whitespace runs made
-// one space, trimmed and lower-cased, anything else its own key.
+// one space, trimmed and lower-cased, anything else its own key. The class
+// spells out what JavaScript's \s matches beyond Postgres's (no-break and
+// other Unicode spaces, common in pasted text); lower() still follows the
+// server's LC_CTYPE, so a non-ASCII capital can split an old group under a
+// C locale, never link the wrong sessions.
 const BACKFILL_0008 = `${MARK_0008} every existing session gets
 -- its scene key (scripts/revisit.mjs sceneKey); none has an earlier attempt.
 UPDATE "conversations" SET "scene_key" = CASE
   WHEN coalesce(btrim("scenario_id"), '') <> '' THEN 's:' || btrim("scenario_id")
-  WHEN btrim(regexp_replace(coalesce("pack_snapshot"->>'quick_scenario', ''), '\\s+', ' ', 'g')) <> ''
-    THEN 'q:' || md5(lower(btrim(regexp_replace("pack_snapshot"->>'quick_scenario', '\\s+', ' ', 'g'))))
+  WHEN btrim(regexp_replace(coalesce("pack_snapshot"->>'quick_scenario', ''), '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+', ' ', 'g')) <> ''
+    THEN 'q:' || md5(lower(btrim(regexp_replace("pack_snapshot"->>'quick_scenario', '[\\s\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+', ' ', 'g'))))
   ELSE 'c:' || "id"::text
 END;`;
 

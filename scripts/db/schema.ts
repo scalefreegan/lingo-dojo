@@ -790,7 +790,7 @@ export const recentDigests = pgTable(
     /** The run holding it, to tell a live run from one a restart killed. */
     claim: uuid("claim"),
     text: text("text"),
-    /** The newest session start it covered, and how many sessions. */
+    /** The newest recap it read (conversations.extracted_at), and how many sessions. */
     through: tz("through"),
     sessions: integer("sessions").notNull().default(0),
     createdAt: createdAt(),

@@ -282,7 +282,16 @@ function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
                   <Button variant="ghost" className={small} onClick={() => onOpen(x)}>
                     Open
                   </Button>
-                  <Button variant="ghost" className={`${small} text-err`} onClick={() => void onDelete(x)} aria-label={`Delete ${x.title} of ${when(x.startedAt)}`}>
+                  <Button
+                    variant="ghost"
+                    className={`${small} text-err`}
+                    // The scene's header is listed again by the parent; this
+                    // list is the row's own, so it drops the session itself.
+                    onClick={async () => {
+                      if (await onDelete(x)) setItems((was) => (was ?? []).filter((y) => y.id !== x.id));
+                    }}
+                    aria-label={`Delete ${x.title} of ${when(x.startedAt)}`}
+                  >
                     Delete
                   </Button>
                 </div>

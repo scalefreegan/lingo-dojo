@@ -2808,18 +2808,25 @@ whichever pack it came from; `q:<md5>` for a quick scenario, of its text
 with whitespace runs made one space, trimmed, lower-cased; `c:<own id>` for
 anything else (never linked). Written at creation; 0008's backfill gives the
 old rows the same key in SQL (`hand-edits.mjs` 0008, checked against the JS
-in `migration-0008.mjs`). Readers fall back to `c:<id>` for a null.
+in `migration-0008.mjs`, its whitespace class spelling out the Unicode
+spaces JavaScript's `\s` matches; `lower()` follows the server's
+LC_CTYPE, so under a C locale a non-ASCII capital can split an old group). Readers fall back to `c:<id>` for a null.
 
 **The previous attempt** (`web/server/revisit.ts` `previousAttempt`), chosen
 once when the conversation is made: the session `ConversationCreateRequest.previous`
-names (Practice again's) when it is this language's, this scene's, ended,
-with `extraction_status = 'done'`; else the scene's latest such session.
+names (Practice again's) when it is this language's, this scene's, played
+in the same target language (`conversations.target_language`: a pack whose
+overrides move it is not a retry), ended, with `extraction_status =
+'done'`; else the scene's latest such session.
 None for a `c:` key, a scene never played, or one whose recaps all failed,
 were skipped or are still being written. `previous_conversation_id` records
 it, composite key `(previous_conversation_id, language_profile_id)` to
 `conversations (id, language_profile_id)`, `ON DELETE SET NULL
 ("previous_conversation_id")`: a delete nulls the link only. A failed read
-is logged and the session starts fresh.
+is logged and the session starts fresh; an insert refused because that
+session was deleted meanwhile (another tab; `revisit.ts` `lostPrevious`) is
+made again without the link, the carry-over kept, as the delete would have
+left it.
 
 **What it carries** is frozen into `pack_snapshot.revisit` (`carryFrom`;
 the server's key, a client's dropped, like `review` and `random_draw`):
@@ -2837,7 +2844,9 @@ earlier session never change a session's briefing or comparison. Three uses:
   `revisitBlock` to the system prompt: instructions (mention it once,
   briefly; set up moments to retry each correction; work the kept phrases
   in; vary the details) and the data between `[LAST TIME IN THIS SCENE]`
-  and `[END OF LAST TIME]`, defanged, said to be data. It lists the kept
+  and `[END OF LAST TIME]`, every stored string through `recall.mjs`
+  `bankText` (no square, curly or angle brackets: a learner's words quoted
+  in a correction can't close the block or open a fake one), said to be data. It lists the kept
   phrases too, so a pack with no recall unit still gets them. An unsaved
   turn has no conversation and no briefing.
 - **Comparison** (adults). The recap's prompt lists last time's
@@ -2854,7 +2863,7 @@ earlier session never change a session's briefing or comparison. Three uses:
 **History by scene.** `GET /api/conversations/scenes?offset=&limit=` →
 `{scenes: [{sceneKey, attempts, latest}], nextOffset}`, the scene played
 most recently first; `GET /api/conversations?scene=<key>` lists one
-scene's. Index `conversations_profile_scene_idx (language_profile_id,
+scene's (compared on the column itself, so the index serves it). Index `conversations_profile_scene_idx (language_profile_id,
 scene_key, started_at)`. `ConversationSummary` carries `sceneKey` and
 `buildsOn: {id | null, startedAt}`. `GET /api/conversations/:id` carries
 `pack`, the snapshot without the server's keys, which Practice again loads
@@ -2874,8 +2883,9 @@ along as `previous` until a conversation builds on something.
   characters). Table `recent_digests (id, learner_id, language_profile_id,
   day date, status running|done|failed, claim, text, through, sessions,
   created_at, finished_at)`, unique `(language_profile_id, day)`: the
-  request that finds a digest due (a done recap newer than the last done
-  digest's `through`, no row today) inserts today's row first, and only the
+  request that finds a digest due (a recap finished, `extracted_at`, after
+  the last done digest's `through`, the newest recap it read, so a Retry
+  that lands late counts; no row today) inserts today's row first, and only the
   insert that lands starts the call, so the unique key is the cap and a
   failed day still counts. Never retried the same day. `status` on the
   wire: `pending` (today's running in this server), `failed` (today's

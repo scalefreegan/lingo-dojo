@@ -37,7 +37,7 @@ write(root, "kids/units/recycle-words.md", "---\nid: recycle-words\nslot: recall
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
-const { settleDigests } = await import("../../web/server/revisit.ts");
+const { lostPrevious, settleDigests } = await import("../../web/server/revisit.ts");
 
 const fake = fakeClaude();
 const REPLY = "NARRATOR-F: Bienvenido al <t>mercado</t>.\nGLOSS: mercado = market\nSTAGE: scene";
@@ -332,4 +332,35 @@ test("kids: the kept words come back, with no briefing, no comparison and no ove
   assert.equal((await recapOf(pip, two.id)).vsLast, null);
   assert.deepEqual((await pip.call("GET", "/api/conversations/overview")).body, { stats: null, digest: null });
   assert.equal((await pip.call("GET", "/api/conversations/scenes")).body.scenes[0].attempts, 2, "kids get History by scene");
+});
+
+test("a pack that moves the target language builds on no attempt in another language", async () => {
+  const sam = await someone();
+  await session(sam);
+  const french = await start(sam, { p: pack({ scenario: "market", overrides: { target_language: "French" } }) });
+  assert.equal(french.sceneKey, "s:market", "still the same scene in History");
+  assert.equal(french.buildsOn, null, "but not a retry of the Spanish one");
+  assert.equal((await start(sam)).buildsOn !== null, true, "the Spanish one still links");
+});
+
+test("lostPrevious tells the earlier attempt's delete racing a create from any other error", () => {
+  const fk = Object.assign(new Error("insert failed"), { cause: Object.assign(new Error("fk"), { code: "23503", constraint: "conversations_previous_fk" }) });
+  assert.equal(lostPrevious(fk), true);
+  assert.equal(lostPrevious(Object.assign(new Error("x"), { code: "23503", constraint: "conversations_language_profile_fk" })), false);
+  assert.equal(lostPrevious(new Error("boom")), false);
+});
+
+test("a recap that lands late (a Retry) makes the digest stale, whenever its session started", async () => {
+  const sam = await someone();
+  fake.recap("!fail");
+  const early = await session(sam);
+  fake.recap(JSON.stringify(FIRST));
+  await session(sam, { p: pack({ scenario: "plaza" }) });
+  await sam.call("GET", "/api/conversations/overview");
+  await settleDigests();
+  assert.equal((await sam.call("GET", "/api/conversations/overview")).body.digest.status, "current");
+  assert.equal((await sam.call("POST", `/api/conversations/${early.id}/recap`)).status, 202);
+  await settleExtractions();
+  assert.equal((await recapOf(sam, early.id)).status, "done");
+  assert.equal((await sam.call("GET", "/api/conversations/overview")).body.digest.status, "stale");
 });

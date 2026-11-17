@@ -79,9 +79,9 @@ export default function VoicePanel({
    *  when the conversation is made (docs/DATA.md §Revisit). */
   previous?: string | null;
   /** The earlier attempt a new conversation builds on (null when it builds
-   *  on none), each time one is made; null again at Restart and Close. A
-   *  state setter or stable callback. */
-  onBuildsOn?: (b: ConversationSummary["buildsOn"]) => void;
+   *  on none) with `made` true, each time one is made; null again at
+   *  Restart and Close. A stable callback. */
+  onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void;
   /** What the saved conversation is called in History (the scene shown). */
   title?: string;
   /** Bumped by every pick in the Go tab's "How long do you have?". */
@@ -147,7 +147,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"]) => void; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -686,7 +686,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         const c = { id: conversation.id, start, page };
         if (creating.current === made) creating.current = null;
         // Whether it builds on an earlier attempt, for the Go tab's line.
-        if (epoch === sessionEpoch.current) onBuildsOn?.(conversation.buildsOn);
+        if (epoch === sessionEpoch.current) onBuildsOn?.(conversation.buildsOn, true);
         // The scene a random draw gave this session (the server's draw;
         // the turns play it from the conversation), for the Go tab to show.
         if (conversation.randomScene && conversation.scenarioId && epoch === sessionEpoch.current) {

@@ -33,15 +33,34 @@ type Digest = typeof recentDigests.$inferSelect;
  * A session whose recap failed, was skipped or is still being written has
  * nothing to carry, so it is passed over.
  */
-export async function previousAttempt(profile: LanguageProfileRef, key: string, preferred: string | null): Promise<Conversation | null> {
+export async function previousAttempt(profile: LanguageProfileRef, key: string, preferred: string | null, targetLanguage: string): Promise<Conversation | null> {
   const mine = profileRows(profile);
-  const usable = and(eq(conversations.sceneKey, key), isNotNull(conversations.endedAt), eq(conversations.extractionStatus, "done")) as SQL;
+  // Played in the same target language: a pack whose overrides move it (a
+  // French market from the Spanish profile) is not a retry of the Spanish
+  // one, and its briefing and comparison would be in the wrong language.
+  const usable = and(
+    eq(conversations.sceneKey, key),
+    eq(conversations.targetLanguage, targetLanguage),
+    isNotNull(conversations.endedAt),
+    eq(conversations.extractionStatus, "done"),
+  ) as SQL;
   if (preferred) {
     const row = await mine.get(conversations, and(eq(conversations.id, preferred), usable) as SQL);
     if (row) return row;
   }
   const [row] = await mine.list(conversations, usable, { orderBy: [desc(conversations.startedAt), desc(conversations.id)], limit: 1 });
   return row ?? null;
+}
+
+/** Whether `e` is the insert refused because the earlier attempt it links
+ *  to was deleted between choosing it and the insert (another tab's
+ *  Delete). The caller then inserts with no link: a delete nulls the link
+ *  and nothing else, as it would have a moment later. */
+export function lostPrevious(e: unknown): boolean {
+  for (let x = e as { code?: string; constraint?: string; cause?: unknown } | undefined; x; x = x.cause as typeof x) {
+    if (x.code === "23503" && x.constraint === "conversations_previous_fk") return true;
+  }
+  return false;
 }
 
 /* --------------------------------- digest ---------------------------------- */
@@ -84,6 +103,7 @@ async function weekRows(profile: LanguageProfileRef, now: Date) {
       summary: conversations.summary,
       extraction: conversations.extraction,
       extractionStatus: conversations.extractionStatus,
+      extractedAt: conversations.extractedAt,
     })
     .from(conversations)
     .where(profileRows(profile).where(conversations, gte(conversations.startedAt, new Date(now.getTime() - WEEK_MS))))
@@ -125,9 +145,17 @@ async function runDigest(ctx: LearnerCtx, row: Digest, sessions: WeekRow[], clai
   }
 }
 
+/** The newest recap among the week's done ones (a recap made late, a
+ *  Retry, counts when it lands, whenever its session started). */
+function newestRecap(rows: WeekRow[]): Date | null {
+  let at: Date | null = null;
+  for (const r of rows) if (r.endedAt && r.extractionStatus === "done" && r.extractedAt && (!at || new Date(r.extractedAt) > at)) at = new Date(r.extractedAt);
+  return at;
+}
+
 /**
- * Today's digest, if one is due: the week has a session with a finished
- * recap newer than anything a digest has covered, and today has no row
+ * Today's digest, if one is due: the week has a recap finished after
+ * anything a digest has covered (`through`: the newest recap it read), and today has no row
  * yet (one per language per day, failed ones included, claimed by the
  * insert: two tabs asking at once make one call). Starts the run in the
  * background; returns today's row, new or not.
@@ -135,8 +163,8 @@ async function runDigest(ctx: LearnerCtx, row: Digest, sessions: WeekRow[], clai
 async function startDigestIfDue(ctx: LearnerCtx, rows: WeekRow[], latestDone: Digest | undefined, todays: Digest | undefined): Promise<Digest | undefined> {
   if (todays) return todays;
   const recapped = rows.filter((r) => r.endedAt && r.extractionStatus === "done").slice(0, DIGEST_SESSIONS);
-  const newest = recapped[0]?.startedAt;
-  if (!newest || (latestDone?.through && new Date(newest) <= new Date(latestDone.through))) return undefined;
+  const newest = newestRecap(rows);
+  if (!newest || (latestDone?.through && newest <= new Date(latestDone.through))) return undefined;
   const claim = randomUUID();
   const [row] = await profileRows(ctx.language).insertOrIgnore(
     recentDigests,
@@ -168,8 +196,8 @@ export async function handleOverview(res: ServerResponse, ctx: LearnerCtx): Prom
   todays = await startDigestIfDue(ctx, rows, latestDone, todays);
   // Today's, when it is done, is the newest done one.
   const shown = todays?.status === "done" ? todays : latestDone;
-  const newest = rows.find((r) => r.endedAt && r.extractionStatus === "done")?.startedAt;
-  const stale = !!newest && (!shown?.through || new Date(newest) > new Date(shown.through));
+  const newest = newestRecap(rows);
+  const stale = !!newest && (!shown?.through || newest > new Date(shown.through));
   const pending = todays?.status === "running" && !!todays.claim && live.has(todays.claim);
   const failed = !!todays && todays.status !== "done" && !pending;
   sendJson(res, 200, {

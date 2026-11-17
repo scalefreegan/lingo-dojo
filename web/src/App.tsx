@@ -389,7 +389,10 @@ export default function App({
   // Practice again (docs/DATA.md §Revisit): the History session the draft
   // was loaded from, sent with the next conversation so it builds on that
   // attempt; cleared once one has, or when another pack is loaded.
-  const [revisit, setRevisit] = useState<{ id: string; startedAt: string } | null>(null);
+  // `scene`: the draft's scene when it was loaded; picking another scene
+  // leaves the request unsent (revisitShown), and the server would ignore
+  // it anyway (another scene's session isn't built on).
+  const [revisit, setRevisit] = useState<{ id: string; startedAt: string; scene: string } | null>(null);
   const revisitUsed = useCallback(() => setRevisit(null), []);
 
   /** Practice again: the pack exactly as that session played it (a random
@@ -401,7 +404,7 @@ export default function App({
     const draft: Draft = { ...d, title: played.title || c.title, sourceId: null, created: "" };
     setDraft(content ? withBackfill(content, draft) : draft);
     setSaveRequest(null);
-    setRevisit({ id: c.id, startedAt: c.startedAt });
+    setRevisit({ id: c.id, startedAt: c.startedAt, scene: draftScene(draft) });
     setTab("go");
   }
 
@@ -531,7 +534,7 @@ export default function App({
                 langs={voiceLangs}
                 practiceRequest={practiceRequest}
                 onPracticeOpened={() => setPracticeRequest(false)}
-                revisit={revisit}
+                revisit={revisit && revisit.scene === draftScene(draft) ? revisit : null}
                 onRevisitUsed={revisitUsed}
               />
             </div>
@@ -597,4 +600,9 @@ function ProblemsStrip({ problems }: { problems: Problem[] }) {
       </ul>
     </details>
   );
+}
+
+/** Which scene a draft plays, as Practice again remembers it. */
+function draftScene(d: Draft): string {
+  return d.scenarioMode === "quick" ? `q:${d.quickScenario.trim()}` : d.scenarioMode === "random" ? "random" : `s:${d.scenario}`;
 }

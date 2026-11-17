@@ -113,12 +113,12 @@ export default function GoTab({
   // §Revisit), as the server linked it when the conversation was made.
   const [buildsOn, setBuildsOn] = useState<ConversationSummary["buildsOn"]>(null);
   const onBuildsOn = useCallback(
-    (b: ConversationSummary["buildsOn"]) => {
+    (b: ConversationSummary["buildsOn"], made = false) => {
       setBuildsOn(b);
-      // Used once a conversation built on it. One that built on nothing
-      // (that session's recap isn't done) keeps asking: the server checks
-      // the scene and the recap each time, so a stale request is harmless.
-      if (b) onRevisitUsed?.();
+      // Used by the first conversation made, whatever the server linked it
+      // to (nothing, when that session's recap isn't done): the line then
+      // says what the session really builds on, never a promise left over.
+      if (made) onRevisitUsed?.();
     },
     [onRevisitUsed],
   );

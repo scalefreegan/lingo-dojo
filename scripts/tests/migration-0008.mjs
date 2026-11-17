@@ -1,7 +1,7 @@
 // Migration 0008 (revisit: conversations.scene_key and
 // previous_conversation_id, the recent_digests table) against a database at
 // 0007 with sessions in it: a library scene, a random scene that drew one,
-// two quick scenes whose text differs only in case and spacing, and one
+// two quick scenes whose text differs only in case and spacing (a no-break space and an ideographic one among it), and one
 // with no scene. Every row keeps every column it had; each gets the scene
 // key scripts/revisit.mjs sceneKey gives its pack (so the two quick ones
 // share one); none has an earlier attempt; the schema is a fresh build's.
@@ -35,7 +35,7 @@ const PACKS = [
   [C(1), "market", { scenario: "market", quick_scenario: "" }],
   [C(2), "plaza", { scenario: "plaza", quick_scenario: "", random_scene: null, random_draw: { collections: [], pool: ["plaza", "market"], drawn: "plaza" } }],
   [C(3), null, { scenario: "", quick_scenario: "Ordering tacos at a stand" }],
-  [C(4), null, { scenario: "", quick_scenario: "  ordering TACOS\n\tat a  stand " }],
+  [C(4), null, { scenario: "", quick_scenario: "  ordering TACOS\n\tat a  stand　" }],
   [C(5), null, { scenario: "", quick_scenario: "   " }],
 ];
 

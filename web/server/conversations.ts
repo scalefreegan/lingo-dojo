@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { and, asc, desc, eq, gte, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, notInArray, sql, type SQL } from "drizzle-orm";
 import { RANDOM_SCENE_TITLE, effectiveProfile } from "../../scripts/assemble.mjs";
 import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs";
 import {
@@ -23,7 +23,7 @@ import { withDrawnScene } from "../shared/scenes.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
 import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
 import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
-import { handleOverview, previousAttempt } from "./revisit.ts";
+import { handleOverview, lostPrevious, previousAttempt } from "./revisit.ts";
 import { sessionReview } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
@@ -459,7 +459,11 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const id = randomUUID();
   const key = sceneKey(pack, id) as string;
   const previous = typeof body.previous === "string" && CONVERSATION_ID_RE.test(body.previous) ? body.previous.toLowerCase() : null;
-  const prev = linkable(key) ? await previousAttempt(ctx.language, key, previous).catch((e) => {
+  // The session's languages, as the prompt sees them (the profile under the
+  // pack's overrides, a moved target language dropping the profile's
+  // variant), kept so History's locales never follow a later profile edit.
+  const langs = effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(pack).overrides);
+  const prev = linkable(key) ? await previousAttempt(ctx.language, key, previous, str(langs.target_language)).catch((e) => {
     // The session goes on without it, as with an unreadable bank.
     console.error("[lingo-dojo] revisit: reading the last attempt failed; starting fresh:", e);
     return null;
@@ -473,11 +477,7 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // last attempt's kept phrases come first.
   const review = await sessionReview(ctx.language, { ...library, profile: learnerProfile(ctx.learner, ctx.language) }, pack, mode, keptIds);
   const scenarioTitle = scenario?.title ?? null;
-  // The session's languages, as the prompt sees them (the profile under the
-  // pack's overrides, a moved target language dropping the profile's
-  // variant), kept so History's locales never follow a later profile edit.
-  const langs = effectiveProfile(learnerProfile(ctx.learner, ctx.language), normalizePack(pack).overrides);
-  const [row] = await profileRows(ctx.language).insert(conversations, {
+  const values = {
     id,
     // What was played, frozen: the pack changes later, and History shows
     // what this session was. With the review it was given (`review`), which
@@ -503,7 +503,15 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     targetVariant: str(langs.target_variant),
     model: (await readVoiceSettings(ctx.user.id)).model,
     plannedMinutes: readMinutes(pack.overrides?.minutes).minutes,
-  });
+  };
+  // The earlier attempt deleted since it was chosen (another tab): made
+  // without the link, as the delete would have left it (revisit.ts lostPrevious).
+  const [row] = await profileRows(ctx.language)
+    .insert(conversations, values)
+    .catch((e) => {
+      if (!values.previousConversationId || !lostPrevious(e)) throw e;
+      return profileRows(ctx.language).insert(conversations, { ...values, previousConversationId: null });
+    });
   // The scenario's lists into the bank (DATA.md §Phrase capture): its
   // vocab as phrases, its English `phrases:` as pending ones. Not part of
   // the conversation's creation: a failure here is logged, and the session
@@ -529,7 +537,9 @@ async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx):
   const rows = await rawDb()
     .select({ c: conversations, lastTurnAt })
     .from(conversations)
-    .where(profileRows(ctx.language).where(conversations, scene ? sql`${SCENE} = ${scene}` : undefined))
+    // Every row has its key (written at creation; 0008 filled the old ones),
+    // so the plain column is compared and the scene index serves it.
+    .where(profileRows(ctx.language).where(conversations, scene ? eq(conversations.sceneKey, scene) : undefined))
     .orderBy(desc(conversations.startedAt), desc(conversations.id))
     .limit(limit + 1)
     .offset(start);
@@ -560,7 +570,7 @@ async function scenes(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     ? await rawDb()
         .selectDistinctOn([SCENE], { c: conversations, lastTurnAt })
         .from(conversations)
-        .where(mine.where(conversations, sql`${SCENE} in (${sql.join(keys.map((k) => sql`${k}`), sql`, `)})`))
+        .where(mine.where(conversations, inArray(conversations.sceneKey, keys)))
         .orderBy(SCENE, desc(conversations.startedAt), desc(conversations.id))
     : [];
   const byKey = new Map(latest.map((r) => [keyOf(r.c), r]));

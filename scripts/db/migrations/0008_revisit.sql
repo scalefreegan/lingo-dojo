@@ -28,7 +28,7 @@ CREATE INDEX "conversations_profile_scene_idx" ON "conversations" USING btree ("
 -- its scene key (scripts/revisit.mjs sceneKey); none has an earlier attempt.
 UPDATE "conversations" SET "scene_key" = CASE
   WHEN coalesce(btrim("scenario_id"), '') <> '' THEN 's:' || btrim("scenario_id")
-  WHEN btrim(regexp_replace(coalesce("pack_snapshot"->>'quick_scenario', ''), '\s+', ' ', 'g')) <> ''
-    THEN 'q:' || md5(lower(btrim(regexp_replace("pack_snapshot"->>'quick_scenario', '\s+', ' ', 'g'))))
+  WHEN btrim(regexp_replace(coalesce("pack_snapshot"->>'quick_scenario', ''), '[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+', ' ', 'g')) <> ''
+    THEN 'q:' || md5(lower(btrim(regexp_replace("pack_snapshot"->>'quick_scenario', '[\s\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+', ' ', 'g'))))
   ELSE 'c:' || "id"::text
 END;

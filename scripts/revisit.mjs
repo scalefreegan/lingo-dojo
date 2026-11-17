@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import { ratingForSessionEvent } from "./fsrs.mjs";
 import { extractJsonObject } from "./json-reply.mjs";
 import { defang, normKey } from "./match.mjs";
+import { bankText } from "./recall.mjs";
 import { modelText } from "./phrases.mjs";
 
 /* -------------------------------- scene key -------------------------------- */
@@ -135,15 +136,20 @@ const day = (iso) => new Date(iso).toLocaleDateString("en-US", { month: "short",
  */
 export function revisitBlock(revisit) {
   if (!revisit || !("corrections" in revisit)) return "";
+  // Every stored string through recall.mjs bankText, as the phrase bank's
+  // block does: no square or curly brackets (a learner's words quoted in a
+  // correction could otherwise close this block and open a fake one), no
+  // angle brackets, one line.
+  const t = (s) => bankText(s, CARRY.summary);
   const lines = [];
-  if (revisit.summary) lines.push(`Summary: ${revisit.summary}`);
+  if (revisit.summary) lines.push(`Summary: ${t(revisit.summary)}`);
   if (revisit.corrections.length) {
     lines.push("Corrections from that session (what the learner said → a better way):");
-    for (const c of revisit.corrections) lines.push(`- ${c.said} → ${c.better}`);
+    for (const c of revisit.corrections) lines.push(`- ${t(c.said)} → ${t(c.better)}`);
   }
   if (revisit.kept.length) {
     lines.push("Phrases worth keeping from it:");
-    for (const k of revisit.kept) lines.push(`- ${k.text}${k.meaning ? ` — ${k.meaning}` : ""}`);
+    for (const k of revisit.kept) lines.push(`- ${t(k.text)}${k.meaning ? ` — ${t(k.meaning)}` : ""}`);
   }
   if (!lines.length) return "";
   return [
@@ -158,7 +164,7 @@ export function revisitBlock(revisit) {
     "- Vary the details (names, prices, what goes wrong) so it is the same scene, not the same conversation.",
     "",
     REVISIT_OPEN,
-    ...lines.map(defang),
+    ...lines,
     REVISIT_CLOSE,
   ].join("\n");
 }
@@ -172,7 +178,7 @@ export function lastTimeSection(revisit) {
   if (!cs.length) return "";
   return [
     "LAST TIME'S CORRECTIONS (from the learner's previous session of this same scene; for each, judge whether this session shows it fixed):",
-    ...cs.map((c, i) => `${i + 1}. said "${defang(c.said)}", better "${defang(c.better)}"`),
+    ...cs.map((c, i) => `${i + 1}. said "${bankText(c.said, CARRY.text)}", better "${bankText(c.better, CARRY.text)}"`),
   ].join("\n");
 }
 
