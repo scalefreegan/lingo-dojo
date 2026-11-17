@@ -61,10 +61,12 @@ iconutil -c icns "$ICONSET" -o "$BUILD_DIR/$APP_NAME.app/Contents/Resources/appl
 # 3. identity in the bundle plist (osacompile leaves generic applet values)
 PLIST="$BUILD_DIR/$APP_NAME.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$PLIST"
-# the applet sends no Apple Events (only do shell script / curl / pkill), so
-# strip osacompile's generic "controls other applications" usage string rather
-# than leave a misleading permission-prompt description in the bundle
-/usr/libexec/PlistBuddy -c "Delete :NSAppleEventsUsageDescription" "$PLIST" 2>/dev/null || true
+# the applet sends Apple Events to Google Chrome (openDashboard focuses the
+# app's existing tab instead of opening a new one). macOS only shows the
+# Automation prompt for an app that carries a usage string; without one the
+# events are refused silently (-1743) and every click falls back to a new tab.
+/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string Lingo Dojo focuses the Chrome tab it already has open instead of opening a new one." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription Lingo Dojo focuses the Chrome tab it already has open instead of opening a new one." "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLE_ID" "$PLIST" 2>/dev/null \
