@@ -6,6 +6,7 @@ import {
   CONVERSATION_ID_RE, IDLE_END_MS, MAX_PAGE, MAX_TURN_PAGE, PAGE_SIZE, TURN_PAGE, conversationTitle, itemFromRow, planTurnWrite, readPage,
 } from "../../scripts/conversations.mjs";
 import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/db/accounts.ts";
+import { hiddenSet } from "../../scripts/db/hidden.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
@@ -445,7 +446,8 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     const keep = typeof body.drawn === "string" && body.drawn.length <= 200 ? body.drawn : null;
     // Recent scenes always go in: a kept scene ignores them, but one no
     // longer in the pool falls through to a fresh draw that must avoid them.
-    const draw = drawOrRefuse(library, target, random, { recent: await recentScenes(ctx.language), keep });
+    // The language's hidden scenes and collections are never drawn.
+    const draw = drawOrRefuse(library, target, random, { recent: await recentScenes(ctx.language), keep, hidden: await hiddenSet(rawDb(), ctx.language) });
     pack = withDrawnScene(sent, draw.scene.id);
     randomDraw = { collections: random.collections, pool: draw.pool.map((s) => s.id), drawn: draw.scene.id, ...(draw.kept ? { kept: true } : {}) };
   }

@@ -5,7 +5,7 @@ import PhraseBankView from "./PhraseBankView";
 import { clearBankRequest, onOpenBank, peekBankRequest } from "../bankLink";
 import { slugify, splitPackId, unitCount } from "../draft";
 import type { ContentReply, ConversationSummary, DeletedPack, Mode, Pack } from "../types";
-import { Badge, Button, FolderSelect, inputClass } from "./ui";
+import { Badge, Button, FolderSelect, TrashGlyph, inputClass } from "./ui";
 import type { PackActions } from "./shared";
 
 /** The small button style every row and header action here uses. */
@@ -87,11 +87,39 @@ function PacksView({
   onRestored,
   onStale,
   onPracticeAgain: _practiceAgain,
+  onDelete,
   ...row
 }: LibraryProps) {
   // null = closed; otherwise the name being typed.
   const [newFolder, setNewFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The last pack deleted here, for its Undo line. A delete is a revision
+  // (docs/DATA.md §Packs), so Undo is the undelete Recently deleted offers,
+  // of that pack's newest deletion.
+  const [undo, setUndo] = useState<{ id: string; title: string; state: "ready" | "busy" | "error"; error?: string } | null>(null);
+
+  async function remove(p: Pack): Promise<boolean> {
+    const ok = await onDelete(p.id);
+    setUndo(ok ? { id: p.id, title: p.title, state: "ready" } : null);
+    return ok;
+  }
+
+  async function undoDelete() {
+    if (!undo) return;
+    const { id, title } = undo;
+    setUndo({ id, title, state: "busy" });
+    try {
+      const { packs: gone } = await listDeletedPacks(mode);
+      const latest = gone.find((d) => d.pack.id === id);
+      if (!latest) throw new Error("it isn't in Recently deleted any more");
+      const r = await undeletePack(mode, latest.revision);
+      setUndo(null);
+      await onRestored(r.pack);
+    } catch (e) {
+      setUndo({ id, title, state: "error", error: e instanceof ApiError ? e.message : String((e as Error)?.message ?? e) });
+      if (e instanceof ApiError && e.status === 409) await onStale();
+    }
+  }
   // Every folder on disk plus any a pack names (one the list has not caught
   // up with yet): "No folder" first, the rest alphabetical.
   const names = [...new Set([...folders, ...packs.map((p) => p.folder).filter(Boolean)])].sort();
@@ -146,6 +174,24 @@ function PacksView({
         </div>
       </div>
 
+      {undo && (
+        <p role="status" className={`flex flex-wrap items-center gap-x-2 rounded-md bg-raised px-3 py-2 text-sm ${undo.state === "error" ? "text-err" : "text-fg-2"}`} data-testid="pack-deleted">
+          {undo.state === "error" ? (
+            <span>Couldn't undo: {undo.error}</span>
+          ) : (
+            <>
+              <span className="min-w-0 truncate">Deleted “{undo.title}”.</span>
+              <button type="button" className="font-medium text-accent hover:underline disabled:opacity-50" disabled={undo.state === "busy"} onClick={() => void undoDelete()} data-testid="pack-undo">
+                {undo.state === "busy" ? "Restoring…" : "Undo"}
+              </button>
+            </>
+          )}
+          <button type="button" className="ml-auto text-fg-3 hover:text-fg-2" aria-label="Dismiss" onClick={() => setUndo(null)}>
+            ×
+          </button>
+        </p>
+      )}
+
       {packs.length === 0 && names.length === 0 ? (
         <p className="text-sm text-fg-3">None yet. Save one on the Go tab to reopen it later.</p>
       ) : (
@@ -165,7 +211,7 @@ function PacksView({
                   </header>
                   <ul>
                     {g.packs.map((p) => (
-                      <PackRow key={p.id} pack={p} content={content} open={p.id === currentId} folders={names} {...row} />
+                      <PackRow key={p.id} pack={p} content={content} open={p.id === currentId} folders={names} {...row} onDelete={() => remove(p)} />
                     ))}
                   </ul>
                 </section>
@@ -278,11 +324,11 @@ function RecentlyDeleted({
   );
 }
 
-/** One saved pack: Load and Clone up front; Move, Rename and Delete behind a
- *  "…" toggle, since they change the pack. Delete is the one action that asks
- *  (window.confirm — the pack goes to Recently deleted). On a phone the
- *  three buttons sit on their own line under the title, so the title keeps
- *  its width and "…" stays a full-size target. */
+/** One saved pack: Load, Clone and a trash button up front; Move and
+ *  Rename behind a "…" toggle. Delete doesn't ask: the pack goes to
+ *  Recently deleted, and the list's "Deleted … Undo" line brings it straight
+ *  back. On a phone the buttons sit on their own line under the title, so
+ *  the title keeps its width and "…" stays a full-size target. */
 function PackRow({
   pack: p,
   content,
@@ -293,11 +339,12 @@ function PackRow({
   onMove,
   onRename,
   onDelete,
-}: Omit<PackActions, "onCreateFolder" | "onDeleteFolder"> & {
+}: Omit<PackActions, "onCreateFolder" | "onDeleteFolder" | "onDelete"> & {
   pack: Pack;
   content: ContentReply;
   open: boolean;
   folders: string[];
+  onDelete: () => Promise<boolean>;
 }) {
   const [mode, setMode] = useState<"closed" | "menu" | "rename">("closed");
   const [title, setTitle] = useState(p.title);
@@ -344,6 +391,17 @@ function PackRow({
           </Button>
           <Button
             variant="ghost"
+            className={`${small} min-w-10 justify-center text-fg-3 hover:text-err`}
+            aria-label={`Delete ${p.title}`}
+            title="Delete (Undo brings it back)"
+            disabled={busy}
+            onClick={() => void run(onDelete())}
+            data-testid="pack-delete"
+          >
+            <TrashGlyph />
+          </Button>
+          <Button
+            variant="ghost"
             className={`${small} min-w-10 justify-center`}
             aria-label={`More actions for ${p.title}`}
             aria-expanded={mode !== "closed"}
@@ -369,16 +427,6 @@ function PackRow({
             }}
           >
             Rename…
-          </Button>
-          <Button
-            variant="ghost"
-            className={`${small} text-err`}
-            disabled={busy}
-            onClick={() => {
-              if (window.confirm(`Delete "${p.title}" (${p.id})?\nIt moves to Recently deleted, below the list, where Restore brings it back.`)) void run(onDelete(p.id));
-            }}
-          >
-            Delete
           </Button>
         </div>
       )}

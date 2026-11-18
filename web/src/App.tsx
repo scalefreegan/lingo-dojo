@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getConversation, getVoiceSettings, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
-  updateLanguage,
+  ApiError, assemblePack, createFolder, deleteFolder, deletePack, getContent, getConversation, getVoiceSettings, hideScene, listHiddenScenes, listPacks, movePack, renamePack, savePack, saveProfile, saveVoiceSettings,
+  unhideScene, updateLanguage,
 } from "./api";
-import type { AssembleResult, AuthUser, ContentReply, ConversationSummary, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
+import type { AssembleResult, AuthUser, ContentReply, ConversationSummary, HiddenScene, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftPool, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
+  draftPool, draftPoolMessage, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
   rememberDraft, sessionValues, splitPackId, type Draft,
 } from "./draft";
-import { emptyPoolMessage } from "../shared/scenes.ts";
+import { hiddenSetOf, type HiddenKind } from "../shared/scenes.ts";
 import TopBar from "./components/TopBar";
 import SummaryBar from "./components/SummaryBar";
 import SceneTab from "./components/SceneTab";
@@ -166,6 +166,68 @@ export default function App({
     }
   }
 
+  // The library scenes and collections this language has hidden (docs/DATA.md
+  // §Hidden scenes): the Scene tab leaves them out, and the random pool
+  // here (the summary bar, Start) by the server's own rule. Until they
+  // load, nothing is hidden; a failed read leaves it so, since the server
+  // still applies the hides when it draws.
+  const [hiddenRows, setHiddenRows] = useState<HiddenScene[]>([]);
+  useEffect(() => {
+    let live = true;
+    listHiddenScenes().then(
+      (r) => live && setHiddenRows(r.hidden),
+      (e) => console.warn("[lingo-dojo] hidden scenes:", (e as Error).message),
+    );
+    return () => {
+      live = false;
+    };
+  }, [language.id]);
+  const hiddenScenes = useMemo(() => hiddenSetOf(hiddenRows), [hiddenRows]);
+
+  // Each key's hide/restore requests, one after another: a double click,
+  // or Undo before the hide's POST has answered, would otherwise send a POST
+  // and a DELETE at once, and whichever landed last on the server could
+  // disagree with what the tab shows. Chained, the server applies them in
+  // the order they were asked, the last one wins on both sides.
+  const hideQueue = useRef(new Map<string, Promise<unknown>>());
+
+  /** Hide or restore one scene or collection: shown at once, and run after
+   *  any earlier request for the same one. A refusal re-reads the list, so
+   *  the tab shows what the server holds (put back by hand if even that
+   *  fails). Resolves to an error sentence, or null; a stale page (409
+   *  stale_learner) is the gate's to handle (api.ts raises its re-pick), so
+   *  it says nothing here. */
+  async function setSceneHidden(kind: HiddenKind, key: string, hide: boolean): Promise<string | null> {
+    const same = (r: HiddenScene) => r.kind === kind && r.key === key;
+    const was = hiddenRows.find(same);
+    setHiddenRows((rows) => (hide ? [...rows.filter((r) => !same(r)), { kind, key, hiddenAt: was?.hiddenAt ?? new Date().toISOString() }] : rows.filter((r) => !same(r))));
+    const id = `${kind}:${key}`;
+    const run = async () => {
+      if (hide) {
+        const r = await hideScene(kind, key);
+        setHiddenRows((rows) => rows.map((x) => (same(x) ? r.hidden : x)));
+      } else {
+        await unhideScene(kind, key);
+      }
+    };
+    const op = (hideQueue.current.get(id) ?? Promise.resolve()).catch(() => undefined).then(run);
+    hideQueue.current.set(id, op);
+    try {
+      await op;
+      return null;
+    } catch (e) {
+      try {
+        setHiddenRows((await listHiddenScenes()).hidden);
+      } catch {
+        setHiddenRows((rows) => (hide ? rows.filter((r) => !same(r)) : was && !rows.some(same) ? [...rows, was] : rows));
+      }
+      if (e instanceof ApiError && e.code === "stale_learner") return null;
+      return e instanceof ApiError ? e.message : String(e);
+    } finally {
+      if (hideQueue.current.get(id) === op) hideQueue.current.delete(id);
+    }
+  }
+
   // The Go tab's "How long do you have?": the draft's own choice, else the
   // last one, which lives in this user's voice settings (the database) per mode.
   // Until (or unless) they load, the picker offers no lengths and the pack
@@ -242,10 +304,8 @@ export default function App({
   // A random scene's pool as the Scene tab counts it (null when the draft
   // isn't random): the summary bar shows its size, and an empty one blocks
   // Start with the card's message.
-  const randomPool = useMemo(() => (content && draft && draft.scenarioMode === "random" ? draftPool(content, draft) : null), [content, draft]);
-  const randomBlock = content && draft && randomPool && randomPool.length === 0
-    ? emptyPoolMessage({ collections: draft.randomCollections }, sessionValues(draft, content.profile).target_language)
-    : null;
+  const randomPool = useMemo(() => (content && draft && draft.scenarioMode === "random" ? draftPool(content, draft, hiddenScenes) : null), [content, draft, hiddenScenes]);
+  const randomBlock = content && draft && randomPool && randomPool.length === 0 ? draftPoolMessage(content, draft, hiddenScenes) : null;
 
   // The voice panel's languages, memoized so its settings fetch reruns only
   // when the target or native language actually changes.
@@ -372,6 +432,26 @@ export default function App({
     return null;
   }
 
+  /** The language menu's level: straight to the active language's profile
+   *  (like its goals and notes), then the library reloads so content.profile
+   *  has it, the draft drops a level override that would hide it, and the
+   *  gate re-reads the language for the pills. Resolves to an error
+   *  sentence, or null. */
+  async function saveLanguageLevel(level: string): Promise<string | null> {
+    try {
+      await updateLanguage(learner.id, language.id, { level });
+    } catch (e) {
+      return e instanceof ApiError ? e.message : String(e);
+    }
+    await reloadContent();
+    // An unsaved draft follows the new level. A loaded pack keeps its own
+    // (it was saved at that level; dropping it would lose it on the next
+    // save), and the menu says so.
+    setDraft((d) => (d && d.overrides.level && d.sourceId == null ? { ...d, overrides: { ...d.overrides, level: "" } } : d));
+    await onLearnerSaved();
+    return null;
+  }
+
   /** The active language's goals and notes, straight to its profile; then
    *  the library reloads (the Learner block reads them) and the gate
    *  re-reads the language. Resolves to an error sentence, or null. */
@@ -475,6 +555,8 @@ export default function App({
         onChange={setDraft}
         onSaveDefaults={saveDefaults}
         onSaveLanguageNotes={saveLanguageNotes}
+        onSaveLevel={saveLanguageLevel}
+        packLevel={draft && draft.sourceId != null && draft.overrides.level ? draft.overrides.level : null}
       />
       {switchError && (
         <p className="flex items-start justify-between gap-3 bg-err-soft px-4 py-2 text-sm text-err" role="alert" data-testid="switch-error">
@@ -500,7 +582,8 @@ export default function App({
         <main className="flex-1 p-4">
           <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : "max-w-3xl"}`}>
             {tab === "scene" && (
-              <SceneTab key={mode} languageId={language.id} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("customize")} />
+              <SceneTab key={mode} languageId={language.id} content={ready} draft={draft} hidden={hiddenScenes} hiddenRows={hiddenRows} onHide={setSceneHidden}
+                onChange={setDraft} onNext={() => setTab("customize")} />
             )}
             {tab === "customize" && <CustomizeTab key={mode} content={ready} draft={draft} onChange={setDraft} onNext={() => setTab("go")} />}
             {/* Go stays mounted while another tab is open, so a practice

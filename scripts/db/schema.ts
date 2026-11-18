@@ -802,3 +802,31 @@ export const recentDigests = pgTable(
     unique("recent_digests_profile_day").on(t.languageProfileId, t.day),
   ],
 );
+
+/* ------------------------------- hidden scenes ----------------------------- */
+
+/** A library scene or collection one language profile has hidden from its
+ *  Scene tab and its random draws (DATA.md §Hidden scenes, migration 0009).
+ *  The library is content shared by everyone, so hiding is a per-language
+ *  preference, not a file delete: unhiding deletes the row, hiding again
+ *  inserts it again. `key` is a scenario id (`kind = 'scenario'`) or a
+ *  collection name (`'collection'`, "" for the scenes in no collection), not
+ *  checked against the library, which can change under it. The primary key
+ *  is the unique (language, kind, key). The reader role (0005) gets nothing
+ *  on it. */
+export const hiddenScenes = pgTable(
+  "hidden_scenes",
+  {
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    kind: text("kind").$type<"scenario" | "collection">().notNull(),
+    key: text("key").notNull(),
+    hiddenAt: tz("hidden_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("hidden_scenes_kind", sql`${t.kind} in ('scenario', 'collection')`),
+    check("hidden_scenes_key_length", sql`char_length(${t.key}) <= 200`),
+    primaryKey({ name: "hidden_scenes_pk", columns: [t.languageProfileId, t.kind, t.key] }),
+    foreignKey({ name: "hidden_scenes_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+  ],
+);

@@ -1251,3 +1251,33 @@ export interface PhraseReply {
 export interface PhraseLookupReply {
   phrase: PhraseSummary | null;
 }
+
+/* ------------------------------ hidden scenes ----------------------------- */
+
+/** A library scene or collection the active language has hidden
+ *  (docs/DATA.md §Hidden scenes): `key` is a scenario id, or a collection
+ *  name ("" for the scenes in no collection). */
+export interface HiddenScene {
+  kind: "scenario" | "collection";
+  key: string;
+  /** ISO time it was hidden. */
+  hiddenAt: string;
+}
+
+/** GET /api/hidden-scenes: the active language's hides, oldest first. */
+export interface HiddenScenesReply {
+  hidden: HiddenScene[];
+}
+
+/** POST /api/hidden-scenes {kind, key}: the hide as it stands; `created`
+ *  false when it was hidden already. */
+export interface HiddenSceneReply {
+  hidden: HiddenScene;
+  created: boolean;
+}
+
+/** DELETE /api/hidden-scenes {kind, key}: `unhidden` false when it wasn't
+ *  hidden (nothing to do, still a 200). */
+export interface UnhideSceneReply {
+  unhidden: boolean;
+}

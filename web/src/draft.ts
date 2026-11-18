@@ -7,7 +7,7 @@ import type { ContentReply, Language, LanguageInfo, Pack, PackInput, PickerKey, 
 // The one rule for which scenes fit a language, shared with the assembler
 // and the server's draw (a runtime import, so spelled with its extension:
 // the draft tests run this file under Node).
-import { foreignLanguage, randomPool } from "../shared/scenes.ts";
+import { NOTHING_HIDDEN, emptiedByHides, emptyPoolMessage, foreignLanguage, randomPool, type HiddenSet } from "../shared/scenes.ts";
 
 export { foreignLanguage };
 
@@ -335,12 +335,21 @@ export function packToDraft(pack: Pack): Draft {
 
 /** The random scene's pool as the draft stands (the Scene tab's count, the
  *  summary bar, Start): the scenes that fit the session's target language,
- *  narrowed to the chosen collections. The server draws from the same
- *  pool (web/shared/scenes.ts). Empty for a draft that isn't random. */
-export function draftPool(content: ContentReply, draft: Draft): Scenario[] {
+ *  narrowed to the chosen collections, without the language's hidden
+ *  scenes. The server draws from the same pool (web/shared/scenes.ts).
+ *  Empty for a draft that isn't random. */
+export function draftPool(content: ContentReply, draft: Draft, hidden: HiddenSet = NOTHING_HIDDEN): Scenario[] {
   if (draft.scenarioMode !== "random") return [];
   const target = sessionValues(draft, content.profile).target_language;
-  return randomPool(content.scenarios, content.languages, target, { collections: draft.randomCollections });
+  return randomPool(content.scenarios, content.languages, target, { collections: draft.randomCollections }, hidden);
+}
+
+/** What an empty pool says for this draft (the server's words for the same
+ *  case): that hides emptied it, when they did. */
+export function draftPoolMessage(content: ContentReply, draft: Draft, hidden: HiddenSet = NOTHING_HIDDEN): string {
+  const target = sessionValues(draft, content.profile).target_language;
+  const random = { collections: draft.randomCollections };
+  return emptyPoolMessage(random, target, emptiedByHides(content.scenarios, content.languages, target, random, hidden));
 }
 
 /** Choose or drop one collection in the Random card's pool, keeping the

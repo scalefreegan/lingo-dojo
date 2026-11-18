@@ -44,6 +44,8 @@ export default function TopBar({
   onChange,
   onSaveDefaults,
   onSaveLanguageNotes,
+  onSaveLevel,
+  packLevel,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
@@ -67,11 +69,18 @@ export default function TopBar({
   onChange: (d: Draft) => void;
   onSaveDefaults: (values: ProfileRequest) => Promise<string | null>;
   onSaveLanguageNotes: (values: { goals: string; notes: string }) => Promise<string | null>;
+  /** The language menu's level, saved to the active language. */
+  onSaveLevel: (level: string) => Promise<string | null>;
+  /** The loaded pack's own level, when it sets one (it overrides the language's). */
+  packLevel: string | null;
 }) {
   return (
     // On a phone everything is a little tighter, so the Kids tag still
-    // leaves room for all three tabs (Go was pushed out of sight).
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line bg-panel/90 px-3 backdrop-blur sm:gap-2 sm:px-4 sm:pr-10">
+    // leaves room for all three tabs (Go was pushed out of sight). The blur
+    // is from `sm` up only: a backdrop-filter makes the header the box its
+    // fixed children are placed in, and the language and profile menus are
+    // fixed bottom sheets on a phone, which it squeezed into the bar.
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line bg-panel px-3 sm:gap-2 sm:bg-panel/90 sm:backdrop-blur sm:px-4 sm:pr-10">
       <h1 className="flex shrink-0 items-center gap-1 text-lg font-semibold text-fg sm:mr-1 sm:gap-1.5">
         <Mochi size={30} />
         {/* Kids mode's tag takes the room the name needs below lg, where
@@ -92,7 +101,7 @@ export default function TopBar({
       </nav>
       <div className="ml-auto flex h-full shrink-0 items-center gap-1">
         {content && (
-          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} defaultLevel={content.defaultLevel} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} />
+          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} defaultLevel={content.defaultLevel} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} onSaveLevel={onSaveLevel} packLevel={packLevel} />
         )}
         {content && draft && (
           <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}

@@ -47,6 +47,73 @@ export function foreignLanguage(items: readonly Scenario[], languages: readonly 
   return languages.find((l) => l.code === first)?.name ?? first;
 }
 
+/* ------------------------------ hidden scenes ----------------------------- */
+
+// A language profile can hide library scenes and whole collections it will
+// never use (docs/DATA.md §Hidden scenes): the Scene tab stops listing them
+// and a random draw stops picking them. A pack that names a hidden scene
+// still plays it; hiding is a preference about what is shown, not a delete.
+
+export type HiddenKind = "scenario" | "collection";
+/** A hidden thing as the API names it: a scenario id, or a collection name
+ *  ("" for the scenes in no collection, as collectionKey gives it). */
+export interface HiddenRef {
+  kind: HiddenKind;
+  key: string;
+}
+/** What is hidden, as two lists (the scenario ids, the collection names). */
+export interface HiddenSet {
+  scenarios: readonly string[];
+  collections: readonly string[];
+}
+
+/** The longest key a hide may name: scenario ids and collection names are
+ *  far shorter, and the table checks the same bound. */
+export const MAX_HIDDEN_KEY = 200;
+/** How many hides one language may hold: far above any real library, a
+ *  bound on what a page can make the table store. */
+export const MAX_HIDDEN_PER_LANGUAGE = 500;
+
+export const NOTHING_HIDDEN: HiddenSet = { scenarios: [], collections: [] };
+
+/** A request's `{kind, key}` → the value, or why it is malformed. The key is
+ *  kept exactly (it must match the library's id or name, which the loader
+ *  trims, so leading or trailing spaces are refused rather than stored
+ *  where nothing matches them); an unknown one is allowed, since the
+ *  library can change under a stored hide. */
+export function readHiddenRef(v: unknown): { value: HiddenRef } | { error: string } {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return { error: "body must be {kind, key}" };
+  const { kind, key } = v as Record<string, unknown>;
+  if (kind !== "scenario" && kind !== "collection") return { error: "kind must be \"scenario\" or \"collection\"" };
+  if (typeof key !== "string") return { error: "key must be a string: a scenario id or a collection name" };
+  if (kind === "scenario" && !key.trim()) return { error: "a scenario's key is its id, which can't be empty" };
+  if (key !== key.trim()) return { error: "key can't start or end with spaces: it must match the library's id or name exactly" };
+  if (key.length > MAX_HIDDEN_KEY) return { error: `key is too long (at most ${MAX_HIDDEN_KEY} characters)` };
+  if (key.includes("\u0000")) return { error: "key can't contain a NUL character (\\u0000)" };
+  return { value: { kind, key } };
+}
+
+/** The rows' two lists. */
+export function hiddenSetOf(rows: readonly HiddenRef[]): HiddenSet {
+  return {
+    scenarios: rows.filter((r) => r.kind === "scenario").map((r) => r.key),
+    collections: rows.filter((r) => r.kind === "collection").map((r) => r.key),
+  };
+}
+
+/** Whether a scenario is hidden: itself, or its whole collection. */
+export function isHiddenScene(s: Pick<Scenario, "id" | "collection">, hidden: HiddenSet): boolean {
+  return hidden.scenarios.includes(s.id) || hidden.collections.includes(collectionKey(s));
+}
+
+/** The scenarios that aren't hidden, in library order; `keep` (the Scene
+ *  tab's selected scene) stays even when hidden, so a draft never points
+ *  at something the list no longer shows. */
+export function visibleScenes<S extends Pick<Scenario, "id" | "collection">>(scenarios: readonly S[], hidden: HiddenSet, keep?: string | null): S[] {
+  if (!hidden.scenarios.length && !hidden.collections.length) return [...scenarios];
+  return scenarios.filter((s) => s.id === keep || !isHiddenScene(s, hidden));
+}
+
 /* ------------------------------ random scene ------------------------------ */
 
 /** A random scene's pool may name this many collections, each at most this
@@ -102,14 +169,19 @@ export function readRandomScene(v: unknown): { value: RandomScene | null } | { e
  * any scene: a learner asking for a random scene wants a conversation, not
  * a word drill. A pool of nothing but drills (a random pack over the First
  * steps collection) keeps them, so it still draws.
+ *
+ * Hidden scenes (`hidden`: the language profile's hides, isHiddenScene) are
+ * never in the pool, whether hidden one by one or by their collection, and
+ * a collection the pool names that is hidden adds nothing.
  */
 export function randomPool<S extends Pick<Scenario, "id" | "language" | "collection"> & { format?: Scenario["format"] }>(
   scenarios: readonly S[],
   languages: readonly Language[],
   target: string,
   random: RandomScene,
+  hidden: HiddenSet = NOTHING_HIDDEN,
 ): S[] {
-  const fit = scenarios.filter((s) => fitsTarget(s, languages, target));
+  const fit = scenarios.filter((s) => fitsTarget(s, languages, target) && !isHiddenScene(s, hidden));
   const named = new Set(random.collections);
   const pool = random.collections.length ? fit.filter((s) => named.has(collectionKey(s))) : fit;
   const scenes = pool.filter((s) => s.format !== "drill");
@@ -148,18 +220,19 @@ export function drawScene<S extends Pick<Scenario, "id">>(pool: readonly S[], re
 }
 
 /**
- * A random scene's draw, start to end: the pool (randomPool), then either
- * `keep` (a scene this session drew already, kept while it is still in the
- * pool) or a fresh draw (drawScene). Null for an empty pool.
+ * A random scene's draw, start to end: the pool (randomPool, without the
+ * hidden scenes), then either `keep` (a scene this session drew already,
+ * kept while it is still in the pool: one hidden since is drawn afresh) or
+ * a fresh draw (drawScene). Null for an empty pool.
  */
 export function drawRandomScene<S extends Pick<Scenario, "id" | "language" | "collection"> & { format?: Scenario["format"] }>(
   scenarios: readonly S[],
   languages: readonly Language[],
   target: string,
   random: RandomScene,
-  { recent = [], keep, rand }: { recent?: readonly (string | null)[]; keep?: string | null; rand: () => number },
+  { recent = [], keep, rand, hidden = NOTHING_HIDDEN }: { recent?: readonly (string | null)[]; keep?: string | null; rand: () => number; hidden?: HiddenSet },
 ): { scene: S; pool: S[]; kept: boolean } | null {
-  const pool = randomPool(scenarios, languages, target, random);
+  const pool = randomPool(scenarios, languages, target, random, hidden);
   const held = keep ? pool.find((s) => s.id === keep) : undefined;
   if (held) return { scene: held, pool, kept: true };
   const scene = drawScene(pool, recent, rand);
@@ -192,10 +265,28 @@ export function unsavedTurnPack<P extends { scenario: string; quick_scenario: st
 /** "1 scene" / "12 scenes". */
 export const scenesWord = (n: number) => `${n} scene${n === 1 ? "" : "s"}`;
 
+/** Whether a pool is empty only because of hides: without them it would
+ *  have a scene. emptyPoolMessage then says so. */
+export function emptiedByHides<S extends Pick<Scenario, "id" | "language" | "collection"> & { format?: Scenario["format"] }>(
+  scenarios: readonly S[],
+  languages: readonly Language[],
+  target: string,
+  random: RandomScene,
+  hidden: HiddenSet,
+): boolean {
+  return randomPool(scenarios, languages, target, random, hidden).length === 0 && randomPool(scenarios, languages, target, random).length > 0;
+}
+
 /** What an empty pool says, wherever it is caught (the Scene tab's card,
- *  Start, an export). */
-export function emptyPoolMessage(random: RandomScene, target: string): string {
+ *  Start, an export). `byHides` (emptiedByHides): only hidden scenes would
+ *  fit, so the way out is restoring some. */
+export function emptyPoolMessage(random: RandomScene, target: string, byHides = false): string {
   const fit = target ? `that fit ${target}` : "that fit the target language";
+  if (byHides) {
+    return random.collections.length
+      ? `The random scene's pool is empty: every scene ${fit} in the chosen collections is hidden. Restore some from "hidden" at the bottom of the Scene tab, or choose other collections.`
+      : `The random scene's pool is empty: every scene ${fit} is hidden. Restore some from "hidden" at the bottom of the Scene tab, or pick a scene instead.`;
+  }
   return random.collections.length
     ? `The random scene's pool is empty: none of the chosen collections has scenes ${fit}. Choose other collections, or none for every scene.`
     : `The random scene's pool is empty: the library has no scenes ${fit}. Pick a scene instead.`;

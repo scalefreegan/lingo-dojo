@@ -72,6 +72,13 @@ briefing in every turn's system prompt and a `vsLast` comparison in the
 recap); `/api/conversations/scenes` and `/overview` (the 7-day card and a
 digest written by one tool-less call per language per day, capped by
 `recent_digests`' unique day row).
+Hidden scenes (migration 0009, docs/DATA.md §Hidden scenes): a language
+profile may hide library scenes and collections (`hidden_scenes`, one row
+per (profile, kind, key), unhide deletes it; queries only in
+`scripts/db/hidden.ts`, routes `/api/hidden-scenes` in `web/server/hidden.ts`);
+`isHiddenScene` in `web/shared/scenes.ts` leaves them out of the Scene tab
+and of every random draw (`randomPool`'s `hidden`), never out of a pack
+that names one.
 First steps drills (docs/CONTENT.md §Drills; no migration): a scenario with
 `format: drill` is the narrator alone drilling words, played under
 `frame-drill.md` with the schema's `scene_only` slots skipped, rounds as its

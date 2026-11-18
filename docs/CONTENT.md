@@ -321,7 +321,9 @@ drawn when a session starts. The **pool** is every scenario of the mode's
 library that fits the learner's target language (the same rule that dims a
 scene on the Scene tab: `fitsTarget` in `web/shared/scenes.ts`), narrowed
 to the named collections when there are any (`""` names the scenes in no
-collection). A collection the library no longer has is ignored; if nothing
+collection), without the scenes and collections the learner's language has
+hidden on the Scene tab (docs/DATA.md §Hidden scenes; the CLI export has no
+learner, so hides nothing). A collection the library no longer has is ignored; if nothing
 is left the pool is empty, which is an error (the Scene tab says why and
 Start is blocked), never a silent fallback to another scene. The pool never
 crosses libraries: a kids pack draws only kids scenes. At most 50 names of
