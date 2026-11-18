@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
@@ -639,10 +640,14 @@ export async function systemVoicesFor(locale: string): Promise<VoiceChoice[]> {
  *  looked up per line, which must not mean a list call per line, but a
  *  voice removed from the account should stop being picked within the hour. */
 const VOICE_LIST_TTL_MS = 60 * 60_000;
-/** The raw voice list per paid provider (ElevenLabs: the whole account's;
- *  Azure: every voice of the region), shared by every user and locale. A
- *  failed fetch is dropped, so the next line asks again. */
-const voiceLists = new Map<"elevenlabs" | "azure", { at: number; json: Promise<unknown> }>();
+/** A failed list fetch is kept this long, so an outage (or a bad key) costs
+ *  one list call per half minute, not one per tapped sound. */
+const VOICE_LIST_FAIL_MS = 30_000;
+/** The raw voice list per paid provider and key (ElevenLabs: the whole
+ *  account's; Azure: every voice of the region), shared by every user and
+ *  locale. Keyed by a hash of the key too, so a key rotated in .env.local
+ *  never serves the old account's voice ids. */
+const voiceLists = new Map<string, { at: number; ttl: number; json: Promise<unknown> }>();
 
 /** Forget the cached voice lists (tests stub a provider per case). */
 export function clearVoiceLists(): void {
@@ -652,14 +657,16 @@ export function clearVoiceLists(): void {
 async function providerVoices(provider: TtsProvider, locale: string): Promise<VoiceChoice[]> {
   if (provider === "system") return systemVoicesFor(locale);
   const keys = keysFor(provider);
-  let held = voiceLists.get(provider);
-  if (!held || Date.now() - held.at > VOICE_LIST_TTL_MS) {
+  const secret = provider === "elevenlabs" ? keys.elevenlabs : `${keys.azureRegion}\u0001${keys.azureKey}`;
+  const id = `${provider}:${createHash("sha256").update(String(secret)).digest("hex").slice(0, 16)}`;
+  let held = voiceLists.get(id);
+  if (!held || Date.now() - held.at > held.ttl) {
     const request = provider === "elevenlabs" ? elevenVoicesRequest({ key: keys.elevenlabs }) : azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion });
     const json = call(provider, request).then((r) => r.json() as Promise<unknown>);
-    const entry = { at: Date.now(), json };
-    voiceLists.set(provider, entry);
+    const entry = { at: Date.now(), ttl: VOICE_LIST_TTL_MS, json };
+    voiceLists.set(id, entry);
     json.catch(() => {
-      if (voiceLists.get(provider) === entry) voiceLists.delete(provider);
+      entry.ttl = VOICE_LIST_FAIL_MS;
     });
     held = entry;
   }
@@ -717,10 +724,13 @@ export async function voiceReady(settings: VoiceSettings, locale: string): Promi
 
 /** What /api/voice/sound will say: at most this many characters (one
  *  character, an exemplar, or 媽媽 for the neutral tone), every one a Han
- *  character or a zhuyin symbol or tone mark. Keeps the route a card's
- *  sounds, not a general text-to-speech cache on the owner's credits. */
+ *  character. Zhuyin and tone marks are heard through exemplar characters
+ *  (web/src/script/sounds.ts), never sent: a voice reading a bare symbol
+ *  says its name or nothing, and that would be paid for and cached. Keeps
+ *  the route a card's sounds, not a general text-to-speech cache on the
+ *  owner's credits. */
 export const MAX_SOUND_CHARS = 4;
-const SOUND_RE = /^[\p{Script=Han}ㄅ-ㄩˉˊˇˋ˙]+$/u;
+const SOUND_RE = /^\p{Script=Han}+$/u;
 
 /**
  * POST /api/voice/sound {text, locale} → the sound of a character or zhuyin
@@ -738,7 +748,7 @@ export async function handleVoiceSound(req: IncomingMessage, res: ServerResponse
   const body = await readJsonBody<Partial<VoiceSoundRequest>>(req);
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text || [...text].length > MAX_SOUND_CHARS || !SOUND_RE.test(text)) {
-    throw new HttpError(400, `a sound is 1 to ${MAX_SOUND_CHARS} Chinese characters or zhuyin symbols`);
+    throw new HttpError(400, `a sound is 1 to ${MAX_SOUND_CHARS} Chinese characters`);
   }
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");

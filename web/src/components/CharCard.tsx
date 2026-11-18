@@ -524,7 +524,7 @@ function Reading({ reading, primary, ch, locale, kids, zh, sound }: { reading: s
           className={`ld-sound ${kids ? "text-2xl" : "text-base"}`}
           style={{ borderBottom: 0 }}
           disabled={!said}
-          aria-busy={sound.busy === said}
+          aria-busy={said != null && sound.busy === said}
           aria-label={said ? `Hear ${reading}${primary ? "" : `, as in ${said}`}` : `Can't play ${reading} on its own`}
           title={
             said === null

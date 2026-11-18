@@ -185,7 +185,7 @@ export function assemble(content, rawPack, options = "adult") {
     // without a word, a required one's absence too: every pack keeps them
     // (Customize's defaults), so a warning would fire on every drill.
     if (drill && slot.scene_only) continue;
-    let chosen =picked.filter((id) => unitsById.get(id).slot === slot.id).map((id) => unitsById.get(id));
+    let chosen = picked.filter((id) => unitsById.get(id).slot === slot.id).map((id) => unitsById.get(id));
     // Nothing to review: a unit that is only a frame around the review list
     // has nothing to say, so it goes, and its slot with it when empty (an
     // optional slot; a required one would show its placeholder line).

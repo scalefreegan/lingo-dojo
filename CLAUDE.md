@@ -130,7 +130,7 @@ the `First steps` collections and the adult `Pre-A1` level (opt-in) go with it.
   With no voice saved, a line outside a session speaks in the provider's
   default (`defaultVoice`: an ElevenLabs premade voice, else the locale's
   first), never a "pick a voice" 400. The character card's sounds go through
-  `POST /api/voice/sound` (1–4 Han or zhuyin only, disk-cached per user;
+  `POST /api/voice/sound` (1–4 Han characters only, disk-cached per user;
   exemplar tables in `web/src/script/sounds.ts`); docs/VOICE.md §Character sounds.
 - Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated
   SQL in `scripts/db/migrations/` (commit it; edit the schema, then

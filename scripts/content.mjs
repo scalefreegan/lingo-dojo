@@ -76,7 +76,7 @@ export const LEVELS_BY_MODE = {
  *  for adults: Pre-A1 is opt-in, so a new adult starts at A1 as before. */
 export const DEFAULT_LEVEL_BY_MODE = { adult: "A1", kids: "First words" };
 
-/** A scenario's `format`:a scene (the default: a character in a setting)
+/** A scenario's `format`: a scene (the default: a character in a setting)
  *  or a drill (First steps: the narrator alone drills words, no character;
  *  frame-drill.md instead of frame.md, and the scene-only slots skipped). */
 export const SCENARIO_FORMATS = ["scene", "drill"];

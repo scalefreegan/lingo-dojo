@@ -508,8 +508,8 @@ phrase audio and `/api/voice/sound`):
   sound is a 400 (that audio would be cached).
 
 The provider's voice list is read once per server process (an hour at most
-for the paid ones; a failed read is retried on the next line), never once
-per line. The default only stands in for "no voice saved": a provider
+for the paid ones, keyed by provider and a hash of its key; a failed read
+is kept for 30 seconds), never once per line. The default only stands in for "no voice saved": a provider
 without its keys is still the 400 that says which keys to add. The Practice
 tab's setup check (`voiceReady`) asks no provider: it reports a missing key
 or a missing macOS voice, never "no voice picked".
@@ -522,8 +522,8 @@ The character card (`web/src/components/CharCard.tsx`) plays sounds through
 button per reading, each pinyin initial and final, each zhuyin symbol and
 tone mark, and the sound chart (`SoundChart.tsx`: the 37 zhuyin symbols as
 initials, medials and finals, and the five tones). The route only takes 1
-to 4 Han characters or zhuyin symbols and tone marks (400 otherwise, before
-any provider call), so it can't serve as a general text-to-speech cache on
+to 4 Han characters (400 otherwise, before any provider call; zhuyin and
+tone marks are heard through exemplar characters, never sent), so it can't serve as a general text-to-speech cache on
 the owner's credits. It speaks in the narrator's voice for the locale as
 above, through the phrase audio's disk cache (`audioKey`/`cachedAudio`,
 keyed per user; `paidSlot`; `Cache-Control: private, no-store`): the same

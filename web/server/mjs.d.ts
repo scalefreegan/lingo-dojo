@@ -185,7 +185,7 @@ declare module "*/scripts/voice.mjs" {
     voices: { id: string; gender: string; match: boolean; premade?: boolean }[],
     gender?: "female" | "male" | null,
   ): string;
-  export function replayCastNotes(raw: unknown):{ slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
+  export function replayCastNotes(raw: unknown): { slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
   export function castFallbacks(
     own: { id: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[],
     slots: string[],

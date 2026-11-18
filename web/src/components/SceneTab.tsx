@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ContentReply, Scenario } from "../types";
 import { draftPool, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
-import { collectionKey, emptyPoolMessage, fitsTarget, missingCollections, scenesWord } from "../../shared/scenes.ts";
+import { collectionKey, emptyPoolMessage, missingCollections, randomPool, scenesWord } from "../../shared/scenes.ts";
 import { Button, Chevron, inputClass } from "./ui";
 
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
@@ -132,11 +132,16 @@ export default function SceneTab({
       .map(([key, items]) => ({
         key,
         name: key || OTHER_SCENES,
-        fit: items.filter((s) => fitsTarget(s, content.languages, target)).length,
+        // What the collection alone would draw from, by randomPool's own rule,
+        // so a First steps folder counts its drills and a mixed one doesn't.
+        fit: randomPool(items, content.languages, target, { collections: [] }).length,
         foreign: foreignLanguage(items, content.languages, target),
       }))
       .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
   }, [scenarios, content.languages, target]);
+  // "Every scene that fits" is the whole library's pool, drills left out
+  // as the draw leaves them out.
+  const poolAll = useMemo(() => randomPool(scenarios, content.languages, target, { collections: [] }).length, [scenarios, content.languages, target]);
   const missing = random ? missingCollections(scenarios, { collections: draft.randomCollections }) : [];
 
   const filtering = needle !== "" || category !== "";
@@ -226,6 +231,7 @@ export default function SceneTab({
               <RandomSceneCard
                 selected={random}
                 choices={poolChoices}
+                allSize={poolAll}
                 chosen={draft.randomCollections}
                 poolSize={pool.length}
                 missing={missing}
@@ -442,6 +448,7 @@ function LocationField({ value, variant, onChange, note }: { value: string; vari
 function RandomSceneCard({
   selected,
   choices,
+  allSize,
   chosen,
   poolSize,
   missing,
@@ -453,6 +460,8 @@ function RandomSceneCard({
 }: {
   selected: boolean;
   choices: { key: string; name: string; fit: number; foreign: string | null }[];
+  /** The whole library's pool size (randomPool with no collections). */
+  allSize: number;
   chosen: string[];
   poolSize: number;
   missing: string[];
@@ -482,7 +491,7 @@ function RandomSceneCard({
             Your units, length and notes stay as they are; a scene from the pool is drawn when the session starts, not one of your last few.
           </p>
           <div className="flex flex-wrap gap-1.5" role="group" aria-label="Random scene pool" data-testid="random-pool">
-            <Chip label="Every scene that fits" count={choices.reduce((n, c) => n + c.fit, 0)} active={chosen.length === 0} onClick={onAll} testId="random-pool-all" />
+            <Chip label="Every scene that fits" count={allSize} active={chosen.length === 0} onClick={onAll} testId="random-pool-all" />
             {choices.map((c) => {
               const on = chosen.includes(c.key);
               return (

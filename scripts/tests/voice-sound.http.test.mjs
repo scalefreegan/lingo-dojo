@@ -1,7 +1,7 @@
 // The character card's sounds end to end (web/server/voice.ts
 // handleVoiceSound, ld-6c8) and the default voice when none is saved
-// (ld-zxn): /api/voice/sound takes only a few Han characters or zhuyin
-// symbols, needs a session and the page's learner, speaks in the narrator's
+// (ld-zxn): /api/voice/sound takes only a few Han characters (zhuyin is
+// heard through example characters, never sent), needs a session and the page's learner, speaks in the narrator's
 // voice (or the provider's default) and is served from the on-disk audio
 // cache after the first time; /api/voice/speak with every slot Random
 // speaks in the default voice too. The real plugin on an in-process PGlite,
@@ -100,13 +100,13 @@ test("a sound needs a session, and the page's own learner", async () => {
   assert.equal(synths.filter((s) => s.text === "行").length, 0, "nothing said for any of them");
 });
 
-test("only 1 to 4 Han characters or zhuyin symbols: anything else is a 400, before any provider call", async () => {
+test("only 1 to 4 Han characters: anything else is a 400, before any provider call", async () => {
   const sam = await someone();
   const before = synths.length;
-  for (const bad of ["", "   ", "行行行行行", "hello", "行a", "ㄅ ㄆ", "ni3", "你好！", "😀", "ㄅㄆㄇㄈㄉ", "1"]) {
+  for (const bad of ["", "   ", "行行行行行", "hello", "行a", "ㄅ ㄆ", "ni3", "你好！", "😀", "ㄅㄆㄇㄈㄉ", "1", "ㄇㄚˇ", "ㄅ", "ˊ"]) {
     const r = await sound(sam, bad);
     assert.equal(r.status, 400, JSON.stringify(bad));
-    assert.match(r.body.error, /1 to 4 Chinese characters or zhuyin/);
+    assert.match(r.body.error, /1 to 4 Chinese characters/);
   }
   for (const body of [{}, { text: 7, locale: "zh-TW" }, { text: ["行"], locale: "zh-TW" }]) {
     assert.equal((await sam.call("POST", "/api/voice/sound", body)).status, 400, JSON.stringify(body));
@@ -115,8 +115,8 @@ test("only 1 to 4 Han characters or zhuyin symbols: anything else is a 400, befo
   assert.equal((await sam.call("GET", "/api/voice/sound")).status, 405);
   assert.equal((await sam.call("POST", "/api/voice/sound/x", { text: "行", locale: "zh-TW" })).status, 404);
   assert.equal(synths.length, before);
-  // Within the limits: a character, four, a zhuyin syllable with its tone.
-  for (const ok of ["行", "媽媽", "一二三四", "ㄇㄚˇ", "ㄅ", "˙ㄇㄚ"]) {
+  // Within the limits: a character, the neutral tone's 媽媽, four.
+  for (const ok of ["行", "媽媽", "一二三四"]) {
     const r = await sound(sam, ok);
     assert.equal(r.status, 200, `${ok}: ${r.text}`);
   }
