@@ -20,10 +20,13 @@
 // data/pronunciation-proof/ (gitignored; LINGO_PROOF_DIR overrides), so a
 // rerun costs nothing.
 //
-// Your own recordings: put audio files and a labels.tsv in
-// data/pronunciation-proof/recordings/ (see "Real recordings" in the
-// report, or RECORDINGS_HELP below); they are scored on every run and never
-// leave this machine.
+// Your own recordings: `npm run pron:record` (scripts/pronunciation-record.mjs)
+// records them into data/pronunciation-proof/recordings/ with a labels.tsv
+// (see "Real recordings" in the report, or RECORDINGS_HELP below); they are
+// scored on every run and never leave this machine. Their results are a
+// person's, so they are printed and written to recordings/report.md
+// (gitignored), never into the tracked report. --recordings
+// (`npm run pron:proof`) scores only them and leaves the report alone.
 //
 // Until there are learner recordings to test on, the samples are
 // synthesized, and each clip is used twice over: scored against its own
@@ -37,9 +40,10 @@ import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
-  AZURE_RULES, FALLBACK_TRUST, TONE_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parsePinyin, parseWav, scoreTones, scribeCharTimings, speakerRange,
+  AZURE_RULES, FALLBACK_TRUST, TONE_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
   trackPitch, withTone,
 } from "./pronunciation.mjs";
+import { PHRASES, SINGLES, parseLabels, saidTones as readSaid, speakerTable, speakerTally } from "./pronunciation-recordings.mjs";
 import { DEFAULT_ELEVEN_MODEL, elevenLibrary, elevenLibraryRequest, elevenSpeechRequest,elevenVoices, elevenVoicesRequest, voiceKeys } from "./voice.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -52,12 +56,12 @@ const LOCALE = "zh-CN";
 // LINGO_PROOF_RULES='{"sigmaSt":1.2}'. The report prints what it ran with.
 const RULES = { ...TONE_RULES, ...JSON.parse(process.env.LINGO_PROOF_RULES || "{}") };
 
-// ma / shi / yi / ba in each tone: sixteen single syllables.
-const SINGLES = [..."妈麻马骂诗十使是衣姨椅意八拔把爸"];
-// Short phrases, the connected-speech rules among them: third-tone sandhi
-// (你好, 很好, 我很好, 我想喝水), 不 (不是, 不客气, 他不来), 一 (一个, 一起去),
-// the half third (我是学生, 很热), the neutral tone (谢谢, 什么).
-const PHRASES = ["你好", "不是", "一个", "很好", "谢谢", "我很好", "不客气", "一起去", "你叫什么", "我想喝水", "明天见", "今天很热", "我是学生", "他不来", "再见"];
+// SINGLES and PHRASES (pronunciation-recordings.mjs, shared with the
+// recorder's prompt list): ma / shi / yi / ba in each tone, sixteen single
+// syllables; and short phrases, the connected-speech rules among them:
+// third-tone sandhi (你好, 很好, 我很好, 我想喝水), 不 (不是, 不客气, 他不来),
+// 一 (一个, 一起去), the half third (我是学生, 很热), the neutral tone
+// (谢谢, 什么).
 
 // macOS voices are free and local; a classic synthesizer, so its tones are
 // textbook. Two, one of each sex, where installed.
@@ -544,7 +548,7 @@ function tune(group) {
   return best;
 }
 let heldOut = null;
-if (voices.length === 4 && !process.env.LINGO_PROOF_RULES && !args.has("--quick")) {
+if (voices.length === 4 && !process.env.LINGO_PROOF_RULES && !args.has("--quick") && !args.has("--recordings")) {
   // One macOS and one ElevenLabs voice, one of each sex, on each side.
   const order = ["say-tingting", "eleven-pNInz6obpgDQGcFmaJgB", "say-reed", "eleven-21m00Tcm4TlvDq8ikWAM"].map((id) => voices.find((v) => v.id === id));
   if (order.every(Boolean)) {
@@ -564,31 +568,53 @@ if (voices.length === 4 && !process.env.LINGO_PROOF_RULES && !args.has("--quick"
 // Real recordings, when someone has dropped some in.
 const REC_DIR = path.join(DIR, "recordings");
 const RECORDINGS_HELP = [
-  "Put recordings in `data/pronunciation-proof/recordings/` (gitignored; with `LINGO_PROOF_DIR` set, its `recordings/` folder) and list them in a `labels.tsv` beside them, one recording per line, tab-separated:",
+  "### How to record your clips",
+  "",
+  "1. In a terminal, in the repository: `npm run pron:record`.",
+  "2. Open <http://127.0.0.1:38410> in Chrome or Safari on the same computer, and allow the microphone when the browser asks.",
+  "3. Type a first name or nickname, pick Adult or Child, press **Start**.",
+  "4. For each word: press **Listen** to hear it, press **Record** (or the space bar), say it, press **Stop** (or space again). The page plays your clip back.",
+  "5. Press **Keep** (or Enter) if it is what you meant to say, or **Redo** (space) to try again. If you doubt you said it right, tick **Not sure I said it right** before keeping: that is useful, not a failure.",
+  "6. Part 1 is 31 words and phrases said as shown. Part 2 is 12 words said in the *wrong* tone on purpose, each with a model to copy; the page explains it when you get there.",
+  "7. Stop whenever you like (**Stop for now**, or just close the tab). Every kept clip is already saved; next time, pick your name on the first screen and it carries on where you stopped.",
+  "8. When you have some clips, press Ctrl-C in the terminal and run `npm run pron:proof`. It prints how the scorer did for each speaker and writes the detail to `data/pronunciation-proof/recordings/report.md`.",
+  "",
+  "After each kept clip the page shows a \"test readout\": what the scorer made of it. It is there to show the thing working and is not a grade; it is often unsure and sometimes wrong, which is what these recordings are for.",
+  "",
+  "The recorder is a local tool, not part of the app: it listens on 127.0.0.1 only, uses no login or database, plays the proof's cached model clips and makes no request to anywhere else. Recordings and their results stay under `data/` (gitignored): this report never includes them.",
+  "",
+  "### What a label means",
+  "",
+  "A label records what the speaker was **aiming for**, not what came out. A beginner's \"said as shown\" clips will hold real mistakes, so a flag on one may be a true catch that the tally counts as a false alarm. That is why the speaker's own \"not sure\" clips are counted apart, and why the false-alarm rate from a beginner's clips is an upper bound until someone who knows the language has listened to the flagged ones.",
+  "",
+  "### The labels file",
+  "",
+  "`data/pronunciation-proof/recordings/labels.tsv` (with `LINGO_PROOF_DIR` set, its `recordings/` folder): one recording per line, tab-separated; the recorder writes it, and it can be written by hand:",
   "",
   "```",
-  "# file<TAB>text<TAB>said (optional)<TAB>speaker (optional)",
+  "# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure",
   "nihao-1.wav\t你好",
-  "ma-wrong.wav\t妈\tma3",
-  "wo-shi-xuesheng.m4a\t我是学生\two3 shi4 xue2 sheng2\tsam",
+  "rec-20261118-153012-ab12cd34.wav\t妈\tma2\tsam\tadult\t",
+  "rec-20261118-153140-0f3e9a71.wav\t我是学生\t\tsam\tadult\tunsure",
   "```",
   "",
-  "- `file`: WAV, M4A, MP3 or WebM; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The app's own recordings are already the right format.",
-  "- `text`: the characters the learner was asked to say.",
-  "- `said`: only when the learner said something else on purpose, to test the flags: one pinyin syllable per character with the tone as a digit (5 or 0 for neutral), as actually said. `ma3` against 妈 is a deliberate mǎ for mā. Leave it out when the recording is a good-faith attempt you have listened to and judged right.",
-  "- `speaker`: any name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings (leave it out for one speaker).",
+  "- `file`: WAV, M4A, MP3 or WebM in that folder; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The recorder's files are already the right format.",
+  "- `text`: the characters the speaker was shown.",
+  "- `said`: empty when they were asked to say it as shown. Otherwise what they were asked to say instead: one pinyin syllable per character with the tone as a digit (5 or 0 for neutral). `ma2` against 妈 is a deliberate má for mā.",
+  "- `speaker`: a name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings.",
+  "- `group`: `adult` or `child` (optional).",
+  "- `unsure`: `unsure` when the speaker ticked \"not sure I said it right\" (optional).",
   "",
-  "Then run `node scripts/pronunciation-proof.mjs --quick`. Nothing is uploaded: the local scorer runs on this machine. A syllable whose `said` tone is one the text accepts counts as right (a flag on it is a false alarm); any other counts as wrong (a flag is a catch). Twenty or thirty phrases from each of two or three people, a third of them with one deliberate wrong tone, would say more than everything above.",
+  "A syllable whose `said` tone is one the text accepts counts as said as shown (a flag on it is a false alarm); any other counts as wrong on purpose (a flag is a catch). Nothing is uploaded: the local scorer runs on this machine.",
 ].join("\n");
 let recordings = null;
 if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
+  const parsed = parseLabels(fs.readFileSync(path.join(REC_DIR, "labels.tsv"), "utf8"));
   const rows = [];
-  const problems = [];
-  for (const line of fs.readFileSync(path.join(REC_DIR, "labels.tsv"), "utf8").split(/\r?\n/)) {
-    if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    const [file, text, said = "", speaker = "speaker"] = line.split("\t").map((x) => x.trim());
+  const problems = [...parsed.problems];
+  for (const label of parsed.rows) {
+    const { file, text } = label;
     try {
-      if (!file || !text) throw new Error("needs a file and a text");
       const src = path.join(REC_DIR, file);
       if (path.dirname(path.resolve(src)) !== path.resolve(REC_DIR)) throw new Error("the file must be in the recordings folder");
       let wav = null;
@@ -604,21 +630,16 @@ if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
         wav = parseWav(fs.readFileSync(out));
       }
       const syllables = expectedSyllables(text, readCodePoints(text, LOCALE));
-      let saidTones = null;
-      if (said) {
-        saidTones = said.split(/\s+/).map((x) => {
-          const digit = x.match(/([0-5])$/);
-          return digit ? Number(digit[1]) % 5 : parsePinyin(x).tone;
-        });
-        if (saidTones.length !== syllables.length) throw new Error(`"said" has ${saidTones.length} syllables, the text ${syllables.length}`);
-      }
-      rows.push({ file, text, speaker, syllables, saidTones, samples: wav.samples, sampleRate: wav.sampleRate, track: trackPitch(wav.samples, wav.sampleRate) });
+      const saidTones = readSaid(label.said);
+      if (saidTones && saidTones.length !== syllables.length) throw new Error(`"said" has ${saidTones.length} syllables, the text ${syllables.length}`);
+      rows.push({ ...label, syllables, saidTones, samples: wav.samples, sampleRate: wav.sampleRate, track: trackPitch(wav.samples, wav.sampleRate) });
     } catch (e) {
-      problems.push(`${file || line}: ${e.message}`);
+      problems.push(`${file}: ${e.message}`);
     }
   }
   const t = { right: { ok: 0, unsure: 0, off: 0 }, wrong: { ok: 0, unsure: 0, off: 0 } };
   const detail = [];
+  const marked = [];
   for (const row of rows) {
     const others = rows.filter((x) => x !== row && x.speaker === row.speaker).map((x) => x.track);
     const res = scoreTones({ samples: row.samples, sampleRate: row.sampleRate, syllables: row.syllables, speaker: others.length ? speakerRange(others) : null, track: row.track, rules: RULES });
@@ -627,11 +648,60 @@ if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
       if (row.syllables[k].expectedTone === 0 || saidTone === 0) return `${x.char} –`;
       const wrong = saidTone !== null && !row.syllables[k].accept.includes(saidTone);
       t[wrong ? "wrong" : "right"][x.verdict]++;
+      marked.push({ speaker: row.speaker, group: row.group, unsure: row.unsure, wrong, verdict: x.verdict });
       return `${x.char} ${x.verdict}${x.verdict === "off" ? (wrong ? " (caught)" : " (**false alarm**)") : wrong ? " (missed)" : ""}`;
     });
-    detail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as written"} | ${marks.join(", ")} |`);
+    detail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as shown"} | ${row.unsure ? "yes" : ""} | ${marks.join(", ")} |`);
   }
-  recordings = { rows, problems, t, detail };
+  recordings = { rows, problems, t, detail, bySpeaker: speakerTally(marked) };
+}
+
+/** The recordings' results: a person's, so never in the tracked report.
+ *  Printed, and written beside the recordings (gitignored). */
+function recordingsReport() {
+  const { t, rows, problems, detail, bySpeaker } = recordings;
+  const right = t.right.ok + t.right.unsure + t.right.off;
+  const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
+  const out = [
+    "# Real recordings: how the scorer did",
+    "",
+    `Written by \`node scripts/pronunciation-proof.mjs\` on ${new Date().toISOString().slice(0, 10)}. Personal: this file stays in the gitignored recordings folder.`,
+    "",
+    `${rows.length} recordings from \`labels.tsv\`, ${bySpeaker.length} speaker(s). Syllables said as shown: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Syllables said wrong on purpose: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}.`,
+    "",
+    "## By speaker",
+    "",
+    "A label is what the speaker was aiming for, not what came out: a flag on a beginner's \"said as shown\" clip may be a real mistake caught. Clips the speaker marked \"not sure I said it right\" are in the last two columns and in no other.",
+    "",
+    ...speakerTable(bySpeaker),
+    "",
+    "## Every clip",
+    "",
+    "| File | Speaker | Text | Asked to say | Marked not sure | Syllables |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...detail,
+    "",
+    ...(problems.length ? [`Not scored: ${problems.join("; ")}.`, ""] : []),
+  ];
+  return { markdown: out.join("\n"), console: ["", "Real recordings, by speaker:", ...speakerTable(bySpeaker), ...(problems.length ? [`Not scored: ${problems.join("; ")}.`] : [])].join("\n") };
+}
+
+/** Print the recordings' results and write them beside the recordings. */
+function writeRecordingsReport() {
+  const rec = recordingsReport();
+  const file = path.join(REC_DIR, "report.md");
+  fs.writeFileSync(file, rec.markdown, { mode: 0o600 });
+  console.log(rec.console);
+  console.log(`Wrote ${file}`);
+}
+
+// --recordings (npm run pron:proof): score the recordings and stop. The
+// tracked report is left alone, so scoring your own clips never changes a
+// file git tracks.
+if (args.has("--recordings")) {
+  if (recordings) writeRecordingsReport();
+  else console.log(`No recordings yet in ${REC_DIR}. Run \`npm run pron:record\` to make some.`);
+  process.exit(0);
 }
 
 // The trade-off: the same clips at several values of the one knob that
@@ -952,16 +1022,9 @@ p("The same clips (all four voices, range known) at several values of `offMargin
   p("`creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.");
 }
 p("## Real recordings");
-if (recordings) {
-  const { t } = recordings;
-  const right = t.right.ok + t.right.unsure + t.right.off;
-  const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
-  p(`${recordings.rows.length} recordings from \`labels.tsv\`, ${new Set(recordings.rows.map((r) => r.speaker)).size} speaker(s). Right syllables: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Deliberately wrong syllables: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}.`);
-  p(["| File | Speaker | Text | Said | Syllables |", "| --- | --- | --- | --- | --- |", ...recordings.detail].join("\n"));
-  if (recordings.problems.length) p(`Not scored: ${recordings.problems.join("; ")}.`);
-} else {
-  p("None yet: everything above is synthesized speech. This is the next step, and the harness is ready for it.");
-}
+// Nothing of a person's recordings goes into this tracked file: not a
+// name, not a count, not a result.
+p("Everything above is synthesized speech. Real recordings are the next step: `npm run pron:record` collects them and `npm run pron:proof` scores them, per speaker, into `data/pronunciation-proof/recordings/report.md` and the terminal. That folder is gitignored and its results are deliberately left out of this report.");
 p(RECORDINGS_HELP);
 for (const r of results) {
   p(`### ${r.title}`);
@@ -1007,6 +1070,7 @@ p([
 ].join("\n"));
 fs.writeFileSync(REPORT, lines.join("\n").replace(/\n+$/, "\n"));
 console.log(`Wrote ${path.relative(REPO, REPORT)}`);
+if (recordings) writeRecordingsReport();
 for (const [i, r] of results.entries()) console.log(r.key.padEnd(13), JSON.stringify(sums[i]));
 if (args.has("--dump")) {
   for (const r of results) {

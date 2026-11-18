@@ -1,0 +1,578 @@
+<!doctype html>
+<!-- The recording page of scripts/pronunciation-record.mjs. One file, every
+     asset inline: the server's Content-Security-Policy allows nothing else.
+     The server fills in the nonce and the prompt data on each load. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Record tones</title>
+<style nonce="__NONCE__">
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --ink: #1d1c1a; --soft: #6b6862; --line: #dedad2;
+    --accent: #1f6f5c; --accent-ink: #ffffff; --rec: #c0392b; --wrong: #8a4b08; --wrong-bg: #fdf0d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --card: #22211e; --ink: #f1eee8; --soft: #a5a199; --line: #3a3833;
+      --accent: #57b9a1; --accent-ink: #10201c; --rec: #ef6a5b; --wrong: #f0b961; --wrong-bg: #3a2c12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 18px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h2 { font-size: 1.2rem; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  .soft { color: var(--soft); }
+  .small { font-size: 0.9rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; margin-top: 16px; }
+  [hidden] { display: none !important; }
+  button { font: inherit; font-weight: 600; min-height: 56px; padding: 12px 22px; border-radius: 14px; border: 2px solid var(--line); background: var(--card); color: var(--ink); cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.rec { background: var(--rec); border-color: var(--rec); color: #fff; }
+  button.plain { min-height: 44px; border-color: transparent; background: none; color: var(--soft); font-weight: 500; text-decoration: underline; padding: 8px; }
+  kbd { font: inherit; font-size: 0.8em; border: 1px solid currentColor; border-radius: 6px; padding: 0 6px; opacity: 0.75; margin-left: 6px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .row.center { justify-content: center; }
+  label.field { display: block; font-weight: 600; margin-bottom: 6px; }
+  input[type=text] { font: inherit; width: 100%; max-width: 320px; min-height: 52px; padding: 10px 14px; border-radius: 12px; border: 2px solid var(--line); background: var(--card); color: var(--ink); }
+  .choice { display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 8px 16px; border: 2px solid var(--line); border-radius: 12px; cursor: pointer; }
+  .choice input { width: 20px; height: 20px; accent-color: var(--accent); }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 8px 0 0; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); }
+  .part { display: inline-block; font-weight: 700; padding: 4px 12px; border-radius: 999px; background: var(--line); }
+  .wrongpart .part { background: var(--wrong-bg); color: var(--wrong); }
+  .wrongpart .card.prompt { border-color: var(--wrong); border-width: 2px; }
+  .prompt { text-align: center; }
+  .syllables { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin: 8px 0; }
+  .syl { display: flex; flex-direction: column; align-items: center; min-width: 72px; }
+  .han { font: 500 84px/1.15 "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+  .many .han { font-size: 60px; }
+  .pin { font-size: 30px; font-weight: 600; }
+  .tone { color: var(--soft); font-size: 0.95rem; }
+  .shape { width: 56px; height: 44px; color: var(--accent); }
+  .wrongpart .shape { color: var(--wrong); }
+  .gloss { font-size: 1.15rem; margin-top: 6px; }
+  .ask { background: var(--wrong-bg); color: var(--wrong); border-radius: 12px; padding: 12px; margin: 12px 0 0; font-size: 1.15rem; }
+  .ask b { font-size: 1.6rem; }
+  .status { min-height: 30px; text-align: center; font-weight: 600; margin: 16px 0 8px; }
+  .status.recording { color: var(--rec); }
+  .meter { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; max-width: 320px; margin: 0 auto 12px; }
+  .meter > div { height: 100%; width: 0; background: var(--rec); }
+  #review { margin-top: 12px; }
+  .unsure { display: flex; justify-content: center; margin-top: 14px; }
+  .readout { border: 1px dashed var(--soft); border-radius: 12px; padding: 12px 16px; margin-top: 16px; }
+  .readout .tag { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--soft); }
+  .error { color: var(--rec); font-weight: 600; }
+  ul { margin: 0 0 12px; padding-left: 22px; }
+  li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <!-- Start: who is speaking -->
+  <section id="start">
+    <h1>Record your tones</h1>
+    <p class="soft">A test tool for the tone scorer. It shows one word at a time; you listen, say it, and keep the clip.</p>
+    <div class="card">
+      <p id="welcomeBack" class="soft" hidden></p>
+      <div id="known" hidden>
+        <p><b>Carry on as</b></p>
+        <div id="knownList" class="row"></div>
+        <p class="soft small">or start as someone new:</p>
+      </div>
+      <label class="field" for="name">Who is speaking? A first name or nickname is enough.</label>
+      <input id="name" type="text" maxlength="24" autocomplete="off" spellcheck="false">
+      <p></p>
+      <div class="row" role="radiogroup" aria-label="Adult or child">
+        <label class="choice"><input type="radio" name="group" value="adult" checked> Adult</label>
+        <label class="choice"><input type="radio" name="group" value="child"> Child</label>
+      </div>
+      <p></p>
+      <button id="go" class="primary">Start</button>
+      <p id="startError" class="error" role="alert"></p>
+    </div>
+    <div class="card small">
+      <h2>Before you start</h2>
+      <ul>
+        <li>Your browser will ask to use the microphone. A quiet room and a headset or laptop mic are fine.</li>
+        <li>Recordings stay on this computer. This page sends nothing anywhere else.</li>
+        <li>You can stop at any time and carry on later: every clip you keep is saved straight away.</li>
+        <li>Each clip is labelled with what you were <b>aiming for</b>, not what actually came out. A beginner's clips will contain real slips, and that is useful too. When you doubt one, tick <b>"Not sure I said it right"</b> before keeping it.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- The session: one prompt at a time -->
+  <section id="session" hidden>
+    <div class="top">
+      <span id="part" class="part"></span>
+      <span><b id="count"></b> <span id="who" class="soft"></span></span>
+      <button id="stop" class="plain">Stop for now</button>
+    </div>
+    <div class="bar" aria-hidden="true"><div id="progress"></div></div>
+
+    <div id="intro" class="card" hidden>
+      <h2>Part 2: say it wrong on purpose</h2>
+      <p>Well done, part 1 is finished. This short part is different.</p>
+      <p>The scorer has to learn to notice a wrong tone, so for these last few you will see a word and be asked to say it with a <b>different tone</b> than it should have. Press Listen to hear the tone to copy, then say it that way.</p>
+      <p>Saying it "wrong" here is exactly right.</p>
+      <button id="introGo" class="primary">OK, start part 2</button>
+    </div>
+
+    <div id="promptCard" class="card prompt">
+      <div id="syllables" class="syllables"></div>
+      <div id="gloss" class="gloss soft"></div>
+      <p id="sandhi" class="soft small" hidden></p>
+      <div id="ask" class="ask" hidden></div>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+      <div class="meter" aria-hidden="true"><div id="level"></div></div>
+
+      <div class="row center">
+        <button id="listen">Listen<kbd>L</kbd></button>
+        <button id="record" class="rec">Record<kbd>space</kbd></button>
+      </div>
+      <div id="review" hidden>
+        <div class="row center">
+          <button id="play">Play mine<kbd>P</kbd></button>
+          <button id="keep" class="primary">Keep<kbd>Enter</kbd></button>
+        </div>
+        <div class="unsure">
+          <label class="choice"><input id="unsure" type="checkbox"> Not sure I said it right</label>
+        </div>
+      </div>
+      <p></p>
+      <button id="skip" class="plain">Skip this one</button>
+      <p id="sessionError" class="error" role="alert"></p>
+    </div>
+
+    <div id="readout" class="readout small" hidden>
+      <div class="tag">Test readout, not a grade</div>
+      <div id="readoutText"></div>
+      <div class="soft">This is what the scorer made of your last clip, shown so you can see it working. It is often unsure, and it can be wrong.</div>
+    </div>
+  </section>
+
+  <!-- Finished -->
+  <section id="finished" hidden>
+    <h1>All done. Thank you!</h1>
+    <div class="card">
+      <p id="finishedText"></p>
+      <p class="soft">To see how the scorer did on your clips, run <code>npm run pron:proof</code> in the terminal. Someone else can record now too.</p>
+      <div class="row">
+        <button id="skipped" hidden>Go back to the ones I skipped</button>
+        <button id="again" class="primary">Back to the start</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script id="data" type="application/json">__DATA__</script>
+<script nonce="__NONCE__">
+"use strict";
+(function () {
+  var DATA = JSON.parse(document.getElementById("data").textContent);
+  var PROMPTS = DATA.prompts;
+  var RATE = 16000;
+  var MAX_MS = 12000;   // a clip stops itself here
+  var MIN_MS = 400;     // shorter is a slip of the finger
+
+  var $ = function (id) { return document.getElementById(id); };
+  var keyOf = function (p) { return p.text + "\t" + p.said; };
+
+  var speaker = null, group = "adult";
+  var done = new Set(), skipped = new Set();
+  var current = null, introSeen = false;
+  // idle | starting | recording | working | review | saving
+  var state = "idle";
+  var stream = null, audioCtx = null, analyser = null, recorder = null, chunks = [], startedAt = 0, stopTimer = 0, meterTimer = 0;
+  var take = null, takeUrl = null, player = null;
+
+  /* ------------------------------ small helpers ----------------------------- */
+
+  function show(id) {
+    ["start", "session", "finished"].forEach(function (s) { $(s).hidden = s !== id; });
+  }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function api(path, options) {
+    return fetch(path, options).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.error || "The recorder didn't answer. Is it still running in the terminal?");
+        return j;
+      });
+    }, function () {
+      throw new Error("Can't reach the recorder. Is it still running in the terminal?");
+    });
+  }
+
+  /** A tiny picture of a tone on the usual five-level scale. */
+  function toneShape(tone) {
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 56 44");
+    svg.setAttribute("class", "shape");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", ["neutral tone: short and light", "tone 1: high and level", "tone 2: rising", "tone 3: dips low, then rises", "tone 4: falling"][tone] || "");
+    var y = function (level) { return 38 - (level - 1) * 8; };
+    for (var l = 1; l <= 5; l++) {
+      var g = document.createElementNS(NS, "line");
+      g.setAttribute("x1", 4); g.setAttribute("x2", 52); g.setAttribute("y1", y(l)); g.setAttribute("y2", y(l));
+      g.setAttribute("stroke", "currentColor"); g.setAttribute("stroke-opacity", "0.15"); g.setAttribute("stroke-width", "1");
+      svg.appendChild(g);
+    }
+    var shapes = { 1: [[8, 5], [48, 5]], 2: [[8, 3], [48, 5]], 3: [[8, 2], [24, 1], [48, 4]], 4: [[8, 5], [48, 1]] };
+    if (shapes[tone]) {
+      var line = document.createElementNS(NS, "polyline");
+      line.setAttribute("points", shapes[tone].map(function (pt) { return pt[0] + "," + y(pt[1]); }).join(" "));
+      line.setAttribute("fill", "none"); line.setAttribute("stroke", "currentColor"); line.setAttribute("stroke-width", "4");
+      line.setAttribute("stroke-linecap", "round"); line.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(line);
+    } else {
+      var dot = document.createElementNS(NS, "circle");
+      dot.setAttribute("cx", 28); dot.setAttribute("cy", y(3)); dot.setAttribute("r", 4); dot.setAttribute("fill", "currentColor");
+      svg.appendChild(dot);
+    }
+    return svg;
+  }
+  var toneName = function (t) { return t ? "tone " + t : "neutral"; };
+
+  /* --------------------------------- start --------------------------------- */
+
+  function loadSpeakers() {
+    api("/api/speakers").then(function (j) {
+      var list = $("knownList");
+      list.textContent = "";
+      j.speakers.forEach(function (s) {
+        var b = el("button", "", s.name + (s.group ? " (" + s.group + ")" : "") + ": " + s.done + " of " + PROMPTS.length + " done");
+        b.addEventListener("click", function () { begin(s.name, s.group || "adult"); });
+        list.appendChild(b);
+      });
+      $("known").hidden = !j.speakers.length;
+    }).catch(function () { $("known").hidden = true; });
+  }
+
+  function begin(name, grp) {
+    $("startError").textContent = "";
+    if (!name.trim()) { $("startError").textContent = "Type a name or nickname first."; return; }
+    api("/api/progress?speaker=" + encodeURIComponent(name)).then(function (j) {
+      speaker = j.speaker; group = grp; done = new Set(j.done); skipped = new Set();
+      introSeen = false;
+      return openMic();
+    }).then(function () {
+      $("who").textContent = "· " + speaker;
+      $("readout").hidden = true;
+      show("session");
+      next();
+    }).catch(function (e) { $("startError").textContent = e.message; });
+  }
+
+  /** The microphone is opened once for the session and kept open: opening
+   *  it per clip takes long enough to cut off the start of a lone syllable.
+   *  The same processing as the app's recorder, since that is what the
+   *  scorer will hear there. */
+  function openMic() {
+    if (stream) return Promise.resolve();
+    if (!navigator.mediaDevices || !window.MediaRecorder) return Promise.reject(new Error("This browser can't record. Try a current Chrome, Safari or Firefox."));
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) {
+      stream = s;
+      audioCtx = new AudioContext();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      audioCtx.createMediaStreamSource(stream).connect(analyser);
+    }, function () {
+      throw new Error("The microphone is blocked. Allow it for this page (the icon in the address bar), then press Start again.");
+    });
+  }
+  function closeMic() {
+    if (recorder && recorder.state !== "inactive") { recorder.onstop = null; recorder.stop(); }
+    clearTimeout(stopTimer); clearInterval(meterTimer);
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    if (audioCtx) audioCtx.close();
+    stream = null; audioCtx = null; analyser = null; recorder = null;
+  }
+
+  /* -------------------------------- prompts -------------------------------- */
+
+  function next() {
+    dropTake();
+    setState("idle");
+    $("sessionError").textContent = "";
+    current = PROMPTS.find(function (p) { return !done.has(keyOf(p)) && !skipped.has(p.id); }) || null;
+    var total = PROMPTS.length;
+    var n = PROMPTS.filter(function (p) { return done.has(keyOf(p)); }).length;
+    $("progress").style.width = (100 * n / total) + "%";
+    if (!current) return finish(n, total);
+    $("count").textContent = n + " of " + total + " done";
+    var wrong = current.part === "wrong";
+    $("session").classList.toggle("wrongpart", wrong);
+    $("part").textContent = wrong ? "Part 2: say it wrong on purpose" : "Part 1: say it as shown";
+    // The second part is announced once, on its own card, before its
+    // first prompt: it asks for the opposite of everything before it.
+    var needIntro = wrong && !introSeen;
+    $("intro").hidden = !needIntro;
+    $("promptCard").hidden = needIntro;
+    if (needIntro) { $("introGo").focus(); return; }
+    render(current);
+  }
+
+  function render(p) {
+    var box = $("syllables");
+    box.textContent = "";
+    box.classList.toggle("many", p.syllables.length > 2);
+    var wrong = p.part === "wrong";
+    p.syllables.forEach(function (s) {
+      var d = el("div", "syl");
+      var han = el("div", "han", s.char);
+      han.lang = "zh-Hans";
+      d.appendChild(han);
+      if (wrong) {
+        // The picture and the big pinyin are of the tone to say; the
+        // word's own reading is in the line below.
+        d.appendChild(el("div", "pin", p.ask.pinyin));
+        d.appendChild(toneShape(p.ask.tone));
+        d.appendChild(el("div", "tone", "say " + toneName(p.ask.tone)));
+      } else {
+        d.appendChild(el("div", "pin", s.pinyin));
+        d.appendChild(toneShape(s.spoken));
+        d.appendChild(el("div", "tone", toneName(s.spoken)));
+      }
+      box.appendChild(d);
+    });
+    $("gloss").textContent = p.gloss ? "“" + p.gloss + "”" : "";
+    var changed = wrong ? [] : p.syllables.filter(function (s) { return s.spoken !== s.tone; });
+    $("sandhi").hidden = !changed.length;
+    if (changed.length) {
+      $("sandhi").textContent = "On its own: " + p.syllables.map(function (s) { return s.written; }).join(" ") + ". In this phrase "
+        + changed.map(function (s) { return s.char + " changes to " + toneName(s.spoken); }).join(" and ") + ", as shown above.";
+    }
+    $("ask").hidden = !wrong;
+    if (wrong) {
+      var s0 = p.syllables[0];
+      $("ask").textContent = "";
+      $("ask").appendChild(document.createTextNode("This word is really " + s0.written + " (" + toneName(s0.tone) + "). This time, on purpose, say it like "));
+      $("ask").appendChild(el("b", "", p.ask.pinyin));
+      $("ask").appendChild(document.createTextNode(" (" + toneName(p.ask.tone) + ")."));
+    }
+    $("listen").firstChild.textContent = wrong ? "Listen to " + p.ask.pinyin : "Listen";
+    $("unsure").checked = false;
+  }
+
+  function finish(n, total) {
+    closeMic();
+    $("finishedText").textContent = n >= total
+      ? speaker + ", you recorded all " + total + " clips."
+      : speaker + ", you recorded " + n + " of " + total + " clips and skipped " + (total - n) + ".";
+    $("skipped").hidden = n >= total;
+    show("finished");
+  }
+
+  /* ------------------------------- recording ------------------------------- */
+
+  function setState(s) {
+    state = s;
+    var busy = s === "starting" || s === "working" || s === "saving";
+    $("record").disabled = busy;
+    $("record").firstChild.textContent = s === "recording" ? "Stop" : s === "review" ? "Redo" : "Record";
+    $("listen").disabled = s === "recording" || busy;
+    $("skip").disabled = s === "recording" || busy;
+    $("keep").disabled = s !== "review";
+    $("play").disabled = s !== "review";
+    $("review").hidden = !(s === "review" || s === "saving");
+    $("status").classList.toggle("recording", s === "recording");
+    $("status").textContent = {
+      idle: "Listen first, then press Record and say it.",
+      starting: "Getting ready…",
+      recording: "Recording… press Stop (or space) when you have said it.",
+      working: "One moment…",
+      review: "Happy with it? Keep it, or Redo.",
+      saving: "Saving…",
+    }[s];
+    if (s !== "recording") $("level").style.width = "0";
+  }
+
+  function dropTake() {
+    if (player) { player.pause(); player = null; }
+    if (takeUrl) URL.revokeObjectURL(takeUrl);
+    take = null; takeUrl = null;
+  }
+
+  function startRecording() {
+    if (!stream || state === "recording") return;
+    dropTake();
+    $("sessionError").textContent = "";
+    setState("starting");
+    chunks = [];
+    try {
+      recorder = new MediaRecorder(stream);
+    } catch (e) {
+      setState("idle");
+      $("sessionError").textContent = "Couldn't start recording: " + e.message;
+      return;
+    }
+    recorder.ondataavailable = function (e) { if (e.data.size) chunks.push(e.data); };
+    recorder.onstart = function () {
+      startedAt = performance.now();
+      setState("recording");
+      stopTimer = setTimeout(stopRecording, MAX_MS);
+      var buf = new Float32Array(analyser.fftSize);
+      meterTimer = setInterval(function () {
+        analyser.getFloatTimeDomainData(buf);
+        var sum = 0;
+        for (var i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        $("level").style.width = Math.min(100, 500 * Math.sqrt(sum / buf.length)) + "%";
+      }, 50);
+    };
+    recorder.onstop = function () {
+      clearTimeout(stopTimer); clearInterval(meterTimer);
+      var ms = performance.now() - startedAt;
+      if (ms < MIN_MS) {
+        setState("idle");
+        $("sessionError").textContent = "That was too short to hold anything. Press Record, say it, then press Stop.";
+        return;
+      }
+      setState("working");
+      toWav(new Blob(chunks, { type: recorder.mimeType || "audio/webm" })).then(function (r) {
+        take = r.wav;
+        takeUrl = URL.createObjectURL(take);
+        setState("review");
+        if (r.peak < 0.03) $("sessionError").textContent = "That came out very quiet. Move closer to the microphone and Redo, or keep it if it sounds fine.";
+        playTake();
+      }, function () {
+        setState("idle");
+        $("sessionError").textContent = "The browser couldn't read that recording. Please try again.";
+      });
+    };
+    recorder.start();
+  }
+  function stopRecording() {
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  }
+
+  /** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV: the
+   *  same steps as the app's recorder (web/src/recorder.ts toWav). The
+   *  OfflineAudioContext does the resampling and the downmix. */
+  function toWav(blob) {
+    var decodeCtx = new AudioContext();
+    return blob.arrayBuffer().then(function (ab) { return decodeCtx.decodeAudioData(ab); }).then(function (decoded) {
+      decodeCtx.close();
+      var length = Math.max(1, Math.ceil(decoded.duration * RATE));
+      var offline = new OfflineAudioContext(1, length, RATE);
+      var src = offline.createBufferSource();
+      src.buffer = decoded;
+      src.connect(offline.destination);
+      src.start();
+      return offline.startRendering();
+    }, function (e) { decodeCtx.close(); throw e; }).then(function (rendered) {
+      var pcm = rendered.getChannelData(0);
+      var out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+      var ascii = function (at, s) { for (var i = 0; i < s.length; i++) out.setUint8(at + i, s.charCodeAt(i)); };
+      ascii(0, "RIFF");
+      out.setUint32(4, 36 + pcm.length * 2, true);
+      ascii(8, "WAVE");
+      ascii(12, "fmt ");
+      out.setUint32(16, 16, true);       // fmt chunk size
+      out.setUint16(20, 1, true);        // PCM
+      out.setUint16(22, 1, true);        // mono
+      out.setUint32(24, RATE, true);
+      out.setUint32(28, RATE * 2, true); // byte rate
+      out.setUint16(32, 2, true);        // block align
+      out.setUint16(34, 16, true);       // bits per sample
+      ascii(36, "data");
+      out.setUint32(40, pcm.length * 2, true);
+      var peak = 0;
+      for (var i = 0; i < pcm.length; i++) {
+        var s = Math.max(-1, Math.min(1, pcm[i]));
+        if (Math.abs(s) > peak) peak = Math.abs(s);
+        out.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return { wav: new Blob([out], { type: "audio/wav" }), peak: peak };
+    });
+  }
+
+  function playUrl(url) {
+    if (player) player.pause();
+    player = new Audio(url);
+    player.play().catch(function () {});
+  }
+  function playTake() { if (takeUrl) playUrl(takeUrl); }
+  function listen() { if (current && state !== "recording") playUrl("/model/" + current.id); }
+
+  function keep() {
+    if (state !== "review" || !take || !current) return;
+    var p = current;
+    setState("saving");
+    var q = "?prompt=" + p.id + "&speaker=" + encodeURIComponent(speaker) + "&group=" + group + ($("unsure").checked ? "&unsure=1" : "");
+    api("/api/keep" + q, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: take }).then(function (j) {
+      done = new Set(j.done);
+      done.add(keyOf(p));
+      var said = p.part === "wrong" ? " You were asked to say " + toneName(p.ask.tone) + ", so \"flagged\" here means the scorer caught it." : "";
+      $("readoutText").textContent = p.text + ": " + (j.readout || "the scorer couldn't read this clip (it is saved all the same).") + said;
+      $("readout").hidden = false;
+      next();
+    }, function (e) {
+      // Nothing is lost: the take is still here to send again.
+      setState("review");
+      $("sessionError").textContent = "Not saved: " + e.message + " Press Keep to try again.";
+    });
+  }
+
+  /* --------------------------------- wiring -------------------------------- */
+
+  $("go").addEventListener("click", function () {
+    begin($("name").value, document.querySelector("input[name=group]:checked").value);
+  });
+  $("name").addEventListener("keydown", function (e) { if (e.key === "Enter") $("go").click(); });
+  $("introGo").addEventListener("click", function () { introSeen = true; next(); });
+  $("record").addEventListener("click", function () { state === "recording" ? stopRecording() : startRecording(); });
+  $("listen").addEventListener("click", listen);
+  $("play").addEventListener("click", playTake);
+  $("keep").addEventListener("click", keep);
+  $("skip").addEventListener("click", function () { if (current) { skipped.add(current.id); next(); } });
+  $("stop").addEventListener("click", function () {
+    closeMic(); dropTake();
+    $("welcomeBack").textContent = "Your clips are saved. Pick your name below to carry on where you stopped.";
+    $("welcomeBack").hidden = false;
+    loadSpeakers();
+    show("start");
+  });
+  $("again").addEventListener("click", function () { $("welcomeBack").hidden = true; loadSpeakers(); show("start"); });
+  $("skipped").addEventListener("click", function () {
+    skipped = new Set();
+    openMic().then(function () { show("session"); next(); }).catch(function (e) { $("finishedText").textContent = e.message; });
+  });
+
+  // Space records and stops, wherever the focus is: a focused button must
+  // not also take the key as a click.
+  document.addEventListener("keydown", function (e) {
+    if ($("session").hidden || !$("intro").hidden || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    var k = e.key.toLowerCase();
+    if (e.code === "Space") {
+      e.preventDefault();
+      if (state === "recording") stopRecording();
+      else if (state === "idle" || state === "review") startRecording();
+    } else if (k === "enter" && state === "review") {
+      e.preventDefault();
+      keep();
+    } else if (k === "l") listen();
+    else if (k === "p") playTake();
+  });
+  document.addEventListener("keyup", function (e) {
+    if (e.code === "Space" && !$("session").hidden && $("intro").hidden) e.preventDefault();
+  });
+  window.addEventListener("pagehide", closeMic);
+
+  loadSpeakers();
+})();
+</script>
+</body>
+</html>
