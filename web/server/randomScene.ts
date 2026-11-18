@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { drawRandomScene, emptyPoolMessage, readRandomScene } from "../shared/scenes.ts";
+import { NOTHING_HIDDEN, drawRandomScene, emptiedByHides, emptyPoolMessage, readRandomScene, type HiddenSet } from "../shared/scenes.ts";
 import type { Language, RandomScene, Scenario } from "../shared/wire.ts";
 import { HttpError } from "./sse.ts";
 
@@ -37,14 +37,17 @@ export function useSceneRandom(fn: (() => number) | null): void {
 }
 
 /** Draw a scene from the pool, or the 400 an empty pool is (the Scene tab
- *  shows the same message before Start). */
+ *  shows the same message before Start). `hidden` is the language's hides
+ *  (scripts/db/hidden.ts hiddenSet): never drawn, and when they alone empty
+ *  the pool the message says so. */
 export function drawOrRefuse(
   library: { scenarios: Scenario[]; languages: Language[] },
   target: string,
   random: RandomScene,
-  opts: { recent?: (string | null)[]; keep?: string | null } = {},
+  opts: { recent?: (string | null)[]; keep?: string | null; hidden?: HiddenSet } = {},
 ): { scene: Scenario; pool: Scenario[]; kept: boolean } {
-  const draw = drawRandomScene(library.scenarios, library.languages, target, random, { ...opts, rand: sceneRandom });
-  if (!draw) throw new HttpError(400, emptyPoolMessage(random, target));
+  const hidden = opts.hidden ?? NOTHING_HIDDEN;
+  const draw = drawRandomScene(library.scenarios, library.languages, target, random, { ...opts, hidden, rand: sceneRandom });
+  if (!draw) throw new HttpError(400, emptyPoolMessage(random, target, emptiedByHides(library.scenarios, library.languages, target, random, hidden)));
   return draw;
 }

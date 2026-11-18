@@ -14,6 +14,7 @@ import {
   restoreRevision, savePack, undeletePack,
 } from "../../scripts/db/packs.ts";
 import { STALE_LEARNER, languageWriteError, learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
+import { hiddenSet } from "../../scripts/db/hidden.ts";
 import { rawDb } from "./db.ts";
 import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
 import { reviewFor } from "./recall.ts";
@@ -322,7 +323,7 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse, ct
   let drawn: ExportResult["drawn"];
   if (random) {
     const target = String(effectiveProfile(content.profile, normalizePack(pack).overrides).target_language ?? "").trim();
-    const draw = drawOrRefuse(content, target, random);
+    const draw = drawOrRefuse(content, target, random, { hidden: await hiddenSet(rawDb(), ctx.language) });
     pack = withDrawnScene(normalizePack(pack), draw.scene.id);
     drawn = { id: draw.scene.id, title: draw.scene.title, pool: draw.pool.length };
   }

@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import type { ContentReply, Scenario } from "../types";
-import { draftPool, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
-import { collectionKey, emptyPoolMessage, missingCollections, randomPool, scenesWord } from "../../shared/scenes.ts";
-import { Button, Chevron, inputClass } from "./ui";
+import type { ContentReply, HiddenScene, Scenario } from "../types";
+import { draftPool, draftPoolMessage, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
+import { collectionKey, isHiddenScene, missingCollections, randomPool, scenesWord, visibleScenes, type HiddenKind, type HiddenSet } from "../../shared/scenes.ts";
+import { Button, Chevron, TrashGlyph, inputClass } from "./ui";
 
 const FILTER_KEY = "lingo-dojo.scene-filter.v1";
 /** Chip order (the adult library's categories); any other category a
@@ -49,11 +49,23 @@ function loadFilter(languageId: string): Filter {
  * control, and the note for the dojo master on the Go tab. Filters and
  * folder state are remembered per language profile (the search box is that
  * learner's typing in that language); App remounts on a learner or language
- * switch, so the initial-state readers run again. */
+ * switch, so the initial-state readers run again.
+ *
+ * A scene or a whole folder can be hidden (docs/DATA.md §Hidden scenes): a
+ * per-language preference, so learning Spanish needn't list First steps
+ * (Mandarin). Hidden ones leave the list, the chip counts and the Random
+ * card's pool at once (App puts them back if the server refuses), and a
+ * quiet "N hidden" line at the bottom opens them with Restore. Hiding is
+ * undone that easily, so it never asks first. The selected scene stays
+ * listed even when hidden, marked so, so the draft never points at
+ * something the tab doesn't show. */
 export default function SceneTab({
   languageId,
   content,
   draft,
+  hidden,
+  hiddenRows,
+  onHide,
   onChange,
   onNext,
 }: {
@@ -61,13 +73,34 @@ export default function SceneTab({
   languageId: string;
   content: ContentReply;
   draft: Draft;
+  /** This language's hidden scenes and collections (hiddenRows as two lists). */
+  hidden: HiddenSet;
+  hiddenRows: HiddenScene[];
+  /** Hide (true) or restore one; resolves to an error sentence, or null. */
+  onHide: (kind: HiddenKind, key: string, hide: boolean) => Promise<string | null>;
   onChange: (d: Draft) => void;
   onNext: () => void;
 }) {
   const quick = draft.scenarioMode === "quick";
   const random = draft.scenarioMode === "random";
   const library = draft.scenarioMode === "library";
-  const { scenarios } = content;
+  const { scenarios: libraryScenes } = content;
+  // What the tab lists: the library without this language's hidden scenes,
+  // the selected one kept. Search, chips, folders and counts all start here.
+  const scenarios = useMemo(() => visibleScenes(libraryScenes, hidden, library ? draft.scenario : null), [libraryScenes, hidden, library, draft.scenario]);
+  const [showHidden, setShowHidden] = useState(false);
+  // The last hide, for its one-tap Undo; and a refused hide or restore.
+  const [lastHidden, setLastHidden] = useState<{ kind: HiddenKind; key: string; name: string } | null>(null);
+  const [hideError, setHideError] = useState<string | null>(null);
+  async function toggleHidden(kind: HiddenKind, key: string, hide: boolean, name: string) {
+    setHideError(null);
+    setLastHidden(hide ? { kind, key, name } : null);
+    const error = await onHide(kind, key, hide);
+    if (error) {
+      setHideError(`Couldn't ${hide ? "hide" : "restore"} ${name}: ${error}`);
+      setLastHidden(null);
+    }
+  }
   const [filter, setFilterState] = useState<Filter>(() => loadFilter(languageId));
   const setFilter = (f: Filter) => {
     setFilterState(f);
@@ -116,33 +149,37 @@ export default function SceneTab({
     return [...by.entries()]
       .map(([key, items]) => {
         const foreign = foreignLanguage(all.get(key) ?? [], content.languages, target);
-        return { key, name: key || OTHER_SCENES, items, foreign, starter: !foreign && drillsOnly(all.get(key) ?? []) };
+        return { key, name: key || OTHER_SCENES, items, foreign, starter: !foreign && drillsOnly(all.get(key) ?? []), hidden: hidden.collections.includes(key) };
       })
       .sort((a, b) => Number(b.starter) - Number(a.starter) || Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
-  }, [scenarios, visible, content.languages, target]);
+  }, [scenarios, visible, content.languages, target, hidden]);
 
   // The Random card's pool: one chip per collection, with how many of its
   // scenes fit the target (a collection written for another language has
   // none, and is dimmed as its folder is).
-  const pool = useMemo(() => draftPool(content, draft), [content, draft]);
+  const pool = useMemo(() => draftPool(content, draft, hidden), [content, draft, hidden]);
   const poolChoices = useMemo(() => {
     const by = new Map<string, Scenario[]>();
-    for (const s of scenarios) by.set(collectionKey(s), [...(by.get(collectionKey(s)) ?? []), s]);
+    for (const s of libraryScenes) by.set(collectionKey(s), [...(by.get(collectionKey(s)) ?? []), s]);
     return [...by.entries()]
+      // A hidden folder offers no chip, unless a saved pool names it (then
+      // it shows, at 0, so it can be taken out).
+      .filter(([key]) => !hidden.collections.includes(key) || draft.randomCollections.includes(key))
       .map(([key, items]) => ({
         key,
         name: key || OTHER_SCENES,
-        // What the collection alone would draw from, by randomPool's own rule,
-        // so a First steps folder counts its drills and a mixed one doesn't.
-        fit: randomPool(items, content.languages, target, { collections: [] }).length,
+        // What the collection alone would draw from, by randomPool's own rule
+        // (hidden scenes left out), so a First steps folder counts its
+        // drills and a mixed one doesn't.
+        fit: randomPool(items, content.languages, target, { collections: [] }, hidden).length,
         foreign: foreignLanguage(items, content.languages, target),
       }))
       .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
-  }, [scenarios, content.languages, target]);
-  // "Every scene that fits" is the whole library's pool, drills left out
-  // as the draw leaves them out.
-  const poolAll = useMemo(() => randomPool(scenarios, content.languages, target, { collections: [] }).length, [scenarios, content.languages, target]);
-  const missing = random ? missingCollections(scenarios, { collections: draft.randomCollections }) : [];
+  }, [libraryScenes, content.languages, target, hidden, draft.randomCollections]);
+  // "Every scene that fits" is the whole library's pool, drills and hidden
+  // scenes left out as the draw leaves them out.
+  const poolAll = useMemo(() => randomPool(libraryScenes, content.languages, target, { collections: [] }, hidden).length, [libraryScenes, content.languages, target, hidden]);
+  const missing = random ? missingCollections(libraryScenes, { collections: draft.randomCollections }) : [];
 
   const filtering = needle !== "" || category !== "";
   const selected = library ? scenarios.find((s) => s.id === draft.scenario) : undefined;
@@ -235,7 +272,7 @@ export default function SceneTab({
                 chosen={draft.randomCollections}
                 poolSize={pool.length}
                 missing={missing}
-                emptyMessage={emptyPoolMessage({ collections: draft.randomCollections }, target)}
+                emptyMessage={draftPoolMessage(content, draft, hidden)}
                 onSelect={() => onChange({ ...draft, scenarioMode: "random" })}
                 onToggle={(key) => onChange(togglePoolCollection(draft, key))}
                 onAll={() => onChange({ ...draft, scenarioMode: "random", randomCollections: [] })}
@@ -259,13 +296,14 @@ export default function SceneTab({
             const bodyId = `folder-${g.key || "other"}`.replace(/\s+/g, "-");
             return (
               <section key={g.key} aria-label={g.name} className="flex flex-col gap-2">
+                <div className="group/folder flex min-w-0 items-center gap-1">
                 <button
                   type="button"
                   aria-expanded={open}
                   aria-controls={bodyId}
                   disabled={empty}
                   onClick={() => toggle(g)}
-                  className={`flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1.5 text-left hover:bg-raised disabled:cursor-default disabled:hover:bg-transparent ${g.foreign ? "opacity-60" : ""}`}
+                  className={`flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1.5 text-left hover:bg-raised disabled:cursor-default disabled:hover:bg-transparent ${g.foreign ? "opacity-60" : ""}`}
                 >
                   <span className={`shrink-0 transition-transform ${open ? "" : "-rotate-90"}`}>
                     <Chevron open={false} />
@@ -289,25 +327,71 @@ export default function SceneTab({
                       · {selected.title}
                     </span>
                   )}
+                  {g.hidden && (
+                    <span className="shrink-0 rounded-full border border-line px-2 text-xs text-fg-3" title="Listed only because the selected scene is in it" data-testid="folder-hidden">
+                      hidden
+                    </span>
+                  )}
                 </button>
+                <HideButton
+                  label={g.hidden ? `Restore folder ${g.name}` : `Hide folder ${g.name}`}
+                  text={g.hidden ? "Restore" : "Hide folder"}
+                  restore={g.hidden}
+                  onClick={() => void toggleHidden("collection", g.key, !g.hidden, `folder ${g.name}`)}
+                  testId="hide-folder"
+                />
+                </div>
                 {open && !empty && (
                   <div id={bodyId} className={`${GRID} ${g.foreign ? "opacity-75" : ""}`}>
-                    {g.items.map((s) => (
-                      <ScenarioCard
-                        key={s.id}
-                        title={s.title}
-                        summary={s.summary}
-                        category={s.category}
-                        drill={s.format === "drill"}
-                        selected={library && draft.scenario === s.id}
-                        onClick={() => pick(s.id)}
-                      />
-                    ))}
+                    {g.items.map((s) => {
+                      const isHidden = isHiddenScene(s, hidden);
+                      // A scene hidden only through its folder is restored with the folder.
+                      const own = hidden.scenarios.includes(s.id);
+                      return (
+                        <ScenarioCard
+                          key={s.id}
+                          title={s.title}
+                          summary={s.summary}
+                          category={s.category}
+                          drill={s.format === "drill"}
+                          selected={library && draft.scenario === s.id}
+                          hidden={isHidden}
+                          onClick={() => pick(s.id)}
+                          onHide={isHidden && !own ? undefined : () => void toggleHidden("scenario", s.id, !own, s.title)}
+                        />
+                      );
+                    })}
                   </div>
                 )}
               </section>
             );
           })}
+
+          {(lastHidden || hideError) && (
+            <p role="status" className={`text-sm ${hideError ? "text-err" : "text-fg-2"}`} data-testid="hide-status">
+              {hideError ?? (
+                <>
+                  Hid {lastHidden!.name}.{" "}
+                  <button
+                    type="button"
+                    className="text-accent hover:underline"
+                    onClick={() => {
+                      const h = lastHidden!;
+                      void toggleHidden(h.kind, h.key, false, h.name);
+                    }}
+                    data-testid="hide-undo"
+                  >
+                    Undo
+                  </button>
+                </>
+              )}
+            </p>
+          )}
+
+          {hiddenRows.length > 0 && (
+            <HiddenList rows={hiddenRows} scenarios={libraryScenes} open={showHidden} onToggle={() => setShowHidden(!showHidden)}
+              onRestore={(r, name) => void toggleHidden(r.kind, r.key, false, name)} />
+          )}
       </div>
 
       {/* A random scene may draw one set wherever the session says: the
@@ -375,7 +459,9 @@ function ScenarioCard({
   category,
   drill = false,
   selected,
+  hidden = false,
   onClick,
+  onHide,
 }: {
   title: string;
   summary: string;
@@ -383,14 +469,23 @@ function ScenarioCard({
   /** A drill (First steps): the narrator drills words, no conversation. */
   drill?: boolean;
   selected: boolean;
+  /** Hidden, and listed only because it is the selected scene. */
+  hidden?: boolean;
   onClick: () => void;
+  /** Hide it, or (hidden) restore it; absent for a scene hidden through
+   *  its folder, which the folder's Restore brings back. */
+  onHide?: () => void;
 }) {
+  // The hide action sits beside the card's own button (a button can't hold
+  // another): in its top corner, always shown on a touch screen, and from
+  // `sm` up on hover or keyboard focus, so the grid stays calm.
   return (
+    <div className="group/card relative min-w-0">
     <button
       type="button"
       aria-pressed={selected}
       onClick={onClick}
-      className={`flex min-w-0 flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors ${
+      className={`flex h-full w-full min-w-0 flex-col items-start gap-1 rounded-lg border p-3 pr-10 text-left transition-colors ${
         selected ? "border-accent bg-accent-soft" : "border-line bg-panel hover:border-line-strong"
       }`}
     >
@@ -406,7 +501,109 @@ function ScenarioCard({
           {category}
         </span>
       )}
+      {hidden && (
+        <span className="text-sm text-fg-3 sm:text-[11px]" data-testid="scene-hidden">
+          Hidden · shown because it's selected
+        </span>
+      )}
     </button>
+    {onHide && (
+      <button
+        type="button"
+        aria-label={hidden ? `Restore ${title}` : `Hide ${title}`}
+        title={hidden ? "Restore this scene" : "Hide this scene"}
+        onClick={onHide}
+        data-testid="hide-scene"
+        className="absolute top-1.5 right-1.5 flex size-8 items-center justify-center rounded-md text-fg-3 transition-opacity hover:bg-raised hover:text-fg focus-visible:opacity-100 sm:opacity-0 sm:group-hover/card:opacity-100 sm:group-focus-within/card:opacity-100"
+      >
+        {hidden ? <RestoreGlyph /> : <TrashGlyph />}
+      </button>
+    )}
+    </div>
+  );
+}
+
+/** A folder's Hide (or Restore): quiet beside the folder's name, its words
+ *  from `sm` up, the icon alone on a phone. */
+function HideButton({ label, text, restore, onClick, testId }: { label: string; text: string; restore: boolean; onClick: () => void; testId: string }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      data-testid={testId}
+      className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-sm text-fg-3 hover:bg-raised hover:text-fg sm:text-xs"
+    >
+      {restore ? <RestoreGlyph /> : <TrashGlyph />}
+      <span className="hidden sm:inline">{text}</span>
+    </button>
+  );
+}
+
+/** An arrow turning back: Restore. */
+function RestoreGlyph() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className="size-4 shrink-0">
+      <path d="M4 8h8.5a4 4 0 0 1 0 8H8M4 8l3.2-3.2M4 8l3.2 3.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** The bottom of the list: "N hidden — show", and open, each hidden scene
+ *  and folder with Restore. A hide for a scene the library no longer has
+ *  is listed by its id, so it can still be cleared. */
+function HiddenList({
+  rows,
+  scenarios,
+  open,
+  onToggle,
+  onRestore,
+}: {
+  rows: HiddenScene[];
+  scenarios: readonly Scenario[];
+  open: boolean;
+  onToggle: () => void;
+  onRestore: (r: HiddenScene, name: string) => void;
+}) {
+  const describe = (r: HiddenScene) => {
+    if (r.kind === "collection") {
+      const n = scenarios.filter((s) => collectionKey(s) === r.key).length;
+      return { name: `folder ${r.key || OTHER_SCENES}`, title: r.key || OTHER_SCENES, meta: n ? `Folder · ${scenesWord(n)}` : "Folder · not in the library now" };
+    }
+    const s = scenarios.find((x) => x.id === r.key);
+    return { name: s?.title ?? r.key, title: s?.title ?? r.key, meta: s ? (s.collection ?? OTHER_SCENES) : "Not in the library now" };
+  };
+  return (
+    <section aria-label="Hidden scenes" className="flex flex-col gap-2" data-testid="hidden-scenes">
+      <p className="text-sm text-fg-3">
+        {rows.length} hidden ·{" "}
+        <button type="button" className="text-fg-2 hover:text-fg hover:underline" aria-expanded={open} onClick={onToggle} data-testid="hidden-toggle">
+          {open ? "hide list" : "show"}
+        </button>
+      </p>
+      {open && (
+        <div className="flex flex-col gap-1.5">
+          <h3 className="text-sm font-medium text-fg">Hidden scenes</h3>
+          <ul className="overflow-hidden rounded-lg border border-line">
+            {rows.map((r) => {
+              const d = describe(r);
+              return (
+                <li key={`${r.kind}:${r.key}`} className="flex items-center gap-3 border-b border-line px-3 py-2 last:border-b-0" data-testid={`hidden-${r.kind}`}>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-fg-2">{d.title}</div>
+                    <div className="truncate text-sm text-fg-3 sm:text-xs">{d.meta}</div>
+                  </div>
+                  <Button variant="ghost" className="px-2 py-1 text-sm sm:text-xs" aria-label={`Restore ${d.name}`} onClick={() => onRestore(r, d.name)}>
+                    Restore
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

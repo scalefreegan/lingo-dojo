@@ -85,6 +85,16 @@ export function FolderSelect({
   );
 }
 
+/** A trash can: a delete (a saved pack, a History session) or hiding a
+ *  library scene. Decorative: the button around it carries the label. */
+export function TrashGlyph({ className = "size-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+      <path d="M3.5 5.5h13M8 5.5V4c0-.6.4-1 1-1h2c.6 0 1 .4 1 1v1.5M5 5.5l.8 10.1c.1.8.7 1.4 1.5 1.4h5.4c.8 0 1.4-.6 1.5-1.4L15 5.5M8.3 8.5v5.5M11.7 8.5v5.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /** A chevron that rotates open — the Customize tab's row disclosure. */
 export function Chevron({ open }: { open: boolean }) {
   return (

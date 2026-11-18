@@ -8,8 +8,11 @@ import { Button, inputClass } from "./ui";
  * session practises. Each language is its own profile (level, variant,
  * goals) with its own packs, drafts and History, so switching reloads the
  * app like a learner switch does (AuthGate keys App by the language). The
- * menu also adds a language and archives the current one; a learner keeps
- * at least one, so the last can't be archived. */
+ * menu also sets the current language's level (the same row the profile
+ * pill's Save writes), adds a language, and stops learning the current one
+ * (an archive: its History, packs and phrase bank are kept but hidden). A
+ * learner keeps at least one, so the last can't be stopped; the button
+ * stays, disabled, and says why. */
 export default function LanguageSwitcher({
   learner,
   language,
@@ -18,6 +21,7 @@ export default function LanguageSwitcher({
   defaultLevel = "",
   onSwitch,
   onChanged,
+  onSaveLevel,
 }: {
   learner: LearnerInfo;
   /** The session's active language: one of learner.languages. */
@@ -31,16 +35,30 @@ export default function LanguageSwitcher({
   /** A language was archived: re-read who's practising (the server moved
    *  this session to another of the learner's languages). */
   onChanged: () => Promise<void> | void;
+  /** Save the current language's level (App reloads the library and the
+   *  gate, as the profile pill's Save does); an error sentence, or null. */
+  onSaveLevel: (level: string) => Promise<string | null>;
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // Stop learning asks in place, so the menu says exactly what is kept.
+  const [stopping, setStopping] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [levelNote, setLevelNote] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
+  const name = language.target_language || "this language";
+  const last = learner.languages.length <= 1;
+  // A level outside the mode's list (typed before, or an older library) is
+  // still shown, first, never silently replaced.
+  const levelOptions = language.level && !levels.includes(language.level) ? [language.level, ...levels] : levels;
 
   const close = () => {
     setOpen(false);
     setAdding(false);
     setMessage(null);
+    setStopping(false);
+    setLevelNote(null);
   };
 
   useEffect(() => {
@@ -52,6 +70,8 @@ export default function LanguageSwitcher({
       setOpen(false);
       setAdding(false);
       setMessage(null);
+      setStopping(false);
+      setLevelNote(null);
       pillRef.current?.focus();
     };
     document.addEventListener("keydown", onKey);
@@ -59,14 +79,25 @@ export default function LanguageSwitcher({
   }, [open]);
 
   async function archive() {
-    if (!window.confirm(`Archive ${language.target_language || "this language"} for ${learner.name}? It leaves this list; its packs and History are kept.`)) return;
+    setBusy(true);
     try {
       await archiveLanguage(learner.id, language.id);
       close();
       await onChanged();
     } catch (e) {
       setMessage(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setBusy(false);
     }
+  }
+
+  async function chooseLevel(level: string) {
+    if (level === language.level) return;
+    setBusy(true);
+    setLevelNote(null);
+    const error = await onSaveLevel(level);
+    setBusy(false);
+    setLevelNote(error ? { tone: "err", text: error } : { tone: "ok", text: `${name} is now ${level}` });
   }
 
   return (
@@ -125,6 +156,30 @@ export default function LanguageSwitcher({
                 </button>
               ))}
             </div>
+            {levelOptions.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <label className="flex items-center justify-between gap-3 text-sm text-fg-2 sm:text-xs">
+                  <span className="whitespace-nowrap">Level</span>
+                  <select
+                    className={`${inputClass} w-auto min-w-24`}
+                    value={language.level}
+                    disabled={busy}
+                    onChange={(e) => void chooseLevel(e.target.value)}
+                    data-testid="language-menu-level"
+                  >
+                    {!language.level && <option value="">—</option>}
+                    {levelOptions.map((l) => (
+                      <option key={l}>{l}</option>
+                    ))}
+                  </select>
+                </label>
+                {levelNote && (
+                  <p role="status" className={`text-sm sm:text-xs ${levelNote.tone === "ok" ? "text-accent" : "text-err"}`} data-testid="language-level-note">
+                    {levelNote.text}
+                  </p>
+                )}
+              </div>
+            )}
             {adding ? (
               <AddLanguage
                 learnerId={learner.id}
@@ -139,19 +194,50 @@ export default function LanguageSwitcher({
                 }}
               />
             ) : (
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <Button onClick={() => setAdding(true)} data-testid="add-language">
+              <div className="flex flex-col gap-3">
+                <Button className="self-start" onClick={() => setAdding(true)} data-testid="add-language">
                   + Add a language
                 </Button>
-                {learner.languages.length > 1 && (
-                  <button type="button" className="text-sm text-fg-3 hover:text-err hover:underline sm:text-xs" onClick={() => void archive()} data-testid="archive-language">
-                    Archive {language.target_language || "this one"}
-                  </button>
-                )}
+                <div className="flex flex-col gap-2 border-t border-line pt-3">
+                  {stopping ? (
+                    <div role="alert" className="flex flex-col gap-2 rounded-md bg-err-soft p-2.5 text-sm text-fg sm:text-xs" data-testid="stop-language-confirm">
+                      <p>
+                        Stop learning {name}? It's archived for {learner.name}: it leaves this menu, and its History, saved packs and phrase bank are kept but
+                        hidden. Adding {name} again later starts a fresh profile.
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button className="border-err/60 text-err" disabled={busy} onClick={() => void archive()} data-testid="stop-language-yes">
+                          {busy ? "Stopping…" : `Stop learning ${name}`}
+                        </Button>
+                        <Button variant="ghost" disabled={busy} onClick={() => setStopping(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <Button
+                        variant="ghost"
+                        className="self-start border-err/40 text-err hover:bg-err-soft hover:text-err disabled:hover:bg-transparent"
+                        disabled={last}
+                        aria-describedby={last ? "stop-language-why" : undefined}
+                        onClick={() => setStopping(true)}
+                        data-testid="archive-language"
+                      >
+                        Stop learning {name}…
+                      </Button>
+                      {last && (
+                        <p id="stop-language-why" className="text-sm text-fg-3 sm:text-xs">
+                          A learner needs at least one language. Add another first.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             )}
             {message && <p className="text-sm text-err sm:text-xs">{message}</p>}
-            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs, History and phrase bank. Change this one's level, variant, goals and notes under the profile pill.</p>
+            <p className="text-sm text-fg-3 sm:text-xs">Each language keeps its own level, packs, History and phrase bank. Its variant, goals and notes are under the profile pill.</p>
           </div>
         </>
       )}

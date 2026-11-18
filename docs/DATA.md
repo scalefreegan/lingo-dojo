@@ -2906,6 +2906,66 @@ rows, the week card, Practice again), `SessionRecap.tsx` (Since last time),
 `revisit.test.mjs`, `revisit.http.test.mjs`, `db-migration-0008.test.mjs`,
 `migration-0008.pg.test.mjs`.
 
+## Hidden scenes
+
+Added 2026-11-18 (bead `ld-ke1`, migration `0009_hidden_scenes`). A learner
+practising several languages can hide the library scenes and folders one of
+them will never use (First steps (Mandarin) while learning Spanish). The
+library is content everyone shares, so a hide is a per-language-profile
+preference, never a file delete, and it is soft only in the sense that it
+is undone in one tap: unhide deletes the row, hiding again inserts a new one.
+
+Table `hidden_scenes (learner_id, language_profile_id, kind, key,
+hidden_at)`, primary key `(language_profile_id, kind, key)` (the unique
+key), `kind` checked `in ('scenario', 'collection')`, `key` at most 200
+characters (checked), composite key `(language_profile_id, learner_id)` to
+`language_profiles (id, learner_id)` `ON DELETE CASCADE`, like
+`phrase_dismissals`. `key` is a scenario id, or a collection name exactly as
+the library spells it (`""` for the scenes in no collection, as the random
+pool names them); it is not checked against the library, which can change
+under a stored hide (a hide for a scene gone from it is listed by its id
+and can still be restored). The reader role (0005) gets nothing on it.
+Queries only in `scripts/db/hidden.ts`, through `forLanguageProfile`.
+
+Routes (`web/server/hidden.ts`, wrap's `learner: true`; the language is the
+session's, never one named in the body, so another learner's or language's
+hides are neither seen nor removed):
+
+- `GET /api/hidden-scenes` → `{hidden: [{kind, key, hiddenAt}]}`, oldest first.
+- `POST /api/hidden-scenes {kind, key}` → `{hidden, created}`: 201 when made,
+  200 (its first `hiddenAt` kept) when it was hidden already.
+- `DELETE /api/hidden-scenes {kind, key}` → `{unhidden}`, false (still 200)
+  when it wasn't hidden.
+
+A malformed body is a 400 (`readHiddenRef` in `web/shared/scenes.ts`: a
+known kind, a string key, a scenario's not blank, at most `MAX_HIDDEN_KEY`,
+no NUL).
+
+What a hide changes, by one pure rule in `web/shared/scenes.ts`
+(`isHiddenScene`: the scenario itself, or its whole collection) used by the
+server and the Scene tab alike:
+
+- **The random draw.** `randomPool` takes the hides and leaves those scenes
+  out before the drill rule; `drawOrRefuse` gets them from `hiddenSet` at a
+  session's start (`conversations.ts`) and for an export (`content.ts`). A
+  kept draw (`drawn`) hidden since is drawn afresh. When the hides alone
+  empty the pool (`emptiedByHides`), the 400 says so and points at Restore.
+  The CLI export has no learner and hides nothing.
+- **The Scene tab** (`SceneTab.tsx`, `visibleScenes`): hidden ones leave the
+  list, its folders, the category chips' counts and the Random card's
+  counts and chips at once (App's `setSceneHidden`: optimistic, put back
+  when the server refuses), with a "Hid … Undo" line, and "N hidden · show"
+  at the bottom lists each with Restore. No confirm: it is that easily
+  undone. The selected scene stays listed even when hidden, marked so, so a
+  draft never points at something the tab doesn't show.
+- **Nothing else.** A pack, a revisit or Practice again that names a hidden
+  scene plays it; preview and assemble never draw. Hides are not part of a
+  pack or its snapshot.
+
+Tests: `hidden.test.mjs` (pure rules, rows, isolation, the table's checks),
+`hidden.http.test.mjs` (401, 409 `stale_learner`, 400s, the draw and the
+export), `db-migration-0009.test.mjs`.
+
 ## Docs to update as phases land
 
 - `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user
@@ -2936,6 +2996,7 @@ rows, the week card, Practice again), `SessionRecap.tsx` (Since last time),
 | 10 | Tailscale serve: allowed host, origin test (built); verify login and a voice turn from a second device (owner) | 1 |
 | 11 | Session length: picker, Time budget section, per-turn clock, +5 min | none (can ship first) |
 | 12 | Revisit (`ld-qxw`, migration 0008): History by scene, Practice again, building on the last attempt, the recap's comparison, the week card and daily digest. **Built** (see "Revisit") | 5, 6 |
+| 13 | Hidden scenes (`ld-ke1`, migration 0009): hide library scenes and folders per language, left out of the Scene tab and random draws. **Built** (see "Hidden scenes") | 2 |
 
 Phases 5–8 can run in parallel once 4 lands.
 

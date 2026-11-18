@@ -20,6 +20,7 @@ import type {
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
+  HiddenSceneReply, HiddenScenesReply, UnhideSceneReply,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
@@ -507,6 +508,22 @@ export function updatePhrase(id: string, body: PhraseInput): Promise<PhraseReply
 
 export function deletePhrase(id: string): Promise<{ deleted: true }> {
   return req<{ deleted: true }>(`/api/phrases/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/* ------------------------------ hidden scenes ----------------------------- */
+// Library scenes and collections the active language has hidden from its
+// Scene tab and random draws (docs/DATA.md §Hidden scenes).
+
+export function listHiddenScenes(): Promise<HiddenScenesReply> {
+  return req<HiddenScenesReply>("/api/hidden-scenes");
+}
+
+export function hideScene(kind: "scenario" | "collection", key: string): Promise<HiddenSceneReply> {
+  return req<HiddenSceneReply>("/api/hidden-scenes", json({ kind, key }));
+}
+
+export function unhideScene(kind: "scenario" | "collection", key: string): Promise<UnhideSceneReply> {
+  return req<UnhideSceneReply>("/api/hidden-scenes", json({ kind, key }, "DELETE"));
 }
 
 /* ------------------------------ conversations ----------------------------- */

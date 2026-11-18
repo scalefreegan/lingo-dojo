@@ -6,6 +6,7 @@ import {
 } from "./auth.ts";
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
+import { handleHiddenScenes } from "./hidden.ts";
 import { handlePhrases } from "./phrases.ts";
 import { handlePractice } from "./practice.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
@@ -137,6 +138,9 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       server.middlewares.use("/api/packs", wrap(handlePacks, { learner: true }));
       server.middlewares.use("/api/folders", wrap(handleFolders, { learner: true }));
       server.middlewares.use("/api/pack-revisions", wrap(handlePackRevisions, { learner: true }));
+      // Library scenes and collections the active language has hidden
+      // (hidden.ts): a per-language preference, the library itself untouched.
+      server.middlewares.use("/api/hidden-scenes", wrap(handleHiddenScenes, { learner: true }));
       server.middlewares.use("/api/assemble", wrap(handleAssemble, { learner: true }));
       server.middlewares.use("/api/export", wrap(handleExport, { learner: true }));
       // The embedded agent (SSE, auto-commit of content/ after each turn) and

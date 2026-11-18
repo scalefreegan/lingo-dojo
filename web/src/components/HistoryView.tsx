@@ -6,7 +6,7 @@ import { inBankLanguage } from "./shared";
 import { RubyToggle } from "./Ruby";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
-import { Badge, Button, Card } from "./ui";
+import { Badge, Button, Card, TrashGlyph } from "./ui";
 
 /* History, in the Library tab: the active learner's saved voice sessions
  * (docs/DATA.md §Conversations), grouped by scene (§Revisit): each scene
@@ -16,8 +16,15 @@ import { Badge, Button, Card } from "./ui";
  * session builds on that attempt. Above the list (adults), a card for the
  * last 7 days and the digest written once a day. Opening a session shows its
  * transcript read-only in the live session's own components, with its
- * glosses tappable as they were; there is no audio to replay. Delete is for
- * good (it asks first). */
+ * glosses tappable as they were; there is no audio to replay. Delete (the
+ * trash button on every row) is for good, so it asks first: the transcript
+ * and recap go, while the phrases a session put in the bank stay (a
+ * conversation's delete never erases memory, docs/DATA.md §Schema). A scene
+ * played more than once deletes all its sessions from its row, or one at a
+ * time from its expanded list. */
+
+/** What a delete asks, in the same words wherever it is offered. */
+const forGood = "Its transcript and recap are gone for good; the phrases it added stay in your phrase bank.";
 
 const PAGE = 20;
 /** While today's digest is being written, ask again this often, this long. */
@@ -104,7 +111,7 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
   }
 
   async function remove(c: ConversationSummary): Promise<boolean> {
-    if (!window.confirm(`Delete "${c.title}" (${when(c.startedAt)}) from your History?\nIts transcript is gone for good.`)) return false;
+    if (!window.confirm(`Delete "${c.title}" (${when(c.startedAt)}) from your History?\n${forGood}`)) return false;
     try {
       await deleteConversation(c.id);
     } catch (e) {
@@ -114,6 +121,35 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
     // A scene's count and latest session may both change: list again.
     setRound((n) => n + 1);
     return true;
+  }
+
+  /** Every session of a scene played more than once: read its list a page
+   *  at a time, then delete each (one route, as the rows do). Stops at the
+   *  first failure and says how far it got; the list is read again either
+   *  way. */
+  async function removeScene(g: SceneGroup): Promise<boolean> {
+    const title = g.latest.title;
+    if (!window.confirm(`Delete all ${g.attempts} sessions of "${title}" from your History?\nTheir transcripts and recaps are gone for good; the phrases they added stay in your phrase bank.`)) return false;
+    setError(null);
+    let done = 0;
+    try {
+      const ids: string[] = [];
+      for (let offset: number | null = 0; offset != null; ) {
+        const r = await listConversations(offset, 100, g.sceneKey);
+        ids.push(...r.conversations.map((c) => c.id));
+        offset = r.nextOffset;
+      }
+      for (const id of ids) {
+        await deleteConversation(id);
+        done++;
+      }
+      return true;
+    } catch (e) {
+      setError(`Could not delete every session of "${title}" (${done} deleted): ${errText(e)}`);
+      return false;
+    } finally {
+      setRound((n) => n + 1);
+    }
   }
 
   if (open) {
@@ -140,7 +176,7 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
       ) : (
         <ul className="overflow-hidden rounded-lg border border-line" aria-label="Past sessions">
           {groups.map((g) => (
-            <SceneRow key={g.sceneKey} group={g} onOpen={setOpen} onDelete={remove} onPracticeAgain={onPracticeAgain} />
+            <SceneRow key={g.sceneKey} group={g} onOpen={setOpen} onDelete={remove} onDeleteScene={removeScene} onPracticeAgain={onPracticeAgain} />
           ))}
         </ul>
       )}
@@ -198,12 +234,22 @@ function Badges({ c }: { c: ConversationSummary }) {
   );
 }
 
+/** A row's trash button: the icon, its name as the label and tooltip. */
+function DeleteButton({ label, onClick, testId }: { label: string; onClick: () => void; testId: string }) {
+  return (
+    <Button variant="ghost" className={`${small} min-w-10 justify-center text-fg-3 hover:text-err`} aria-label={label} title={label} onClick={onClick} data-testid={testId}>
+      <TrashGlyph />
+    </Button>
+  );
+}
+
 /** One scene: its latest session, how many it has, and (expanded) all of
  *  them. A scene played once is just that session. */
-function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
+function SceneRow({ group, onOpen, onDelete, onDeleteScene, onPracticeAgain }: {
   group: SceneGroup;
   onOpen: (c: ConversationSummary) => void;
   onDelete: (c: ConversationSummary) => Promise<boolean>;
+  onDeleteScene: (g: SceneGroup) => Promise<boolean>;
   onPracticeAgain?: (c: ConversationSummary) => Promise<void>;
 }) {
   const c = group.latest;
@@ -242,7 +288,7 @@ function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
           <Button variant="ghost" className={small} onClick={() => onOpen(c)}>
             {many ? "Open latest" : "Open"}
           </Button>
-          {many ? (
+          {many && (
             <Button
               variant="ghost"
               className={small}
@@ -256,11 +302,12 @@ function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
             >
               {expanded ? "Hide" : `All ${group.attempts}`}
             </Button>
-          ) : (
-            <Button variant="ghost" className={`${small} text-err`} onClick={() => void onDelete(c)} aria-label={`Delete ${c.title}`}>
-              Delete
-            </Button>
           )}
+          <DeleteButton
+            label={many ? `Delete all ${group.attempts} sessions of ${c.title}` : `Delete ${c.title}`}
+            onClick={() => void (many ? onDeleteScene(group) : onDelete(c))}
+            testId="history-delete"
+          />
         </div>
       </div>
       {many && expanded && (
@@ -282,18 +329,15 @@ function SceneRow({ group, onOpen, onDelete, onPracticeAgain }: {
                   <Button variant="ghost" className={small} onClick={() => onOpen(x)}>
                     Open
                   </Button>
-                  <Button
-                    variant="ghost"
-                    className={`${small} text-err`}
+                  <DeleteButton
+                    label={`Delete ${x.title} of ${when(x.startedAt)}`}
                     // The scene's header is listed again by the parent; this
                     // list is the row's own, so it drops the session itself.
                     onClick={async () => {
                       if (await onDelete(x)) setItems((was) => (was ?? []).filter((y) => y.id !== x.id));
                     }}
-                    aria-label={`Delete ${x.title} of ${when(x.startedAt)}`}
-                  >
-                    Delete
-                  </Button>
+                    testId="history-delete-one"
+                  />
                 </div>
               </li>
             ))}
@@ -427,7 +471,7 @@ function ConversationView({ id, bankLanguage, onBack, onDelete, onPracticeAgain 
         <span className="flex-1" />
         {c && <PracticeAgainButton c={c} onPracticeAgain={onPracticeAgain} />}
         <Button variant="ghost" className={`${small} text-err`} onClick={onDelete} disabled={!c}>
-          Delete
+          <TrashGlyph /> Delete
         </Button>
       </div>
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">Could not open it: {error}</p>}
