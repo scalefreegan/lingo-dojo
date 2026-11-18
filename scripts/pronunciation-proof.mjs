@@ -40,7 +40,7 @@ import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
-  AZURE_RULES, FALLBACK_TRUST, TONE_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
+  AZURE_RULES, FALLBACK_TRUST, TONE_RULES, TRIM_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
   trackPitch, withTone,
 } from "./pronunciation.mjs";
 import { PHRASES, SINGLES, parseLabels, saidTones as readSaid, speakerTable, speakerTally } from "./pronunciation-recordings.mjs";
@@ -662,16 +662,21 @@ function recordingsReport() {
   const { t, rows, problems, detail, bySpeaker } = recordings;
   const right = t.right.ok + t.right.unsure + t.right.off;
   const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
+  // The table below splits what this line adds together: say so, with
+  // the numbers, or the two look as if they disagree.
+  const n = (c) => c.ok + c.unsure + c.off;
+  const doubtedRight = bySpeaker.reduce((a, s) => a + n(s.doubted.right), 0);
+  const doubtedWrong = bySpeaker.reduce((a, s) => a + n(s.doubted.wrong), 0);
   const out = [
     "# Real recordings: how the scorer did",
     "",
     `Written by \`node scripts/pronunciation-proof.mjs\` on ${new Date().toISOString().slice(0, 10)}. Personal: this file stays in the gitignored recordings folder.`,
     "",
-    `${rows.length} recordings from \`labels.tsv\`, ${bySpeaker.length} speaker(s). Syllables said as shown: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Syllables said wrong on purpose: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}.`,
+    `${rows.length} recordings from \`labels.tsv\`, ${bySpeaker.length} speaker(s). Syllables said as shown: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Syllables said wrong on purpose: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}. These totals are over every clip. Of them, ${doubtedRight} said-as-shown and ${doubtedWrong} wrong-on-purpose syllables are in clips the speaker marked "not sure I said it right"; the table below counts those apart, so its first columns are out of ${right - doubtedRight} and ${wrong - doubtedWrong}.`,
     "",
     "## By speaker",
     "",
-    "A label is what the speaker was aiming for, not what came out: a flag on a beginner's \"said as shown\" clip may be a real mistake caught. Clips the speaker marked \"not sure I said it right\" are in the last two columns and in no other.",
+    "A label is what the speaker was aiming for, not what came out: a flag on a beginner's \"said as shown\" clip may be a real mistake caught. Each syllable is counted once: in the \"kept without doubt\" columns, or, if its clip was marked \"not sure I said it right\", in the last two.",
     "",
     ...speakerTable(bySpeaker),
     "",
@@ -1045,7 +1050,7 @@ p(scribeNote);
 p("## Speed");
 p(`Scoring a 3-second, 16 kHz recording on this machine (${process.arch}, Node ${process.version}): ${timing}. Nearly all of it is the pitch track.`);
 p("## Settings this ran with");
-p(`\`TONE_RULES\` = \`${JSON.stringify(RULES)}\`${process.env.LINGO_PROOF_RULES ? " (overridden by LINGO_PROOF_RULES: not the engine's defaults)" : ""}; cuts made by energy are trusted at ${FALLBACK_TRUST}.`);
+p(`\`TONE_RULES\` = \`${JSON.stringify(RULES)}\`${process.env.LINGO_PROOF_RULES ? " (overridden by LINGO_PROOF_RULES: not the engine's defaults)" : ""}; cuts made by energy are trusted at ${FALLBACK_TRUST}. Before anything is cut or measured the recording is trimmed to its speech (\`TRIM_RULES\` = \`${JSON.stringify(TRIM_RULES)}\`): on these clips that removes no voiced frame and no loud one, so it changes nothing here; it is for real recordings, which have seconds of room and key noise around the speech. Its numbers were chosen on 43 real clips from one speaker and are set on the keeping side.`);
 p("## Before wiring this to a route");
 p([
   "- **Start with single syllables and drills.** Their flags have room to spare; phrase flags rest on a half-semitone margin chosen on these clips, and the held-out phrase false alarms are the highest number in this report.",

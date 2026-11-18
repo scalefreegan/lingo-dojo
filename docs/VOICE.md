@@ -576,7 +576,7 @@ One result whichever engine ran:
 
 `verdict` is `off` only when the engine is confident; whatever it can't
 vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
-`neutral`, `untimed`, `unclear`, `omitted`). A false alarm costs more than a
+`neutral`, `untimed`, `octave`, `unclear`, `omitted`). A false alarm costs more than a
 miss. `margin` is how far the contour is from the nearest right answer, in
 semitones (0 or more: every accepted tone is ruled out). `pitch` is the syllable's curve for drawing: 16 points in semitones
 above or below the speaker's median, `null` where unvoiced;
@@ -621,7 +621,19 @@ browser already sends, with no dependency:
    Octave slips are undone per voiced run (a short piece an octave from
    the rest of its run), never across a silence. Each frame also carries
    its zero-crossing rate, which tells creak from the hiss of s or sh.
-2. Cuts: per-syllable `timings` when the caller has extents it can trust
+2. `trimToSpeech`: everything that isn't the speech is silenced first.
+   A push-to-talk recording has a second of room before and after the
+   words, with key presses and short pitched blips in it; taken as speech
+   they made a lone syllable read as creaky (one blip stretches its voiced
+   span) and spread a phrase's cuts into the silence. Speech is the voiced
+   runs of 80 ms or more within 26 dB of the loudest voiced frame, plus
+   shorter ones that loud within 200 ms of those; 250 ms is kept before
+   the first and 120 ms after the last, and further for as long as the
+   sound stays loud (a creaky last syllable). These numbers (`TRIM_RULES`)
+   were chosen on 43 real clips from one speaker, so each is set on the
+   keeping side; on the synthesized proof clips the trim removes no
+   voiced frame and no loud one.
+3. Cuts: per-syllable `timings` when the caller has extents it can trust
    (Azure's words), else `segmentSyllables`, which cuts the speech at its
    quietest, least voiced frames given the syllable count, kept on Scribe's
    character times when those are passed as `anchors` (below). Its cuts
@@ -629,13 +641,13 @@ browser already sends, with no dependency:
    syllable of a phrase needs a little more margin (`phraseMarginSt`),
    whoever made the cuts; neither is mixed into `quality`, which is only
    how clean the pitch measurement was.
-3. `classifyContour`: five points of each syllable's voiced part against
+4. `classifyContour`: five points of each syllable's voiced part against
    tone templates on Chao's five-level scale, scaled to the speaker's own
    range (`speakerRange`: pass one learnt from earlier turns as `speaker`;
    without it only the shape counts, each template stretched to the
    contour, plus the recording's own range from four syllables up). So a
    child's voice, a low adult voice and a narrow one are read the same way.
-4. The verdict. `ok` when an accepted tone is the best match or holds a
+5. The verdict. `ok` when an accepted tone is the best match or holds a
    third of the belief. `off` only when the contour *rules out* every
    accepted tone, the measurement is clean, and the syllable is long
    enough. `ruleMargins` says by how many semitones each tone is ruled
@@ -664,8 +676,16 @@ browser already sends, with no dependency:
    Still never flagged: a low fall said for a fourth tone, and second
    against third when the second dips or the third comes back up. A level
    pitch in the middle of a known range rules nothing out (a syllable
-   squeezed flat by its neighbours). Creak in the vowel supports an
-   expected third tone and makes anything else `unsure` (`creakFlags`).
+   squeezed flat by its neighbours). Creak in the vowel can confirm
+   but never flag: it supports an expected third tone, any other tone is
+   `ok` when its voiced part fits and nothing rules it out (at half
+   confidence: a low voice creaks wherever a tone touches the bottom of
+   its range, the end of a fourth tone as much as a third), and otherwise
+   the syllable is `unsure` (`creakFlags` lets creaky syllables be
+   flagged; off). A pitch track that jumps seven semitones or more
+   between neighbouring frames inside the syllable is an octave slip the
+   tracker didn't mend (it mends 80 ms or less): `unsure`, reason
+   `octave`, whatever the label.
    The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
    trades catches for false alarms.
 

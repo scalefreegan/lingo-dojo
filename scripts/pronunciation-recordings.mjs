@@ -231,6 +231,8 @@ const cellTally = () => ({ ok: 0, unsure: 0, off: 0 });
  * is a catch; on any other syllable an "off" is a false alarm. Syllables
  * from clips the speaker marked "not sure I said it right" are counted
  * apart (`doubted`): their label is the aim, and the aim may have missed.
+ * Every syllable is in exactly one of the two, so the table's counts add up
+ * to the totals only when both halves are added.
  */
 export function speakerTally(marks) {
   const by = new Map();
@@ -250,7 +252,7 @@ const share = (k, n) => (n ? `${k} of ${n} (${((100 * k) / n).toFixed(0)}%)` : "
 export function speakerTable(tally) {
   const rows = tally.map((s) => `| ${s.speaker} | ${s.group || "–"} | ${share(s.sure.wrong.off, total(s.sure.wrong))} | ${share(s.sure.right.off, total(s.sure.right))} | ${share(s.sure.right.unsure, total(s.sure.right))} | ${share(s.doubted.wrong.off, total(s.doubted.wrong))} | ${share(s.doubted.right.off, total(s.doubted.right))} |`);
   return [
-    "| Speaker | Group | Wrong on purpose: caught | Said as shown: flagged (false alarms) | Said as shown: scorer not sure | Marked \"not sure\", wrong on purpose: caught | Marked \"not sure\", said as shown: flagged |",
+    "| Speaker | Group | Clips kept without doubt, wrong on purpose: caught | Clips kept without doubt, said as shown: flagged (false alarms) | Clips kept without doubt, said as shown: scorer not sure | Clips marked \"not sure\", wrong on purpose: caught | Clips marked \"not sure\", said as shown: flagged |",
     "| --- | --- | --- | --- | --- | --- | --- |",
     ...rows,
   ];

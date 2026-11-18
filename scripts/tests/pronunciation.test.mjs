@@ -4,7 +4,7 @@ import fs from "node:fs";
 import {
   LOCAL_MAX_SECONDS, LOCAL_MAX_SYLLABLES, AZURE_MAX_SECONDS, AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, azureLocale, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
   classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
-  scoresTones, scribeCharTimings, segmentSyllables, speakerRange, trackPitch, withTone,
+  scoresTones, scribeCharTimings, segmentSyllables, speakerRange, trackPitch, trimToSpeech, withTone, TRIM_RULES,
 } from "../pronunciation.mjs";
 import { readCodePoints } from "../../web/src/script/zh.ts";
 
@@ -579,6 +579,174 @@ test("recorded pitch tracks: no flag on any correctly said syllable, the near mi
   assert.equal(replay("Tingting", "妈", ["mà"]).syllables[0].verdict, "off");
   assert.equal(replay("Reed", "麻", ["mà"]).syllables[0].verdict, "off");
   assert.equal(replay("Tingting", "骂", ["má"]).syllables[0].verdict, "off");
+});
+
+/** `speech` as a push-to-talk recording: a lead-in and a tail of room
+ *  noise around it, and whatever else is asked for. `blips` are short
+ *  pitched sounds ({ atMs, ms, hz, amp }, times from the start of the
+ *  recording), `clickAtMs` a key press (a short decaying thump). */
+function recording(speech, { leadMs = 700, tailMs = 1200, noise = 0.004, blips = [], clickAtMs = null, seed = 5 } = {}) {
+  const lead = Math.round((RATE * leadMs) / 1000);
+  const out = new Float32Array(lead + speech.length + Math.round((RATE * tailMs) / 1000));
+  let state = seed;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  for (let i = 0; i < out.length; i++) out[i] = noise * rand();
+  for (let i = 0; i < speech.length; i++) out[lead + i] += speech[i];
+  for (const b of blips) {
+    const from = Math.round((RATE * b.atMs) / 1000);
+    const len = Math.round((RATE * b.ms) / 1000);
+    for (let i = 0; i < len && from + i < out.length; i++) {
+      const x = (2 * Math.PI * b.hz * i) / RATE;
+      out[from + i] += b.amp * Math.min(1, i / 40, (len - i) / 40) * (Math.sin(x) + Math.sin(2 * x) / 2 + Math.sin(3 * x) / 3);
+    }
+  }
+  if (clickAtMs !== null) {
+    const from = Math.round((RATE * clickAtMs) / 1000);
+    for (let k = 0; k < 240 && from + k < out.length; k++) out[from + k] += 0.25 * Math.exp(-k / 40) * Math.sin(k / 3);
+  }
+  return { samples: out, leadMs, speechEndMs: leadMs + (speech.length / RATE) * 1000 };
+}
+
+test("trimToSpeech: the noise and blips around a syllable no longer count as speech", () => {
+  for (const seed of [11, 23, 57]) {
+    const said = speak([2], { seed });
+    // 700 ms of room noise, the syllable, a 40 ms pitched blip half a
+    // second later and 20 dB under it, another before it, a key press at
+    // the very end: a lone syllable as a person records it.
+    const rec = recording(said.samples, { blips: [{ atMs: 80, ms: 40, hz: 150, amp: 0.02 }, { atMs: 1650, ms: 40, hz: 260, amp: 0.02 }], clickAtMs: 2150 });
+    const raw = trackPitch(rec.samples, RATE);
+    const voicedAt = (track) => [...track.f0].map((f, i) => (f > 0 ? i * HOP_MS : -1)).filter((ms) => ms >= 0);
+    // The test is only a test if the tracker heard the blips as voice.
+    assert.ok(voicedAt(raw).some((ms) => ms > rec.speechEndMs + 300), "the trailing blip is voiced in the raw track");
+    const trimmed = trimToSpeech(raw);
+    const kept = voicedAt(trimmed);
+    assert.ok(kept.length >= 20);
+    assert.ok(kept[0] >= rec.leadMs && kept[kept.length - 1] <= rec.speechEndMs, `voiced only in the syllable (${kept[0]}–${kept[kept.length - 1]})`);
+    // Every voiced frame of the syllable itself is still there, unchanged.
+    for (let i = 0; i < raw.f0.length; i++) if (raw.f0[i] > 0 && i * HOP_MS >= rec.leadMs && i * HOP_MS <= rec.speechEndMs) assert.equal(trimmed.f0[i], raw.f0[i]);
+    // Outside the kept stretch there is no level left to cut on.
+    assert.equal(trimmed.rms[5], 0);
+    assert.equal(trimmed.rms[trimmed.rms.length - 2], 0);
+    assert.notEqual(trimmed, raw);
+    assert.equal(raw.rms[5] > 0, true, "the input is not changed");
+
+    // And so the syllable is read as what it is, and as wrong when it is.
+    const right = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(2), speaker: said.range }).syllables[0];
+    assert.deepEqual([right.verdict, right.heardTone], ["ok", 2], `seed ${seed}: ${right.reason}`);
+    assert.ok(right.startMs >= rec.leadMs - TRIM_RULES.beforeMs && right.endMs <= rec.speechEndMs + TRIM_RULES.afterMs + HOP_MS);
+    assert.equal(scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range }).syllables[0].verdict, "off");
+  }
+});
+
+test("trimToSpeech: a phrase in a long recording is cut where the speech is", () => {
+  const said = speak([1, 4, 2]);
+  const rec = recording(said.samples, { leadMs: 900, tailMs: 1500, blips: [{ atMs: 60, ms: 30, hz: 140, amp: 0.02 }, { atMs: 2900, ms: 50, hz: 120, amp: 0.02 }], clickAtMs: 3350 });
+  const r = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(1, 4, 2), speaker: said.range });
+  assert.deepEqual(verdicts(r), ["ok", "ok", "ok"]);
+  assert.deepEqual(r.syllables.map((x) => x.heardTone), [1, 4, 2]);
+  // Each piece sits on its own syllable, none in the silence.
+  r.syllables.forEach((x, k) => {
+    const mid = (x.startMs + x.endMs) / 2 - rec.leadMs;
+    assert.ok(mid > said.timings[k].startMs && mid < said.timings[k].endMs, `piece ${k + 1} is on syllable ${k + 1}`);
+  });
+  // A wrong tone in the middle is still caught.
+  assert.equal(scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range }).syllables[1].verdict, "off");
+});
+
+test("trimToSpeech never cuts into speech: a quiet consonant before the vowel, a soft last syllable, a clean clip", () => {
+  // A clip with nothing around the speech comes back as it is.
+  const clean = speak([1, 4]);
+  const cleanTrack = trackPitch(clean.samples, RATE);
+  assert.equal(trimToSpeech(cleanTrack), cleanTrack);
+
+  // 180 ms of quiet hiss (an sh, 20 dB under the vowel) right before the
+  // vowel, in a recording with a long lead-in: the hiss is kept.
+  const vowel = speak([4]).samples;
+  const hissMs = 180;
+  const hiss = new Float32Array(Math.round((RATE * hissMs) / 1000));
+  let state = 3;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  for (let i = 0; i < hiss.length; i++) hiss[i] = 0.03 * rand();
+  const sh = new Float32Array(hiss.length + vowel.length);
+  sh.set(hiss);
+  sh.set(vowel, hiss.length);
+  const rec = recording(sh);
+  const raw = trackPitch(rec.samples, RATE);
+  const trimmed = trimToSpeech(raw);
+  for (let ms = rec.leadMs + 20; ms < rec.leadMs + hissMs; ms += HOP_MS) assert.equal(trimmed.rms[ms / HOP_MS], raw.rms[ms / HOP_MS], `the consonant at ${ms} ms is kept`);
+
+  // A neutral tone at the end: 90 ms long, 18 dB under the syllable
+  // before it, after a 120 ms stop closure. Short and soft, and still
+  // speech: all of its voiced frames are kept.
+  const first = speak([4], { gapMs: 0 }).samples;
+  const soft = speak([(x) => 2.2 - 0.6 * x], { ms: 90, gapMs: 0, seed: 29 }).samples;
+  const word = new Float32Array(first.length + Math.round(RATE * 0.12) + soft.length);
+  word.set(first);
+  for (let i = 0; i < soft.length; i++) word[first.length + Math.round(RATE * 0.12) + i] = soft[i] * 0.125;
+  const rec2 = recording(word);
+  const raw2 = trackPitch(rec2.samples, RATE);
+  const trimmed2 = trimToSpeech(raw2);
+  const softFrom = rec2.leadMs + ((first.length / RATE) * 1000) + 120;
+  let softVoiced = 0;
+  for (let i = 0; i < raw2.f0.length; i++) {
+    if (!(raw2.f0[i] > 0) || i * HOP_MS < softFrom || i * HOP_MS > rec2.speechEndMs) continue;
+    softVoiced++;
+    assert.equal(trimmed2.f0[i], raw2.f0[i]);
+  }
+  assert.ok(softVoiced >= 5, `the soft syllable is voiced in the raw track (${softVoiced} frames)`);
+});
+
+/** Creak over part of a syllable: the buzz replaced by glottal pulses at
+ *  irregular intervals, loud but with no period to find. */
+function creakOver(samples, fromMs, toMs, seed = 7) {
+  let state = seed;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  const from = Math.round((RATE * fromMs) / 1000);
+  const to = Math.round((RATE * toMs) / 1000);
+  for (let i = from; i < to; i++) samples[i] = 0;
+  for (let i = from + 20; i < to; i += Math.round(RATE * (0.012 + 0.016 * Math.abs(rand())))) {
+    for (let k = 0; k < 90 && i + k < to; k++) samples[i + k] += 0.5 * Math.exp(-k / 18) * Math.sin(k / 6);
+  }
+  return samples;
+}
+
+test("creak can confirm a tone but never flag one", () => {
+  for (const seed of [11, 23, 57]) {
+    // A fourth tone in a low voice: the fall is there, and the middle of it
+    // breaks into creak for 100 ms, as a low voice does near its floor.
+    const said = speak([4], { ms: 320, seed });
+    const at = said.timings[0];
+    creakOver(said.samples, at.startMs + 130, at.startMs + 230, seed);
+    const right = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(4), speaker: said.range }).syllables[0];
+    assert.deepEqual([right.verdict, right.heardTone], ["ok", 4], `seed ${seed}: ${right.reason}`);
+    // …counted for less than a clean one.
+    const cleanOk = speak([4], { ms: 320, seed });
+    assert.ok(right.confidence < scoreTones({ samples: cleanOk.samples, sampleRate: RATE, syllables: expecting(4), speaker: cleanOk.range }).syllables[0].confidence);
+    // Labelled as a first tone the same clip is plainly wrong, and still
+    // not flagged: creak is where the tracker is least to be trusted.
+    for (const wrong of [1, 2]) {
+      const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(wrong), speaker: said.range }).syllables[0];
+      assert.deepEqual([res.verdict, res.reason], ["unsure", "creaky"], `seed ${seed}, labelled ${wrong}`);
+    }
+  }
+});
+
+test("an octave jump inside a vowel makes the syllable unsure, not off", () => {
+  // A level first tone whose track drops an octave for 130 ms in the
+  // middle and comes back: longer than the 80 ms the tracker mends by
+  // itself, which is how a low voice near creak comes out of it.
+  const said = speak([1], { ms: 400 });
+  const track = trackPitch(said.samples, RATE);
+  const ok = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track }).syllables[0];
+  assert.equal(ok.verdict, "ok");
+  const slipped = { ...track, f0: Float32Array.from(track.f0) };
+  const from = Math.round((said.timings[0].startMs + 130) / HOP_MS);
+  for (let i = from; i < from + 13; i++) slipped.f0[i] /= 2;
+  const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track: slipped }).syllables[0];
+  assert.deepEqual([res.verdict, res.reason, res.confidence], ["unsure", "octave", 0]);
+  // The steepest real movement is not a jump: a fourth tone said fast.
+  const fast = speak([4], { ms: 140, spanSt: 14 });
+  assert.equal(scoreTones({ samples: fast.samples, sampleRate: RATE, syllables: expecting(4), speaker: fast.range }).syllables[0].verdict, "ok");
 });
 
 test("unsure, not off: short, unvoiced, neutral, untimed, and anything under the bar", () => {
