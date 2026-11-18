@@ -14,10 +14,11 @@
 //
 // Safety. A file name is only ever a 64-hex key this module computed plus
 // an extension from a fixed list: nothing a client sends becomes a path.
-// The route that serves it (web/server/practice.ts) takes a phrase id the
-// active language profile owns, never a hash or text, and files are per
-// user, so the cache can't be used to read, or time, another account's
-// phrases. Writes are atomic (a
+// The routes that serve it take a phrase id the active language profile
+// owns (web/server/practice.ts) or 1–4 Han characters (web/server/voice.ts,
+// the character card's sounds), never a hash, and files are per user (the
+// owner is in the key), so the cache can't be used to read, or time,
+// another account's audio. Writes are atomic (a
 // temp file in the same directory, then rename), so a reader never sees a
 // half-written file. Two requests for the same missing key share one
 // synthesis (in this process).
@@ -211,7 +212,7 @@ export async function cachedAudio(key, make, opts = {}) {
     try {
       writeCached(key, made.audio, made.type, opts);
     } catch (e) {
-      console.error(`[lingo-dojo] audio cache: couldn't store a phrase's audio (${String(e?.message || e)})`);
+      console.error(`[lingo-dojo] audio cache: couldn't store a sound's audio (${String(e?.message || e)})`);
     }
     return made;
   })();

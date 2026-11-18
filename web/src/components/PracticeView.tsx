@@ -275,7 +275,7 @@ export default function PracticeView() {
               {setupProblems.map((p) => (
                 <p key={p}>{p}</p>
               ))}
-              <p className={`${fine} mt-1 text-fg-2`}>Voices and speech-to-text are set in the Go tab's voice settings.</p>
+              <p className={`${fine} mt-1 text-fg-2`}>The voice provider and speech-to-text are chosen in the Go tab's voice settings (with no voice picked, a default one speaks).</p>
             </div>
           )}
         </fieldset>
@@ -727,7 +727,7 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
         // "I don't know" (that would record a lapse). Skip records nothing.
         <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-err" role="alert" data-testid="practice-audio-error">
           <p>The phrase couldn't be played: {audio.error}</p>
-          <p className="text-fg-2">Voices are set in the Go tab's voice settings. Nothing is recorded for this card.</p>
+          <p className="text-fg-2">The voice and its provider are chosen in the Go tab's voice settings. Nothing is recorded for this card.</p>
           <div>
             <Button onClick={() => onNext(null)} data-testid="practice-skip">
               Skip this card

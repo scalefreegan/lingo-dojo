@@ -1,0 +1,18 @@
+title: "First steps: hello & goodbye"
+created: 2026-11-17T09:00:00-06:00
+scenario: first-steps-1-hello-goodbye
+quick_scenario: ""
+units:
+  - intro-first-steps
+  - narrator-native-rotating
+  - style-scaffolded
+  - fill-in-words
+  - guidance-native
+  - correct-gently
+  - debrief-first-steps
+overrides:
+  level: Pre-A1
+notes: |
+  A first session for a complete beginner: the narrator drills a few words
+  at a time, no conversation yet. Pick another First steps drill on the
+  Scene tab for the next one, and move on to the A1 scenes after Mix it up.

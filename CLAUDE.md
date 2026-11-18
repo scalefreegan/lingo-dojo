@@ -72,6 +72,12 @@ briefing in every turn's system prompt and a `vsLast` comparison in the
 recap); `/api/conversations/scenes` and `/overview` (the 7-day card and a
 digest written by one tool-less call per language per day, capped by
 `recent_digests`' unique day row).
+First steps drills (docs/CONTENT.md §Drills; no migration): a scenario with
+`format: drill` is the narrator alone drilling words, played under
+`frame-drill.md` with the schema's `scene_only` slots skipped, rounds as its
+beats in `sessionPlan`, only the narrator tag in the voice prompt (others
+voiced as the narrator), and left out of a random pool that has any scene;
+the `First steps` collections and the adult `Pre-A1` level (opt-in) go with it.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
@@ -121,6 +127,11 @@ digest written by one tool-less call per language per day, capped by
   `web/server/voice.ts`, pure helpers in `scripts/voice.mjs`; see `docs/VOICE.md`.
   Provider keys live only in the gitignored repo-root `.env.local` and never
   reach the browser. Voice turns spawn `claude -p` with **no tools**.
+  With no voice saved, a line outside a session speaks in the provider's
+  default (`defaultVoice`: an ElevenLabs premade voice, else the locale's
+  first), never a "pick a voice" 400. The character card's sounds go through
+  `POST /api/voice/sound` (1–4 Han characters only, disk-cached per user;
+  exemplar tables in `web/src/script/sounds.ts`); docs/VOICE.md §Character sounds.
 - Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated
   SQL in `scripts/db/migrations/` (commit it; edit the schema, then
   `npm run db:generate`). Never hand-edit a migration except through

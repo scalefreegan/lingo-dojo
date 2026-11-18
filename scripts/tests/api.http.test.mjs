@@ -216,7 +216,10 @@ test("GET /api/content?mode= browses either library; the profile is the active l
   const adult = await call("GET", "/api/content");
   assert.equal(adult.body.mode, "adult", "no ?mode: the learner's");
   assert.equal(adult.body.profile.learner_name, "Sam");
-  assert.deepEqual(adult.body.levels, ["A1", "A2", "B1", "B2", "C1", "C2"]);
+  assert.deepEqual(adult.body.levels, ["Pre-A1", "A1", "A2", "B1", "B2", "C1", "C2"]);
+  // Pre-A1 (First steps) is opt-in: a new adult learner starts at A1.
+  assert.equal(adult.body.defaultLevel, "A1");
+  assert.equal(adult.body.frameDrill, "", "the fixture has no frame-drill.md");
   assert.ok(!adult.body.units.some((u) => u.id === "story-quest"));
   assert.ok(!adult.body.scenarios.some((s) => s.id === "farm"));
   const explicit = await call("GET", "/api/content?mode=adult");

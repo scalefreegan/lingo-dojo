@@ -27,16 +27,24 @@ export function sessionPlan(content, pack, mode = "adult") {
   const inSlot = (slot) => units.filter((u) => u.slot === slot);
   const opener = (u) => !!cfg.openerTag && Array.isArray(u.tags) && u.tags.includes(cfg.openerTag);
   const part = (slot, u) => ({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
+  // A drill (First steps: `format: drill`) is the introduction, the drill
+  // and its rounds, then the debrief: no warm-ups before it and no games in
+  // it, since drilling words is the whole session. The drill keeps kind
+  // "scene", so the time split and the timeline treat it as the middle part
+  // and its beats (the rounds) fold into it.
+  const drill = scenario?.format === "drill";
   const plan = [];
   if (inSlot(cfg.intro).length) plan.push({ id: "intro", title: "Introduction", kind: "intro" });
-  for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u));
-  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter(opener)) plan.push(part(slot, u));
-  const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
+  if (!drill) {
+    for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u));
+    for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter(opener)) plan.push(part(slot, u));
+  }
   const title = scenario?.title || (pack?.quick_scenario ? "Quick scene" : "The scene");
   plan.push({ id: "scene", title, kind: "scene" });
   // Games played during the story sit at its start: they begin with it and
   // come back whenever a word needs repeating.
-  for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter((u) => !opener(u))) plan.push(part(slot, u));
+  if (!drill) for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter((u) => !opener(u))) plan.push(part(slot, u));
   const beats = Array.isArray(scenario?.beats) ? scenario.beats : [];
   beats.forEach((b, i) => {
     // One line: a beat written over several lines would break the

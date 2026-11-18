@@ -57,5 +57,22 @@ for (const mode of MODES) {
     const { warnings, markdown } = assemble(c, fresh, mode);
     assert.deepEqual(warnings, [], "the default pack assembles clean");
     assert.ok(!/\{\{\s*\w+\s*\}\}/.test(markdown), "no placeholder leaks into the prompt");
+
+    // First steps drills (docs/CONTENT.md "Drills"): the library has its
+    // drill frame, every drill has rounds and words, and the defaults
+    // assemble around each one without a warning (the scene-only slots go
+    // quietly) under frame-drill.md.
+    const drills = c.scenarios.filter((s) => s.format === "drill");
+    assert.ok(drills.length > 0, "has First steps drills");
+    assert.ok(c.frameDrill.length > 0, "has frame-drill.md");
+    assert.deepEqual(c.problems.filter((p) => p.level === "warning" && /scenarios\/|frame-drill|schema/.test(p.file)), [], "scenarios, the schema and the drill frame load without warnings");
+    for (const d of drills) {
+      assert.ok(d.beats.length >= 3 && d.beats.length <= 5, `drill ${d.id} has 3–5 rounds`);
+      assert.ok(d.phrases.length + d.vocab.length >= 10, `drill ${d.id} has at least 10 words to drill`);
+      const r = assemble(c, { ...fresh, scenario: d.id, overrides: { minutes: 10 } }, mode);
+      assert.deepEqual(r.warnings, [], `drill ${d.id} assembles with the defaults without warnings`);
+      assert.ok(r.markdown.includes("## The drill"), `drill ${d.id} renders as a drill`);
+      assert.ok(!/\{\{\s*\w+\s*\}\}/.test(r.markdown), `no placeholder leaks into drill ${d.id}`);
+    }
   });
 }

@@ -109,6 +109,9 @@ export default function GoTab({
   const random = poolSize != null;
   const [drawnId, setDrawnId] = useState<string | null>(null);
   const drawn = random && drawnId ? content.scenarios.find((s) => s.id === drawnId) : undefined;
+  // A drill (First steps) is voiced by the narrator alone. A random scene is
+  // known only once drawn (after its first cast, which is then the usual one).
+  const drill = (random ? drawn : content.scenarios.find((s) => s.id === pack.scenario))?.format === "drill";
   // The earlier attempt the running session builds on (docs/DATA.md
   // §Revisit), as the server linked it when the conversation was made.
   const [buildsOn, setBuildsOn] = useState<ConversationSummary["buildsOn"]>(null);
@@ -220,7 +223,7 @@ export default function GoTab({
       {/* The main event: the session here, with native voices. */}
       {/* A random scene's conversation is named after the scene drawn
           (the server's), not "Random scene". */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} previous={revisit?.id ?? null} onBuildsOn={onBuildsOn} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} previous={revisit?.id ?? null} onBuildsOn={onBuildsOn} drill={drill} />
 
       <div className={narrow}>
 

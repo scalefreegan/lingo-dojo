@@ -44,6 +44,12 @@ slots:
   the slot's default unit anyway, unless its `units` list has `-<slot id>`
   (written when the slot is set to None in Customize). Without `backfill`, a
   pack with no unit of a slot simply has none.
+- `scene_only: true` (optional) marks a slot that only makes sense around a
+  scene: adult `character`, `warmup`, `interrupts` and `variation`; kids
+  `helper` and `story`. A drill scenario (see "Drills" below) skips it: the
+  pack's units in it are left out of the prompt without a warning, and a
+  required one with nothing picked is not a warning either. A scene ignores
+  the key.
 
 ## `content/units/<id>.md` — a unit
 
@@ -94,6 +100,7 @@ category: Food & drink        # optional; Scene tab filter chip. Use one of:
                               #   Lodging & logistics · Health & help ·
                               #   Emergencies · People & social ·
                               #   Errands & admin
+format: scene                 # optional; scene (the default) or drill (below)
 roles:
   dojo_master: the maestro mezcalero, Don Eulogio, 60s, warm, proud of his craft
   learner: a curious visitor on a first trip to Oaxaca
@@ -173,6 +180,53 @@ twists:
   defer to "whatever is customary in {{location}}". Kids scenarios don't use
   `{{location}}`; they ask for a light touch of a culture where the target
   variant is spoken.
+
+### Drills: `format: drill` (First steps)
+
+A brand-new beginner can't follow even an A1 scene. A **drill** is a
+scenario with `format: drill`: no character and no conversation, only the
+narrator drilling a few words at a time (say it slowly, give the meaning,
+the learner repeats, a quick recall), with more of the guiding moving into
+the target language as the learner succeeds. A pack that picks a drill is a
+First steps session; there is no separate mode, pack field or migration.
+
+```markdown
+---
+id: first-steps-3-numbers
+title: Numbers 0–10
+summary: Count from zero to ten, then hear numbers out of order and catch them.
+collection: First steps
+format: drill
+beats:                        # the rounds, in order (3–5)
+  - Zero to three
+  - Four to seven
+phrases: [zero, one, two, three]   # English meanings, 10–20; or vocab for one language
+---
+How to run this drill: what to stress, what success looks like.
+```
+
+- `format` is `scene` (the default) or `drill`; anything else is read as
+  `scene` with a warning.
+- A drill has no `roles` and no `twists` (both are ignored if present), and
+  should not use `{{location}}`. Its `beats` are the rounds; its `phrases`
+  (or `vocab`) the words to drill.
+- The assembler uses `frame-drill.md` instead of `frame.md` (a warning, and
+  frame.md, when the library has none), renders the scenario as
+  `## The drill` (title, summary, the word list, the rounds, the body) and
+  skips the `scene_only` slots. The session's parts are the introduction,
+  the drill (its rounds as beats), and the debrief or ending: no warm-ups
+  and no kids games on the timeline.
+- The voice session allows only the narrator's tag; a line tagged
+  CHARACTER or SIDEKICK is voiced as the narrator, and only the narrator is
+  cast.
+- A random scene's pool leaves drills out unless every scenario in it is a
+  drill (a random pack over the First steps collection still draws).
+- The Scene tab lists a collection of nothing but drills first, with a
+  "New to the language? Start here" hint, and badges each drill.
+- The First steps collections: `First steps` (adult and kids, every
+  language) and `First steps (Mandarin)` (the four tones, `language: zh-TW`).
+  The adult level `Pre-A1` goes with them; it is opt-in (a new adult
+  learner still starts at A1).
 
 ## `content/profile.yaml` — the learner
 
@@ -327,7 +381,9 @@ The app has two modes, each a complete content tree in the same file formats.
 `content/` is adult mode. `content/kids/` is kids mode: its own `schema.yaml`
 (story, helper, games, energy slots instead of style and difficulty), `frame.md`,
 `profile.yaml`, `units/`, `scenarios/`, and `packs/`. `languages.yaml` is shared
-from the root. The kids level scale is `First words` · `Getting going` · `Chatty`
+from the root. The adult level scale is CEFR with `Pre-A1` (First steps
+drills) before `A1`; a new adult learner starts at A1. The kids level scale
+is `First words` · `Getting going` · `Chatty`
 (not CEFR); kids units carry those in `level`. Seed packs are addressed by the
 same ids within their tree (`2026-10-20-first-german-adventure` in kids mode is
 `content/kids/packs/2026-10-20-first-german-adventure.yaml`), and seed a kids
@@ -341,6 +397,21 @@ the dojo-master role, the fixed rules (stay in the voice session, keep turns
 short for speech, etc.), and the voice rule: both speakers are native speakers
 of the target variant and keep that accent even when speaking the learner's
 native language. It may use the same placeholders as units.
+
+## `content/frame-drill.md` — the drill preamble
+
+Optional, beside `frame.md` in each library (`content/frame-drill.md`,
+`content/kids/frame-drill.md`), in the same format. Used **instead of**
+`frame.md` when the scenario is a drill. It keeps frame.md's voice, accent
+and variant rules and its short, speakable turns, and replaces the scene and
+character rules with the drill's: one speaker (the narrator), the order
+(introduction, the rounds, the debrief), how a round runs (3–5 words; say
+it, mean it, repeat, one-sound feedback; a recall that mixes in earlier
+words; a tiny target-language exchange of drilled words only), and the
+language-mix ramp (guide in the native language, move known bits of the
+guiding into the target language as the learner succeeds, pull back the
+moment they struggle). It also tells the dojo master to read any unit's
+talk of a scene or character as the drill and the narrator.
 
 ## The recall slot: `{{phrase_review}}`
 
@@ -387,13 +458,16 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
    scenario in place, `withDrawnScene` in `web/shared/scenes.ts`).
 3. Walk `schema.slots` in order. For each slot, take the pack's units with that
    slot, in pack order. Apply cardinality: `one` with >1 is a warning (keep the
-   first); `required` with 0 is a warning and a placeholder line.
+   first); `required` with 0 is a warning and a placeholder line. For a drill
+   scenario, a `scene_only` slot is skipped entirely, silently.
 4. Render, in this order:
    - `# Lingo Dojo session: <scenario title>`
-   - `frame.md` body (placeholders substituted)
+   - `frame.md` body (placeholders substituted); `frame-drill.md` for a drill
    - `## Learner` — a short block from the effective profile
    - `## Scenario` — title, summary, roles, beats, vocab table, twists list (each
-     if present; twists are labelled as usable only when a Variation unit asks), body
+     if present; twists are labelled as usable only when a Variation unit asks), body.
+     For a drill, `## The drill` instead: title, summary, the word list
+     (phrases, vocab), the beats as numbered rounds, body
    - One `## <slot title>` per slot that has units, each unit rendered as
      `### <unit title>` + body (placeholders substituted). Slots with no units are
      omitted unless required.

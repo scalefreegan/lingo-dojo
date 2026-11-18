@@ -742,6 +742,38 @@ test("speechVoices: a refused cast voice falls back to the exact saved slot, the
   assert.deepEqual(speechVoices({ set: {}, speaker: "character", gender: "male", cast: null, fallback: "ACC_M", refused }), { first: "ACC_M", retry: "" });
 });
 
+test("defaultVoice (ld-zxn): ElevenLabs a premade voice, native and of the gender first; Azure and macOS the locale's first of the gender", async () => {
+  const { defaultVoice } = await import("../voice.mjs");
+  const eleven = [
+    { id: "cloned_zh_f", gender: "female", match: true, premade: false },
+    { id: "pre_en_m", gender: "male", match: false, premade: true },
+    { id: "pre_en_f", gender: "female", match: false, premade: true },
+  ];
+  assert.equal(defaultVoice("elevenlabs", eleven, "female"), "pre_en_f", "premade (any plan) before a native added voice");
+  assert.equal(defaultVoice("elevenlabs", eleven, "male"), "pre_en_m");
+  assert.equal(defaultVoice("elevenlabs", eleven, null), "pre_en_m", "no gender: the first premade");
+  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_m", gender: "male", match: true, premade: true }, ...eleven], "female"), "pre_zh_m", "a native premade voice before the gender (pronunciation first)");
+  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_f", gender: "female", match: true, premade: true }, ...eleven], "female"), "pre_zh_f");
+  // No premade voice at all: a native one; none native either: nothing (a 400 upstream).
+  assert.equal(defaultVoice("elevenlabs", [eleven[0], { id: "de_m", gender: "male", match: false }], "male"), "cloned_zh_f");
+  assert.equal(defaultVoice("elevenlabs", [{ id: "de_m", gender: "male", match: false }], "male"), "");
+  const azure = [
+    { id: "zh-TW-HsiaoChenNeural", gender: "Female", match: true },
+    { id: "zh-TW-YunJheNeural", gender: "Male", match: true },
+    { id: "zh-CN-XiaoxiaoMultilingualNeural", gender: "Female", match: false },
+  ];
+  assert.equal(defaultVoice("azure", azure, "male"), "zh-TW-YunJheNeural");
+  assert.equal(defaultVoice("azure", azure, null), "zh-TW-HsiaoChenNeural");
+  assert.equal(defaultVoice("azure", azure.slice(2), "male"), "zh-CN-XiaoxiaoMultilingualNeural", "a secondary-locale voice only when the locale has none");
+  const mac = [
+    { id: "Bubbles", gender: "novelty", match: true },
+    { id: "Meijia", gender: "female", match: true },
+  ];
+  assert.equal(defaultVoice("system", mac, null), "Meijia", "never a novelty voice");
+  assert.equal(defaultVoice("system", [], null), "");
+  assert.equal(defaultVoice("azure", null, "female"), "");
+});
+
 test("castFallbacks: a distinct account voice per slot, premade first, set voices kept out", () => {
   const own = [
     { id: "lib_f", name: "Added Carmen", gender: "female", match: true, premade: false, age: "" },

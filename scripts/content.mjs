@@ -66,9 +66,23 @@ export function exportsDirFor(mode = "adult") {
 /** The level picker's options per mode. Adult is CEFR; kids is a child-sized
  *  scale. A profile level outside the list is still shown by the UI. */
 export const LEVELS_BY_MODE = {
-  adult: ["A1", "A2", "B1", "B2", "C1", "C2"],
+  // Pre-A1 is the First steps drills' level (docs/CONTENT.md "Drills"): a
+  // learner picks it; a new learner still starts at A1.
+  adult: ["Pre-A1", "A1", "A2", "B1", "B2", "C1", "C2"],
   kids: ["First words", "Getting going", "Chatty"],
 };
+
+/** The level a new learner or language starts at. Not the scale's first
+ *  for adults: Pre-A1 is opt-in, so a new adult starts at A1 as before. */
+export const DEFAULT_LEVEL_BY_MODE = { adult: "A1", kids: "First words" };
+
+/** A scenario's `format`: a scene (the default: a character in a setting)
+ *  or a drill (First steps: the narrator alone drills words, no character;
+ *  frame-drill.md instead of frame.md, and the scene-only slots skipped). */
+export const SCENARIO_FORMATS = ["scene", "drill"];
+
+/** Whether a scenario (loaded, or anything carrying `format`) is a drill. */
+export const isDrill = (s) => s?.format === "drill";
 
 /** One path segment — an export id, a pack folder name, a pack file stem:
  *  kebab-case, no dots or slashes. The one check that keeps a
@@ -217,7 +231,8 @@ function strList(v) {
 
 /**
  * Load and validate everything under the content root.
- * Returns `{ root, schema, frame, profile, languages, units, scenarios, problems }`;
+ * Returns `{ root, schema, frame, frameDrill, profile, languages, units, scenarios, problems }`
+ * (`frameDrill`: frame-drill.md, "" when the library has none);
  * `problems` is `[{ file, level: "error"|"warning", message }]`. Pack files
  * are not part of the library any more (saved packs live in the database):
  * loadPackFiles reads them, for the import and the export CLI, so the
@@ -234,6 +249,16 @@ export function loadContent(root = contentRoot()) {
   const frameRead = readText(framePath);
   if (frameRead.error) report(framePath, "error", frameRead.error);
   const frame = frameRead.text ? cleanBody(frameRead.text.replace(/\r\n?/g, "\n")) : "";
+  // The drill frame (First steps) replaces frame.md for a drill scenario.
+  // Optional: a library without one plays its drills under frame.md, and
+  // the assembler warns. "" when absent.
+  const frameDrillPath = path.join(root, "frame-drill.md");
+  let frameDrill = "";
+  if (fs.existsSync(frameDrillPath)) {
+    const read = readText(frameDrillPath);
+    if (read.error) report(frameDrillPath, "error", read.error);
+    else frameDrill = cleanBody(read.text.replace(/\r\n?/g, "\n"));
+  }
 
   const profile = loadProfile(path.join(root, "profile.yaml"), report);
   // A mode tree inside the content root (content/kids) without its own
@@ -265,7 +290,7 @@ export function loadContent(root = contentRoot()) {
     if (scenario) scenarios.push(scenario);
   }
 
-  return { root, schema, frame, profile, languages, units, scenarios, problems };
+  return { root, schema, frame, frameDrill, profile, languages, units, scenarios, problems };
 }
 
 function loadYamlFile(abs, report) {
@@ -311,6 +336,9 @@ function loadSchema(abs, report) {
       pick: s.pick,
       required: s.required === true,
       backfill: s.backfill === true,
+      // A slot that only makes sense around a scene (its character, a
+      // warm-up before it, twists in it): a drill skips it.
+      scene_only: s.scene_only === true,
       description: typeof s.description === "string" ? s.description.trim() : "",
     });
   });
@@ -491,6 +519,11 @@ function loadScenario(abs, report) {
   let language = null;
   if (isStr(fm.language)) language = fm.language.trim();
   else if (fm.language != null) report(abs, "warning", 'language should be a code like "es-MX"; ignored');
+  // `format`: a scene unless it says drill; anything else is a scene, with
+  // a warning, so a typo is seen rather than silently changing the session.
+  let format = "scene";
+  if (SCENARIO_FORMATS.includes(fm.format)) format = fm.format;
+  else if (fm.format != null) report(abs, "warning", `format should be one of ${SCENARIO_FORMATS.join(", ")}, not ${JSON.stringify(fm.format)}; read as "scene"`);
   const usesLocation = [body, ...Object.values(roles), ...twists].some((t) => LOCATION_RE.test(t));
   return {
     ...fm,
@@ -501,6 +534,7 @@ function loadScenario(abs, report) {
     language,
     collection: typeof fm.collection === "string" && fm.collection.trim() ? fm.collection.trim() : null,
     category: typeof fm.category === "string" && fm.category.trim() ? fm.category.trim() : null,
+    format,
     roles,
     beats,
     vocab,

@@ -13,7 +13,7 @@
 // markdown is still produced, with a visible placeholder where a required
 // piece is missing, so an export is never silently incomplete.
 
-import { PLACEHOLDERS, normalizePack, packUnits } from "./content.mjs";
+import { PLACEHOLDERS, isDrill, normalizePack, packUnits } from "./content.mjs";
 import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
 import { renderReview } from "./recall.mjs";
 import { emptyPoolMessage, randomPool, scenesWord } from "../web/shared/scenes.ts";
@@ -109,6 +109,10 @@ export function assemble(content, rawPack, options = "adult") {
 
   // 2. Scenario: by id, or the quick-scenario text as an ad hoc one.
   const scenario = resolveScenario(content, pack, warn, profile);
+  // A drill (First steps, docs/CONTENT.md "Drills") is the narrator alone
+  // drilling words: frame-drill.md instead of frame.md, the scenario
+  // rendered as rounds, and no scene-only slots.
+  const drill = isDrill(scenario);
 
   // The session's location is a setting for the scene, not a fact about the
   // learner: it never shows in the Learner block, and only a scenario that
@@ -176,6 +180,11 @@ export function assemble(content, rawPack, options = "adult") {
 
   const slotSections = [];
   for (const slot of slots) {
+    // A drill has no scene, so a slot about one (its character, a warm-up
+    // before it, twists in it) has nothing to act on. Its units are dropped
+    // without a word, a required one's absence too: every pack keeps them
+    // (Customize's defaults), so a warning would fire on every drill.
+    if (drill && slot.scene_only) continue;
     let chosen = picked.filter((id) => unitsById.get(id).slot === slot.id).map((id) => unitsById.get(id));
     // Nothing to review: a unit that is only a frame around the review list
     // has nothing to say, so it goes, and its slot with it when empty (an
@@ -204,13 +213,25 @@ export function assemble(content, rawPack, options = "adult") {
 
   // 4. Render, in the contract's order.
   const sections = [`# Lingo Dojo session: ${scenario.title}`];
-  const frame = fill(content.frame ?? "", "frame.md").trim();
+  // A library without frame-drill.md still plays its drills, under the
+  // scene frame, which asks for a character the drill doesn't have: say so.
+  let frameText = content.frame ?? "";
+  let frameName = "frame.md";
+  if (drill) {
+    if (content.frameDrill) {
+      frameText = content.frameDrill;
+      frameName = "frame-drill.md";
+    } else {
+      warn(`"${scenario.title}" is a drill, but the library has no frame-drill.md; it uses frame.md, written for a scene with a character.`);
+    }
+  }
+  const frame = fill(frameText, frameName).trim();
   if (frame) sections.push(frame);
   sections.push(renderLearner(profile));
-  sections.push(renderScenario(scenario, fill, scenario.uses_location ? settingLine(location, values.target_variant) : ""));
+  sections.push(drill ? renderDrill(scenario, fill) : renderScenario(scenario, fill, scenario.uses_location ? settingLine(location, values.target_variant) : ""));
   sections.push(...slotSections);
   // After the slots, so it can name the warm-ups and debrief described above.
-  if (budget.minutes != null) sections.push(renderTimeBudget(budgetSplit(sessionPlan(content, pack, mode), budget.minutes), budget.minutes, mode));
+  if (budget.minutes != null) sections.push(renderTimeBudget(budgetSplit(sessionPlan(content, pack, mode), budget.minutes), budget.minutes, mode, drill));
   const notes = pack.notes.trim();
   if (notes) sections.push(`## Notes from the learner\n\n${notes}`);
 
@@ -358,6 +379,30 @@ function renderScenario(s, fill, setting) {
   return parts.join("\n\n");
 }
 
+/** A drill scenario (First steps): no roles, no setting, no twists. The
+ *  word list and the rounds are the whole of it; frame-drill.md says how
+ *  each round runs. `beats` are the rounds, in order. */
+function renderDrill(s, fill) {
+  const where = `scenario "${s.id}"`;
+  const parts = ["## The drill", `### ${s.title}`];
+  if (s.summary) parts.push(s.summary);
+  if (s.phrases?.length) {
+    parts.push(fill("**Words and phrases to drill** (English meanings; use the natural {{target_variant}} for each, the shortest everyday form)", where));
+    parts.push(s.phrases.map((p) => `- ${p}`).join("\n"));
+  }
+  if (s.vocab?.length) {
+    parts.push("**Words to drill**");
+    parts.push(["| Term | Gloss |", "| --- | --- |", ...s.vocab.map((v) => `| ${cell(v.term)} | ${cell(v.gloss)} |`)].join("\n"));
+  }
+  if (s.beats?.length) {
+    parts.push("**Rounds** (in this order; each takes its words from the list above)");
+    parts.push(s.beats.map((b, i) => `${i + 1}. ${b}`).join("\n"));
+  }
+  const body = fill(s.body ?? "", where).trimEnd();
+  if (body) parts.push(body);
+  return parts.join("\n\n");
+}
+
 /** How a part is labelled in the Time budget's split ("" = its title alone). */
 const PART_LABELS = { warmup: "Warm-up", games: "Game", debrief: "Debrief", ending: "Ending" };
 
@@ -371,32 +416,39 @@ function minutesWord(m) {
  *  to shrink to fit. Built from numbers alone, so it is deterministic, and
  *  it travels with an export: pasted into another voice tool, the model
  *  there can only count exchanges, so the section says how. */
-function renderTimeBudget(rows, minutes, mode) {
+function renderTimeBudget(rows, minutes, mode, drill = false) {
   const has = (g) => rows.some((r) => r.group === g);
   const kids = mode === "kids";
   const closing = kids ? "the goodbye" : "the short debrief";
+  // A drill's beats are its rounds, and its scene part is the drill.
+  const beatWord = drill ? "rounds" : "beats";
+  const middle = drill ? "the drill" : "the scene";
   const split = rows.map((r) => {
-    const kind = r.kind === "scene" ? (kids ? "Story" : "Scene") : PART_LABELS[r.kind];
+    const kind = r.kind === "scene" ? (drill ? "Drill" : kids ? "Story" : "Scene") : PART_LABELS[r.kind];
     const label = kind ? `${kind}: ${r.title}` : r.title;
     const time = r.minutes > 0 ? `about ${minutesWord(r.minutes)}` : "skip it unless there is time to spare";
     let more = "";
-    if (r.kind === "scene" && r.beats) more = r.play < r.beats ? `, about ${r.play} of its ${r.beats} beats` : `, all ${r.beats} beats`;
+    if (r.kind === "scene" && r.beats) more = r.play < r.beats ? `, about ${r.play} of its ${r.beats} ${beatWord}` : `, all ${r.beats} ${beatWord}`;
     if (r.kind === "scene" && r.games?.length) more += ` (with ${r.games.join(", ")} during it)`;
     return `- ${label}: ${time}${more}`;
   });
   const scene = rows.find((r) => r.kind === "scene");
   const shrink = [];
-  if (scene?.beats > 1) shrink.push("- Play fewer beats: the ones that matter most, in order, and skip the rest. A 5-minute session plays one or two.");
+  if (scene?.beats > 1) {
+    shrink.push(drill
+      ? "- Play fewer rounds: the first ones, in order, and skip the rest. A 5-minute session plays one or two."
+      : "- Play fewer beats: the ones that matter most, in order, and skip the rest. A 5-minute session plays one or two.");
+  }
   if (has("before")) shrink.push(kids ? "- Keep the opening game short: a few words, or skip it when time is short." : "- Keep the warm-up short: a few items per drill, or skip a drill when time is short.");
   if (has("after")) shrink.push(kids ? "- Keep the goodbye to a word of praise and one word to remember." : "- Keep the debrief to one or two points.");
   shrink.push("- Keep your own turns short, so the learner does most of the talking.");
   return [
     "## Time budget",
-    `The learner has **${minutesWord(minutes)}** for this whole session. Pace it to finish on time with ${closing} included: the session ends on its closing part, not cut off in the middle of the scene.`,
+    `The learner has **${minutesWord(minutes)}** for this whole session. Pace it to finish on time with ${closing} included: the session ends on its closing part, not cut off in the middle of ${middle}.`,
     "**Rough split**",
     split.join("\n"),
     "**To fit the time**",
     shrink.join("\n"),
-    `**Keeping time:** when a turn comes with a clock line (minutes used, minutes left, the current part), follow it: it is the real time. Without one, estimate from the number of exchanges, about two a minute. From about four fifths of the time, start closing the scene; once the time is up, end the scene and give ${closing} within a turn or two. If the learner then wants to keep going, go along with it.`,
+    `**Keeping time:** when a turn comes with a clock line (minutes used, minutes left, the current part), follow it: it is the real time. Without one, estimate from the number of exchanges, about two a minute. From about four fifths of the time, start closing ${middle}; once the time is up, end ${middle} and give ${closing} within a turn or two. If the learner then wants to keep going, go along with it.`,
   ].join("\n\n");
 }

@@ -19,7 +19,7 @@ import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
-import { SPEECH_FORMATS, practiceVoice, readAudio, sttReady, synthesize, transcribeAudio } from "./voice.ts";
+import { SPEECH_FORMATS, practiceVoice, readAudio, sttReady, synthesize, transcribeAudio, voiceReady } from "./voice.ts";
 
 // The Practice tab's routes (docs/DATA.md §Practice modes, §Grading):
 // flashcards both ways, the listening drill, speak-it and fill the gap
@@ -247,14 +247,16 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   sendJson(res, 200, out satisfies PracticeAnswerReply);
 }
 
-/** Why phrases can't be played for this language, or null: the same checks
- *  the audio route makes, so the mode picker can say so before a session
- *  rather than card by card. */
+/** Why phrases can't be played for this language, or null: the checks the
+ *  audio route makes that need no provider call (voiceReady: the keys, a
+ *  macOS voice for the locale), so the mode picker can say so before a
+ *  session rather than card by card. No voice saved is not a problem: the
+ *  route then speaks in the provider's default voice. */
 async function audioProblem(ctx: LearnerCtx): Promise<string | null> {
   const locale = targetLocale(ctx);
   if (!locale) return "this language has no voice locale, so its phrases can't be played";
   try {
-    await practiceVoice(await readVoiceSettings(ctx.user.id), locale);
+    await voiceReady(await readVoiceSettings(ctx.user.id), locale);
     return null;
   } catch (e) {
     if (e instanceof HttpError) return e.message;

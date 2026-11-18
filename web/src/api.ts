@@ -20,7 +20,7 @@ import type {
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
@@ -68,7 +68,19 @@ export interface PageLearner {
 let pageLearner: PageLearner | null = null;
 
 export function setPageLearner(page: PageLearner | null): void {
+  if (page?.learnerId !== pageLearner?.learnerId || page?.languageId !== pageLearner?.languageId) soundEpoch++;
   pageLearner = page;
+}
+
+/** Bumped whenever the voice a sound would be said in may have changed:
+ *  another learner or language (sign-out included), or saved voice
+ *  settings. The sound player keys its in-page cache by it, so the server's
+ *  per-user, per-voice audio cache isn't undone in the browser (user B
+ *  hearing user A's voice after a sign-out in the same tab). */
+let soundEpoch = 0;
+
+export function soundEpochNow(): number {
+  return soundEpoch;
 }
 
 /** The learner and language this page renders now (null before one is picked). */
@@ -429,8 +441,10 @@ export function getVoiceSettings(langs?: VoiceLanguages): Promise<VoiceSettingsR
 }
 
 /** Merges into this user's voice settings; `voices` replaces the whole map. */
-export function saveVoiceSettings(patch: VoiceSettingsRequest, langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
-  return req<VoiceSettingsReply>(voiceSettingsUrl(langs), json(patch, "PUT"));
+export async function saveVoiceSettings(patch: VoiceSettingsRequest, langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
+  const reply = await req<VoiceSettingsReply>(voiceSettingsUrl(langs), json(patch, "PUT"));
+  soundEpoch++;
+  return reply;
 }
 
 export function listVoices(provider: TtsProvider, locale: string, signal?: AbortSignal): Promise<VoicesReply> {
@@ -564,8 +578,20 @@ export function endConversation(id: string, page: PageLearner): Promise<void> {
 }
 
 /** One line → playable audio. Errors come back as the usual {error}. */
-export async function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
-  const res = await send("/api/voice/speak", { ...json(body), signal });
+export function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
+  return audioFrom("/api/voice/speak", body, signal);
+}
+
+/** The character card's sounds: 1–4 example characters said by the
+ *  narrator's voice, cached on the server per user. Through reqBlob, as the
+ *  route is learner-scoped: a stale page gets the re-pick flow, not an
+ *  error line on the card. */
+export async function soundAudio(body: VoiceSoundRequest, signal?: AbortSignal): Promise<Blob> {
+  return (await reqBlob("/api/voice/sound", { ...json(body), signal })).blob;
+}
+
+async function audioFrom(url: string, body: unknown, signal?: AbortSignal): Promise<Blob> {
+  const res = await send(url, { ...json(body), signal });
   check401(res);
   if (res.ok) return res.blob();
   const text = await res.text();

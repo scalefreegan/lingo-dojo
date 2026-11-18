@@ -251,4 +251,28 @@ h3 {
   .ld-char:hover {
     background: var(--accent-soft);
   }
+  /* A part of a reading that plays its sound (the character card's pinyin
+     initial and final, each zhuyin symbol and the tone): it keeps reading
+     as one word, so no tile, just a dotted underline that fills on hover. */
+  .ld-sound {
+    display: inline-block;
+    padding: 0 0.06em;
+    border: 0;
+    border-bottom: 1px dotted currentColor;
+    border-radius: 0.25rem;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    cursor: pointer;
+  }
+  .ld-sound:hover,
+  .ld-sound[data-playing] {
+    background: var(--accent-soft);
+  }
+  .ld-sound:disabled {
+    border-bottom-color: transparent;
+    cursor: default;
+    background: transparent;
+  }
 }

@@ -1,0 +1,16 @@
+title: "First steps: hello & goodbye"
+created: 2026-11-17T09:00:00-06:00
+scenario: kids-first-steps-1-hello-goodbye
+quick_scenario: ""
+units:
+  - intro-first-steps
+  - narrator-kids-warm
+  - game-echo
+  - energy-calm-5
+  - correct-playful
+  - ending-celebration
+overrides: {}
+notes: |
+  A first word game for a child who knows no words of the language yet:
+  the narrator alone, a few words at a time, a sticker every round. Pick
+  another First steps game on the Scene tab next time.

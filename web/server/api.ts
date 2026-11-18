@@ -11,7 +11,7 @@ import { handlePractice } from "./practice.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
-import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceTurn } from "./voice.ts";
+import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceSound, handleVoiceTurn } from "./voice.ts";
 
 // The whole "backend": dev-server-only middleware on the Vite server,
 // bound to localhost. Copied from Atlas, plus logins (docs/DATA.md §Auth):
@@ -143,12 +143,14 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // its model setting: it writes the shared library, so admins only.
       server.middlewares.use("/api/chat", wrap(handleChat, { auth: "admin" }));
       server.middlewares.use("/api/settings", wrap(handleSettings, { auth: "admin" }));
-      // Voice practice (voice.ts). A turn and a cast are for the learner;
+      // Voice practice (voice.ts). A turn, a cast and the character card's
+      // cached sounds are for the learner;
       // adding a Voice Library voice changes the owner's ElevenLabs account,
       // so it is an admin's. Mounted ahead of /api/voice, whose handler has
       // the rest (settings, voices, transcribe, speak, library search).
       server.middlewares.use("/api/voice/turn", wrap(handleVoiceTurn, { learner: true }));
       server.middlewares.use("/api/voice/cast", wrap(handleVoiceCast, { learner: true }));
+      server.middlewares.use("/api/voice/sound", wrap(handleVoiceSound, { learner: true }));
       server.middlewares.use("/api/voice/library/add", wrap(handleVoiceLibraryAdd, { auth: "admin" }));
       server.middlewares.use("/api/voice", wrap(handleVoice));
       // Saved conversations (conversations.ts): the learner's own, so the

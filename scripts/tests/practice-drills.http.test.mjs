@@ -35,6 +35,7 @@ const audioDir = path.join(dataDir, "audio");
 /* ElevenLabs, stubbed: speech is "MP3:<voice>:<text>"; a transcription
  * answers `stt.reply` (or fails with `stt.status`) and keeps the form. */
 const synths = [];
+const voiceLists = [];
 const tts = { delayMs: 0 };
 const stt = { reply: "", status: 200, forms: [] };
 const realFetch = globalThis.fetch;
@@ -47,6 +48,17 @@ globalThis.fetch = async (input, init) => {
     synths.push({ voice, text, model_id });
     if (tts.delayMs) await new Promise((r) => setTimeout(r, tts.delayMs));
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+  }
+  // The account's voices, for the default voice when none is saved: a
+  // cloned Spanish voice and premade ones (the default is a premade one).
+  if (url.pathname === "/v2/voices") {
+    voiceLists.push(url.pathname);
+    const voices = [
+      { voice_id: "cloned-es", name: "Clon", labels: { language: "es", gender: "female" }, category: "cloned" },
+      { voice_id: "premade-en-m", name: "Adam", labels: { language: "en", gender: "male" }, category: "premade" },
+      { voice_id: "premade-en-f", name: "Rachel", labels: { language: "en", gender: "female" }, category: "premade" },
+    ];
+    return new Response(JSON.stringify({ voices }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
   if (url.pathname === "/v1/speech-to-text") {
     const form = init.body;
@@ -61,6 +73,7 @@ const { apiPlugins } = await import("../../web/server/api.ts");
 // A started flashcards session writes its cards sentences in the background
 // (the stand-in claude answers them): let those runs end before the database.
 const { settleClozeFills } = await import("../../web/server/cloze.ts");
+const { clearVoiceLists } = await import("../../web/server/voice.ts");
 
 const fake = fakeClaude();
 const ACCEPT = JSON.stringify({ accepted: true, rating_hint: "good", note: "Another natural way to say it." });
@@ -237,7 +250,7 @@ test("paid calls per user are bounded: a third miss at once is a 429, never a th
   assert.equal((await sam.call("GET", `/api/practice/audio/${late.id}`)).status, 200);
 });
 
-test("phrase audio is only for this language's own phrases: another account's id, a bad id, no voice set", async () => {
+test("phrase audio is only for this language's own phrases: another account's id, a bad id", async () => {
   const sam = await someone();
   const robin = await someone();
   const p = await add(sam, PAIRS.slice(0, 1));
@@ -254,19 +267,40 @@ test("phrase audio is only for this language's own phrases: another account's id
   // Another of Sam's languages doesn't own it either.
   await sam.addLanguage({ target_language: "French", target_variant: "", level: "A1" });
   assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).status, 404);
-  // No voice picked for the language: a 400 that says where.
+  assert.deepEqual((await robin.call("GET", `/api/practice?tz=${TZ}`)).body.setup, { audio: null, speech: null });
+});
+
+test("no voice saved (every slot Random): the listening drill plays in the account's premade voice, and Start isn't blocked (ld-zxn)", async () => {
+  clearVoiceLists();
   const fresh = await someone([ADULT], { voices: false });
-  await fresh.call("PUT", "/api/voice/settings", { tts: "elevenlabs" });
-  const f = await add(fresh, PAIRS.slice(0, 1));
-  const none = await fresh.call("GET", `/api/practice/audio/${f["la vuelta"].id}`);
-  assert.equal(none.status, 400);
-  assert.match(none.body.error, /voice settings/);
-  // The mode picker is told the same before a session.
+  await fresh.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs" });
+  // The mode picker has nothing to warn about, and asked no provider for it.
+  const lists = voiceLists.length;
   const stats = await fresh.call("GET", `/api/practice?tz=${TZ}&mode=listening`);
   assert.equal(stats.status, 200);
-  assert.match(stats.body.setup.audio, /voice settings/);
-  assert.equal(stats.body.setup.speech, null);
-  assert.deepEqual((await robin.call("GET", `/api/practice?tz=${TZ}`)).body.setup, { audio: null, speech: null });
+  assert.deepEqual(stats.body.setup, { audio: null, speech: null });
+  assert.equal(voiceLists.length, lists, "the counts never fetch a voice list");
+  const f = await add(fresh, PAIRS.slice(0, 2));
+  const one = await fresh.call("GET", `/api/practice/audio/${f["la vuelta"].id}`);
+  assert.equal(one.status, 200, one.text);
+  // A premade voice (any plan speaks with them), not the cloned Spanish one;
+  // no gender asked for, so the list's first (by name: Adam).
+  assert.equal(one.text, "MP3:premade-en-m:la vuelta");
+  const two = await fresh.call("GET", `/api/practice/audio/${f["¿Cuánto cuesta?"].id}`);
+  assert.equal(two.status, 200, two.text);
+  assert.equal(voiceLists.length, lists + 1, "the account's list is fetched once per process, not per line");
+});
+
+test("no provider key: the listening drill still says so, before a session and on play", async () => {
+  const sam = await someone();
+  const p = await add(sam, PAIRS.slice(0, 1));
+  // Azure has no key in this test's .env: the default voice never hides that.
+  await sam.call("PUT", "/api/voice/settings", { tts: "azure" });
+  const stats = await sam.call("GET", `/api/practice?tz=${TZ}&mode=listening`);
+  assert.match(stats.body.setup.audio, /Azure Speech is not set up: add AZURE_SPEECH_KEY/);
+  const r = await sam.call("GET", `/api/practice/audio/${p["la vuelta"].id}`);
+  assert.equal(r.status, 400);
+  assert.match(r.body.error, /AZURE_SPEECH_KEY/);
 });
 
 test("a listening choice: right is Good and wrong is Again at once (no model check), recorded on the listen card as mode listening, words in the reply", async () => {
