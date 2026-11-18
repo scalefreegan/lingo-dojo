@@ -83,8 +83,11 @@ export default function TopBar({
           descendants are placed in, which squeezed the menus' full-screen
           click-away catchers (and a phone's bottom sheets) into this 56px
           bar, so a click on the page didn't close a menu. Behind the bar's
-          content (the sticky z-30 header is its stacking context). */}
-      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-panel/90 backdrop-blur" />
+          content (the sticky z-30 header is its stacking context). Solid
+          where the browser can't blur, so page text never shows through.
+          Keep filters off the header and any wrapper of its menus, or the
+          trap comes back. */}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-panel backdrop-blur supports-[backdrop-filter]:bg-panel/90" />
       <h1 className="flex shrink-0 items-center gap-1 text-lg font-semibold text-fg sm:mr-1 sm:gap-1.5">
         <Mochi size={30} />
         {/* Kids mode's tag takes the room the name needs below lg, where
