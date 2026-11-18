@@ -76,11 +76,15 @@ export default function TopBar({
 }) {
   return (
     // On a phone everything is a little tighter, so the Kids tag still
-    // leaves room for all three tabs (Go was pushed out of sight). The blur
-    // is from `sm` up only: a backdrop-filter makes the header the box its
-    // fixed children are placed in, and the language and profile menus are
-    // fixed bottom sheets on a phone, which it squeezed into the bar.
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line bg-panel px-3 sm:gap-2 sm:bg-panel/90 sm:backdrop-blur sm:px-4 sm:pr-10">
+    // leaves room for all three tabs (Go was pushed out of sight).
+    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b border-line px-3 sm:gap-2 sm:px-4 sm:pr-10">
+      {/* The frosted background is a layer of its own, never the header's:
+          a backdrop-filter makes its element the box that position:fixed
+          descendants are placed in, which squeezed the menus' full-screen
+          click-away catchers (and a phone's bottom sheets) into this 56px
+          bar, so a click on the page didn't close a menu. Behind the bar's
+          content (the sticky z-30 header is its stacking context). */}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-0 -z-10 bg-panel/90 backdrop-blur" />
       <h1 className="flex shrink-0 items-center gap-1 text-lg font-semibold text-fg sm:mr-1 sm:gap-1.5">
         <Mochi size={30} />
         {/* Kids mode's tag takes the room the name needs below lg, where
