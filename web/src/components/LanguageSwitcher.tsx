@@ -15,6 +15,7 @@ export default function LanguageSwitcher({
   language,
   languages,
   levels,
+  defaultLevel = "",
   onSwitch,
   onChanged,
 }: {
@@ -24,6 +25,8 @@ export default function LanguageSwitcher({
   /** The library's languages and the mode's levels, for the Add form. */
   languages: Language[];
   levels: string[];
+  /** The level the Add form starts at ("" = the first of `levels`). */
+  defaultLevel?: string;
   onSwitch: (languageId: string) => void;
   /** A language was archived: re-read who's practising (the server moved
    *  this session to another of the learner's languages). */
@@ -127,6 +130,7 @@ export default function LanguageSwitcher({
                 learnerId={learner.id}
                 languages={languages}
                 levels={levels}
+                defaultLevel={defaultLevel}
                 taken={learner.languages.map((l) => l.target_language)}
                 onCancel={() => setAdding(false)}
                 onAdded={(l) => {
@@ -243,6 +247,7 @@ function AddLanguage({
   learnerId,
   languages,
   levels,
+  defaultLevel,
   taken,
   onCancel,
   onAdded,
@@ -250,6 +255,7 @@ function AddLanguage({
   learnerId: string;
   languages: Language[];
   levels: string[];
+  defaultLevel: string;
   /** The learner's languages already: not offered (one profile per target
    *  language; a variant is a setting inside it). Typed in, the server
    *  refuses one with a 409 that says so. */
@@ -257,7 +263,7 @@ function AddLanguage({
   onCancel: () => void;
   onAdded: (l: LanguageInfo) => void;
 }) {
-  const [value, setValue] = useState({ target_language: "", target_variant: "", level: levels[0] ?? "" });
+  const [value, setValue] = useState({ target_language: "", target_variant: "", level: defaultLevel || (levels[0] ?? "") });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const offered = languages.filter((l) => !taken.some((t) => t.trim().toLowerCase() === l.name.toLowerCase()));

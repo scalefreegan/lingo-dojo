@@ -48,9 +48,13 @@ declare module "*/scripts/content.mjs" {
   ): string[];
   /** The level picker's options per mode. */
   export const LEVELS_BY_MODE: Record<import("../shared/wire.ts").Mode, string[]>;
+  /** The level a new learner or language starts at, per mode. */
+  export const DEFAULT_LEVEL_BY_MODE: Record<import("../shared/wire.ts").Mode, string>;
+  /** Whether a scenario is a drill (`format: drill`, First steps). */
+  export function isDrill(s: { format?: unknown } | null | undefined): boolean;
   /** Never throws; bad files land in `problems`. The mode and its levels are
    *  the route's to add (content.ts contentReply). */
-  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels">;
+  export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels" | "defaultLevel">;
   /** A tree's pack files (seed content and the export CLI's input; the app's
    *  saved packs are in the database): the packs that load, every folder
    *  under packs/, and the problems of the pack files that did not load. */
@@ -148,12 +152,12 @@ declare module "*/scripts/voice.mjs" {
   export const SPEAKERS_BY_MODE: Record<Mode, VoiceSpeaker[]>;
   export const AZURE_VOICE_RE: RegExp;
   export const SESSION_START: string;
-  export function speakersFor(mode: Mode): VoiceSpeaker[];
+  export function speakersFor(mode: Mode, opts?: { drill?: boolean }): VoiceSpeaker[];
   export function localeFor(language: unknown, variant?: unknown): string | null;
   export function envFile(): string;
   export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string };
   export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
-  export function voiceSystemPrompt(markdown: string, mode: Mode): string;
+  export function voiceSystemPrompt(markdown: string, mode: Mode, opts?: { drill?: boolean }): string;
   /** `notes`: recall's delimited blocks (bank retrieval, LOOKUP results), after the clock. */
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string, notes?: string[]): string;
   /** The query of a reply's first LOOKUP line, or null. */
@@ -162,7 +166,7 @@ declare module "*/scripts/voice.mjs" {
   export const MINUTE_CHOICES: Record<Mode, number[]>;
   /** The time-budget line for a turn's prompt; "" without a budget. */
   export function clockLine(o: { minutes: unknown; elapsedMs: unknown; plan: import("../shared/wire.ts").VoicePlanItem[]; stage: string | null | undefined; mode?: Mode }): string;
-  export function parseVoiceReply(text: string, mode: Mode): VoiceLine[];
+  export function parseVoiceReply(text: string, mode: Mode, opts?: { drill?: boolean }): VoiceLine[];
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;
   export function parseChoices(text: string): string[];
@@ -174,7 +178,7 @@ declare module "*/scripts/voice.mjs" {
   export function poolFor(list: { id: string; name: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[], gender: string, skip?: Set<string>, age?: string): { id: string; name: string; age: string }[];
   export function retryInOtherVoice(status: number): boolean;
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
-  export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
+  export function parseCast(text: string, mode?: Mode, opts?: { drill?: boolean }): import("../shared/wire.ts").VoiceCastNote[];
   export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
   export function replayCastNotes(raw: unknown): { slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
   export function castFallbacks(
@@ -194,10 +198,10 @@ declare module "*/scripts/voice.mjs" {
     avoid?: string[];
   }): { pools: Record<string, { id: string; name: string; age?: string; exact?: boolean }[]>; omitted: string[] };
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
-  export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[]): string;
+  export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[], opts?: { drill?: boolean }): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
-  export function voiceSlots(mode: Mode): import("../shared/wire.ts").VoiceSlot[];
+  export function voiceSlots(mode: Mode, opts?: { drill?: boolean }): import("../shared/wire.ts").VoiceSlot[];
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
   export function voiceFor(set: Record<string, string> | undefined, speaker: VoiceSpeaker, gender: import("../shared/wire.ts").VoiceGender | null | undefined): string;
   export const LIBRARY_SORTS: import("../shared/wire.ts").LibrarySort[];

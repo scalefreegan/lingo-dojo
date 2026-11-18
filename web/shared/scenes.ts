@@ -97,17 +97,23 @@ export function readRandomScene(v: unknown): { value: RandomScene | null } | { e
  * any. A name no collection has any more is ignored; when the names match
  * nothing that fits, the pool is empty, which is an error for the caller to
  * show, never a quiet fallback to the whole library. Library order.
+ *
+ * Drills (First steps, `format: drill`) are left out while the pool has
+ * any scene: a learner asking for a random scene wants a conversation, not
+ * a word drill. A pool of nothing but drills (a random pack over the First
+ * steps collection) keeps them, so it still draws.
  */
-export function randomPool<S extends Pick<Scenario, "id" | "language" | "collection">>(
+export function randomPool<S extends Pick<Scenario, "id" | "language" | "collection"> & { format?: Scenario["format"] }>(
   scenarios: readonly S[],
   languages: readonly Language[],
   target: string,
   random: RandomScene,
 ): S[] {
   const fit = scenarios.filter((s) => fitsTarget(s, languages, target));
-  if (!random.collections.length) return fit;
   const named = new Set(random.collections);
-  return fit.filter((s) => named.has(collectionKey(s)));
+  const pool = random.collections.length ? fit.filter((s) => named.has(collectionKey(s))) : fit;
+  const scenes = pool.filter((s) => s.format !== "drill");
+  return scenes.length ? scenes : pool;
 }
 
 /** The pool's collection names that the library no longer has (ignored by
@@ -146,7 +152,7 @@ export function drawScene<S extends Pick<Scenario, "id">>(pool: readonly S[], re
  * `keep` (a scene this session drew already, kept while it is still in the
  * pool) or a fresh draw (drawScene). Null for an empty pool.
  */
-export function drawRandomScene<S extends Pick<Scenario, "id" | "language" | "collection">>(
+export function drawRandomScene<S extends Pick<Scenario, "id" | "language" | "collection"> & { format?: Scenario["format"] }>(
   scenarios: readonly S[],
   languages: readonly Language[],
   target: string,

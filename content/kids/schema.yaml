@@ -20,12 +20,15 @@ slots:
     title: Helper character
     pick: one
     required: true
+    # A drill (First steps) has the narrator alone: no helper, no story.
+    scene_only: true
     description: "A sidekick who is always there with one fixed, silly voice: the child's anchor across the whole session."
   - id: story
     group: Story shape
     title: Story shape
     pick: one
     required: true
+    scene_only: true
     description: How the session unfolds, e.g. a quest, a silly mix-up, a bedtime story, a game show.
   - id: games
     group: Repetition games

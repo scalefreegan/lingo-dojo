@@ -4,7 +4,7 @@ import {
   newSessionToken, normalizeUsername, parseCookies, passwordProblem, profileFromLearner, sessionCookie, throttleKey, tokenHash,
   usernameProblem, verifyPassword,
 } from "../../scripts/auth.mjs";
-import { MODES, isMode, LEVELS_BY_MODE } from "../../scripts/content.mjs";
+import { MODES, isMode, DEFAULT_LEVEL_BY_MODE } from "../../scripts/content.mjs";
 import {
   LanguageIdentityError, LanguageTakenError, archiveLanguageProfile, archiveLearner, createFirstAdmin, createLanguageProfile, createLearner, createSession,
   deleteSession, findSession, findUserByUsername, getLanguageProfile, getLearner, hasUsers, languagesByLearner, listLanguageProfiles,
@@ -474,7 +474,7 @@ export async function handleLearners(req: IncomingMessage, res: ServerResponse, 
       if (!mode) throw new HttpError(400, `a learner needs a mode (one of ${MODES.join(", ")})`);
       // A new learner comes with its first language, which starts at the
       // mode's first level unless one is given.
-      const values: NewLearnerWithLanguage = { ...patch, ...language, name: patch.name, mode, level: language.level || LEVELS_BY_MODE[mode][0] || "" };
+      const values: NewLearnerWithLanguage = { ...patch, ...language, name: patch.name, mode, level: language.level || DEFAULT_LEVEL_BY_MODE[mode] };
       const learner = await createLearner(db, ctx.user.id, values);
       return sendJson(res, 200, { learner: learnerInfo(learner, [learner.language]) } satisfies LearnerReply);
     }
@@ -524,7 +524,7 @@ async function handleLanguages(req: IncomingMessage, res: ServerResponse, ctx: C
     }
     if (req.method === "POST") {
       const patch = languagePatch(await readJsonBody<unknown>(req));
-      const language = await createLanguageProfile(db, learner.id, { ...patch, level: patch.level || LEVELS_BY_MODE[learner.mode][0] || "" }).catch((e) =>
+      const language = await createLanguageProfile(db, learner.id, { ...patch, level: patch.level || DEFAULT_LEVEL_BY_MODE[learner.mode] }).catch((e) =>
         languageWriteError(e, learner.name),
       );
       return sendJson(res, 200, { language: languageInfo(language) } satisfies LanguageReply);

@@ -9,6 +9,11 @@ const FILTER_KEY = "lingo-dojo.scene-filter.v1";
  *  scenario uses, the kids library's included, follows alphabetically. */
 const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help", "Emergencies", "People & social", "Errands & admin"];
 const OTHER_SCENES = "Other scenes";
+
+/** A collection of nothing but drills (First steps, `format: drill`): the
+ *  place a beginner starts, so it is listed first, with a hint, whenever it
+ *  fits the target language. */
+const drillsOnly = (items: readonly Scenario[]) => items.length > 0 && items.every((s) => s.format === "drill");
 const FOLDERS_KEY = "lingo-dojo.scene-folders.v1";
 
 /** Open/closed per collection, as the user last left it. A collection absent
@@ -109,8 +114,11 @@ export default function SceneTab({
     const by = new Map<string, typeof visible>([...all.keys()].map((k) => [k, []]));
     for (const s of visible) by.get(s.collection ?? "")?.push(s);
     return [...by.entries()]
-      .map(([key, items]) => ({ key, name: key || OTHER_SCENES, items, foreign: foreignLanguage(all.get(key) ?? [], content.languages, target) }))
-      .sort((a, b) => Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
+      .map(([key, items]) => {
+        const foreign = foreignLanguage(all.get(key) ?? [], content.languages, target);
+        return { key, name: key || OTHER_SCENES, items, foreign, starter: !foreign && drillsOnly(all.get(key) ?? []) };
+      })
+      .sort((a, b) => Number(b.starter) - Number(a.starter) || Number(!!a.foreign) - Number(!!b.foreign) || (a.key === "" ? 1 : b.key === "" ? -1 : a.key.localeCompare(b.key)));
   }, [scenarios, visible, content.languages, target]);
 
   // The Random card's pool: one chip per collection, with how many of its
@@ -264,6 +272,11 @@ export default function SceneTab({
                       written for {g.foreign}
                     </span>
                   )}
+                  {g.starter && !empty && (
+                    <span className="min-w-0 truncate text-sm text-accent sm:text-xs" data-testid="folder-starter">
+                      New to the language? Start here
+                    </span>
+                  )}
                   {empty && <span className="shrink-0 text-sm text-fg-3">no matches</span>}
                   {!open && !empty && selected && selectedKey === g.key && (
                     <span className="min-w-0 truncate text-sm text-fg-3" data-testid="folder-selected">
@@ -279,6 +292,7 @@ export default function SceneTab({
                         title={s.title}
                         summary={s.summary}
                         category={s.category}
+                        drill={s.format === "drill"}
                         selected={library && draft.scenario === s.id}
                         onClick={() => pick(s.id)}
                       />
@@ -353,12 +367,15 @@ function ScenarioCard({
   title,
   summary,
   category,
+  drill = false,
   selected,
   onClick,
 }: {
   title: string;
   summary: string;
   category: string | null;
+  /** A drill (First steps): the narrator drills words, no conversation. */
+  drill?: boolean;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -373,7 +390,16 @@ function ScenarioCard({
     >
       <span className="line-clamp-2 text-sm leading-snug font-medium text-fg">{title}</span>
       <p className="w-full truncate text-sm text-fg-2 sm:text-xs">{summary}</p>
-      {category && <span className="mt-0.5 text-sm text-fg-3 sm:text-[11px]">{category}</span>}
+      {(category || drill) && (
+        <span className="mt-0.5 flex items-center gap-1.5 text-sm text-fg-3 sm:text-[11px]">
+          {drill && (
+            <span className="rounded-full border border-accent/60 px-1.5 text-accent" title="A drill: the narrator teaches words one at a time, no conversation" data-testid="drill-badge">
+              Drill
+            </span>
+          )}
+          {category}
+        </span>
+      )}
     </button>
   );
 }
