@@ -11,6 +11,20 @@
       href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400..700&family=Figtree:ital,wght@0,400..800;1,400..800&display=swap"
     />
     <title>Lingo Dojo</title>
+    <script>
+      // Light or dark before the first paint, so a dark page never flashes
+      // light while the bundle loads. Same key and rule as src/theme.ts
+      // (which takes over once it runs): "light"/"dark" as chosen, anything
+      // else follows the system.
+      (function () {
+        var t = null;
+        try {
+          t = localStorage.getItem("lingo-theme");
+        } catch (e) {}
+        if (t !== "light" && t !== "dark") t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

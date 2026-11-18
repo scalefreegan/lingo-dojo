@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 /* Small shared pieces. Colours come from the semantic tokens in index.css,
- * which flip with prefers-color-scheme, so nothing here writes dark:.
+ * which flip with the light/dark switch (theme.ts), so nothing here writes dark:.
  *
  * Fine print (badges, meta lines, small buttons) is 14px on a phone and
  * only drops to 11–12px from `sm` up: `text-sm sm:text-xs` throughout, so

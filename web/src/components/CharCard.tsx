@@ -8,6 +8,7 @@ import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
 import type { PhraseSummary } from "../types";
 import { CharTerm } from "./Ruby";
 import { Button } from "./ui";
+import { useTheme } from "../theme";
 import { useSound, type SoundPlayer } from "./useSound.ts";
 
 // The zhuyin and tones chart: its own chunk, fetched when first opened.
@@ -390,6 +391,22 @@ function Strokes({ ch, locale, kids, sound }: { ch: string; locale: string; kids
       el?.replaceChildren();
     };
   }, [ch, kids, size]);
+
+  // The writer's colours are read from the tokens once, when it's made: a
+  // theme switch with the card open (the menu, another tab, Auto at dusk)
+  // recolours it in place, rather than re-creating it, which would restart
+  // the animation and drop a trace in progress.
+  const { scheme } = useTheme();
+  useEffect(() => {
+    const w = writer.current;
+    if (!w) return;
+    const fg = css("--fg") ?? "#333";
+    void w.updateColor("strokeColor", fg);
+    void w.updateColor("radicalColor", css("--accent"));
+    void w.updateColor("outlineColor", css("--line") ?? "#ddd");
+    void w.updateColor("highlightColor", css("--kiai") ?? "#aaf");
+    void w.updateColor("drawingColor", css("--accent") ?? "#333");
+  }, [scheme]);
 
   function replay() {
     const w = writer.current;
