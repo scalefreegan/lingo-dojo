@@ -1,12 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import type HanziWriterType from "hanzi-writer";
-import { listPhrases, speakLine } from "../api";
-import { loadZh, useScript } from "../script/ruby.tsx";
-import { ARPHIC_LICENSE_URL, parseRadical, pinyinToZhuyin } from "../script/script.ts";
+import { listPhrases } from "../api";
+import { loadZh, useScript, useZhReader } from "../script/ruby.tsx";
+import { ARPHIC_LICENSE_URL, parseRadical } from "../script/script.ts";
+import { TONE_SOUNDS, syllableParts, zhuyinSound } from "../script/sounds.ts";
 import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
 import type { PhraseSummary } from "../types";
 import { CharTerm } from "./Ruby";
 import { Button } from "./ui";
+import { useSound, type SoundPlayer } from "./useSound.ts";
+
+// The zhuyin and tones chart: its own chunk, fetched when first opened.
+const SoundChart = lazy(() => import("./SoundChart.tsx"));
+
+type ZhReader = typeof import("../script/zh.ts");
 
 /* The character card: one Chinese character, large, with its stroke order
  * animated (Hanzi Writer; replay, and trace it yourself), its readings in
@@ -23,7 +30,15 @@ import { Button } from "./ui";
  * meanings, radicals and counterparts from Unihan (zh-chars.json, its own
  * chunk), readings from the pinyin reader. In kids mode the glyph is
  * bigger, the animation comes first and plays slower, and the words are
- * simpler. */
+ * simpler.
+ *
+ * Sounds (useSound: /api/voice/sound, cached per user on the server): each
+ * reading has a speaker button, and each of its parts (the pinyin initial
+ * and final, each zhuyin symbol, the tone) plays on a tap. The first
+ * reading is the character itself; another reading of a character with
+ * several is said by an exemplar read only that way (zh.ts exemplars), as
+ * a voice given 行 alone says xíng, never háng. A symbol or tone plays its
+ * fixed exemplar (sounds.ts). The sound chart lists them all. */
 
 type Chars = Record<string, ZhCharRow>;
 let charsLoad: Promise<Chars> | null = null;
@@ -50,6 +65,9 @@ const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(pre
 
 export default function CharCard({ ch, locale, onClose }: { ch: string; locale: string; onClose: () => void }) {
   const { kids, openChar } = useScript();
+  const zh = useZhReader(true);
+  const sound = useSound(locale);
+  const [chart, setChart] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const pressedBackdrop = useRef(false);
   // Each result says which character it is for, and is only set from its
@@ -147,6 +165,11 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
   const ownMeaning = phrases?.find((p) => p.text === ch)?.meaning ?? null;
   const shownReadings = readings ?? [];
   const [trad, simp] = row ? [row[4], row[5]] : ["", ""];
+  const soundError = sound.error && sound.error.text !== ch && (
+    <p className="text-sm text-err" role="status">
+      Couldn't play it: {sound.error.message}
+    </p>
+  );
 
   return (
     <dialog
@@ -188,21 +211,21 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
         </div>
 
         <div className={`flex gap-4 ${kids ? "flex-col items-center" : "flex-col items-center sm:flex-row sm:items-start"}`}>
-          <Strokes key={ch} ch={ch} locale={locale} kids={kids} />
+          <Strokes key={ch} ch={ch} locale={locale} kids={kids} sound={sound} />
           <div className={`flex min-w-0 flex-1 flex-col gap-2 ${kids ? "items-center text-center" : ""}`}>
             {shownReadings.length > 0 && (
-              <ul className={`flex flex-wrap gap-x-4 gap-y-1 ${kids ? "justify-center" : ""}`} aria-label="Readings">
+              <ul className={`flex flex-wrap gap-x-5 gap-y-2 ${kids ? "justify-center" : ""}`} aria-label="Readings">
                 {(kids ? shownReadings.slice(0, 1) : shownReadings).map((r, k) => (
-                  <li key={r} className="flex flex-col leading-tight">
-                    <span className={`${k === 0 ? "text-accent" : "text-fg-2"} ${kids ? "text-3xl" : k === 0 ? "text-xl" : "text-base"} font-medium`}>{r}</span>
-                    <span className={`${kids ? "text-2xl" : "text-sm"} text-fg-3`} lang="zh-TW">
-                      {pinyinToZhuyin(r) ?? ""}
-                    </span>
-                  </li>
+                  <Reading key={r} reading={r} primary={k === 0} ch={ch} locale={locale} kids={kids} zh={zh} sound={sound} />
                 ))}
               </ul>
             )}
             {readings && readings.length > 1 && !kids && <p className="text-sm text-fg-3 sm:text-xs">First is the usual reading; the others depend on the word.</p>}
+            {shownReadings.length > 0 && (
+              <p className="text-sm text-fg-3 sm:text-xs">{kids ? "Tap a sound to hear it." : "Tap a letter, a zhuyin symbol or the tone mark to hear it."}</p>
+            )}
+            {/* A part's failure (Hear it shows its own); with the chart open, above the chart. */}
+            {!chart && soundError}
             {ownMeaning && (
               <p className={kids ? "text-xl" : "text-base"}>
                 <span className="text-sm text-fg-3">{kids ? "You learned: " : "In your bank: "}</span>
@@ -254,6 +277,27 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
           </div>
         </div>
 
+        <div className={`flex flex-col gap-2 ${kids ? "items-center" : "items-start"}`}>
+          <Button
+            variant="ghost"
+            className={kids ? "px-3 py-1.5 text-base" : "px-2 py-1 text-sm"}
+            onClick={() => setChart((c) => !c)}
+            aria-expanded={chart}
+            aria-controls="char-card-chart"
+            data-testid="sound-chart-toggle"
+          >
+            {chart ? "Hide the sound chart" : kids ? "🔤 All the sounds" : "🔤 Sound chart"}
+          </Button>
+          {chart && soundError}
+          {chart && (
+            <div id="char-card-chart" className="w-full">
+              <Suspense fallback={<p className="text-sm text-fg-3">Loading the chart…</p>}>
+                <SoundChart locale={locale} kids={kids} sound={sound} toScript={(t) => (zh ? zh.inScript(t, locale) : t)} />
+              </Suspense>
+            </div>
+          )}
+        </div>
+
         <section aria-labelledby="char-card-bank" className="flex flex-col gap-1">
           <h3 id="char-card-bank" className="text-sm font-medium text-fg-2">
             {kids ? "Words you know with it" : "In your phrase bank"}
@@ -287,14 +331,13 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
 
 /** The stroke-order animation, with Replay, Trace it (draw it yourself,
  *  stroke by stroke, with hints after misses) and Say it. */
-function Strokes({ ch, locale, kids }: { ch: string; locale: string; kids: boolean }) {
+function Strokes({ ch, locale, kids, sound }: { ch: string; locale: string; kids: boolean; sound: SoundPlayer }) {
   const box = useRef<HTMLDivElement>(null);
   const writer = useRef<HanziWriterType | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "missing" | "failed">("loading");
   const [count, setCount] = useState(0);
   const [tracing, setTracing] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [speaking, setSpeaking] = useState(false);
   const size = kids ? 240 : 180;
 
   useEffect(() => {
@@ -377,25 +420,14 @@ function Strokes({ ch, locale, kids }: { ch: string; locale: string; kids: boole
     });
   }
 
-  async function say() {
-    setSpeaking(true);
+  // The whole character, through the same cached sound route as the
+  // readings (the narrator's voice, a default one when none is picked).
+  function say() {
     setNote(null);
-    try {
-      const blob = await speakLine({ speaker: "narrator", text: ch, locale, lang: "target" });
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      // A play() refused (autoplay rules, no audio device) never ends: let go of the blob here.
-      await audio.play().catch((e: unknown) => {
-        URL.revokeObjectURL(url);
-        throw e;
-      });
-    } catch (e) {
-      setNote(`Couldn't say it: ${String((e as Error)?.message || e)}`);
-    } finally {
-      setSpeaking(false);
-    }
+    void sound.play(ch);
   }
+  const speaking = sound.busy === ch;
+  const shown = note ?? (sound.error?.text === ch ? `Couldn't say it: ${sound.error.message}` : null);
 
   const big = kids ? "px-4 py-2 text-base" : "px-2.5 py-1 text-sm";
   return (
@@ -424,15 +456,139 @@ function Strokes({ ch, locale, kids }: { ch: string; locale: string; kids: boole
         <Button className={big} onClick={trace} disabled={state !== "ready"} aria-pressed={tracing}>
           ✎ {tracing ? "Stop" : kids ? "Your turn" : "Trace it"}
         </Button>
-        <Button className={big} onClick={() => void say()} disabled={speaking}>
+        <Button className={big} onClick={say} disabled={speaking} data-testid="char-say">
           🔊 {kids ? "Say it" : "Hear it"}
         </Button>
       </div>
-      {note && (
+      {shown && (
         <p className="max-w-[16rem] text-center text-sm text-fg-2" role="status">
-          {note}
+          {shown}
         </p>
       )}
     </div>
+  );
+}
+
+/** One reading: its pinyin split into a tappable initial and final, its
+ *  zhuyin with each symbol and the tone tappable, and a speaker button for
+ *  the whole syllable (the character for the first reading, an exemplar
+ *  read only this way for another). `zh` is the reader once loaded: until
+ *  then an exemplar is unknown and its button waits. */
+function Reading({ reading, primary, ch, locale, kids, zh, sound }: { reading: string; primary: boolean; ch: string; locale: string; kids: boolean; zh: ZhReader | null; sound: SoundPlayer }) {
+  const parts = syllableParts(reading);
+  const inScript = (t: string) => (zh ? zh.inScript(t, locale) : t);
+  // What the speaker button says: the character's own usual reading, or a
+  // character whose only reading is this one (null: none among the common
+  // characters; undefined: the reader is still loading).
+  const said: string | null | undefined = primary ? ch : zh ? zh.exemplars(locale).exact(reading) : undefined;
+  const symbolText = (s: string) => {
+    const e = zhuyinSound(s);
+    return e ? inScript(e.char) : null;
+  };
+  // A final of several symbols (ㄧㄤ) is heard in its syllable with no
+  // initial (yang); one symbol plays the chart's sound.
+  const finalText = (z: string): string | null | undefined => {
+    if (!z) return null;
+    if ([...z].length === 1) return symbolText(z);
+    return zh ? zh.exemplars(locale).sound(z) : undefined;
+  };
+  const tone = parts ? TONE_SOUNDS[parts.tone - 1] : null;
+  const toneText = tone ? inScript(tone.text) : null;
+  const big = kids ? "text-3xl" : primary ? "text-xl" : "text-base";
+  return (
+    <li className={`flex flex-col gap-0.5 leading-tight ${kids ? "items-center" : ""}`} data-testid="char-reading">
+      <span className="flex items-center gap-1.5">
+        <span className={`${primary ? "text-accent" : "text-fg-2"} ${big} font-medium`}>
+          {parts ? (
+            <>
+              {parts.initial && (
+                <SoundPart sound={sound} text={symbolText(parts.initial.zhuyin)} label={`${parts.initial.pinyin}, ${parts.initial.zhuyin}`}>
+                  {parts.initial.pinyin}
+                </SoundPart>
+              )}
+              <SoundPart
+                sound={sound}
+                text={finalText(parts.final.zhuyin)}
+                label={parts.final.zhuyin ? `${parts.final.pinyin}, ${parts.final.zhuyin}` : parts.final.pinyin}
+                why={parts.final.zhuyin ? undefined : `The ${parts.final.pinyin} here is not a sound of its own: ${parts.initial?.zhuyin ?? ""} is the whole syllable.`}
+              >
+                {parts.final.pinyin}
+              </SoundPart>
+            </>
+          ) : (
+            reading
+          )}
+        </span>
+        <button
+          type="button"
+          className={`ld-sound ${kids ? "text-2xl" : "text-base"}`}
+          style={{ borderBottom: 0 }}
+          disabled={!said}
+          aria-busy={sound.busy === said}
+          aria-label={said ? `Hear ${reading}${primary ? "" : `, as in ${said}`}` : `Can't play ${reading} on its own`}
+          title={
+            said === null
+              ? `No common character is read only ${reading}, and ${ch} alone would be said with its usual reading, so this one can't be played on its own.`
+              : said
+                ? `Hear ${reading}${primary ? "" : ` (said with ${said}, read only ${reading}; ${ch} alone would be said its usual way)`}`
+                : "Loading…"
+          }
+          onClick={() => said && void sound.play(said)}
+          data-testid="char-reading-say"
+        >
+          🔊
+        </button>
+        {!primary && said && (
+          <span className="text-sm text-fg-3">
+            as in{" "}
+            <span lang={locale} className="text-fg-2">
+              {said}
+            </span>
+          </span>
+        )}
+      </span>
+      {parts && (
+        <span className={`${kids ? "text-2xl" : "text-sm"} text-fg-3`} lang="zh-TW">
+          {parts.tone === 5 && tone && (
+            <SoundPart sound={sound} text={toneText} label={tone.name}>
+              ˙
+            </SoundPart>
+          )}
+          {parts.symbols.map((s, i) => {
+            const e = zhuyinSound(s);
+            return (
+              <SoundPart key={`${s}${i}`} sound={sound} text={symbolText(s)} label={e ? `${s}, ${e.pinyin}` : s}>
+                {s}
+              </SoundPart>
+            );
+          })}
+          {parts.tone !== 5 && tone && (
+            // The first tone is unmarked in print; its mark shows faint here so it can be tapped.
+            <SoundPart sound={sound} text={toneText} label={tone.name} faint={parts.tone === 1}>
+              {parts.tone === 1 ? "ˉ" : tone.mark}
+            </SoundPart>
+          )}
+        </span>
+      )}
+    </li>
+  );
+}
+
+/** A tappable part of a reading: plays `text` (an exemplar), or is shown
+ *  disabled with `why` (or "not known yet" while the reader loads). */
+function SoundPart({ sound, text, label, why, faint, children }: { sound: SoundPlayer; text: string | null | undefined; label: string; why?: string; faint?: boolean; children: ReactNode }) {
+  const title = text ? `Hear ${label}${[...text].length === 1 ? ` (as in ${text})` : ` (${text})`}` : (why ?? (text === undefined ? "Loading…" : `No sound for ${label}`));
+  return (
+    <button
+      type="button"
+      className={`ld-sound ${faint ? "opacity-50" : ""}`}
+      disabled={!text}
+      data-playing={!!text && sound.busy === text ? "" : undefined}
+      aria-label={title}
+      title={title}
+      onClick={() => text && void sound.play(text)}
+    >
+      {children}
+    </button>
   );
 }

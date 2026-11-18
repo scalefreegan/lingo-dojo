@@ -20,7 +20,7 @@ import type {
   DeletedPacksReply, PackDeleteReply, PackInput, PackRestoreReply, PackRevisionsReply, PickLanguageRequest, PickLearnerRequest,
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
@@ -564,8 +564,18 @@ export function endConversation(id: string, page: PageLearner): Promise<void> {
 }
 
 /** One line → playable audio. Errors come back as the usual {error}. */
-export async function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
-  const res = await send("/api/voice/speak", { ...json(body), signal });
+export function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
+  return audioFrom("/api/voice/speak", body, signal);
+}
+
+/** The character card's sounds: a character or zhuyin symbol (1–4) said by
+ *  the narrator's voice, cached on the server per user. */
+export function soundAudio(body: VoiceSoundRequest, signal?: AbortSignal): Promise<Blob> {
+  return audioFrom("/api/voice/sound", body, signal);
+}
+
+async function audioFrom(url: string, body: unknown, signal?: AbortSignal): Promise<Blob> {
+  const res = await send(url, { ...json(body), signal });
   check401(res);
   if (res.ok) return res.blob();
   const text = await res.text();

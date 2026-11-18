@@ -121,6 +121,11 @@ digest written by one tool-less call per language per day, capped by
   `web/server/voice.ts`, pure helpers in `scripts/voice.mjs`; see `docs/VOICE.md`.
   Provider keys live only in the gitignored repo-root `.env.local` and never
   reach the browser. Voice turns spawn `claude -p` with **no tools**.
+  With no voice saved, a line outside a session speaks in the provider's
+  default (`defaultVoice`: an ElevenLabs premade voice, else the locale's
+  first), never a "pick a voice" 400. The character card's sounds go through
+  `POST /api/voice/sound` (1–4 Han or zhuyin only, disk-cached per user;
+  exemplar tables in `web/src/script/sounds.ts`); docs/VOICE.md §Character sounds.
 - Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated
   SQL in `scripts/db/migrations/` (commit it; edit the schema, then
   `npm run db:generate`). Never hand-edit a migration except through

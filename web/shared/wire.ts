@@ -1046,6 +1046,14 @@ export interface VoiceSpeakRequest {
   fallback?: string;
 }
 
+/** POST /api/voice/sound — a short sound for the character card: one to
+ *  four Han characters or zhuyin symbols, said by the narrator's voice for
+ *  `locale` and cached on disk per user (docs/VOICE.md §Character sounds). */
+export interface VoiceSoundRequest {
+  text: string;
+  locale: string;
+}
+
 /** POST /api/voice/cast — this session's voices, drawn at session start. */
 export interface VoiceCastRequest {
   mode: Mode;

@@ -1269,6 +1269,36 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
   return refused.has(cast) ? { first: retry, retry: "" } : { first: cast, retry };
 }
 
+/**
+ * The voice to speak in when the learner has saved none for the locale
+ * (every slot "Random", which the Go tab says is fine): the character card's
+ * sounds and the listening drill, whose lines have no cast to name one.
+ * `voices` is the provider's own list for the locale (elevenVoices,
+ * azureVoices, systemVoices: natives first); `gender` the narrator's, when
+ * known. → an id, or "" when the list has nothing usable.
+ *
+ *  - ElevenLabs: a premade voice of the account (any plan can speak with
+ *    them, unlike voices added from the library), a native one before any
+ *    other (pronunciation over gender), each of the gender where there is
+ *    one; with no premade voice at all, a native voice of the account.
+ *  - Azure and macOS: the locale's own first voice of the gender, else its
+ *    first voice (a secondary-locale voice only when the locale has none;
+ *    macOS's novelty voices never).
+ */
+export function defaultVoice(provider, voices, gender = null) {
+  const g = gender === "female" || gender === "male" ? gender : null;
+  const list = (Array.isArray(voices) ? voices : []).filter((v) => v && typeof v.id === "string" && v.id && String(v.gender).toLowerCase() !== "novelty");
+  const ofGender = (v) => String(v.gender).toLowerCase() === g;
+  // Each tier gendered first: an unknown gender just skips that half.
+  const tiers = (pools) => pools.flatMap((p) => (g ? [p.filter(ofGender), p] : [p]));
+  const native = list.filter((v) => v.match);
+  const pools =
+    provider === "elevenlabs"
+      ? tiers([list.filter((v) => v.premade && v.match), list.filter((v) => v.premade), native])
+      : tiers([native, list]);
+  return pools.find((p) => p.length)?.[0]?.id ?? "";
+}
+
 /** For ElevenLabs: each slot's fallback, a distinct account voice of its
  *  gender (two women never share one while the account has two). Premade
  *  voices come first (any plan can speak with them; voices added from the

@@ -2070,12 +2070,15 @@ holds; this adds two drills and a mode picker.
   - **Paid calls** (an audio miss, a transcription) run at most two at
     once per user; a third is a 429. The Go tab's routes don't share the
     bound yet (bead ld-e6q).
-  - **macOS voices:** with no voice picked, the locale's first installed
-    one; with none installed for the locale, a 400 (rather than `say`
-    reading the words in the Mac's own language, and caching that).
+  - **No voice picked:** the provider's default voice (docs/VOICE.md
+    §Default voice: an ElevenLabs premade voice, Azure's or macOS's first
+    for the locale); with no macOS voice installed for the locale, a 400
+    (rather than `say` reading the words in the Mac's own language, and
+    caching that).
   - **Before a session**, `GET /api/practice` answers `setup: { audio,
-    speech }`: why phrases can't be played (no voice picked, no key, no
-    locale) or answers can't be transcribed (no key), or null each. The
+    speech }`: why phrases can't be played (no key, no macOS voice for the
+    locale, no locale; never "no voice picked", and no provider call) or
+    answers can't be transcribed (no key), or null each. The
     mode picker says so, and won't start listening or speak-it alone
     that can't run. A listening card whose audio fails anyway shows why
     and where to fix it, with only Skip (nothing recorded); its choices

@@ -176,7 +176,12 @@ declare module "*/scripts/voice.mjs" {
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
   export function parseCast(text: string, mode?: Mode): import("../shared/wire.ts").VoiceCastNote[];
   export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
-  export function replayCastNotes(raw: unknown): { slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
+  export function defaultVoice(
+    provider: "elevenlabs" | "azure" | "system",
+    voices: { id: string; gender: string; match: boolean; premade?: boolean }[],
+    gender?: "female" | "male" | null,
+  ): string;
+  export function replayCastNotes(raw: unknown):{ slot: string; age: "child" | "young" | "middle" | "old"; who: string }[];
   export function castFallbacks(
     own: { id: string; gender: string; match: boolean; home?: boolean; premade?: boolean; age?: string }[],
     slots: string[],

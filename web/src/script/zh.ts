@@ -17,6 +17,7 @@
 import { pinyin } from "pinyin-pro";
 import t2s from "./zh-t2s.json" with { type: "json" };
 import { isHan, isPinyin, isTaiwan, particleDe, simplifyForReading, taiwanize } from "./script.ts";
+import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
 
 const toSimp: Record<string, string> = t2s.t2s;
 
@@ -116,4 +117,27 @@ export function charReadings(ch: string, locale: string): string[] {
 /** The one-for-one simplified form of a character (愛 → 爱), or itself. */
 export function simplified(ch: string): string {
   return toSimp[ch] ?? ch;
+}
+
+/** The exemplar index per script (sounds.ts buildExemplarIndex): built the
+ *  first time a card needs one, over the common characters of the
+ *  learner's script, each read as charReadings reads it for that locale
+ *  (Taiwan's readings for zh-TW). Some 5,000 lookups, once per page. */
+const exemplarIndexes = new Map<string, ExemplarIndex>();
+export function exemplars(locale: string): ExemplarIndex {
+  const tw = isTaiwan(locale);
+  const key = tw ? "tw" : "cn";
+  let index = exemplarIndexes.get(key);
+  if (!index) {
+    index = buildExemplarIndex(commonChars(tw), (ch) => charReadings(ch, tw ? "zh-TW" : "zh-CN"));
+    exemplarIndexes.set(key, index);
+  }
+  return index;
+}
+
+/** A sound's text in the learner's script: the tables keep traditional
+ *  characters (the zhuyin chart's), a mainland learner sees and hears the
+ *  simplified form (each read the same: sounds.test.mjs). */
+export function inScript(text: string, locale: string): string {
+  return isTaiwan(locale) ? text : [...text].map(simplified).join("");
 }

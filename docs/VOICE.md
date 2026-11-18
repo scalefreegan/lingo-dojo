@@ -247,8 +247,9 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   the card's own list). Tapping one opens the character card (a modal:
   Escape or Close returns focus): the character large with its stroke order
   animated by Hanzi Writer (▶ Replay, ✎ Trace it to draw it stroke by
-  stroke, 🔊 Hear it through `/api/voice/speak`), its readings in pinyin and
-  zhuyin, meaning, radical, stroke count, its simplified or traditional
+  stroke, 🔊 Hear it), its readings in pinyin and zhuyin, each with a
+  speaker button and every part tappable, a sound chart (all of these
+  through the cached `/api/voice/sound`: §Character sounds), meaning, radical, stroke count, its simplified or traditional
   counterpart, and the phrases in this language's bank that contain it or
   its counterpart (the bank's own search). Transcript lines keep their one
   tap (a glossed word's meaning); characters are reached through the
@@ -463,9 +464,8 @@ The Practice tab's listening and speak-it drills (docs/DATA.md §As built
 
 - **Phrase audio.** `GET /api/practice/audio/:phraseId` says one of the
   active language's phrases with your TTS provider in your voice for that
-  language (the narrator's slot first; macOS voices with none picked take
-  the locale's first voice; ElevenLabs or Azure with none picked answer
-  400: pick one in the Go tab's voice settings). The synthesis is
+  language (the narrator's slot first; with none picked, the default voice:
+  see §Default voice). The synthesis is
   `/api/voice/speak`'s (`synthesize()` in `web/server/voice.ts`), with no
   cast and no retry in another voice. The audio is cached on disk
   (`scripts/audio-cache.mjs`): `data/audio/<sha256>.mp3` (`.wav` for macOS
@@ -487,6 +487,73 @@ The Practice tab's listening and speak-it drills (docs/DATA.md §As built
   records nothing; the answer is sent after you see what was heard. The
   card lets go of the microphone, and cancels the transcription, when it
   goes, even while the microphone is still opening.
+
+## Default voice
+
+Every slot may stay Random: a session's cast draws voices for them. A line
+said outside a session has no cast, so when no voice is saved for the
+locale (`voiceFor` finds nothing, borrowing included) the server picks one
+(`defaultVoice` in `scripts/voice.mjs`, used by `/api/voice/speak`, the
+phrase audio and `/api/voice/sound`):
+
+- **ElevenLabs:** a premade voice of your account (any plan can speak with
+  them; voices added from the library can be refused), a native speaker of
+  the locale's language first, of the narrator's gender when the line
+  names one. With no premade voice at all, a native voice of the account.
+- **Azure:** the locale's first voice of that gender, else its first voice
+  (a voice that only lists the locale as a secondary one, only when there
+  is no other).
+- **macOS:** the locale's first installed voice. With none installed, the
+  Go tab still speaks with the Mac's own voice, as before; a phrase or a
+  sound is a 400 (that audio would be cached).
+
+The provider's voice list is read once per server process (an hour at most
+for the paid ones; a failed read is retried on the next line), never once
+per line. The default only stands in for "no voice saved": a provider
+without its keys is still the 400 that says which keys to add. The Practice
+tab's setup check (`voiceReady`) asks no provider: it reports a missing key
+or a missing macOS voice, never "no voice picked".
+
+## Character sounds
+
+The character card (`web/src/components/CharCard.tsx`) plays sounds through
+`POST /api/voice/sound {text, locale}` (`handleVoiceSound` in
+`web/server/voice.ts`, mounted with `learner: true`): Hear it, a speaker
+button per reading, each pinyin initial and final, each zhuyin symbol and
+tone mark, and the sound chart (`SoundChart.tsx`: the 37 zhuyin symbols as
+initials, medials and finals, and the five tones). The route only takes 1
+to 4 Han characters or zhuyin symbols and tone marks (400 otherwise, before
+any provider call), so it can't serve as a general text-to-speech cache on
+the owner's credits. It speaks in the narrator's voice for the locale as
+above, through the phrase audio's disk cache (`audioKey`/`cachedAudio`,
+keyed per user; `paidSlot`; `Cache-Control: private, no-store`): the same
+text, voice and locale is synthesized once. The page also keeps each
+sound's audio for its own life (`useSound.ts`).
+
+A voice given a lone character says its usual reading, so every sound is an
+exemplar character (`web/src/script/sounds.ts`, checked against pinyin-pro
+in `scripts/tests/sounds.test.mjs`):
+
+- **A reading:** the first is the character itself. Another reading of a
+  character with several is said by a common character read *only* that
+  way (行 háng: "as in 杭"), found by `zh.ts` `exemplars()`: pinyin-pro has
+  no reading → character lookup, so the first time a card needs one it
+  reads every common character of the learner's script (Big5's 5,401
+  for zh-TW, GB 2312's 3,755 otherwise, both from the browser's own
+  `TextDecoder`) and indexes the ones with a single reading. A reading
+  with no such character has its button disabled, saying why.
+- **A zhuyin symbol** (and the pinyin initial or one-symbol final that
+  matches it): a fixed table of the classroom names (ㄅ 玻, ㄆ 坡 …), with
+  the ones whose character had another reading replaced (ㄉ 德, ㄌ 叻, ㄏ 河,
+  ㄙ 絲, ㄛ 噢). ㄝ, ㄟ and ㄥ have no character of their own: they are heard
+  in 耶, 黑 and 燈. ㄈ keeps 佛 (no character is read only fo; its usual
+  reading is fó). A final of several symbols (ㄧㄤ) is its syllable with no
+  initial, from the same index. The i of zhi chi shi ri zi ci si plays
+  nothing: the initial is the whole syllable.
+- **Tones:** 媽 麻 馬 罵, and the neutral tone as the second syllable of
+  媽媽 (嗎 alone may be said má).
+
+A mainland learner sees and hears the simplified forms (`inScript`).
 
 ## Cost (rough, Nov 2026)
 

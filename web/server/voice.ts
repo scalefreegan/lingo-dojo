@@ -9,12 +9,12 @@ import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
   LibraryAddReply, LibraryAddRequest, LibraryReply, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
-  VoiceLine, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  VoiceLine, VoiceSoundRequest, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
@@ -22,6 +22,8 @@ import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 import { conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
+import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
+import { paidSlot } from "./paid.ts";
 
 // Voice practice: run a pack as a spoken session inside the app. Four routes,
 // one per step of a turn, so the browser can start playing the first line
@@ -32,11 +34,12 @@ import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 //   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
 //   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines, review}
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
+//   POST    /api/voice/sound         {text, locale} → a character's or zhuyin symbol's sound (cached)
 //   GET     /api/voice/library       ElevenLabs Voice Library search
 //   POST    /api/voice/library/add   add a library voice to the account (admin)
 //   POST    /api/voice/cast          this session's voices
 //
-// turn and cast act for the active learner and language, so api.ts mounts them with
+// turn, cast and sound act for the active learner and language, so api.ts mounts them with
 // wrap's `learner: true` (the page must name both).
 //
 // The browser holds the session: it sends the whole history with every
@@ -532,9 +535,13 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   // (all-Random on a free plan has no saved voice, and library voices are
   // refused there), else a voice borrowed from another slot.
   const fallback = body?.provider === provider ? (castVoice(provider, body?.fallback) ?? "") : "";
-  const { first, retry } = speechVoices({ set: settings.voices[provider]?.[locale] ?? {}, speaker, gender, cast, fallback, refused: refusedVoices });
+  const { first: chosen, retry } = speechVoices({ set: settings.voices[provider]?.[locale] ?? {}, speaker, gender, cast, fallback, refused: refusedVoices });
+  // Nothing saved, cast or to fall back on (every slot Random, and a line
+  // from outside a session: the character card's Hear it): the provider's
+  // default for the locale rather than a 400. macOS still says it in the
+  // Mac's own voice when the locale has none installed, as before.
+  const first = chosen || (await defaultVoiceFor(provider, locale, gender, provider === "system"));
   const voice = first;
-  if (!voice && provider !== "system") throw new HttpError(400, `pick a ${NAMES[provider]} voice for ${speaker} first`);
 
   const ctrl = new AbortController();
   const onClose = () => {
@@ -617,7 +624,7 @@ export async function synthesize(
 
 /** The macOS voices for a locale (`say -v '?'`, read once per process). */
 let sayListOnce: Promise<string> | null = null;
-export async function systemVoicesFor(locale: string): Promise<{ id: string }[]> {
+export async function systemVoicesFor(locale: string): Promise<VoiceChoice[]> {
   sayListOnce ??= sayList().catch((e) => {
     sayListOnce = null;
     throw e;
@@ -625,26 +632,129 @@ export async function systemVoicesFor(locale: string): Promise<{ id: string }[]>
   return systemVoices(await sayListOnce, locale);
 }
 
+/** How long a paid provider's voice list is kept: the default voice is
+ *  looked up per line, which must not mean a list call per line, but a
+ *  voice removed from the account should stop being picked within the hour. */
+const VOICE_LIST_TTL_MS = 60 * 60_000;
+/** The raw voice list per paid provider (ElevenLabs: the whole account's;
+ *  Azure: every voice of the region), shared by every user and locale. A
+ *  failed fetch is dropped, so the next line asks again. */
+const voiceLists = new Map<"elevenlabs" | "azure", { at: number; json: Promise<unknown> }>();
+
+/** Forget the cached voice lists (tests stub a provider per case). */
+export function clearVoiceLists(): void {
+  voiceLists.clear();
+}
+
+async function providerVoices(provider: TtsProvider, locale: string): Promise<VoiceChoice[]> {
+  if (provider === "system") return systemVoicesFor(locale);
+  const keys = keysFor(provider);
+  let held = voiceLists.get(provider);
+  if (!held || Date.now() - held.at > VOICE_LIST_TTL_MS) {
+    const request = provider === "elevenlabs" ? elevenVoicesRequest({ key: keys.elevenlabs }) : azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion });
+    const json = call(provider, request).then((r) => r.json() as Promise<unknown>);
+    const entry = { at: Date.now(), json };
+    voiceLists.set(provider, entry);
+    json.catch(() => {
+      if (voiceLists.get(provider) === entry) voiceLists.delete(provider);
+    });
+    held = entry;
+  }
+  const json = await held.json;
+  return provider === "elevenlabs" ? elevenVoices(json, locale) : azureVoices(json, locale);
+}
+
 /**
- * The voice a practice drill says a phrase in: the user's own voice
- * setting for the language's locale, the narrator's first (as voiceFor
- * borrows: the Go tab's dojo master). With none set, macOS voices take the
- * first voice of the locale (`say` with no voice would read the words in
- * the system's own language); the paid providers need one picked (400,
- * naming where). → { provider, voice, model }.
+ * The voice to use when the learner saved none for `locale` (scripts/voice.mjs
+ * defaultVoice: an ElevenLabs premade voice, else the locale's first of the
+ * gender). The provider's list is read through the per-process cache. With
+ * `optional` (macOS on the Go tab, whose `say` without a voice still talks)
+ * an empty list is "", else a 400 that says what to do. A provider without
+ * its keys is still keysFor's 400: the default replaces "no voice saved",
+ * never "no provider".
  */
-export async function practiceVoice(settings: VoiceSettings, locale: string): Promise<{ provider: TtsProvider; voice: string; model: string }> {
-  const provider = settings.tts;
-  keysFor(provider);
-  let voice = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", null);
-  if (!voice && provider === "system") voice = (await systemVoicesFor(locale).catch(() => []))[0]?.id ?? "";
+async function defaultVoiceFor(provider: TtsProvider, locale: string, gender: VoiceGender | null, optional = false): Promise<string> {
+  const voices = provider === "system" ? await systemVoicesFor(locale).catch(() => []) : await providerVoices(provider, locale);
+  const voice = defaultVoice(provider, voices, gender);
+  if (voice || optional) return voice;
   // Without one, `say` would read the words in the Mac's own language, and
   // that audio would be cached: refuse instead.
-  if (!voice && provider === "system") {
+  if (provider === "system") {
     throw new HttpError(400, `no macOS voice is installed for ${locale}: add one in System Settings → Accessibility → Spoken Content, or pick another voice provider`);
   }
-  if (!voice) throw new HttpError(400, `pick an ${NAMES[provider]} voice for this language first (Go tab → voice settings)`);
+  throw new HttpError(400, `${NAMES[provider]} has no voice for ${locale} to default to: pick one in the Go tab's voice settings`);
+}
+
+/**
+ * The narrator's voice for `locale` outside a session (a practice drill's
+ * phrase, the character card's sounds): the user's own voice setting, the
+ * narrator's first (as voiceFor borrows: the Go tab's dojo master), else
+ * the provider's default (defaultVoiceFor), so a learner whose slots are
+ * all Random still hears it. → { provider, voice, model }.
+ */
+export async function practiceVoice(settings: VoiceSettings, locale: string, gender: VoiceGender | null = null): Promise<{ provider: TtsProvider; voice: string; model: string }> {
+  const provider = settings.tts;
+  keysFor(provider);
+  const voice = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", gender) || (await defaultVoiceFor(provider, locale, gender));
   return { provider, voice, model: provider === "elevenlabs" ? settings.elevenModel : "" };
+}
+
+/**
+ * Why `locale` can't be spoken with these settings, as practiceVoice would
+ * fail, without a provider call: no keys for the provider, or (macOS) no
+ * voice installed for the locale. A paid provider's default voice is only
+ * looked up when a line is said, so the Practice tab's counts (which it
+ * polls) never fetch a voice list. Throws the HttpError; returns otherwise.
+ */
+export async function voiceReady(settings: VoiceSettings, locale: string): Promise<void> {
+  const provider = settings.tts;
+  keysFor(provider);
+  if (provider === "system" && !voiceFor(settings.voices.system?.[locale] ?? {}, "narrator", null)) await defaultVoiceFor(provider, locale, null);
+}
+
+/** What /api/voice/sound will say: at most this many characters (one
+ *  character, an exemplar, or 媽媽 for the neutral tone), every one a Han
+ *  character or a zhuyin symbol or tone mark. Keeps the route a card's
+ *  sounds, not a general text-to-speech cache on the owner's credits. */
+export const MAX_SOUND_CHARS = 4;
+const SOUND_RE = /^[\p{Script=Han}ㄅ-ㄩˉˊˇˋ˙]+$/u;
+
+/**
+ * POST /api/voice/sound {text, locale} → the sound of a character or zhuyin
+ * symbol (the character card's readings, its zhuyin and pinyin parts, the
+ * sound chart). The narrator's voice for the locale as /speak resolves it
+ * outside a session (practiceVoice: the saved voice, else the provider's
+ * default), through the on-disk audio cache keyed per user like the
+ * practice drill's phrases (practice.ts phraseAudio): the first play pays
+ * the provider, every later one is read from disk. Whether it was a hit is
+ * logged, never sent. Mounted with wrap's `learner: true`.
+ */
+export async function handleVoiceSound(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
+  if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  const body = await readJsonBody<Partial<VoiceSoundRequest>>(req);
+  const text = typeof body?.text === "string" ? body.text.trim() : "";
+  if (!text || [...text].length > MAX_SOUND_CHARS || !SOUND_RE.test(text)) {
+    throw new HttpError(400, `a sound is 1 to ${MAX_SOUND_CHARS} Chinese characters or zhuyin symbols`);
+  }
+  const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
+  if (!locale) throw new HttpError(400, "locale must look like es-MX");
+  const settings = await readVoiceSettings(ctx.user.id);
+  const { provider, voice, model } = await practiceVoice(settings, locale);
+  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, ctrl.signal)));
+    console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
+    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
+    res.end(out.audio);
+  } finally {
+    res.off("close", onClose);
+  }
 }
 
 /* --------------------------------- library -------------------------------- */
