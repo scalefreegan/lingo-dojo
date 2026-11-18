@@ -600,6 +600,8 @@ connected-speech rules before anything is compared:
   accepted where only a word list could tell (一月, and any 一 after another
   syllable, which may be the end of a word: 统一了, 唯一的); A不A and 看一看
   accept the neutral reading too;
+- a third tone doubled into a neutral one (姐姐, 奶奶, 宝宝) may rise
+  (jiéjie) or stay low: both are accepted;
 - the half third: a third tone before another tone is low without the rise,
   and counts as a third tone;
 - the neutral tone is not judged.
@@ -615,9 +617,10 @@ judged.
 browser already sends, with no dependency:
 
 1. `trackPitch`: YIN (de Cheveigné & Kawahara 2002) every 10 ms over
-   60–600 Hz, written out in the module (sixty lines, nothing native).
+   60–800 Hz, written out in the module (sixty lines, nothing native).
    Octave slips are undone per voiced run (a short piece an octave from
-   the rest of its run), never across a silence.
+   the rest of its run), never across a silence. Each frame also carries
+   its zero-crossing rate, which tells creak from the hiss of s or sh.
 2. Cuts: per-syllable `timings` when the caller has extents it can trust
    (Azure's words), else `segmentSyllables`, which cuts the speech at its
    quietest, least voiced frames given the syllable count, kept on Scribe's
@@ -640,14 +643,23 @@ browser already sends, with no dependency:
    point, the rise from it to the end, the fall from the highest point to
    the end) and, in a voice whose range is known, of the height (where it
    starts, how high or low it sits):
-   - tone 1 by three semitones of movement, or by sitting low;
+   - tone 1 by three semitones of movement, or by sitting low (only in
+     the first two syllables of a phrase: sentences drift down, and "low"
+     is read against the whole voice);
    - tone 2 by not coming up at the end while falling or level, or by a
      deep dip that barely comes back;
    - tone 4 by not coming down at the end while level or rising, or by
      ending on a rise;
    - tone 3 by a high level pitch, by a fall that starts high in the range
-     (so a fourth tone said for a third is caught, with a known range), or
-     by a plain rise with no dip.
+     (so a fourth tone said for a third is caught), or by a plain rise
+     with no dip that starts at mid-range or above. All three need the
+     range, and the last is silent when the start of the syllable is
+     hidden (creak or a burst before the first voiced frame): a third tone
+     that starts at the floor has no fall to show.
+
+   With a known range the semitone bars scale with it (`scaleRange`; the
+   range counts between 7 and 12 semitones, so a very wide voice, a small
+   child's, is still held to a 12-semitone voice's bars).
 
    Still never flagged: a low fall said for a fourth tone, and second
    against third when the second dips or the third comes back up. A level
@@ -662,8 +674,23 @@ on, is in [pronunciation-proof.md](pronunciation-proof.md), written by
 `node scripts/pronunciation-proof.mjs` (not part of `npm test`; `--fetch`,
 `--scribe` and `--azure` are the only steps that call a provider and must
 be asked for). The thresholds were chosen on two voices and measured on the
-other two; the report has both directions, the trade-off at several
-margins, and the classifier's raw accuracy before any gate. **Real
+other two; the report leads with those held-out numbers and labels
+everything else in-sample, and has the trade-off at several margins and the
+classifier's raw accuracy before any gate.
+
+**Before wiring it to a route:**
+
+- Start with single syllables and drills. Phrase flags rest on a
+  half-semitone margin (`phraseMarginSt`) that the proof clips chose.
+- Pass `speaker` only as a range built from the learner's *other*
+  recordings (`speakerRange` over earlier turns), never one that includes
+  the recording being scored.
+- `scoreTones` is synchronous and refuses more than 30 seconds
+  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`); its own
+  segmenter grows with syllables × frames². Run it off the request thread
+  (a worker, or the paid-slot queue) or pass timings.
+- Treat `unsure` as silence.
+ **Real
 recordings are the next step**: drop audio files and a `labels.tsv` into
 `data/pronunciation-proof/recordings/` (gitignored; the format is in the
 report's "Real recordings") and they are scored on every run, locally.
@@ -707,8 +734,12 @@ Azure's syllable timings: a tone flag comes from the pitch
 false alarm in the run at that bar; `reason: "sound"`). A high Azure score
 never turns an unclear pitch reading into `ok`: wrong tones often score
 above 80. The builder refuses audio that is not 16 kHz or is over 30
-seconds, and takes any locale `scoresTones` does (`azureLocale`: `zh`,
-`zh_TW`, `zh-Hant-TW`). Not yet run live:
+seconds. `scoresTones` and `azureLocale` read a locale through one parser,
+so they cannot disagree: Mandarin is `zh` or `cmn` with no region or CN, TW,
+SG or MY (`zh_TW`, `zh-Hant-TW`, `cmn-Hans-CN`), sent to Azure as zh-TW
+(Taiwan, or Traditional with no region) or zh-CN; Cantonese (`zh-HK`,
+`zh-yue`) and anything that isn't a plain tag are not scored and are
+refused. Not yet run live:
 zh-TW, Spanish, a recording near 30 seconds, a per-resource `endpoint`, a
 real learner.
 

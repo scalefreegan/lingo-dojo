@@ -53,10 +53,30 @@ export function pronunciationProvider(keys) {
 /** The locales v1 scores: Mandarin, either script. Cantonese is another
  *  language with other tones. */
 export function scoresTones(locale) {
-  const parts = String(locale ?? "").replace(/_/g, "-").split("-").map((p) => p.toUpperCase());
-  if (parts[0] !== "ZH" && parts[0] !== "CMN") return false;
-  return !parts.includes("HK") && !parts.includes("MO");
+  return isMandarin(parseLocale(locale));
 }
+
+/** The one reading of a locale tag in this module: `{ lang, script, region }`
+ *  from `zh`, `zh_TW`, `zh-Hant-TW`, `cmn-Hans-CN`, `es-mx`, or null for
+ *  anything that isn't language[-Script][-REGION] in letters (`zh-yue`,
+ *  `zh-CN&x=1`: the value can end up in a URL). */
+function parseLocale(locale) {
+  const parts = String(locale ?? "").trim().replace(/_/g, "-").split("-");
+  if (!/^[A-Za-z]{2,3}$/.test(parts[0] ?? "")) return null;
+  let script = null;
+  let region = null;
+  for (const x of parts.slice(1)) {
+    if (/^[A-Za-z]{4}$/.test(x) && !script && !region) script = x.toLowerCase();
+    else if (/^[A-Za-z]{2}$/.test(x) && !region) region = x.toUpperCase();
+    else return null;
+  }
+  return { lang: parts[0].toLowerCase(), script, region };
+}
+
+// Where "zh" means Mandarin. Hong Kong and Macau are Cantonese, another
+// language with other tones.
+const MANDARIN_REGIONS = new Set(["CN", "TW", "SG", "MY"]);
+const isMandarin = (p) => Boolean(p) && (p.lang === "zh" || p.lang === "cmn") && (!p.region || MANDARIN_REGIONS.has(p.region));
 
 /* ---------------------------------- pinyin --------------------------------- */
 
@@ -215,6 +235,14 @@ export function applySandhi(syllables) {
     i = end;
   }
 
+  // A third tone doubled with a neutral second half (姐姐, 奶奶, 宝宝, 走走):
+  // the second lost a third tone, and many speakers, children above all,
+  // still let it lift the first (jiéjie, báobao). Both are right.
+  for (let i = 0; i < s.length; i++) {
+    const n = next(i);
+    if (s[i].expectedTone === 3 && n && n.baseTone === 0 && n.char === s[i].char) s[i].accept = [...new Set([...s[i].accept, 2])];
+  }
+
   // The half third: before any other tone a third tone stays low and never
   // rises. Same category, so `accept` is unchanged; the classifier treats
   // low-and-falling as a third tone everywhere.
@@ -298,9 +326,11 @@ export function encodeWav(samples, sampleRate) {
 export const HOP_MS = 10;
 
 // The search range covers a low adult voice (about 70 Hz at the bottom of a
-// third tone) and a small child (up to about 550 Hz at the top).
+// third tone) and a small child (a high first tone can pass 600 Hz). The
+// ceiling was 600 until a review showed a 640 Hz tone coming back
+// unvoiced; 800 changes nothing on the proof clips.
 const F_MIN = 60;
-const F_MAX = 600;
+const F_MAX = 800;
 // YIN's own threshold on the normalised difference: the first dip under it
 // is the period. 0.15 is the paper's value.
 const YIN_THRESHOLD = 0.15;
@@ -333,10 +363,12 @@ function quantile(values, q) {
  * 111(4)), written out here rather than taken as a dependency: it is sixty
  * lines, has no native part, and the tests can feed it sine sweeps.
  *
- * Returns `{ hopMs, f0, rms, periodicity }`, one entry per frame, frame i
- * centred at i × hopMs. `f0` is hertz, 0 where the frame is unvoiced (no
+ * Returns `{ hopMs, f0, rms, periodicity, zcr }`, one entry per frame, frame
+ * i centred at i × hopMs. `f0` is hertz, 0 where the frame is unvoiced (no
  * clear period, or too quiet). `periodicity` is 1 − YIN's dip, so 1 is a
- * clean period; creaky voice sits low.
+ * clean period; creaky voice sits low. `zcr` is the share of samples where
+ * the wave changes sign: high in the hiss of s or sh, low in creak, which
+ * is how the two kinds of loud unvoiced frame are told apart.
  */
 export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } = {}) {
   const hop = Math.round((sampleRate * HOP_MS) / 1000);
@@ -347,6 +379,7 @@ export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } =
   const f0 = new Float32Array(frames);
   const rms = new Float32Array(frames);
   const periodicity = new Float32Array(frames);
+  const zcr = new Float32Array(frames);
   const d = new Float32Array(tauMax + 1);
   const span = W + tauMax;
 
@@ -355,8 +388,14 @@ export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } =
     const start = Math.max(0, Math.min(samples.length - span, f * hop - (span >> 1)));
     if (samples.length < span) break;
     let energy = 0;
-    for (let j = 0; j < W; j++) energy += samples[start + (tauMax >> 1) + j] ** 2;
+    let crossings = 0;
+    for (let j = 0; j < W; j++) {
+      const v = samples[start + (tauMax >> 1) + j];
+      energy += v * v;
+      if (j && v >= 0 !== samples[start + (tauMax >> 1) + j - 1] >= 0) crossings++;
+    }
     rms[f] = Math.sqrt(energy / W);
+    zcr[f] = crossings / W;
 
     // The difference function, then its cumulative-mean normalisation.
     let running = 0;
@@ -417,7 +456,7 @@ export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } =
   for (let f = 0; f < frames; f++) if (rms[f] < floor || f0[f] < fMin || f0[f] > fMax) f0[f] = 0;
 
   smoothTrack(f0);
-  return { hopMs: HOP_MS, f0, rms, periodicity };
+  return { hopMs: HOP_MS, f0, rms, periodicity, zcr };
 }
 
 /** In place: undo octave slips, drop voiced specks, median-filter. */
@@ -703,8 +742,15 @@ export const TONE_RULES = Object.freeze({
   lowLevel: 2.2,
   lowTop: 2.2,
   // A third tone is also ruled out by a plain rise: one whose dip before
-  // the bottom is at most this share of the climb after it.
+  // the bottom is at most this share of the climb after it, starting at
+  // least this high in a known range.
   dipShare: 0.25,
+  riseStart: 2.5,
+  // From this syllable of a phrase on (0 is the first), a low pitch rules
+  // nothing out: sentences drift down.
+  lateFrom: 2,
+  // Whether the semitone bars above scale with a known range.
+  scaleRange: true,
   // A second tone is ruled out by a deep dip whose final rise is under
   // this share of the dip (a third tone that barely comes back up).
   riseShare: 0.5,
@@ -737,6 +783,10 @@ export const FALLBACK_TRUST = 0.85;
 /** The voiced frames of [startMs, endMs) as `{ i, st }` (frame index, pitch
  *  in semitones), with what the classifier needs to know about how clean
  *  they are. */
+// Voiced sound and creak change sign a few hundred times a second; the hiss
+// of a fricative, thousands. As a share of samples at 16 kHz.
+const CREAK_MAX_ZCR = 0.12;
+
 function contourOf(track, startMs, endMs) {
   const { f0, rms, periodicity, hopMs } = track;
   const a = Math.max(0, Math.round(startMs / hopMs));
@@ -756,6 +806,13 @@ function contourOf(track, startMs, endMs) {
   let gaps = 0;
   let creak = 0;
   let per = 0;
+  // Loud frames with no period before the first voiced one, unless they
+  // hiss (the s or sh of the syllable itself): creak at the very start, or
+  // a consonant's burst. Either way the start of the contour is hidden, and
+  // with it the fall a third tone begins with. Not counted as creak (most
+  // are consonants); the plain-rise rule is what must not trust them.
+  let lead = 0;
+  if (track.zcr) for (let i = a; i < first; i++) if (rms[i] > peak * 0.15 && track.zcr[i] < CREAK_MAX_ZCR) lead++;
   for (let i = first; i <= last; i++) {
     if (f0[i] > 0) {
       points.push({ i, st: hzToSt(f0[i]) });
@@ -767,7 +824,7 @@ function contourOf(track, startMs, endMs) {
       if (rms[i] > peak * 0.15) creak++;
     }
   }
-  return { points, voicedMs: points.length * hopMs, spanFrames: last - first + 1, gaps, creak, periodicity: per / points.length };
+  return { points, voicedMs: points.length * hopMs, spanFrames: last - first + 1, gaps, creak, lead, periodicity: per / points.length };
 }
 
 /** Five evenly spaced medians over the voiced points, the onset trimmed:
@@ -885,10 +942,21 @@ const round3 = (v) => Math.round(v * 1000) / 1000;
  * carries `margin` (semitones; 0 or more means every accepted tone is
  * ruled out), `quality` (the measurement alone) and `belief`.
  */
+/** What the local scorer will take in one call. The same 30 seconds as
+ *  Azure; 60 syllables is a long sentence at twice the speed of speech. A
+ *  route should still run it off the request thread, or pass timings. */
+export const LOCAL_MAX_SECONDS = 30;
+export const LOCAL_MAX_SYLLABLES = 60;
+
 export function scoreTones({ samples, sampleRate, syllables, timings = null, anchors = null, speaker = null, track = null, rules = TONE_RULES }) {
+  const n = syllables.length;
+  // Refused before any work: the tracker is linear in the audio, but the
+  // segmenter is syllables × frames², and all of it is synchronous.
+  const seconds = track ? (track.f0.length * track.hopMs) / 1000 : samples.length / sampleRate;
+  if (seconds > LOCAL_MAX_SECONDS + 0.5) throw new Error(`the local scorer takes at most ${LOCAL_MAX_SECONDS} seconds of audio, got ${seconds.toFixed(1)}`);
+  if (n > LOCAL_MAX_SYLLABLES) throw new Error(`the local scorer takes at most ${LOCAL_MAX_SYLLABLES} syllables, got ${n}`);
   const tr = track ?? trackPitch(samples, sampleRate);
   const own = speakerRange(tr);
-  const n = syllables.length;
 
   // Timings: all given, or all cut here. A mix (some characters untimed)
   // keeps the given ones and leaves the rest unjudged rather than guessing
@@ -914,6 +982,10 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
   const refHz = speaker?.medianHz ?? own?.medianHz ?? 0;
   const useRules = levelTrust === 1 ? rules : { ...rules, levelWeight: rules.levelWeight * levelTrust };
 
+  // How far into its phrase each syllable is (0 after a break).
+  const place = [];
+  syllables.forEach((s, i) => place.push(i === 0 || s.breakBefore ? 0 : place[i - 1] + 1));
+
   const out = syllables.map((s, i) => {
     const cut = cuts[i] ?? null;
     const base = {
@@ -937,7 +1009,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     const { belief, tone: best, levels, stepSt } = classifyContour(five, range, useRules);
     // Height is used to rule a tone out only against a supplied range: a
     // recording's own range is too rough to hang a flag on.
-    const margins = ruleMargins(five, levelTrust === 1 ? levels : null, rules, stepSt);
+    const margins = ruleMargins(five, levelTrust === 1 ? levels : null, rules, stepSt, { late: place[i] >= rules.lateFrom, hiddenOnset: c.lead >= 3 });
     // The tone heard is the best match among those the contour allows.
     const open = [1, 2, 3, 4].filter((t) => margins[t] < 0);
     const tone = open.length ? open.reduce((x, y) => (belief[y] > belief[x] ? y : x)) : best;
@@ -1009,7 +1081,10 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
  *    is a syllable squeezed flat by its neighbours, which any tone can be.
  *  - Tone 3 is low: ruled out by a high level pitch, by a fall that starts
  *    high in the range (a fourth tone; the half third starts in the
- *    middle), or by a plain rise with no dip before it (a second tone).
+ *    middle), or by a plain rise with no dip before it that starts at
+ *    mid-range or above (a second tone). All three need the range.
+ *  - `late` (the syllable is well into its phrase) switches off every rule
+ *    that rests on the pitch being low.
  *  - Not ruled out, so never flagged: a low fall said for a fourth tone, a
  *    dip that rises said for a second, a rise with a dip said for a third.
  *    Synthesized voices already disagree with each other on those.
@@ -1018,7 +1093,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
  * `five` is the contour in semitones; `levels` the same on the Chao scale,
  * or null when the speaker's range isn't known; `stepSt` one Chao step.
  */
-export function ruleMargins(five, levels = null, rules = TONE_RULES, stepSt = rules.stepSt) {
+export function ruleMargins(five, levels = null, rules = TONE_RULES, stepSt = rules.stepSt, { late = false, hiddenOnset = false } = {}) {
   let climb = 0;
   let drop = 0;
   let low = 0;
@@ -1030,9 +1105,14 @@ export function ruleMargins(five, levels = null, rules = TONE_RULES, stepSt = ru
     }
   }
   const span = Math.max(...five) - Math.min(...five);
+  // With `scaleRange`, the semitone bars stretch with a known range (they
+  // are written for a ten-semitone voice).
+  const k = levels && rules.scaleRange ? stepSt / rules.stepSt : 1;
+  const moveSt = rules.moveSt * k;
+  const stillSt = rules.stillSt * k;
   // How level it is (≥ 0: level), the dip before the lowest point, and the
   // rise from the lowest point to the end.
-  const flat = rules.flatSt - span;
+  const flat = rules.flatSt * k - span;
   const dip = Math.max(0, ...five.slice(0, low).map((v) => v - five[low]));
   const endRise = five[five.length - 1] - five[low];
   // …and the fall from the highest point to the end. "Never climbs" and
@@ -1047,30 +1127,40 @@ export function ruleMargins(five, levels = null, rules = TONE_RULES, stepSt = ru
   // middle of a known range it is a syllable squeezed flat by its
   // neighbours, which any tone can be: only high or low rules out a tone
   // that moves.
-  const levelOut = levels ? Math.min(flat, Math.max((meanLevel - rules.highLevel) * stepSt, (rules.lowLevel - meanLevel) * stepSt)) : flat;
+  // "Low" is read against the whole voice's range, and a sentence drifts
+  // down as it goes (declination): by its third syllable a perfectly good
+  // first tone can sit where the voice's low tones started. So late in a
+  // phrase lowness rules nothing out.
+  const lowOut = levels && !late;
+  const levelOut = levels ? Math.min(flat, Math.max((meanLevel - rules.highLevel) * stepSt, lowOut ? (rules.lowLevel - meanLevel) * stepSt : NO)) : flat;
   // High and level is a first tone and nothing else, however the last
   // frames lean.
   const levelHigh = levels ? Math.min(flat, (meanLevel - rules.highLevel) * stepSt) : NO;
   return {
     0: NO,
     1: Math.max(
-      span - rules.moveSt,
-      levels ? Math.min(flat, (rules.lowLevel - meanLevel) * stepSt) : NO,
+      span - moveSt,
+      lowOut ? Math.min(flat, (rules.lowLevel - meanLevel) * stepSt) : NO,
       // Never out of the lower half of the range, level or not.
-      levels ? (rules.lowTop - Math.max(...levels)) * stepSt : NO,
+      lowOut ? (rules.lowTop - Math.max(...levels)) * stepSt : NO,
     ),
     2: Math.max(
       levelHigh,
-      Math.min(rules.stillSt - endRise, Math.max(levelOut, drop - rules.moveSt)),
+      Math.min(stillSt - endRise, Math.max(levelOut, drop - moveSt)),
       // A deep dip that comes back less than part of the way: a third tone.
-      Math.min(dip - rules.moveSt, rules.riseShare * dip - endRise),
+      Math.min(dip - moveSt, rules.riseShare * dip - endRise),
     ),
     3: Math.max(
       levelHigh,
-      levels ? Math.min((startLevel - rules.highStart) * stepSt, drop - rules.moveSt) : NO,
-      Math.min(endRise - rules.moveSt, rules.dipShare * endRise - dip),
+      levels ? Math.min((startLevel - rules.highStart) * stepSt, drop - moveSt) : NO,
+      // A plain rise is a second tone only if it starts where one does. A
+      // third tone that starts at the floor and comes up has no fall to
+      // show, so without a range to place the start, or with the start
+      // hidden (`hiddenOnset`: creak or a burst before the first voiced
+      // frame), the rule is silent.
+      levels && !hiddenOnset ? Math.min(endRise - moveSt, rules.dipShare * endRise - dip, (levels[0] - rules.riseStart) * stepSt) : NO,
     ),
-    4: Math.max(levelHigh, Math.min(rules.stillSt - endFall, Math.max(levelOut, climb - rules.moveSt)), endRise - rules.moveSt),
+    4: Math.max(levelHigh, Math.min(stillSt - endFall, Math.max(levelOut, climb - moveSt)), endRise - moveSt),
   };
 }
 
@@ -1149,20 +1239,22 @@ export function referenceCurves({ samples, sampleRate, count, timings = null, po
 const AZURE_REGION_RE = /^[a-z0-9]+$/;
 
 /** A locale as Azure names it (`zh-CN`, `es-MX`), from whatever the app
- *  holds: `zh`, `zh_TW`, `zh-Hant-TW`, `cmn-Hans-CN`. The same reading of a
- *  tag as `scoresTones`. Mandarin with no region goes by its script
- *  (Traditional → zh-TW, else zh-CN); any other language needs a region.
- *  Throws on anything else. */
+ *  holds, through the same parser as `scoresTones` (`parseLocale`), so the
+ *  two cannot disagree: every locale `scoresTones` accepts maps to zh-TW
+ *  (Taiwan, or Traditional script with no region) or zh-CN (the rest:
+ *  Azure has no Mandarin model for Singapore or Malaysia). Chinese that
+ *  isn't Mandarin (zh-HK) is refused, since this module's tone rules don't
+ *  apply to it; any other language needs a region. Throws on anything
+ *  else. */
 export function azureLocale(locale) {
-  const parts = String(locale ?? "").trim().replace(/_/g, "-").split("-").filter(Boolean);
-  // Letters only, in the three subtag shapes: the value goes into a URL.
-  if (!parts.length || !/^[A-Za-z]{2,3}$/.test(parts[0]) || parts.slice(1).some((x) => !/^([A-Za-z]{2}|[A-Za-z]{4})$/.test(x))) throw new Error(`not a locale: ${JSON.stringify(locale)}`);
-  const lang = parts[0].toLowerCase();
-  const region = parts.slice(1).find((x) => /^[A-Za-z]{2}$/.test(x))?.toUpperCase();
-  const script = parts.slice(1).find((x) => /^[A-Za-z]{4}$/.test(x))?.toLowerCase();
-  if (lang === "zh" || lang === "cmn") return `zh-${region ?? (script === "hant" ? "TW" : "CN")}`;
-  if (!region) throw new Error(`not a locale Azure can assess: ${JSON.stringify(locale)}`);
-  return `${lang}-${region}`;
+  const p = parseLocale(locale);
+  if (!p) throw new Error(`not a locale: ${JSON.stringify(locale)}`);
+  if (p.lang === "zh" || p.lang === "cmn") {
+    if (!isMandarin(p)) throw new Error(`not a locale this module assesses (Mandarin only): ${JSON.stringify(locale)}`);
+    return p.region === "TW" || (!p.region && p.script === "hant") ? "zh-TW" : "zh-CN";
+  }
+  if (!p.region) throw new Error(`not a locale Azure can assess: ${JSON.stringify(locale)}`);
+  return `${p.lang}-${p.region}`;
 }
 
 /** Azure's limit for one assessed recording, and what 16 kHz 16-bit mono
@@ -1308,10 +1400,10 @@ export const AZURE_RULES = Object.freeze({ offBelow: 40 });
  *  - "off" when the local check is confident the tone is another (reason
  *    "tone"), or when Azure itself marks the word mispronounced with a low
  *    score (reason "sound": heardTone stays whatever the pitch showed);
- *  - "ok" when the local check accepts the tone and Azure doesn't object,
- *    or when the pitch was unclear and Azure scores the word high;
- *  - "unsure" otherwise, and for a word Azure says was left out
- *    (reason "omitted").
+ *  - "ok" when the local check accepts the tone and Azure doesn't object;
+ *  - "unsure" otherwise (a high Azure score never settles an unclear
+ *    pitch reading: wrong tones score high too), and for a word Azure says
+ *    was left out (reason "omitted").
  * So adding Azure never removes a tone flag, and adds flags only where
  * Azure is explicit.
  *

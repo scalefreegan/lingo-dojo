@@ -10,24 +10,39 @@ There are no learner recordings, so every clip is used twice over. Scored agains
 
 The number that matters is how many "off" flags are false: a learner told a right tone was wrong stops believing the marks. A miss costs less. The set holds about three wrong labels for each right one, which flatters raw precision, so each table also restates it for a learner who gets one tone in five wrong.
 
-## Results
+## Headline: held out by voice
+
+The numbers to quote. Thresholds chosen on two voices, measured on the other two, both directions added up (details under "Held out by voice" below). Speaker's range known (from the voice's other clips), cuts by energy.
+
+| | Stage 0, same clips | Wrong tones caught | Right syllables flagged (false alarms) | 95% upper bound on the false-alarm rate | Precision of a flag at that bound, one tone in five wrong |
+| --- | --- | --- | --- | --- | --- |
+| Single syllables | 81 of 192 (42.2%), 1 of 64 false alarms | **114 of 192 (59.4%)** | **1 of 64 (1.6%)** | under 7.2% | at least 67% |
+| Phrases | 145 of 576 (25.2%), 0 of 168 false alarms | **278 of 576 (48.3%)** | **3 of 168 (1.8%)** | under 4.6% | at least 73% |
+
+The phrase false alarms by half: Reed + Rachel: 2 of 84; Tingting + Adam: 1 of 84. Every other table in this report except "Held out by voice" is **in-sample**: it runs the engine's defaults, which were chosen with all four voices in view, on those same four voices, and reads better than the table above for that reason alone.
+
+What "held out" covers and what it doesn't: only the 8 thresholds in the search (`moveSt`, `offMarginSt`, `phraseMarginSt`, `flatSt`, `offQuality`, `offMinMs`, `highStart`, `lowLevel`) were chosen without the test voices. The shape of every rule, the tone templates, and the other constants (`dipShare`, `riseShare`, `riseStart`, `stillSt`, `highLevel`, `lowTop`, `lateFrom`, `scaleRange`, `creakFlags`) were written while looking at all four voices, and `phraseMarginSt` was set just above the phrase false alarms seen on them (see "Azure, live"). So even the held-out numbers are optimistic for a new voice.
+
+## Results (in-sample)
+
+The engine's defaults on the four voices they were tuned on.
 
 | | Singles, speaker unknown | Singles, range known | Phrases, speaker unknown | Phrases, range known | Phrases, Scribe anchors, range known | Phrases, Scribe times as cuts, range known |
 | --- | --- | --- | --- | --- | --- | --- |
 | Right syllables scored | 64 | 64 | 168 | 168 | 168 | 168 |
 | Wrong syllables scored | 192 | 192 | 576 | 576 | 576 | 576 |
 | **False alarms** (right, flagged off) | 1 of 64 (1.6%) | 1 of 64 (1.6%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) |
-| **Precision of an off flag**, as measured | 99.0% | 99.2% | 100.0% | 100.0% | 100.0% | 100.0% |
-| Precision at one wrong tone in five | 89.2% | 91.0% | 100.0% | 100.0% | 100.0% | 100.0% |
-| Wrong tones caught (flagged off) | 99 of 192 (51.6%) | 121 of 192 (63.0%) | 187 of 576 (32.5%) | 224 of 576 (38.9%) | 222 of 576 (38.5%) | 124 of 576 (21.5%) |
-| Wrong tones passed as ok | 10.9% | 3.1% | 10.9% | 9.5% | 9.5% | 8.7% |
-| Right tones marked ok | 79.7% | 85.9% | 73.8% | 67.3% | 66.1% | 43.5% |
-| Right tones marked unsure | 18.8% | 12.5% | 26.2% | 32.7% | 33.9% | 56.5% |
-| Marked unsure, all | 32.8% | 28.5% | 49.7% | 47.3% | 47.8% | 66.8% |
+| **Precision of an off flag**, as measured | 98.9% | 99.1% | 100.0% | 100.0% | 100.0% | 100.0% |
+| Precision at one wrong tone in five | 88.1% | 90.2% | 100.0% | 100.0% | 100.0% | 100.0% |
+| Wrong tones caught (flagged off) | 89 of 192 (46.4%) | 111 of 192 (57.8%) | 156 of 576 (27.1%) | 201 of 576 (34.9%) | 201 of 576 (34.9%) | 111 of 576 (19.3%) |
+| Wrong tones passed as ok | 12.5% | 4.7% | 10.9% | 10.1% | 10.1% | 9.0% |
+| Right tones marked ok | 79.7% | 84.4% | 74.4% | 66.7% | 66.1% | 43.5% |
+| Right tones marked unsure | 18.8% | 14.1% | 25.6% | 33.3% | 33.9% | 56.5% |
+| Marked unsure, all | 35.5% | 31.6% | 53.8% | 50.1% | 50.3% | 68.3% |
 
 These are small counts. A false-alarm rate measured on a few dozen or a couple of hundred syllables is only bounded, not known: with 95% confidence, single syllables, nothing known about the speaker: 1 of 64, so under 7.2%; single syllables, speaker's range known: 1 of 64, so under 7.2%; phrases, cut by energy, nothing known about the speaker: 0 of 168, so under 1.8%; phrases, cut by energy, speaker's range known: 0 of 168, so under 1.8%; phrases, cut by energy around scribe's character times, speaker's range known: 0 of 168, so under 1.8%; phrases, scribe's character times taken as the cuts, speaker's range known: 0 of 168, so under 1.8%. And that bound is for voices like these, on the set the thresholds were tuned on.
 
-So "a flag can be trusted" is not established by these counts, only not contradicted. With the false-alarm rate at that upper bound and the catch rate as measured, the precision of a flag for a learner who gets one tone in five wrong is only known to be: single syllables, nothing known about the speaker: at least 64%; single syllables, speaker's range known: at least 69%; phrases, cut by energy, nothing known about the speaker: at least 82%; phrases, cut by energy, speaker's range known: at least 85%; phrases, cut by energy around scribe's character times, speaker's range known: at least 85%; phrases, scribe's character times taken as the cuts, speaker's range known: at least 75%. Narrowing that takes more right syllables, from real people.
+So "a flag can be trusted" is not established by these counts, only not contradicted. With the false-alarm rate at that upper bound and the catch rate as measured, the precision of a flag for a learner who gets one tone in five wrong is only known to be (in-sample; the held-out figures in the headline are lower): single syllables, nothing known about the speaker: at least 62%; single syllables, speaker's range known: at least 67%; phrases, cut by energy, nothing known about the speaker: at least 79%; phrases, cut by energy, speaker's range known: at least 83%; phrases, cut by energy around scribe's character times, speaker's range known: at least 83%; phrases, scribe's character times taken as the cuts, speaker's range known: at least 73%. Narrowing that takes more right syllables, from real people.
 
 "Range known" gives the scorer the voice's pitch range measured over that voice's other clips (never the one being scored), which is what a session would know after a few turns. "Speaker unknown" is a first recording: only the shape of the contour counts, plus the recording's own range once it holds four syllables.
 
@@ -37,11 +52,11 @@ What tone the classifier names for each single syllable (speaker's range known),
 
 | Voice | Named the labelled tone | tone 1 heard as 1/2/3/4 | tone 2 | tone 3 | tone 4 |
 | --- | --- | --- | --- | --- | --- |
-| Tingting | 14 of 16 | 4/0/0/0 | 0/3/1/0 | 0/0/4/0 | 0/0/1/3 |
+| Tingting | 13 of 16 | 4/0/0/0 | 0/2/2/0 | 0/0/4/0 | 0/0/1/3 |
 | Reed | 14 of 16 | 4/0/0/0 | 0/4/0/0 | 0/2/2/0 | 0/0/0/4 |
 | Rachel | 13 of 16 | 2/0/0/2 | 0/3/1/0 | 0/0/4/0 | 0/0/0/4 |
 | Adam | 16 of 16 | 4/0/0/0 | 0/4/0/0 | 0/0/4/0 | 0/0/0/4 |
-| **All** | **57 of 64** | | | | |
+| **All** | **56 of 64** | | | | |
 
 So the classifier mostly reads the pitch right (stage 0's named 53 of 64); the catch rate is lower than this because a flag asks for more than a best guess. What the contours of the misread and unflagged clips showed when looked at one by one: two of Rachel's first tones (妈, 八) fall by 9 and 14 semitones, a fourth tone's contour whatever the label says (Azure scores that 八 at 90 against 爸 and 61 against 八), so those two "errors" are probably the clips; the macOS voices say some second tones as a dip that comes back up and some third tones as a shallow dip that rises, which are each other's shapes; one fourth tone starts in the middle of the range and reads as a low third; and Adam's voice creaks, leaving a hole in the middle of several pitch tracks, which costs flags, not readings. No miss on these clips came from an octave error, from the consonant at the start, or from the range used to normalise. The misses came from the gate: stage 0 never flagged third against second or fourth in either direction (a third of all wrong labels), asked for four semitones of movement, and let a second tone's first dip or a fourth tone's first rise count as "it climbs" or "it drops".
 
@@ -49,18 +64,18 @@ Where the catches are and aren't, by which tone was said for which (range known;
 
 | Said → labelled | Singles | Phrases |
 | --- | --- | --- |
-| 1→2 | 12 / 0 / 16 | 15 / 0 / 32 |
-| 1→3 | 12 / 0 / 16 | 5 / 1 / 16 |
-| 1→4 | 11 / 1 / 16 | 10 / 2 / 24 |
-| 2→1 | 11 / 0 / 16 | 18 / 10 / 44 |
-| 2→3 | 10 / 2 / 16 | 34 / 9 / 76 |
-| 2→4 | 11 / 0 / 16 | 21 / 2 / 76 |
-| 3→1 | 10 / 0 / 16 | 20 / 3 / 36 |
-| 3→2 | 8 / 2 / 16 | 11 / 3 / 52 |
-| 3→4 | 2 / 0 / 16 | 1 / 4 / 36 |
-| 4→1 | 12 / 0 / 16 | 29 / 3 / 56 |
-| 4→2 | 12 / 0 / 16 | 43 / 1 / 72 |
-| 4→3 | 10 / 1 / 16 | 17 / 17 / 56 |
+| 1→2 | 12 / 0 / 16 | 21 / 0 / 32 |
+| 1→3 | 12 / 0 / 16 | 7 / 1 / 16 |
+| 1→4 | 11 / 1 / 16 | 14 / 0 / 24 |
+| 2→1 | 11 / 0 / 16 | 14 / 10 / 44 |
+| 2→3 | 1 / 5 / 16 | 22 / 14 / 76 |
+| 2→4 | 11 / 0 / 16 | 17 / 2 / 76 |
+| 3→1 | 10 / 0 / 16 | 13 / 3 / 36 |
+| 3→2 | 7 / 2 / 16 | 10 / 2 / 52 |
+| 3→4 | 2 / 0 / 16 | 0 / 4 / 36 |
+| 4→1 | 12 / 0 / 16 | 26 / 4 / 56 |
+| 4→2 | 12 / 0 / 16 | 41 / 1 / 72 |
+| 4→3 | 10 / 1 / 16 | 16 / 17 / 56 |
 
 Three pairs stay close to uncatchable by design: a third tone said for a fourth (3→4: a low fall is both), a fourth that starts low said for a third, and second against third when the second dips or the third comes back up. These voices disagree with each other about exactly those shapes, so a flag there would be a guess.
 
@@ -68,32 +83,32 @@ Three pairs stay close to uncatchable by design: a third tone said for a fourth 
 
 The thresholds a flag rests on were chosen on two voices and measured on the other two, which had no say in them, then the other way round. "Chosen" means: of 864 settings (`moveSt` 3/3.5/4, `offMarginSt` 0/0.5/1, `phraseMarginSt` 0/0.5/1, `flatSt` 1/1.5, `offQuality` 0.6/0.75, `offMinMs` 80/110, `highStart` 3.7/4.2, `lowLevel` 2.2/2.6), the one that catches the most wrong tones on the tuning voices while flagging at most one of their right syllables. Range known, cuts by energy, each clip read against the range of the voice's other clips.
 
-| Tuned on | Measured on | | Stage 0 (before) | Tuned on the other two (held out) | The engine's defaults |
+| Tuned on | Measured on | | Stage 0 (before) | Tuned on the other two (held out) | The engine's defaults (in-sample) |
 | --- | --- | --- | --- | --- | --- |
-| Tingting + Adam | Reed + Rachel | Singles | 39 of 96 (40.6%) caught, 1 false alarms | 70 of 96 (72.9%) caught, 1 of 32 false alarms | 67 of 96 (69.8%) caught, 1 of 32 false alarms |
-| Tingting + Adam | Reed + Rachel | Phrases | 63 of 288 (21.9%) caught, 0 false alarms | 144 of 288 (50.0%) caught, 3 of 84 false alarms | 105 of 288 (36.5%) caught, 0 of 84 false alarms |
-| Reed + Rachel | Tingting + Adam | Singles | 42 of 96 (43.8%) caught, 0 false alarms | 54 of 96 (56.3%) caught, 0 of 32 false alarms | 54 of 96 (56.3%) caught, 0 of 32 false alarms |
-| Reed + Rachel | Tingting + Adam | Phrases | 82 of 288 (28.5%) caught, 0 false alarms | 119 of 288 (41.3%) caught, 0 of 84 false alarms | 119 of 288 (41.3%) caught, 0 of 84 false alarms |
+| Tingting + Adam | Reed + Rachel | Singles | 39 of 96 (40.6%) caught, 1 false alarms | 63 of 96 (65.6%) caught, 1 of 32 false alarms | 60 of 96 (62.5%) caught, 1 of 32 false alarms |
+| Tingting + Adam | Reed + Rachel | Phrases | 63 of 288 (21.9%) caught, 0 false alarms | 144 of 288 (50.0%) caught, 2 of 84 false alarms | 86 of 288 (29.9%) caught, 0 of 84 false alarms |
+| Reed + Rachel | Tingting + Adam | Singles | 42 of 96 (43.8%) caught, 0 false alarms | 51 of 96 (53.1%) caught, 0 of 32 false alarms | 51 of 96 (53.1%) caught, 0 of 32 false alarms |
+| Reed + Rachel | Tingting + Adam | Phrases | 82 of 288 (28.5%) caught, 0 false alarms | 134 of 288 (46.5%) caught, 1 of 84 false alarms | 115 of 288 (39.9%) caught, 0 of 84 false alarms |
 
-Settings chosen: on Tingting + Adam `{"moveSt":3.5,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`; on Reed + Rachel `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0.5,"flatSt":1.5,"offQuality":0.75,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`. The engine's defaults are the setting chosen on all four voices where the two halves agree, and the more cautious value where they don't; the defaults column is therefore not held out, and the held-out column is the honest one. The stage 0 numbers are from that commit's report (same clips; its range included the clip being scored).
+Settings chosen: on Tingting + Adam `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`; on Reed + Rachel `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":110,"highStart":3.7,"lowLevel":2.2}`. The engine's defaults are the setting chosen on all four voices where the two halves agree, and the more cautious value where they don't; the defaults column is therefore not held out, and the held-out column is the honest one. The stage 0 numbers are from that commit's report (same clips; its range included the clip being scored).
 
-Held-out false alarms: Rachel (ElevenLabs premade: an English voice speaking Mandarin) 妈[1] 妈 expected 1 heard 4; Reed (macOS) 不客气[2] 客 expected 4 heard 2; Reed (macOS) 我是学生[4] 生 expected 1 heard 3; Rachel (ElevenLabs premade: an English voice speaking Mandarin) 我想喝水[4] 水 expected 3 heard 2.
+Held-out false alarms: Rachel (ElevenLabs premade: an English voice speaking Mandarin) 妈[1] 妈 expected 1 heard 4; Reed (macOS) 不客气[2] 客 expected 4 heard 2; Reed (macOS) 我是学生[4] 生 expected 1 heard 3; Adam (ElevenLabs premade: an English voice speaking Mandarin) 很好[1] 很 expected 2 heard 4.
 
-## The trade-off
+## The trade-off (in-sample)
 
 The same clips (all four voices, range known) at several values of `offMarginSt`: how many semitones past its bar the evidence must be before a syllable is flagged. Negative values flag contours that only nearly rule the label out.
 
 | `offMarginSt` | Singles: false alarms | Singles: caught | Phrases: false alarms | Phrases: caught |
 | --- | --- | --- | --- | --- |
-| -1 | 2 of 64 | 145 of 192 (75.5%) | 10 of 168 | 346 of 576 (60.1%) |
-| -0.5 | 1 of 64 | 132 of 192 (68.8%) | 6 of 168 | 298 of 576 (51.7%) |
-| 0 (default) | 1 of 64 | 121 of 192 (63.0%) | 0 of 168 | 224 of 576 (38.9%) |
-| 0.5 | 1 of 64 | 113 of 192 (58.9%) | 0 of 168 | 184 of 576 (31.9%) |
-| 1 | 1 of 64 | 76 of 192 (39.6%) | 0 of 168 | 142 of 576 (24.7%) |
-| 1.5 | 1 of 64 | 61 of 192 (31.8%) | 0 of 168 | 105 of 576 (18.2%) |
-| 2 | 1 of 64 | 53 of 192 (27.6%) | 0 of 168 | 85 of 576 (14.8%) |
-| 3 | 1 of 64 | 41 of 192 (21.4%) | 0 of 168 | 55 of 576 (9.5%) |
-| default, and creaky syllables flagged too (`creakFlags`) | 2 of 64 | 136 of 192 (70.8%) | 0 of 168 | 234 of 576 (40.6%) |
+| -1 | 1 of 64 | 137 of 192 (71.4%) | 5 of 168 | 310 of 576 (53.8%) |
+| -0.5 | 1 of 64 | 129 of 192 (67.2%) | 2 of 168 | 265 of 576 (46.0%) |
+| 0 (default) | 1 of 64 | 111 of 192 (57.8%) | 0 of 168 | 201 of 576 (34.9%) |
+| 0.5 | 1 of 64 | 105 of 192 (54.7%) | 0 of 168 | 148 of 576 (25.7%) |
+| 1 | 1 of 64 | 65 of 192 (33.9%) | 0 of 168 | 110 of 576 (19.1%) |
+| 1.5 | 1 of 64 | 55 of 192 (28.6%) | 0 of 168 | 88 of 576 (15.3%) |
+| 2 | 1 of 64 | 50 of 192 (26.0%) | 0 of 168 | 71 of 576 (12.3%) |
+| 3 | 1 of 64 | 34 of 192 (17.7%) | 0 of 168 | 48 of 576 (8.3%) |
+| default, and creaky syllables flagged too (`creakFlags`) | 2 of 64 | 124 of 192 (64.6%) | 0 of 168 | 211 of 576 (36.6%) |
 
 `creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.
 
@@ -128,7 +143,7 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | tone 3 | 1 | 3 | 11 | 1 | 0 | 68.8% |
 | tone 4 | 0 | 0 | 0 | 16 | 0 | 100.0% |
 
-Why syllables were unsure (all labels): unclear 61, creaky 23.
+Why syllables were unsure (all labels): unclear 70, creaky 21.
 
 False alarms: Rachel (ElevenLabs premade: an English voice speaking Mandarin) 妈[1] 妈 expected 1 heard 4.
 
@@ -139,11 +154,11 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | said \ heard | 1 | 2 | 3 | 4 | nothing | right |
 | --- | --- | --- | --- | --- | --- | --- |
 | tone 1 | 14 | 0 | 0 | 2 | 0 | 87.5% |
-| tone 2 | 0 | 14 | 2 | 0 | 0 | 87.5% |
+| tone 2 | 0 | 13 | 3 | 0 | 0 | 81.3% |
 | tone 3 | 0 | 2 | 14 | 0 | 0 | 87.5% |
 | tone 4 | 0 | 0 | 1 | 15 | 0 | 93.8% |
 
-Why syllables were unsure (all labels): unclear 47, creaky 26.
+Why syllables were unsure (all labels): unclear 57, creaky 24.
 
 False alarms: Rachel (ElevenLabs premade: an English voice speaking Mandarin) 妈[1] 妈 expected 1 heard 4.
 
@@ -155,10 +170,10 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | --- | --- | --- | --- | --- | --- | --- |
 | tone 1 | 20 | 1 | 1 | 2 | 0 | 83.3% |
 | tone 2 | 2 | 34 | 7 | 2 | 3 | 70.8% |
-| tone 3 | 1 | 2 | 27 | 4 | 2 | 75.0% |
+| tone 3 | 1 | 1 | 28 | 4 | 2 | 77.8% |
 | tone 4 | 2 | 0 | 13 | 40 | 5 | 66.7% |
 
-Why syllables were unsure (all labels): unclear 302, creaky 28, unvoiced 20, short 20.
+Why syllables were unsure (all labels): unclear 333, creaky 27, unvoiced 24, short 16.
 
 ### Phrases, cut by energy, speaker's range known
 
@@ -166,12 +181,12 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 
 | said \ heard | 1 | 2 | 3 | 4 | nothing | right |
 | --- | --- | --- | --- | --- | --- | --- |
-| tone 1 | 21 | 0 | 1 | 2 | 0 | 87.5% |
-| tone 2 | 4 | 31 | 8 | 2 | 3 | 64.6% |
-| tone 3 | 2 | 2 | 26 | 4 | 2 | 72.2% |
-| tone 4 | 4 | 1 | 16 | 34 | 5 | 56.7% |
+| tone 1 | 23 | 0 | 1 | 0 | 0 | 95.8% |
+| tone 2 | 5 | 27 | 11 | 2 | 3 | 56.3% |
+| tone 3 | 2 | 1 | 27 | 4 | 2 | 75.0% |
+| tone 4 | 5 | 1 | 16 | 33 | 5 | 55.0% |
 
-Why syllables were unsure (all labels): unclear 279, creaky 33, unvoiced 20, short 20.
+Why syllables were unsure (all labels): unclear 301, creaky 32, unvoiced 24, short 16.
 
 ### Phrases, cut by energy around Scribe's character times, speaker's range known
 
@@ -179,12 +194,12 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 
 | said \ heard | 1 | 2 | 3 | 4 | nothing | right |
 | --- | --- | --- | --- | --- | --- | --- |
-| tone 1 | 21 | 0 | 1 | 2 | 0 | 87.5% |
-| tone 2 | 4 | 31 | 9 | 1 | 3 | 64.6% |
-| tone 3 | 2 | 2 | 25 | 5 | 2 | 69.4% |
-| tone 4 | 4 | 1 | 16 | 34 | 5 | 56.7% |
+| tone 1 | 23 | 0 | 1 | 0 | 0 | 95.8% |
+| tone 2 | 5 | 28 | 11 | 1 | 3 | 58.3% |
+| tone 3 | 2 | 1 | 26 | 5 | 2 | 72.2% |
+| tone 4 | 5 | 1 | 16 | 33 | 5 | 55.0% |
 
-Why syllables were unsure (all labels): unclear 275, creaky 40, unvoiced 25, short 16.
+Why syllables were unsure (all labels): unclear 298, creaky 35, unvoiced 25, short 16.
 
 ### Phrases, Scribe's character times taken as the cuts, speaker's range known
 
@@ -192,21 +207,21 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 
 | said \ heard | 1 | 2 | 3 | 4 | nothing | right |
 | --- | --- | --- | --- | --- | --- | --- |
-| tone 1 | 17 | 0 | 1 | 2 | 4 | 70.8% |
-| tone 2 | 12 | 12 | 8 | 5 | 11 | 25.0% |
-| tone 3 | 2 | 2 | 16 | 2 | 14 | 44.4% |
-| tone 4 | 2 | 1 | 11 | 33 | 13 | 55.0% |
+| tone 1 | 19 | 0 | 1 | 0 | 4 | 79.2% |
+| tone 2 | 14 | 9 | 9 | 5 | 11 | 18.8% |
+| tone 3 | 2 | 0 | 18 | 2 | 14 | 50.0% |
+| tone 4 | 3 | 1 | 11 | 31 | 14 | 51.7% |
 
-Why syllables were unsure (all labels): unclear 238, short 153, creaky 80, unvoiced 22, untimed 4.
+Why syllables were unsure (all labels): unclear 250, short 157, creaky 75, unvoiced 22, untimed 4.
 
 ### By voice (range known, cut by energy)
 
 | Voice | Singles: false alarms | Singles: caught | Phrases: false alarms | Phrases: caught |
 | --- | --- | --- | --- | --- |
-| Tingting (macOS) | 0 of 16 (0.0%) | 33 of 48 (68.8%) | 0 of 42 (0.0%) | 69 of 144 (47.9%) |
-| Reed (macOS) | 0 of 16 (0.0%) | 33 of 48 (68.8%) | 0 of 42 (0.0%) | 26 of 144 (18.1%) |
-| Rachel (ElevenLabs premade: an English voice speaking Mandarin) | 1 of 16 (6.3%) | 34 of 48 (70.8%) | 0 of 42 (0.0%) | 79 of 144 (54.9%) |
-| Adam (ElevenLabs premade: an English voice speaking Mandarin) | 0 of 16 (0.0%) | 21 of 48 (43.8%) | 0 of 42 (0.0%) | 50 of 144 (34.7%) |
+| Tingting (macOS) | 0 of 16 (0.0%) | 32 of 48 (66.7%) | 0 of 42 (0.0%) | 69 of 144 (47.9%) |
+| Reed (macOS) | 0 of 16 (0.0%) | 29 of 48 (60.4%) | 0 of 42 (0.0%) | 23 of 144 (16.0%) |
+| Rachel (ElevenLabs premade: an English voice speaking Mandarin) | 1 of 16 (6.3%) | 31 of 48 (64.6%) | 0 of 42 (0.0%) | 63 of 144 (43.8%) |
+| Adam (ElevenLabs premade: an English voice speaking Mandarin) | 0 of 16 (0.0%) | 19 of 48 (39.6%) | 0 of 42 (0.0%) | 46 of 144 (31.9%) |
 
 ## Azure, live
 
@@ -215,7 +230,7 @@ Why syllables were unsure (all labels): unclear 238, short 153, creaky 80, unvoi
 | | Syllables | Azure's median score | Azure marks the word `Mispronunciation` | Azure score under 40 | Local scorer alone flags | Merged result flags | which are | Merged result says ok |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Singles, right reference | 64 | 82 | 1 (1.6%) | 0 (0.0%) | 1 (1.6%) | 1 (1.6%): 1 tone, 0 sound | false alarms | 55 (85.9%) |
-| Singles, wrong-tone reference | 192 | 61 | 55 (28.6%) | 21 (10.9%) | 121 (63.0%) | 120 (62.5%): 113 tone, 7 sound | caught | 9 (4.7%) |
+| Singles, wrong-tone reference | 192 | 61 | 55 (28.6%) | 21 (10.9%) | 111 (57.8%) | 109 (56.8%): 102 tone, 7 sound | caught | 11 (5.7%) |
 | Phrases, right reference | 168 | 100 | 4 (2.4%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%): 0 tone, 0 sound | false alarms | 109 (64.9%) |
 
 Where Azure's syllable score separates right from wrong, and where it doesn't. Syllables scoring under each bar (in brackets: those on a word Azure also marks `Mispronunciation`):
@@ -228,11 +243,13 @@ Where Azure's syllable score separates right from wrong, and where it doesn't. S
 | 60 | 0 (0) of 64 | 93 (52) of 192 | 7 (3) of 168 |
 | 70 | 7 (1) of 64 | 132 (55) of 192 | 10 (4) of 168 |
 
-The merged result's false alarms: Rachel 妈[1] 妈 expected 1 heard 4, margin 5.559, Azure 80, 40–720 ms.
+`phraseMarginSt` (the extra margin a flag needs inside a phrase, 0.5 semitones) was set after looking at these very syllables, above every phrase false alarm on Azure's timings: correctly said phrase syllables flagged with it at 0, 0.25 and 0.5 are 2, 1 and 0 of 168, and the cleanly measured right syllable that comes closest sits at 0.325. So phrase flags rest on a thin margin that these clips chose.
+
+The merged result's false alarms: Rachel 妈[1] 妈 expected 1 heard 4, margin 4.959, Azure 80, 40–720 ms.
 
 A high Azure score is not evidence of a right tone (the median wrong-tone syllable scores above 60), so the merged result never turns an unclear pitch reading into "ok" on Azure's word.
 
-On the single syllables, precision of a flag as measured (three wrong for each right): Azure's own `Mispronunciation` mark 98.2%, the local scorer 99.2%, the merged result 99.2%. The merged result flags on the local pitch check, or on Azure's `Mispronunciation` mark with a score under 40.
+On the single syllables, precision of a flag as measured (three wrong for each right): Azure's own `Mispronunciation` mark 98.2%, the local scorer 99.1%, the merged result 99.1%. The merged result flags on the local pitch check, or on Azure's `Mispronunciation` mark with a score under 40.
 
 What the replies look like for Mandarin (316 flat, 0 with a nested `PronunciationAssessment` object): scores sit directly on the `NBest` entry, the word and the phoneme. 48 of 381 words are longer than one character (你好, 学生: Azure segments into words). In 381 of 381 words the `Phonemes` array has exactly one entry per character: a "phoneme" is a whole syllable with its tone as a digit (`ni 3`, `hao 3`; 5 is neutral), with its own offset, duration and score. That digit is the tone of the **reference** reading (the dictionary tone, before sandhi; for a character with several readings, one of them), not the tone that was heard: Azure does not report a heard tone. `DisplayText` echoes the reference too. What a wrong tone changes is the score.
 
@@ -254,14 +271,22 @@ Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 24 m
 
 ## Settings this ran with
 
-`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85}`; cuts made by energy are trusted at 0.85.
+`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseStart":2.5,"lateFrom":2,"scaleRange":true,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85}`; cuts made by energy are trusted at 0.85.
+
+## Before wiring this to a route
+
+- **Start with single syllables and drills.** Their flags have room to spare; phrase flags rest on a half-semitone margin chosen on these clips, and the held-out phrase false alarms are the highest number in this report.
+- **Build the speaker's range only from the learner's other recordings**, never from the one being scored, and not at all until there are a few: without a range the height rules are silent, which is the safe side.
+- **Run it off the request thread, or pass timings.** The scorer is synchronous and refuses more than 30 seconds or 60 syllables; cutting syllables itself is the slow part.
+- **Show unsure as nothing**, not as a soft warning: a third to a half of right syllables are unsure.
+- **Collect real recordings first** (the section above) and rerun this report: every number here is from four synthesizers.
 
 ## Limitations
 
 - **Synthesized speech is not a learner.** These voices hit their tones cleanly, in quiet, at an even pace. A learner's wrong tone is rarely a clean other tone: it is a flat second tone, a fourth that barely falls, a third with no dip. Those land in "unsure" by design, so on real learners expect fewer catches than here, and treat the false-alarm rate as a floor until real recordings are scored.
 - **The wrong answers are other syllables' right answers**, not mistakes: they are well-formed tones, the easiest kind of wrong to spot.
 - **The thresholds were tuned on these voices.** The held-out table tunes on two voices and measures on the other two, which is the fairest number here, but all four are synthesizers and two of them are the same engine. It shows the setting is not fitted to one voice; it does not show it fits a person.
-- **Nobody has tested a child's voice.** The pitch tracker searches 60–600 Hz and tones are read against the speaker's own range, so nothing in the design excludes one, but no child (and no synthesized child) is in the set.
+- **Nobody has tested a child's voice.** The pitch tracker searches 60–800 Hz and tones are read against the speaker's own range, so nothing in the design excludes one, but no child (and no synthesized child) is in the set.
 - **The labels are trusted, not checked.** A synthesizer can misread a lone character, or say it with a sentence's falling intonation; nobody listened to these clips. A clip said in the wrong tone shows up as a miss or a false alarm that isn't the scorer's fault. Scribe is no second opinion here: of 64 single-syllable clips it wrote one character in the labelled tone for 18, and for the rest the commonest word that fits or nothing at all (Tingting 妈 (mā) → ""; Tingting 麻 (má) → ""; Tingting 马 (mǎ) → ""; Tingting 骂 (mà) → ""; Tingting 诗 (shī) → "She"; Tingting 十 (shí) → "She"; Tingting 使 (shǐ) → "是" (shì); Tingting 衣 (yī) → ""; …). That is the generosity this feature exists to get around, and it means the labels stay unchecked.
 - **4 voices, none of them a person.** No microphone, no room, no background noise. The ElevenLabs voices are premade English voices speaking Mandarin through the app's default model, not native Mandarin voices: the account's voice list and the Voice Library search did not answer when the clips were bought, so the script fell back to two public voice ids. Their lone syllables are the least textbook clips in the set: Rachel's 妈 holds level and then drops nine semitones, which the scorer hears as a fourth tone and which may well be one.
 - **Free conversation is harder than these phrases**: faster, with tones squeezed by their neighbours, focus and sentence intonation on top, and cuts that depend on the transcript being right. The phrase numbers are an upper bound for it.
