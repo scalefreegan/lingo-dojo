@@ -12,13 +12,21 @@
 //
 // Erasable TypeScript only, like schema.ts: the tests import it as is.
 
-import { and, asc, eq } from "drizzle-orm";
-import { hiddenSetOf, type HiddenKind, type HiddenRef, type HiddenSet } from "../../web/shared/scenes.ts";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { MAX_HIDDEN_PER_LANGUAGE, hiddenSetOf, type HiddenKind, type HiddenRef, type HiddenSet } from "../../web/shared/scenes.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { hiddenScenes } from "./schema.ts";
 
 export interface HiddenRow extends HiddenRef {
   hiddenAt: Date;
+}
+
+/** Refused by hideScene: the language holds MAX_HIDDEN_PER_LANGUAGE hides. */
+export class HiddenLimitError extends Error {
+  constructor() {
+    super(`at most ${MAX_HIDDEN_PER_LANGUAGE} scenes and folders can be hidden in one language: restore some first`);
+    this.name = "HiddenLimitError";
+  }
 }
 
 const ref = (kind: HiddenKind, key: string) => and(eq(hiddenScenes.kind, kind), eq(hiddenScenes.key, key))!;
@@ -39,6 +47,13 @@ export async function hiddenSet(db: Db, profile: LanguageProfileRef): Promise<Hi
  *  whether this call made it. */
 export async function hideScene(db: Db, profile: LanguageProfileRef, kind: HiddenKind, key: string): Promise<{ row: HiddenRow; created: boolean }> {
   const mine = forLanguageProfile(db, profile);
+  // The cap: a repeat of a hide it already has is still fine at the cap.
+  // Two hides racing at 499 can both land (500 and 501); the bound is
+  // about a runaway page, not an exact count.
+  const existing = await mine.get(hiddenScenes, ref(kind, key));
+  if (existing) return { row: { kind: existing.kind, key: existing.key, hiddenAt: existing.hiddenAt }, created: false };
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(hiddenScenes).where(mine.where(hiddenScenes));
+  if (n >= MAX_HIDDEN_PER_LANGUAGE) throw new HiddenLimitError();
   const [made] = await mine.insertOrIgnore(hiddenScenes, { kind, key }, { target: [hiddenScenes.kind, hiddenScenes.key] });
   const row = made ?? (await mine.get(hiddenScenes, ref(kind, key)));
   // Only an unhide racing this call between the two statements leaves

@@ -70,18 +70,24 @@ export interface HiddenSet {
 /** The longest key a hide may name: scenario ids and collection names are
  *  far shorter, and the table checks the same bound. */
 export const MAX_HIDDEN_KEY = 200;
+/** How many hides one language may hold: far above any real library, a
+ *  bound on what a page can make the table store. */
+export const MAX_HIDDEN_PER_LANGUAGE = 500;
 
 export const NOTHING_HIDDEN: HiddenSet = { scenarios: [], collections: [] };
 
 /** A request's `{kind, key}` → the value, or why it is malformed. The key is
- *  kept exactly (it must match the library's id or name); an unknown one is
- *  allowed, since the library can change under a stored hide. */
+ *  kept exactly (it must match the library's id or name, which the loader
+ *  trims, so leading or trailing spaces are refused rather than stored
+ *  where nothing matches them); an unknown one is allowed, since the
+ *  library can change under a stored hide. */
 export function readHiddenRef(v: unknown): { value: HiddenRef } | { error: string } {
   if (!v || typeof v !== "object" || Array.isArray(v)) return { error: "body must be {kind, key}" };
   const { kind, key } = v as Record<string, unknown>;
   if (kind !== "scenario" && kind !== "collection") return { error: "kind must be \"scenario\" or \"collection\"" };
   if (typeof key !== "string") return { error: "key must be a string: a scenario id or a collection name" };
   if (kind === "scenario" && !key.trim()) return { error: "a scenario's key is its id, which can't be empty" };
+  if (key !== key.trim()) return { error: "key can't start or end with spaces: it must match the library's id or name exactly" };
   if (key.length > MAX_HIDDEN_KEY) return { error: `key is too long (at most ${MAX_HIDDEN_KEY} characters)` };
   if (key.includes("\u0000")) return { error: "key can't contain a NUL character (\\u0000)" };
   return { value: { kind, key } };

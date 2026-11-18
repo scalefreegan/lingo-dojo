@@ -2933,13 +2933,16 @@ hides are neither seen nor removed):
 
 - `GET /api/hidden-scenes` → `{hidden: [{kind, key, hiddenAt}]}`, oldest first.
 - `POST /api/hidden-scenes {kind, key}` → `{hidden, created}`: 201 when made,
-  200 (its first `hiddenAt` kept) when it was hidden already.
+  200 (its first `hiddenAt` kept) when it was hidden already, 409 when the
+  language already holds `MAX_HIDDEN_PER_LANGUAGE` (500) hides
+  (`hidden.ts` `HiddenLimitError`; a repeat of one it has is still a 200).
 - `DELETE /api/hidden-scenes {kind, key}` → `{unhidden}`, false (still 200)
   when it wasn't hidden.
 
 A malformed body is a 400 (`readHiddenRef` in `web/shared/scenes.ts`: a
-known kind, a string key, a scenario's not blank, at most `MAX_HIDDEN_KEY`,
-no NUL).
+known kind, a string key, a scenario's not blank, no leading or trailing
+whitespace (the loader trims ids and names, so such a key could match
+nothing), at most `MAX_HIDDEN_KEY`, no NUL).
 
 What a hide changes, by one pure rule in `web/shared/scenes.ts`
 (`isHiddenScene`: the scenario itself, or its whole collection) used by the
@@ -2953,8 +2956,10 @@ server and the Scene tab alike:
   The CLI export has no learner and hides nothing.
 - **The Scene tab** (`SceneTab.tsx`, `visibleScenes`): hidden ones leave the
   list, its folders, the category chips' counts and the Random card's
-  counts and chips at once (App's `setSceneHidden`: optimistic, put back
-  when the server refuses), with a "Hid … Undo" line, and "N hidden · show"
+  counts and chips at once (App's `setSceneHidden`: optimistic, each key's
+  requests chained so a hide and its Undo reach the server in order, the
+  list re-read when one is refused), with a "Hid … Undo" line (focus moves
+  to Undo, since the hidden button is gone), and "N hidden · show"
   at the bottom lists each with Restore. No confirm: it is that easily
   undone. The selected scene stays listed even when hidden, marked so, so a
   draft never points at something the tab doesn't show.

@@ -8,9 +8,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createLanguageProfile, createLearner, createUser } from "../db/accounts.ts";
-import { hiddenSet, hideScene, listHidden, unhideScene } from "../db/hidden.ts";
+import { HiddenLimitError, hiddenSet, hideScene, listHidden, unhideScene } from "../db/hidden.ts";
 import {
-  MAX_HIDDEN_KEY, NOTHING_HIDDEN, drawRandomScene, emptiedByHides, emptyPoolMessage, hiddenSetOf, isHiddenScene, randomPool, readHiddenRef, visibleScenes,
+  MAX_HIDDEN_KEY, MAX_HIDDEN_PER_LANGUAGE, NOTHING_HIDDEN, drawRandomScene, emptiedByHides, emptyPoolMessage, hiddenSetOf, isHiddenScene, randomPool, readHiddenRef, visibleScenes,
 } from "../../web/shared/scenes.ts";
 import { freshDb } from "./testdb.mjs";
 
@@ -35,7 +35,11 @@ const hide = (scenarios = [], collections = []) => ({ scenarios, collections });
 test("readHiddenRef: kind and key checked, the key kept exactly; an unknown id is allowed", () => {
   assert.deepEqual(readHiddenRef({ kind: "scenario", key: "no-such-scene" }), { value: { kind: "scenario", key: "no-such-scene" } });
   assert.deepEqual(readHiddenRef({ kind: "collection", key: "" }), { value: { kind: "collection", key: "" } }, `"" is the scenes in no collection`);
-  assert.deepEqual(readHiddenRef({ kind: "collection", key: " Daily life" }).value.key, " Daily life", "not trimmed: it must match the library's name");
+  assert.deepEqual(readHiddenRef({ kind: "collection", key: "Daily life" }).value.key, "Daily life");
+  for (const key of [" Daily life", "Daily life ", "cafe\n", "\tcafe"]) {
+    assert.ok("error" in readHiddenRef({ kind: "collection", key }), `edge spaces refused: ${JSON.stringify(key)}`);
+    assert.ok("error" in readHiddenRef({ kind: "scenario", key }), `edge spaces refused: ${JSON.stringify(key)}`);
+  }
   assert.deepEqual(readHiddenRef({ kind: "collection", key: "x".repeat(MAX_HIDDEN_KEY) }).value.kind, "collection");
   for (const bad of [null, [], "cafe", { kind: "folder", key: "x" }, { kind: "scenario" }, { kind: "scenario", key: 7 }, { kind: "scenario", key: "  " }, { kind: "collection", key: "x".repeat(MAX_HIDDEN_KEY + 1) }, { kind: "scenario", key: "a\u0000b" }]) {
     assert.ok("error" in readHiddenRef(bad), JSON.stringify(bad));
@@ -140,4 +144,19 @@ test("one language's hides are invisible from, and can't be removed by, another 
   assert.deepEqual((await listHidden(db, es)).map((r) => r.key), ["First steps (Mandarin)"]);
   // A scope with mismatched owners (Ana's profile under Ben) matches nothing.
   assert.deepEqual(await listHidden(db, { id: es.id, learnerId: ben.learnerId }), []);
+});
+
+test("a language holds at most MAX_HIDDEN_PER_LANGUAGE hides; a repeat at the cap is fine, another language isn't counted", async (t) => {
+  const { db, query, close } = await freshDb();
+  t.after(close);
+  const { es, zh } = await seed(db);
+  await query(
+    `insert into hidden_scenes (learner_id, language_profile_id, kind, key) select $1, $2, 'scenario', 's' || g from generate_series(1, $3) g`,
+    [es.learnerId, es.id, MAX_HIDDEN_PER_LANGUAGE],
+  );
+  await assert.rejects(hideScene(db, es, "scenario", "one-more"), HiddenLimitError);
+  assert.equal((await hideScene(db, es, "scenario", "s1")).created, false, "already hidden: no error at the cap");
+  assert.equal((await hideScene(db, zh, "scenario", "one-more")).created, true, "the cap is per language");
+  assert.equal(await unhideScene(db, es, "scenario", "s1"), true);
+  assert.equal((await hideScene(db, es, "scenario", "one-more")).created, true, "room again after a restore");
 });

@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { hideScene, listHidden, unhideScene, type HiddenRow } from "../../scripts/db/hidden.ts";
+import { HiddenLimitError, hideScene, listHidden, unhideScene, type HiddenRow } from "../../scripts/db/hidden.ts";
 import { readHiddenRef } from "../shared/scenes.ts";
 import type { HiddenScene, HiddenSceneReply, HiddenScenesReply, UnhideSceneReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
@@ -11,7 +11,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // random draws.
 //
 //   GET    /api/hidden-scenes                 → {hidden: [{kind, key, hiddenAt}]}, oldest first
-//   POST   /api/hidden-scenes   {kind, key}   → {hidden, created}  (201 new, 200 already hidden)
+//   POST   /api/hidden-scenes   {kind, key}   → {hidden, created}  (201 new, 200 already hidden; 409 past MAX_HIDDEN_PER_LANGUAGE)
 //   DELETE /api/hidden-scenes   {kind, key}   → {unhidden}         (false: it wasn't hidden)
 //
 // Mounted with wrap's `learner: true`: the page must name the session's
@@ -37,7 +37,10 @@ export async function handleHiddenScenes(req: IncomingMessage, res: ServerRespon
   }
   if (req.method === "POST") {
     const { kind, key } = await bodyRef(req);
-    const { row, created } = await hideScene(rawDb(), ctx.language, kind, key);
+    const { row, created } = await hideScene(rawDb(), ctx.language, kind, key).catch((e) => {
+      if (e instanceof HiddenLimitError) throw new HttpError(409, e.message);
+      throw e;
+    });
     return sendJson(res, created ? 201 : 200, { hidden: wireRow(row), created } satisfies HiddenSceneReply);
   }
   if (req.method === "DELETE") {

@@ -109,6 +109,7 @@ test("a malformed body is a 400; an unknown scene id is still stored", async () 
   assert.equal((await sam.call("POST", "/api/hidden-scenes", "not json")).status, 400);
   assert.equal((await sam.call("PUT", "/api/hidden-scenes", { kind: "scenario", key: "x" })).status, 405);
   assert.equal((await sam.call("GET", "/api/hidden-scenes/extra")).status, 404);
+  assert.equal((await sam.call("POST", "/api/hidden-scenes", { kind: "collection", key: "Daily life " })).status, 400, "edge spaces");
   const gone = await sam.call("POST", "/api/hidden-scenes", { kind: "scenario", key: "removed-from-the-library" });
   assert.equal(gone.status, 201, gone.text);
 });
@@ -180,4 +181,14 @@ test("a pool emptied only by hides says so; one empty anyway keeps the old messa
   // Restored, it draws again.
   await sam.call("DELETE", "/api/hidden-scenes", { kind: "collection", key: "Travel essentials" });
   assert.equal((await sam.call("POST", "/api/conversations", { mode: "adult", pack: randomPack(["Travel essentials"]), title: "Random" })).status, 201);
+});
+
+test("past the per-language cap a hide is a 409 that says why", async () => {
+  const sam = await someone();
+  const [{ learner_id }] = await q("select learner_id from language_profiles where id = $1", [sam.languageId]);
+  await q(`insert into hidden_scenes (learner_id, language_profile_id, kind, key) select $1, $2, 'scenario', 's' || g from generate_series(1, 500) g`, [learner_id, sam.languageId]);
+  const r = await sam.call("POST", "/api/hidden-scenes", { kind: "scenario", key: "cafe" });
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /at most 500/);
+  assert.equal((await sam.call("POST", "/api/hidden-scenes", { kind: "scenario", key: "s7" })).status, 200);
 });

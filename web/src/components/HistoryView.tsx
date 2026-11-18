@@ -140,7 +140,10 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
         offset = r.nextOffset;
       }
       for (const id of ids) {
-        await deleteConversation(id);
+        // Already gone (another tab, a row's own delete) is as good as done.
+        await deleteConversation(id).catch((e) => {
+          if (!(e instanceof ApiError && e.status === 404)) throw e;
+        });
         done++;
       }
       return true;
@@ -176,7 +179,10 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
       ) : (
         <ul className="overflow-hidden rounded-lg border border-line" aria-label="Past sessions">
           {groups.map((g) => (
-            <SceneRow key={g.sceneKey} group={g} onOpen={setOpen} onDelete={remove} onDeleteScene={removeScene} onPracticeAgain={onPracticeAgain} />
+            // Keyed by what it shows too: after a delete (a partial one
+            // included) a changed scene remounts, so its expanded list is read
+            // again instead of offering sessions that are gone.
+            <SceneRow key={`${g.sceneKey}:${g.attempts}:${g.latest.id}`} group={g} onOpen={setOpen} onDelete={remove} onDeleteScene={removeScene} onPracticeAgain={onPracticeAgain} />
           ))}
         </ul>
       )}

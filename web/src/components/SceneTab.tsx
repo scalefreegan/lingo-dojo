@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentReply, HiddenScene, Scenario } from "../types";
 import { draftPool, draftPoolMessage, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
 import { collectionKey, isHiddenScene, missingCollections, randomPool, scenesWord, visibleScenes, type HiddenKind, type HiddenSet } from "../../shared/scenes.ts";
@@ -92,13 +92,21 @@ export default function SceneTab({
   // The last hide, for its one-tap Undo; and a refused hide or restore.
   const [lastHidden, setLastHidden] = useState<{ kind: HiddenKind; key: string; name: string } | null>(null);
   const [hideError, setHideError] = useState<string | null>(null);
+  // Hiding unmounts the button that had focus (the card or the folder's
+  // Hide), which would drop focus to <body>: it moves to the Undo instead.
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const [focusUndo, setFocusUndo] = useState(0);
+  useEffect(() => {
+    if (focusUndo) undoRef.current?.focus();
+  }, [focusUndo]);
   async function toggleHidden(kind: HiddenKind, key: string, hide: boolean, name: string) {
     setHideError(null);
     setLastHidden(hide ? { kind, key, name } : null);
+    if (hide) setFocusUndo((n) => n + 1);
     const error = await onHide(kind, key, hide);
     if (error) {
       setHideError(`Couldn't ${hide ? "hide" : "restore"} ${name}: ${error}`);
-      setLastHidden(null);
+      setLastHidden((h) => (h && h.kind === kind && h.key === key ? null : h));
     }
   }
   const [filter, setFilterState] = useState<Filter>(() => loadFilter(languageId));
@@ -367,26 +375,24 @@ export default function SceneTab({
             );
           })}
 
-          {(lastHidden || hideError) && (
-            <p role="status" className={`text-sm ${hideError ? "text-err" : "text-fg-2"}`} data-testid="hide-status">
-              {hideError ?? (
+          {/* Always mounted, so a screen reader hears each change of its text. */}
+          <p role="status" className={`text-sm empty:hidden ${hideError ? "text-err" : "text-fg-2"}`} data-testid="hide-status">
+            {hideError ??
+              (lastHidden && (
                 <>
-                  Hid {lastHidden!.name}.{" "}
+                  Hid {lastHidden.name}.{" "}
                   <button
+                    ref={undoRef}
                     type="button"
                     className="text-accent hover:underline"
-                    onClick={() => {
-                      const h = lastHidden!;
-                      void toggleHidden(h.kind, h.key, false, h.name);
-                    }}
+                    onClick={() => void toggleHidden(lastHidden.kind, lastHidden.key, false, lastHidden.name)}
                     data-testid="hide-undo"
                   >
                     Undo
                   </button>
                 </>
-              )}
-            </p>
-          )}
+              ))}
+          </p>
 
           {hiddenRows.length > 0 && (
             <HiddenList rows={hiddenRows} scenarios={libraryScenes} open={showHidden} onToggle={() => setShowHidden(!showHidden)}
@@ -477,8 +483,10 @@ function ScenarioCard({
   onHide?: () => void;
 }) {
   // The hide action sits beside the card's own button (a button can't hold
-  // another): in its top corner, always shown on a touch screen, and from
-  // `sm` up on hover or keyboard focus, so the grid stays calm.
+  // another), in its top corner. With a mouse or trackpad (`pointer-fine`)
+  // it shows on hover or keyboard focus, so the grid stays calm; on a touch
+  // screen of any size (a phone, an iPad) there is no hover, so it is always
+  // shown.
   return (
     <div className="group/card relative min-w-0">
     <button
@@ -514,7 +522,7 @@ function ScenarioCard({
         title={hidden ? "Restore this scene" : "Hide this scene"}
         onClick={onHide}
         data-testid="hide-scene"
-        className="absolute top-1.5 right-1.5 flex size-8 items-center justify-center rounded-md text-fg-3 transition-opacity hover:bg-raised hover:text-fg focus-visible:opacity-100 sm:opacity-0 sm:group-hover/card:opacity-100 sm:group-focus-within/card:opacity-100"
+        className="absolute top-1.5 right-1.5 flex size-8 items-center justify-center rounded-md text-fg-3 transition-opacity hover:bg-raised hover:text-fg focus-visible:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover/card:opacity-100 pointer-fine:group-focus-within/card:opacity-100"
       >
         {hidden ? <RestoreGlyph /> : <TrashGlyph />}
       </button>

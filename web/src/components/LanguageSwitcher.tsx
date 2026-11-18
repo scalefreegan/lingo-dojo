@@ -22,6 +22,7 @@ export default function LanguageSwitcher({
   onSwitch,
   onChanged,
   onSaveLevel,
+  packLevel = null,
 }: {
   learner: LearnerInfo;
   /** The session's active language: one of learner.languages. */
@@ -38,6 +39,9 @@ export default function LanguageSwitcher({
   /** Save the current language's level (App reloads the library and the
    *  gate, as the profile pill's Save does); an error sentence, or null. */
   onSaveLevel: (level: string) => Promise<string | null>;
+  /** The loaded pack's own level override, which it keeps whatever the
+   *  language's level is: said under the select. */
+  packLevel?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -173,11 +177,14 @@ export default function LanguageSwitcher({
                     ))}
                   </select>
                 </label>
-                {levelNote && (
-                  <p role="status" className={`text-sm sm:text-xs ${levelNote.tone === "ok" ? "text-accent" : "text-err"}`} data-testid="language-level-note">
-                    {levelNote.text}
+                {packLevel && packLevel !== language.level && (
+                  <p className="text-sm text-fg-3 sm:text-xs" data-testid="language-pack-level">
+                    This pack plays at {packLevel}.
                   </p>
                 )}
+                <p role="status" className={`text-sm sm:text-xs ${levelNote?.tone === "ok" ? "text-accent" : "text-err"} empty:hidden`} data-testid="language-level-note">
+                  {levelNote?.text ?? ""}
+                </p>
               </div>
             )}
             {adding ? (

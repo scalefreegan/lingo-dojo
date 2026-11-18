@@ -45,6 +45,7 @@ export default function TopBar({
   onSaveDefaults,
   onSaveLanguageNotes,
   onSaveLevel,
+  packLevel,
 }: {
   tab: Tab;
   onTab: (t: Tab) => void;
@@ -70,6 +71,8 @@ export default function TopBar({
   onSaveLanguageNotes: (values: { goals: string; notes: string }) => Promise<string | null>;
   /** The language menu's level, saved to the active language. */
   onSaveLevel: (level: string) => Promise<string | null>;
+  /** The loaded pack's own level, when it sets one (it overrides the language's). */
+  packLevel: string | null;
 }) {
   return (
     // On a phone everything is a little tighter, so the Kids tag still
@@ -98,7 +101,7 @@ export default function TopBar({
       </nav>
       <div className="ml-auto flex h-full shrink-0 items-center gap-1">
         {content && (
-          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} defaultLevel={content.defaultLevel} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} onSaveLevel={onSaveLevel} />
+          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} defaultLevel={content.defaultLevel} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} onSaveLevel={onSaveLevel} packLevel={packLevel} />
         )}
         {content && draft && (
           <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}
