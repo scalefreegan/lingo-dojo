@@ -570,14 +570,15 @@ One result whichever engine ran:
 { provider: "azure" | "local",
   syllables: [{ char, pinyin, baseTone, expectedTone, accept, heardTone,
                 verdict: "ok" | "off" | "unsure", confidence, reason?,
-                score?, startMs, endMs, pitch }],
+                margin?, score?, startMs, endMs, pitch }],
   overall? }
 ```
 
 `verdict` is `off` only when the engine is confident; whatever it can't
 vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
 `neutral`, `untimed`, `unclear`, `omitted`). A false alarm costs more than a
-miss. `pitch` is the syllable's curve for drawing: 16 points in semitones
+miss. `margin` is how far the contour is from the nearest right answer, in
+semitones (0 or more: every accepted tone is ruled out). `pitch` is the syllable's curve for drawing: 16 points in semitones
 above or below the speaker's median, `null` where unvoiced;
 `referenceCurves()` makes the same from the narrator's clip.
 
@@ -596,8 +597,9 @@ connected-speech rules before anything is compared:
   grouping needs word boundaries;
 - 不 is bú before a fourth tone; 一 is yí before a fourth tone and yì before
   the others, yī at the end and in numbers (第一, 十一, 一九九八), with both
-  accepted where only a word list could tell (一月); A不A and 看一看 accept
-  the neutral reading too;
+  accepted where only a word list could tell (一月, and any 一 after another
+  syllable, which may be the end of a word: 统一了, 唯一的); A不A and 看一看
+  accept the neutral reading too;
 - the half third: a third tone before another tone is low without the rise,
   and counts as a third tone;
 - the neutral tone is not judged.
@@ -614,32 +616,57 @@ browser already sends, with no dependency:
 
 1. `trackPitch`: YIN (de Cheveigné & Kawahara 2002) every 10 ms over
    60–600 Hz, written out in the module (sixty lines, nothing native).
+   Octave slips are undone per voiced run (a short piece an octave from
+   the rest of its run), never across a silence.
 2. Cuts: per-syllable `timings` when the caller has extents it can trust
    (Azure's words), else `segmentSyllables`, which cuts the speech at its
    quietest, least voiced frames given the syllable count, kept on Scribe's
    character times when those are passed as `anchors` (below). Its cuts
-   are trusted a little less (`FALLBACK_TRUST`).
+   scale the reported confidence (`FALLBACK_TRUST`), and a flag on any
+   syllable of a phrase needs a little more margin (`phraseMarginSt`),
+   whoever made the cuts; neither is mixed into `quality`, which is only
+   how clean the pitch measurement was.
 3. `classifyContour`: five points of each syllable's voiced part against
    tone templates on Chao's five-level scale, scaled to the speaker's own
    range (`speakerRange`: pass one learnt from earlier turns as `speaker`;
-   without it only the shape counts, plus the recording's own range from
-   four syllables up). So a child's voice and a low adult voice are read
-   the same way.
+   without it only the shape counts, each template stretched to the
+   contour, plus the recording's own range from four syllables up). So a
+   child's voice, a low adult voice and a narrow one are read the same way.
 4. The verdict. `ok` when an accepted tone is the best match or holds a
    third of the belief. `off` only when the contour *rules out* every
-   accepted tone (`rulesOut`: a level tone by four semitones of movement, a
-   rise by never climbing, a fall by never dropping), the measurement is
-   clean, and the syllable is long enough. Third against fourth and third
-   against second are never flagged: a half third after a high tone falls
-   like a fourth, a shallow full third rises like a second. Creak in the
-   vowel supports an expected third tone and makes anything else `unsure`.
-   The thresholds are `TONE_RULES`.
+   accepted tone, the measurement is clean, and the syllable is long
+   enough. `ruleMargins` says by how many semitones each tone is ruled
+   out, from features of the shape (the span, the dip before the lowest
+   point, the rise from it to the end, the fall from the highest point to
+   the end) and, in a voice whose range is known, of the height (where it
+   starts, how high or low it sits):
+   - tone 1 by three semitones of movement, or by sitting low;
+   - tone 2 by not coming up at the end while falling or level, or by a
+     deep dip that barely comes back;
+   - tone 4 by not coming down at the end while level or rising, or by
+     ending on a rise;
+   - tone 3 by a high level pitch, by a fall that starts high in the range
+     (so a fourth tone said for a third is caught, with a known range), or
+     by a plain rise with no dip.
+
+   Still never flagged: a low fall said for a fourth tone, and second
+   against third when the second dips or the third comes back up. A level
+   pitch in the middle of a known range rules nothing out (a syllable
+   squeezed flat by its neighbours). Creak in the vowel supports an
+   expected third tone and makes anything else `unsure` (`creakFlags`).
+   The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
+   trades catches for false alarms.
 
 How well that does on synthesized speech, and what it has not been tested
 on, is in [pronunciation-proof.md](pronunciation-proof.md), written by
 `node scripts/pronunciation-proof.mjs` (not part of `npm test`; `--fetch`,
 `--scribe` and `--azure` are the only steps that call a provider and must
-be asked for).
+be asked for). The thresholds were chosen on two voices and measured on the
+other two; the report has both directions, the trade-off at several
+margins, and the classifier's raw accuracy before any gate. **Real
+recordings are the next step**: drop audio files and a `labels.tsv` into
+`data/pronunciation-proof/recordings/` (gitignored; the format is in the
+report's "Real recordings") and they are scored on every run, locally.
 
 **The Azure adapter** (`azurePronunciationRequest`,
 `azurePronunciationResult`, `mergeAzure`) was built from Microsoft's
@@ -669,15 +696,19 @@ From the live service, which the docs don't say for Mandarin:
   Azure never says which tone was said.
 - A wrong tone lowers the score, with wide overlap: on single syllables the
   median is 61 against 82 for the right tone, and Azure's own
-  `Mispronunciation` mark (at about 60) caught 29% of wrong tones while
-  also marking 4 of 168 correctly said phrase syllables.
+  `Mispronunciation` mark caught 29% of wrong tones while also marking 4
+  of 168 correctly said phrase syllables (the proof prints the counts
+  under each score).
 
 That is why `mergeAzure` always runs the local tone check as well, on
 Azure's syllable timings: a tone flag comes from the pitch
 (`reason: "tone"`); Azure adds a flag only where it marks the word
 `Mispronunciation` and the syllable scores under 40 (`AZURE_RULES`: no
-false alarm in the run at that bar; `reason: "sound"`); and an Azure score
-of 80 or more turns an unclear pitch reading into `ok`. Not yet run live:
+false alarm in the run at that bar; `reason: "sound"`). A high Azure score
+never turns an unclear pitch reading into `ok`: wrong tones often score
+above 80. The builder refuses audio that is not 16 kHz or is over 30
+seconds, and takes any locale `scoresTones` does (`azureLocale`: `zh`,
+`zh_TW`, `zh-Hant-TW`). Not yet run live:
 zh-TW, Spanish, a recording near 30 seconds, a per-resource `endpoint`, a
 real learner.
 

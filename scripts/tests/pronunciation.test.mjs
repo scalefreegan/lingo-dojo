@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, applySandhi, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
-  classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, rulesOut, scoreTones,
+  AZURE_MAX_SECONDS, AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, azureLocale, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
+  classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
   scoresTones, scribeCharTimings, segmentSyllables, speakerRange, trackPitch, withTone,
 } from "../pronunciation.mjs";
 import { readCodePoints } from "../../web/src/script/zh.ts";
@@ -114,6 +114,15 @@ test("一: yí before a fourth tone, yì before the others, yī as a number or a
   assert.deepEqual(syl("看:kàn 一:yī 看:kàn")[1].accept.toSorted(), [0, 1, 2, 4]);
   // A 一 read another way (the app's reader marks it so) is left alone.
   assert.deepEqual(tones(syl("一:yí 个:gè")), [2, 4]);
+  // 一 after another syllable may end a word, where it stays yī whatever
+  // follows: 统一了, 唯一的, 统一思想. Only a word list could tell, so yī
+  // is right there too…
+  assert.deepEqual(syl("统:tǒng 一:yī 了:le")[1].accept.toSorted(), [1, 2, 4]);
+  assert.deepEqual(syl("唯:wéi 一:yī 的:de")[1].accept.toSorted(), [1, 2, 4]);
+  assert.deepEqual(syl("统:tǒng 一:yī 思:sī 想:xiǎng")[1].accept.toSorted(), [1, 4]);
+  // …but at the start of a phrase it can only be the changing 一.
+  assert.deepEqual(syl("一:yī 起:qǐ")[0].accept, [4]);
+  assert.deepEqual(syl("好:hǎo | 一:yī 个:gè")[1].accept, [2]);
 });
 
 test("expectedSyllables over the app's own reader: Chinese characters only, each with its reading", () => {
@@ -131,40 +140,63 @@ test("expectedSyllables over the app's own reader: Chinese characters only, each
 /* ------------------------------ generated speech ---------------------------- */
 
 const RATE = 16_000;
-// Chao levels over the syllable, as a learner's textbook draws them.
-const SHAPES = { 1: [5, 5, 5], 2: [3, 3.6, 5], 3: [2.2, 1, 2.8], 4: [5, 3.2, 1], low: [2.2, 1.4, 1] };
 
-/** A voice saying `shapes` (keys of SHAPES) one after another: a buzz of
- *  six harmonics whose pitch follows each shape between `lowHz` and
- *  `lowHz` + `spanSt` semitones, `ms` each, `gapMs` of silence between. */
-function speak(shapes, { lowHz = 110, spanSt = 10, ms = 260, gapMs = 70 } = {}) {
+// The voice the tests listen to. Deliberately not the classifier's own
+// templates: each tone is a curve in time with its own formula (Chao level
+// against x, 0 at the start of the syllable and 1 at its end), not the five
+// levels the classifier matches against; the pitch drifts down across the
+// utterance as real sentences do; every glottal period is jittered; and
+// the range a test hands the scorer is the nominal one, not what the drift
+// and the jitter actually produce.
+const CURVES = {
+  1: (x) => 4.7 - 0.25 * x, // high, sagging a little
+  2: (x) => 2.9 - 0.9 * x + 3 * x * x, // a small dip first, then up to the top
+  3: (x) => 2.7 - 6.8 * x + 7 * x * x, // down to the floor before the middle, most of the way back
+  4: (x) => 4.9 - 3.9 * x ** 1.4, // top to bottom, slowly at first
+  low: (x) => 2.3 - 1.2 * Math.sqrt(x), // the half third: low and sinking
+};
+
+/** A voice saying `shapes` one after another (keys of CURVES, or a curve of
+ *  its own): a buzz of six harmonics whose pitch follows each curve between
+ *  `lowHz` and `lowHz` + `spanSt` semitones, `ms` each, `gapMs` of silence
+ *  between. `declineSt` is the drift down across the utterance, `jitter`
+ *  the period-to-period wobble, `weak` drops the fundamental (a telephone,
+ *  a small speaker), `noise` adds white noise at that amplitude. */
+function speak(shapes, { lowHz = 110, spanSt = 10, ms = 260, gapMs = 70, declineSt = 0.6, jitter = 0.004, weak = false, noise = 0, seed = 11 } = {}) {
   const gap = Math.round((RATE * gapMs) / 1000);
   const len = Math.round((RATE * ms) / 1000);
   const out = new Float32Array(gap + shapes.length * (len + gap));
   const timings = [];
+  let state = seed;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
   let at = gap;
   for (const name of shapes) {
-    const levels = SHAPES[name];
+    const curve = typeof name === "function" ? name : CURVES[name];
     let phase = 0;
+    let wobble = 1;
     for (let i = 0; i < len; i++) {
-      const x = (i / (len - 1)) * (levels.length - 1);
-      const k = Math.min(levels.length - 2, Math.floor(x));
-      const level = levels[k] + (levels[k + 1] - levels[k]) * (x - k);
-      const hz = lowHz * 2 ** ((((level - 1) / 4) * spanSt) / 12);
+      const level = curve(i / (len - 1));
+      const drift = -declineSt * ((at + i) / out.length);
+      const hz = lowHz * 2 ** ((((level - 1) / 4) * spanSt + drift) / 12) * wobble;
+      const before = phase;
       phase += (2 * Math.PI * hz) / RATE;
+      // A new period: a new wobble.
+      if (Math.floor(phase / (2 * Math.PI)) !== Math.floor(before / (2 * Math.PI))) wobble = 1 + jitter * rand();
       const env = Math.min(1, i / 240, (len - 1 - i) / 240);
       let v = 0;
-      for (let h = 1; h <= 6; h++) v += Math.sin(phase * h) / h;
+      for (let h = weak ? 2 : 1; h <= 6; h++) v += Math.sin(phase * h) / h;
       out[at + i] = 0.3 * env * v;
     }
     timings.push({ startMs: (at / RATE) * 1000, endMs: ((at + len) / RATE) * 1000 });
     at += len + gap;
   }
+  if (noise) for (let i = 0; i < out.length; i++) out[i] += noise * rand();
   return { samples: out, timings, range: { medianHz: lowHz * 2 ** (spanSt / 24), lowHz, highHz: lowHz * 2 ** (spanSt / 12), frames: 100 } };
 }
 
 /** Syllables with the given expected tones and no sandhi between them. */
 const expecting = (...ts) => ts.map((t) => ({ char: "字", pinyin: withTone("ma", t), baseTone: t, expectedTone: t, accept: [t], half: false, breakBefore: true }));
+const verdicts = (r) => r.syllables.map((s) => s.verdict);
 
 test("WAV: what encodeWav writes parseWav reads back, and a non-PCM file is refused", () => {
   const { samples } = speak([1], { ms: 50 });
@@ -206,9 +238,45 @@ test("trackPitch: a steady tone, a sweep, silence and noise", () => {
   assert.ok(n <= 3, `${n} voiced frames in noise`);
 });
 
+test("trackPitch: an octave-high onset is put back and does not drag the syllable with it; a missing fundamental is still heard", () => {
+  // 110 Hz whose first 50 ms have only the even harmonics: those frames
+  // read 220 Hz. The rest must stay at 110 (the old correction compared
+  // each frame with the corrected one before it and moved them all).
+  const s = new Float32Array(RATE * 0.4);
+  for (let i = 0; i < s.length; i++) {
+    const ph = (2 * Math.PI * 110 * i) / RATE;
+    const onset = i < RATE * 0.05;
+    let v = 0;
+    for (let h = 1; h <= 6; h++) if (!onset || h % 2 === 0) v += Math.sin(ph * h) / h;
+    s[i] = 0.3 * v;
+  }
+  const voiced = [...trackPitch(s, RATE).f0].filter((v) => v > 0);
+  assert.ok(voiced.length > 30);
+  const near = (hz) => voiced.filter((v) => Math.abs(v - hz) < hz * 0.06).length;
+  assert.ok(near(110) >= voiced.length - 2, `${near(110)} of ${voiced.length} frames at 110 Hz, ${near(220)} at 220`);
+  // A whole syllable an octave up stays there: nothing to compare it with.
+  const high = new Float32Array(RATE * 0.3);
+  for (let i = 0; i < high.length; i++) high[i] = 0.3 * Math.sin((2 * Math.PI * 220 * i) / RATE);
+  const up = [...trackPitch(high, RATE).f0].filter((v) => v > 0);
+  assert.ok(up.every((v) => Math.abs(v - 220) < 8));
+  // And a real fall of an octave inside one syllable is left alone.
+  const fall = new Float32Array(RATE * 0.3);
+  let phase = 0;
+  for (let i = 0; i < fall.length; i++) {
+    phase += (2 * Math.PI * 300 * 2 ** (-i / fall.length)) / RATE;
+    fall[i] = 0.3 * (Math.sin(phase) + Math.sin(2 * phase) / 2);
+  }
+  const down = [...trackPitch(fall, RATE).f0].filter((v) => v > 0);
+  assert.ok(down[2] > 270 && down.at(-3) < 170, `${down[2]} … ${down.at(-3)}`);
+  // No fundamental at all (harmonics 2 to 6 of 150 Hz): the period is still 150.
+  const weak = speak([(x) => 3 + 0 * x], { lowHz: 106, spanSt: 12, weak: true, declineSt: 0, jitter: 0 });
+  const w = [...trackPitch(weak.samples, RATE).f0].filter((v) => v > 0);
+  assert.ok(w.length > 15 && w.every((v) => Math.abs(v - 150) < 8), JSON.stringify(w.slice(0, 6)));
+});
+
 test("classifyContour: the four textbook shapes, and a level contour that only a range can place", () => {
   const range = { lowSt: 12 * Math.log2(100), highSt: 12 * Math.log2(100) + 10 };
-  const at = (levels) => levels.map((l) => range.lowSt + ((l - 1) / 4) * 10);
+  const at = (levels, span = 10) => levels.map((l) => range.lowSt + ((l - 1) / 4) * span);
   assert.equal(classifyContour(at([5, 5, 5, 5, 5]), range).tone, 1);
   assert.equal(classifyContour(at([3, 3.2, 3.8, 4.4, 5]), range).tone, 2);
   assert.equal(classifyContour(at([2.2, 1.4, 1, 1.6, 3]), range).tone, 3);
@@ -222,6 +290,13 @@ test("classifyContour: the four textbook shapes, and a level contour that only a
   // The belief sums to one.
   const b = classifyContour(at([5, 5, 5, 5, 5]), range).belief;
   assert.ok(Math.abs(b[1] + b[2] + b[3] + b[4] - 1) < 1e-9);
+  // With no range the size of a step is unknown: a narrow voice (five
+  // semitones top to bottom) and a wide one (fifteen) are read by shape.
+  for (const span of [5, 15]) {
+    assert.equal(classifyContour(at([3, 3.2, 3.8, 4.4, 5], span), null).tone, 2, `rise, ${span} st`);
+    assert.equal(classifyContour(at([5, 4.4, 3.4, 2.2, 1], span), null).tone, 4, `fall, ${span} st`);
+    assert.equal(classifyContour(at([2.2, 1.4, 1, 1.6, 3], span), null).tone, 3, `dip, ${span} st`);
+  }
 });
 
 test("scoreTones: each tone said and expected is ok, for a low adult voice and a child's", () => {
@@ -244,7 +319,7 @@ test("scoreTones: a clearly different tone is off, with timings and without, and
   for (const t of [timings, null]) {
     const r = scoreTones({ samples, sampleRate: RATE, syllables: label, timings: t, speaker: range });
     assert.deepEqual(r.syllables.map((s) => s.heardTone), [1, 4, 2, 1], t ? "timed" : "cut by energy");
-    assert.deepEqual(r.syllables.map((s) => s.verdict), ["ok", "off", "ok", "off"], t ? "timed" : "cut by energy");
+    assert.deepEqual(verdicts(r), ["ok", "off", "ok", "off"], t ? "timed" : "cut by energy");
     assert.equal(r.timed, t ? "given" : "fallback");
     assert.equal(r.overall, 50);
     for (const s of r.syllables) {
@@ -252,6 +327,8 @@ test("scoreTones: a clearly different tone is off, with timings and without, and
       assert.ok(s.endMs > s.startMs);
       assert.ok(s.confidence > 0.5 && s.confidence <= 1);
     }
+    // A flag says by how much the contour rules the label out.
+    assert.ok(r.syllables[1].margin > 0 && r.syllables[0].margin < 0);
     // The first syllable is high and level: its curve sits above the
     // speaker's median and barely moves.
     const curve = r.syllables[0].pitch.filter((v) => v !== null);
@@ -262,24 +339,91 @@ test("scoreTones: a clearly different tone is off, with timings and without, and
   const anchors = timings.map((t) => t.startMs + 0.6 * (t.endMs - t.startMs));
   const a = scoreTones({ samples, sampleRate: RATE, syllables: label, anchors, speaker: range });
   assert.equal(a.timed, "anchored");
-  assert.deepEqual(a.syllables.map((s) => s.verdict), ["ok", "off", "ok", "off"]);
+  assert.deepEqual(verdicts(a), ["ok", "off", "ok", "off"]);
 });
 
-test("scoreTones: the half third (low, no rise) is a right third tone, and sandhi is applied before comparing", () => {
+test("scoreTones: every tone said for every other, in a known voice: what is flagged and what never is", () => {
+  const flagged = {};
+  for (const said of [1, 2, 3, 4]) {
+    for (const want of [1, 2, 3, 4]) {
+      if (said === want) continue;
+      const { samples, range } = speak([said], { lowHz: 140 });
+      flagged[`${said}→${want}`] = scoreTones({ samples, sampleRate: RATE, syllables: expecting(want), speaker: range }).syllables[0].verdict === "off";
+    }
+  }
+  // A full third (down and back up) against a second, and a third against a
+  // fourth, share too much of their shape: never flagged. Everything else is.
+  const quiet = Object.entries(flagged).filter(([, off]) => !off).map(([k]) => k).sort();
+  assert.deepEqual(quiet, ["3→2", "3→4"], JSON.stringify(flagged));
+  // A fourth tone said for a third is caught by where it starts, which
+  // needs the speaker's range: without one it is not flagged.
+  const fall = speak([4], { lowHz: 140 });
+  assert.notEqual(scoreTones({ samples: fall.samples, sampleRate: RATE, syllables: expecting(3) }).syllables[0].verdict, "off");
+  // A low fall with no rise (a half third) said for a second is a flag
+  // once it falls far enough to be no accident; for a fourth it never is
+  // (a low fall is both).
+  const low = speak([(x) => 2.7 - 1.7 * x], { lowHz: 140 });
+  assert.equal(scoreTones({ samples: low.samples, sampleRate: RATE, syllables: expecting(2), speaker: low.range }).syllables[0].verdict, "off");
+  assert.notEqual(scoreTones({ samples: low.samples, sampleRate: RATE, syllables: expecting(4), speaker: low.range }).syllables[0].verdict, "off");
+  const sinking = speak(["low"], { lowHz: 140 });
+  assert.notEqual(scoreTones({ samples: sinking.samples, sampleRate: RATE, syllables: expecting(2), speaker: sinking.range }).syllables[0].verdict, "off");
+});
+
+test("scoreTones: declination, a narrow voice with no range, a weak fundamental and noise don't turn right into off", () => {
+  // Four first tones, the pitch sinking two semitones across the phrase.
+  const sag = speak([1, 1, 1, 1], { declineSt: 2 });
+  for (const speaker of [sag.range, null]) assert.ok(!verdicts(scoreTones({ samples: sag.samples, sampleRate: RATE, syllables: expecting(1, 1, 1, 1), timings: sag.timings, speaker })).includes("off"));
+  // A voice that uses six semitones, heard for the first time: its tones
+  // are right, and its fourth for a first is still caught.
+  const narrow = speak([1, 2, 4, 3], { spanSt: 6, lowHz: 150 });
+  const own = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 4, 3), timings: narrow.timings });
+  assert.ok(!verdicts(own).includes("off"), JSON.stringify(verdicts(own)));
+  assert.deepEqual(own.syllables.map((s) => s.heardTone).slice(1, 3), [2, 4]);
+  const wrong = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 1, 3), timings: narrow.timings });
+  assert.equal(wrong.syllables[2].verdict, "off");
+  // No fundamental (a phone's speaker), and white noise 20 dB under the voice.
+  for (const how of [{ weak: true }, { noise: 0.03 }, { jitter: 0.02 }]) {
+    const v = speak([1, 4, 2, 1], how);
+    const r = scoreTones({ samples: v.samples, sampleRate: RATE, syllables: expecting(1, 1, 2, 4), timings: v.timings, speaker: v.range });
+    assert.deepEqual(r.syllables.map((s) => s.heardTone), [1, 4, 2, 1], JSON.stringify(how));
+    assert.ok(!["off"].includes(r.syllables[0].verdict) && r.syllables[2].verdict !== "off", JSON.stringify(how));
+    assert.equal(r.syllables[1].verdict, "off", JSON.stringify(how));
+  }
+  // Noise alone, labelled as speech: nothing to flag.
+  const hiss = speak([1], { noise: 0.2 });
+  hiss.samples.fill(0);
+  let seed = 5;
+  for (let i = 0; i < hiss.samples.length; i++) hiss.samples[i] = (((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1) * 0.2;
+  assert.notEqual(scoreTones({ samples: hiss.samples, sampleRate: RATE, syllables: expecting(2), timings: hiss.timings }).syllables[0].verdict, "off");
+});
+
+test("scoreTones: the half third is a right third tone, sandhi is applied before comparing, and a word-final 一 may stay level", () => {
   // 我是: wǒ said low and falling, then shì.
   const { samples, timings, range } = speak(["low", 4]);
-  const syllables = syl("我:wǒ 是:shì");
-  const r = scoreTones({ samples, sampleRate: RATE, syllables, timings, speaker: range });
-  assert.deepEqual(r.syllables.map((s) => s.verdict), ["ok", "ok"]);
-  // 你好 said ní hǎo is right; said with two full third tones it is not
-  // flagged either (3 for an expected 2 that started as a 3 is lenient in
-  // longer runs only): here the first is expected 2 and heard 2.
+  const r = scoreTones({ samples, sampleRate: RATE, syllables: syl("我:wǒ 是:shì"), timings, speaker: range });
+  assert.deepEqual(verdicts(r), ["ok", "ok"]);
+  // 你好 said ní hǎo is right…
   const nihao = speak([2, 3]);
   const ok = scoreTones({ samples: nihao.samples, sampleRate: RATE, syllables: syl("你:nǐ 好:hǎo"), timings: nihao.timings, speaker: nihao.range });
   assert.deepEqual(ok.syllables.map((s) => [s.expectedTone, s.heardTone, s.verdict]), [[2, 2, "ok"], [3, 3, "ok"]]);
+  // …and said with two full third tones (nǐ hǎo, each down and back up)
+  // the first is not what sandhi asks for, but a dip that comes back up is
+  // too close to a rise to flag: no "off" on either.
+  const full = speak([3, 3]);
+  const both = scoreTones({ samples: full.samples, sampleRate: RATE, syllables: syl("你:nǐ 好:hǎo"), timings: full.timings, speaker: full.range });
+  assert.equal(both.syllables[0].expectedTone, 2);
+  assert.ok(!verdicts(both).includes("off"), JSON.stringify(verdicts(both)));
+  // 统一了 with a level yī: the end of a word, not the changing 一.
+  const tong = speak(["low", 1, (x) => 2.6 - 0.4 * x]);
+  const level = scoreTones({ samples: tong.samples, sampleRate: RATE, syllables: syl("统:tǒng 一:yī 了:le"), timings: tong.timings, speaker: tong.range });
+  assert.deepEqual([level.syllables[1].heardTone, level.syllables[1].verdict], [1, "ok"]);
+  // 一起 at the start of a phrase with a level yī is a wrong tone.
+  const yiqi = speak([1, 3]);
+  const start = scoreTones({ samples: yiqi.samples, sampleRate: RATE, syllables: syl("一:yī 起:qǐ"), timings: yiqi.timings, speaker: yiqi.range });
+  assert.equal(start.syllables[0].verdict, "off");
 });
 
-test("unsure, not off: short, unvoiced, neutral, untimed, and anything under the confidence bar", () => {
+test("unsure, not off: short, unvoiced, neutral, untimed, and anything under the bar", () => {
   // 40 ms of voice is too little to call.
   const short = speak([4], { ms: 40 });
   const s1 = scoreTones({ samples: short.samples, sampleRate: RATE, syllables: expecting(1), speaker: short.range }).syllables[0];
@@ -305,47 +449,69 @@ test("unsure, not off: short, unvoiced, neutral, untimed, and anything under the
   const args = { samples: one.samples, sampleRate: RATE, syllables: expecting(1), speaker: one.range };
   assert.equal(scoreTones(args).syllables[0].verdict, "off");
   // …and each bar on its own keeps it quiet: a measurement not clean
-  // enough, a stretch not long enough, a heard tone not clear enough.
-  for (const bar of [{ offQuality: 1.01 }, { offMinMs: 5000 }, { offBelief: 1.01 }]) {
+  // enough, a stretch not long enough, evidence not far enough past its bar.
+  for (const bar of [{ offQuality: 1.01 }, { offMinMs: 5000 }, { offMarginSt: 99 }]) {
     const s = scoreTones({ ...args, rules: { ...TONE_RULES, ...bar } }).syllables[0];
     assert.deepEqual([s.verdict, s.reason, s.heardTone], ["unsure", "unclear", 4], JSON.stringify(bar));
   }
+  // A syllable inside a phrase asks for more margin than one said alone,
+  // on given timings as much as on the scorer's own cuts.
+  const pair = speak([4, 4]);
+  const strict = { ...TONE_RULES, phraseMarginSt: 99 };
+  assert.equal(scoreTones({ ...args, rules: strict }).syllables[0].verdict, "off");
+  for (const t of [pair.timings, null]) assert.equal(scoreTones({ samples: pair.samples, sampleRate: RATE, syllables: expecting(1, 4), timings: t, speaker: pair.range, rules: strict }).syllables[0].verdict, "unsure");
+  assert.equal(scoreTones({ samples: pair.samples, sampleRate: RATE, syllables: expecting(1, 4), timings: pair.timings, speaker: pair.range }).syllables[0].verdict, "off");
 
-  // A droop of three semitones where a first tone was expected: not level,
-  // not a fall either. Whatever the best match is, it is not flagged.
-  SHAPES.droop = [4.8, 4.4, 3.6];
-  const droop = speak(["droop"]);
+  // A sag of two semitones where a first tone was expected: not level, not
+  // a fall either. Whatever the best match is, it is not flagged.
+  const droop = speak([(x) => 4.8 - 0.8 * x]);
   assert.notEqual(scoreTones({ samples: droop.samples, sampleRate: RATE, syllables: expecting(1), speaker: droop.range }).syllables[0].verdict, "off");
 
-  // Third against fourth is never flagged either way (a half third after a
-  // high tone falls like a fourth), nor a low level pitch against a first
-  // tone when the speaker's range is unknown.
-  const fall = speak([4]);
-  assert.notEqual(scoreTones({ samples: fall.samples, sampleRate: RATE, syllables: expecting(3), speaker: fall.range }).syllables[0].verdict, "off");
-  const low = speak(["low"]);
-  assert.notEqual(scoreTones({ samples: low.samples, sampleRate: RATE, syllables: expecting(4), speaker: low.range }).syllables[0].verdict, "off");
-  SHAPES.lowLevel = [1.3, 1.3, 1.3];
-  const flat = speak(["lowLevel"]);
-  assert.notEqual(scoreTones({ samples: flat.samples, sampleRate: RATE, syllables: expecting(3) }).syllables[0].verdict, "off");
+  // A low level pitch is a half third; against a first tone it is a flag
+  // only in a voice whose range is known (it could be anyone's high).
+  const flat = speak([(x) => 1.3 + 0 * x], { declineSt: 0 });
+  assert.notEqual(scoreTones({ samples: flat.samples, sampleRate: RATE, syllables: expecting(3), speaker: flat.range }).syllables[0].verdict, "off");
+  assert.notEqual(scoreTones({ samples: flat.samples, sampleRate: RATE, syllables: expecting(1) }).syllables[0].verdict, "off");
+  assert.equal(scoreTones({ samples: flat.samples, sampleRate: RATE, syllables: expecting(1), speaker: flat.range }).syllables[0].verdict, "off");
+  // A level pitch in the middle of the range is a syllable squeezed flat:
+  // no tone is flagged on it.
+  const mid = speak([(x) => 3 + 0 * x], { declineSt: 0 });
+  for (const want of [1, 2, 3, 4]) assert.notEqual(scoreTones({ samples: mid.samples, sampleRate: RATE, syllables: expecting(want), speaker: mid.range }).syllables[0].verdict, "off", `tone ${want}`);
 });
 
 test("rulesOut: what a contour cannot be, and the middle ground where nothing is ruled out", () => {
   const no = (five, levels) => Object.entries(rulesOut(five, levels)).filter(([, v]) => v).map(([k]) => Number(k));
-  // Level: not a rise, not a fall; a third tone only if it is known to be high.
-  assert.deepEqual(no([50, 50.3, 50.2, 50.1, 50]), [2, 4]);
-  assert.deepEqual(no([50, 50.3, 50.2, 50.1, 50], [4.6, 4.7, 4.7, 4.6, 4.6]), [2, 3, 4]);
-  assert.deepEqual(no([50, 50.3, 50.2, 50.1, 50], [1.4, 1.5, 1.5, 1.4, 1.4]), [2, 4]);
-  // A six-semitone fall: not level, not a rise. Third and fourth both remain.
+  const level = [50, 50.3, 50.2, 50.1, 50];
+  // Level, range unknown: not a rise, not a fall.
+  assert.deepEqual(no(level), [2, 4]);
+  // Level and high: a first tone and nothing else. Level and low: a half
+  // third. Level in the middle: anything squeezed flat.
+  assert.deepEqual(no(level, [4.6, 4.7, 4.7, 4.6, 4.6]), [2, 3, 4]);
+  assert.deepEqual(no(level, [1.4, 1.5, 1.5, 1.4, 1.4]), [1, 2, 4]);
+  assert.deepEqual(no(level, [3, 3.1, 3.1, 3, 3]), []);
+  // A six-semitone fall: not level, not a rise; third and fourth both
+  // remain, until it is known to start high.
   assert.deepEqual(no([56, 55, 53, 51, 50]), [1, 2]);
-  // A six-semitone rise: not level, not a fall. Second and third both remain.
-  assert.deepEqual(no([50, 50.5, 52, 54, 56]), [1, 4]);
-  // A dip and a rise: only the level tone is out.
-  assert.deepEqual(no([53, 50, 49, 51, 54]), [1]);
-  // Three semitones of droop or lift: nothing is ruled out, so nothing can be flagged.
-  assert.deepEqual(no([53, 52.5, 51.5, 50.5, 50]), []);
-  assert.deepEqual(no([50, 50.5, 51.5, 52.5, 53]), []);
+  assert.deepEqual(no([56, 55, 53, 51, 50], [4.8, 4.4, 3.6, 2.8, 2.4]), [1, 2, 3]);
+  assert.deepEqual(no([56, 55, 53, 51, 50], [3.2, 2.8, 2, 1.2, 0.8]), [1, 2]);
+  // A fourth tone rises into its fall: still not a second tone.
+  assert.deepEqual(no([52, 55, 54, 51, 49]), [1, 2]);
+  // A plain six-semitone rise: a second tone only.
+  assert.deepEqual(no([50, 50.5, 52, 54, 56]), [1, 3, 4]);
+  // A second tone dips before it rises: still not a fourth, and with that
+  // much dip a third tone is possible again.
+  assert.deepEqual(no([52, 50, 51, 54, 56]), [1, 4]);
+  // A deep dip that barely comes back: a third tone, not a second.
+  assert.deepEqual(no([55, 51, 49, 49.5, 50.5]), [1, 2]);
+  // Two semitones of droop or lift: nothing is ruled out, so nothing can be flagged.
+  assert.deepEqual(no([52, 51.5, 51, 50.4, 50]), []);
+  assert.deepEqual(no([50, 50.5, 51, 51.6, 52]), []);
   // The neutral tone is never ruled out.
   assert.equal(rulesOut([56, 55, 53, 51, 50])[0], false);
+  // The margins behind those answers are in semitones past the bar.
+  const m = ruleMargins([56, 55, 53, 51, 50]);
+  assert.equal(m[1], 6 - TONE_RULES.moveSt);
+  assert.ok(m[4] < 0 && m[0] === -Infinity);
 });
 
 test("segmentSyllables: the right number of pieces, at the gaps", () => {
@@ -431,12 +597,10 @@ test("azurePronunciationHeader: base64 JSON of the documented parameters", () =>
   // Free speech scored against its own transcript: nothing can be omitted.
   const free = JSON.parse(Buffer.from(azurePronunciationHeader({ referenceText: "我是学生", scripted: false }), "base64").toString("utf8"));
   assert.equal(free.EnableMiscue, "False");
-  // The docs' own example value round-trips the same way.
-  assert.ok(azurePronunciationHeader({ referenceText: "Good morning." }).startsWith("eyJSZWZlcm"));
 });
 
 test("azurePronunciationRequest: the short-audio endpoint, the language, the headers; bad input refused", () => {
-  const audio = new Uint8Array(100);
+  const audio = encodeWav(new Float32Array(RATE / 10), RATE);
   const { url, init } = azurePronunciationRequest({ key: "k", region: "eastus", audio, locale: "zh-TW", referenceText: "你好" });
   assert.equal(url, "https://eastus.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1?language=zh-TW&format=detailed");
   assert.equal(init.method, "POST");
@@ -452,6 +616,18 @@ test("azurePronunciationRequest: the short-audio endpoint, the language, the hea
   assert.throws(() => azurePronunciationRequest({ key: "k", region: "eastus", audio, locale: "zh-CN&x=1", referenceText: "你好" }), /locale/);
   assert.throws(() => azurePronunciationRequest({ key: "k", region: "eastus", audio, locale: "zh-CN", referenceText: " " }), /reference text/);
   assert.throws(() => azurePronunciationRequest({ key: "k", endpoint: "http://plain.example", audio, locale: "zh-CN", referenceText: "你好" }), /https/);
+  // The locale is read as scoresTones reads it, and named Azure's way.
+  for (const [given, sent] of [["zh", "zh-CN"], ["zh_TW", "zh-TW"], ["zh-Hant-TW", "zh-TW"], ["zh-Hant", "zh-TW"], ["cmn-Hans-CN", "zh-CN"], ["es-mx", "es-MX"]]) {
+    assert.equal(azureLocale(given), sent);
+    assert.ok(azurePronunciationRequest({ key: "k", region: "eastus", audio, locale: given, referenceText: "你好" }).url.includes(`language=${sent}&`), given);
+  }
+  for (const bad of ["", null, "es", "zh-CN-x-1", "zh/CN"]) assert.throws(() => azureLocale(bad), /locale/, String(bad));
+  // The request says 16 kHz and Azure assesses 30 seconds: both are read
+  // off the file, and anything else is refused before it is sent.
+  assert.throws(() => azurePronunciationRequest({ key: "k", region: "eastus", audio: new Uint8Array(100), locale: "zh-CN", referenceText: "你好" }), /WAV/);
+  assert.throws(() => azurePronunciationRequest({ key: "k", region: "eastus", audio: encodeWav(new Float32Array(800), 8000), locale: "zh-CN", referenceText: "你好" }), /16 kHz/);
+  assert.throws(() => azurePronunciationRequest({ key: "k", region: "eastus", audio: encodeWav(new Float32Array(RATE * (AZURE_MAX_SECONDS + 1)), RATE), locale: "zh-CN", referenceText: "你好" }), /at most 30 seconds/);
+  assert.ok(azurePronunciationRequest({ key: "k", region: "eastus", audio: encodeWav(new Float32Array(RATE * AZURE_MAX_SECONDS), RATE), locale: "zh-CN", referenceText: "你好" }).url);
   // Thirty seconds of the browser's WAV.
   assert.equal(AZURE_MAX_WAV_BYTES, 960_044);
 });

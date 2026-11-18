@@ -179,10 +179,15 @@ export function applySandhi(syllables) {
         // A neutral-tone measure word is 个 at heart (fourth tone): yí ge.
         const changed = n.baseTone === 4 || n.baseTone === 0 ? 2 : 4;
         const numeric = (p && (p.char === "第" || DIGITS.has(p.char))) || (DIGITS.has(n.char) && !BIG_UNITS.has(n.char));
+        // After another syllable 一 may be the end of a word (统一了, 唯一的,
+        // 统一思想), where it keeps yī whatever follows. Only a word list
+        // could tell, so there the first tone is right as well; at the start
+        // of a phrase it can only be the changing 一.
+        const final = p ? [1] : [];
         if (numeric) set(x, 1, changed);
         else if (ORDINAL_NOUNS.has(n.char)) set(x, changed, 1);
-        else if (n.baseTone === 0) set(x, changed, 4);
-        else set(x, changed);
+        else if (n.baseTone === 0) set(x, changed, 4, ...final);
+        else set(x, changed, ...final);
       }
     } else if (x.char === "不" && x.baseTone === 4) {
       if (!n) continue;
@@ -418,19 +423,48 @@ export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } =
 /** In place: undo octave slips, drop voiced specks, median-filter. */
 function smoothTrack(f0) {
   const n = f0.length;
-  // An octave slip is a jump of about twelve semitones against the frame
-  // before it that moving the frame an octave undoes.
-  // Only against a neighbour: a fourth tone really does start nine
-  // semitones above the speaker's median, so height alone proves nothing.
-  let last = null;
-  for (let i = 0; i < n; i++) {
-    if (!f0[i]) continue;
-    const st = hzToSt(f0[i]);
-    if (last && i - last.i <= 3) {
-      const diff = st - last.st;
-      if (Math.abs(Math.abs(diff) - 12) < 1.5) f0[i] = diff > 0 ? f0[i] / 2 : f0[i] * 2;
+  // An octave slip is a short stretch that sits about twelve semitones from
+  // the rest of its own voiced run, across a jump no voice makes in 10 ms.
+  // Each run is cut at such jumps and every piece is compared with the
+  // run's longest piece; a short piece an octave away is moved back. Judged
+  // per run and never frame against the corrected frame before it: that
+  // let one wrong onset frame "correct" every right frame after it. A run
+  // may hold a single unvoiced frame (the tracker often loses the frame
+  // where the period changes) but never a real silence, and a piece is
+  // only moved when it is short (80 ms): a fourth tone really does start
+  // nine semitones above the syllable before it, and a child's third tone
+  // an octave under the next, so height alone proves nothing.
+  const voicedAt = (k) => k < n && (f0[k] > 0 || (k > 0 && k + 1 < n && f0[k - 1] > 0 && f0[k + 1] > 0));
+  for (let i = 0; i < n; ) {
+    if (!f0[i]) {
+      i++;
+      continue;
     }
-    last = { i, st: hzToSt(f0[i]) };
+    let j = i;
+    while (voicedAt(j)) j++;
+    const pieces = [];
+    let from = i;
+    let prev = i;
+    for (let k = i + 1; k <= j; k++) {
+      if (k < j && !f0[k]) continue;
+      if (k === j || Math.abs(hzToSt(f0[k]) - hzToSt(f0[prev])) >= 7) {
+        pieces.push({ from, to: prev + 1 });
+        from = k;
+      }
+      prev = k;
+    }
+    if (pieces.length > 1) {
+      const stOf = (piece) => median([...f0.subarray(piece.from, piece.to)].filter((v) => v > 0).map(hzToSt));
+      const longest = pieces.reduce((x, y) => (y.to - y.from > x.to - x.from ? y : x));
+      const home = stOf(longest);
+      for (const piece of pieces) {
+        const size = piece.to - piece.from;
+        if (piece === longest || size > 8 || size * 2 > longest.to - longest.from) continue;
+        const diff = stOf(piece) - home;
+        if (Math.abs(Math.abs(diff) - 12) < 2.5) for (let k = piece.from; k < piece.to; k++) f0[k] = diff > 0 ? f0[k] / 2 : f0[k] * 2;
+      }
+    }
+    i = j;
   }
   // Further than fourteen semitones from the middle is outside any one
   // voice's speaking range: a squeak at the release, not pitch.
@@ -651,25 +685,53 @@ export const TONE_RULES = Object.freeze({
   okBelief: 0.34,
   // "off" is decided by what the contour rules out (rulesOut), not by the
   // belief: a level tone is ruled out by this much movement (semitones)…
-  moveSt: 4,
+  moveSt: 3,
   // …a rising tone by never climbing more than this, a falling tone by
   // never dropping more than this…
   stillSt: 1,
   // …and, for those two, only when the contour is clearly doing something
   // else: level within `flatSt`, or moving the other way by `moveSt`.
   flatSt: 1.5,
-  // A third tone is ruled out only by a level pitch this high on the Chao
-  // scale, in a voice whose range is known.
+  // In a voice whose range is known, heights count too (the Chao scale):
+  // a third tone is ruled out by a level pitch this high…
   highLevel: 3.8,
-  // The heard tone must hold this much of the belief, the measurement must
-  // be this clean, and the voiced stretch this long (ms).
-  offBelief: 0.5,
-  offQuality: 0.7,
-  offMinMs: 110,
+  // …or by a fall that starts this high (a fourth tone's start; the half
+  // third starts in the middle)…
+  highStart: 3.7,
+  // …and a first tone by a level pitch this low, or by a pitch of any
+  // shape that never gets above this.
+  lowLevel: 2.2,
+  lowTop: 2.2,
+  // A third tone is also ruled out by a plain rise: one whose dip before
+  // the bottom is at most this share of the climb after it.
+  dipShare: 0.25,
+  // A second tone is ruled out by a deep dip whose final rise is under
+  // this share of the dip (a third tone that barely comes back up).
+  riseShare: 0.5,
+  // The evidence must clear its bar by this many semitones (0: just clear
+  // it), the measurement must be this clean, and the voiced stretch this
+  // long (ms).
+  offMarginSt: 0,
+  offQuality: 0.75,
+  offMinMs: 80,
+  // In connected speech (more than one syllable) the neighbours pull at
+  // each tone and the cuts between them are never exact, whoever made
+  // them: a flag there asks for this much more margin. Every false alarm
+  // on phrases in the proof, on the scorer's own cuts and on Azure's, sat
+  // under it. Kept apart from `quality`, which is only how clean the
+  // measurement is.
+  phraseMarginSt: 0.5,
+  // A syllable with creak in it is flagged at all only when this is true,
+  // and then on its voiced frames alone, its quality counted without the
+  // penalty for the gap and times `creakTrust`.
+  creakFlags: false,
+  creakTrust: 0.85,
 });
 
-/** Quality multiplier for cuts made by `segmentSyllables` rather than by
- *  real timings: its boundaries can sit a few frames inside a neighbour. */
+/** Confidence multiplier for cuts made by `segmentSyllables` rather than by
+ *  real timings: its boundaries can sit a few frames inside a neighbour.
+ *  It scales the reported confidence only; what a flag needs is
+ *  `offMarginSt`, plus `phraseMarginSt` in connected speech. */
 export const FALLBACK_TRUST = 0.85;
 
 /** The voiced frames of [startMs, endMs) as `{ i, st }` (frame index, pitch
@@ -745,8 +807,22 @@ export function classifyContour(points, range = null, rules = TONE_RULES) {
   const scores = { 1: -Infinity, 2: -Infinity, 3: -Infinity, 4: -Infinity };
   for (const t of TEMPLATES) {
     const tMean = t.levels.reduce((a, b) => a + b, 0) / POINTS;
+    // With no range the size of a Chao step is a guess, and a narrow voice
+    // would read flat against it: let each template stretch or shrink to
+    // the contour, within reason.
+    let gain = 1;
+    if (!range) {
+      let pt = 0;
+      let tt = 0;
+      for (let k = 0; k < POINTS; k++) {
+        const tk = (t.levels[k] - tMean) * step;
+        pt += (points[k] - mean) * tk;
+        tt += tk * tk;
+      }
+      if (tt > 1) gain = Math.max(0.5, Math.min(1.5, pt / tt));
+    }
     let shape = 0;
-    for (let k = 0; k < POINTS; k++) shape += (points[k] - mean - (t.levels[k] - tMean) * step) ** 2;
+    for (let k = 0; k < POINTS; k++) shape += (points[k] - mean - (t.levels[k] - tMean) * step * gain) ** 2;
     shape /= POINTS;
     const level = mid === null ? 0 : (mean - (mid + (tMean - 3) * step)) ** 2;
     const score = -(shape + rules.levelWeight * level) / (2 * rules.sigmaSt ** 2);
@@ -758,7 +834,7 @@ export function classifyContour(points, range = null, rules = TONE_RULES) {
   for (const tone of [1, 2, 3, 4]) sum += belief[tone] = Math.exp(scores[tone] - top);
   for (const tone of [1, 2, 3, 4]) belief[tone] /= sum;
   const tone = [1, 2, 3, 4].reduce((a, b) => (belief[b] > belief[a] ? b : a));
-  return { belief, tone, levels: mid === null ? null : points.map((p) => 3 + (p - mid) / step) };
+  return { belief, tone, levels: mid === null ? null : points.map((p) => 3 + (p - mid) / step), stepSt: step };
 }
 
 /** A pitch curve for drawing: `points` values across [startMs, endMs), in
@@ -800,11 +876,14 @@ const round3 = (v) => Math.round(v * 1000) / 1000;
  *                         earlier recordings
  *   track                 optional, a trackPitch() result already in hand
  *
- * Verdicts: "ok" (an accepted tone fits), "off" (the contour rules out every
- * accepted tone, on a clean measurement: rulesOut) or "unsure" with a `reason`: "short", "unvoiced",
- * "creaky", "neutral" (expected neutral: not judged in v1), "untimed",
- * "unclear" (nothing fits clearly). `confidence` is 0…1: how much of the
- * belief the verdict rests on, times how clean the measurement was.
+ * Verdicts: "ok" (an accepted tone fits), "off" (the contour rules out
+ * every accepted tone, on a clean measurement: ruleMargins) or "unsure"
+ * with a `reason`: "short", "unvoiced", "creaky", "neutral" (expected
+ * neutral: not judged in v1), "untimed", "unclear" (nothing fits clearly).
+ * `confidence` is 0…1: how firmly the verdict stands, times how clean the
+ * measurement was, times the trust in the cuts. Each judged syllable also
+ * carries `margin` (semitones; 0 or more means every accepted tone is
+ * ruled out), `quality` (the measurement alone) and `belief`.
  */
 export function scoreTones({ samples, sampleRate, syllables, timings = null, anchors = null, speaker = null, track = null, rules = TONE_RULES }) {
   const tr = track ?? trackPitch(samples, sampleRate);
@@ -855,35 +934,44 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     if (!c.points.length) return { ...base, reason: "unvoiced" };
     if (c.points.length < rules.minFrames) return { ...base, reason: "short" };
     const five = fivePoints(c.points);
-    const { belief, tone, levels } = classifyContour(five, range, useRules);
+    const { belief, tone: best, levels, stepSt } = classifyContour(five, range, useRules);
+    // Height is used to rule a tone out only against a supplied range: a
+    // recording's own range is too rough to hang a flag on.
+    const margins = ruleMargins(five, levelTrust === 1 ? levels : null, rules, stepSt);
+    // The tone heard is the best match among those the contour allows.
+    const open = [1, 2, 3, 4].filter((t) => margins[t] < 0);
+    const tone = open.length ? open.reduce((x, y) => (belief[y] > belief[x] ? y : x)) : best;
     // How clean: mostly voiced across its span, clearly periodic, and long
     // enough that five points mean something.
     const voicedShare = c.points.length / c.spanFrames;
-    const quality = Math.min(1, voicedShare ** 2) * Math.min(1, c.periodicity / 0.85) * Math.min(1, c.voicedMs / 120) * trust;
+    const clean = Math.min(1, c.periodicity / 0.85) * Math.min(1, c.voicedMs / 120);
     const creaky = c.creak >= 3 || voicedShare < 0.7;
-    const accepted = s.accept.filter((t) => t >= 1 && t <= 4).reduce((sum, t) => sum + belief[t], 0);
-    const result = { ...base, heardTone: tone, belief: Object.fromEntries(Object.entries(belief).map(([k, v]) => [k, round3(v)])), quality: round3(quality) };
+    const quality = creaky ? clean * rules.creakTrust : clean * Math.min(1, voicedShare ** 2);
+    const judgedTones = s.accept.filter((t) => t >= 1 && t <= 4);
+    const accepted = judgedTones.reduce((sum, t) => sum + belief[t], 0);
+    // How far the contour is from the nearest right answer: the smallest
+    // margin among the accepted tones. At or past 0, all are ruled out.
+    const margin = judgedTones.length ? Math.min(...judgedTones.map((t) => margins[t])) : -Infinity;
+    const result = {
+      ...base, heardTone: tone, belief: Object.fromEntries(Object.entries(belief).map(([k, v]) => [k, round3(v)])), quality: round3(quality),
+      margin: Number.isFinite(margin) ? round3(margin) : null, voicedMs: c.voicedMs,
+    };
 
     // The neutral tone has no contour of its own: its pitch is set by the
     // tone before it. Not judged in v1.
     if (s.expectedTone === 0 && s.accept.length === 1) return { ...result, reason: "neutral" };
-    if (creaky) {
-      // Creak in the middle of a vowel is what the bottom of a third tone
-      // sounds like, so it supports an expected third tone and says nothing
-      // reliable about any other.
-      if (s.accept.includes(3)) return { ...result, heardTone: 3, verdict: "ok", confidence: round3(0.5 * quality) };
-      return { ...result, reason: "creaky" };
-    }
-    if (s.accept.includes(tone) || accepted >= rules.okBelief) return { ...result, verdict: "ok", confidence: round3(accepted * quality) };
+    // Creak in the middle of a vowel is what the bottom of a third tone
+    // sounds like, so it supports an expected third tone (unless the voiced
+    // part rules a third tone out).
+    if (creaky && s.accept.includes(3) && margins[3] < 0) return { ...result, heardTone: 3, verdict: "ok", confidence: round3(0.5 * quality * trust) };
+    if (creaky && !rules.creakFlags) return { ...result, reason: "creaky" };
+    if (margin < 0 && (s.accept.includes(tone) || accepted >= rules.okBelief) && !creaky) return { ...result, verdict: "ok", confidence: round3(Math.max(accepted, 0.5) * quality * trust) };
     // Off only when the contour rules out every tone that would be right,
-    // on a clean measurement, and the tone heard instead is a clear one.
-    // Height is used for that only against a supplied range: a recording's
-    // own range is too rough to hang a flag on.
-    const not = rulesOut(five, levelTrust === 1 ? levels : null, rules);
-    if (s.accept.every((t) => not[t]) && belief[tone] >= rules.offBelief && quality >= rules.offQuality && c.voicedMs >= rules.offMinMs) {
-      return { ...result, verdict: "off", confidence: round3(belief[tone] * quality) };
+    // by a clear margin, on a clean and long enough measurement.
+    if (margin >= rules.offMarginSt + (n > 1 ? rules.phraseMarginSt : 0) && quality >= rules.offQuality && c.voicedMs >= rules.offMinMs) {
+      return { ...result, verdict: "off", confidence: round3(quality * trust * Math.min(1, 0.6 + 0.1 * margin)) };
     }
-    return { ...result, reason: "unclear" };
+    return { ...result, reason: creaky ? "creaky" : "unclear" };
   });
 
   const judged = out.filter((s) => s.verdict !== "unsure");
@@ -897,45 +985,99 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
 }
 
 /**
- * Which tones a contour cannot be: `{ 0, 1, 2, 3, 4 }` → true when ruled
- * out. This, not the belief, is what a flag rests on, because the belief
- * always names a best match and a flag needs more than that: it needs the
- * right answer to be impossible.
+ * How firmly a contour rules each tone out, in semitones past the bar:
+ * `{ 0, 1, 2, 3, 4 }`, a tone ruled out at 0 or more, −Infinity where no
+ * rule speaks. This, not the belief, is what a flag rests on, because the
+ * belief always names a best match and a flag needs more than that: it
+ * needs the right answer to be impossible. The number is the confidence of
+ * the flag: `offMarginSt` asks for more of it.
  *
- *  - Tone 1 is level: ruled out by a clear movement.
- *  - Tone 2 rises: ruled out when the pitch never climbs and is plainly
- *    level or falling.
- *  - Tone 4 falls: ruled out when the pitch never drops and is plainly
- *    level or rising.
- *  - Tone 3 is ruled out only by a high level pitch in a voice whose range
- *    is known. A dip that rises is also a second tone's shape, a low fall is
- *    also a fourth tone's (after a high tone the half third starts high),
- *    and synthesized voices already disagree about both: flagging 2 for 3
- *    or 4 for 3 would be guessing. So those pairs are never flagged.
+ * The features are of the shape (five medians across the voiced part):
+ * the span, the biggest climb and drop, the dip before the lowest point and
+ * the rise from it to the end. With the speaker's range known, heights
+ * count as well (`levels`, the same contour on the Chao scale).
+ *
+ *  - Tone 1 is level and high: ruled out by a clear movement, by a level
+ *    pitch low in the range, or by one that never leaves the lower half.
+ *  - Tone 2 rises: ruled out when the pitch doesn't come up at the end and
+ *    is plainly falling or level, or when it dips deep and comes back less
+ *    than `riseShare` of the way.
+ *  - Tone 4 falls: ruled out when the pitch doesn't come down at the end
+ *    and is level or rising, or when it ends on a clear rise.
+ *  - "Level" rules those two out anywhere when the range is unknown, but
+ *    in a known range only high or low in it: a level pitch in the middle
+ *    is a syllable squeezed flat by its neighbours, which any tone can be.
+ *  - Tone 3 is low: ruled out by a high level pitch, by a fall that starts
+ *    high in the range (a fourth tone; the half third starts in the
+ *    middle), or by a plain rise with no dip before it (a second tone).
+ *  - Not ruled out, so never flagged: a low fall said for a fourth tone, a
+ *    dip that rises said for a second, a rise with a dip said for a third.
+ *    Synthesized voices already disagree with each other on those.
  *  - The neutral tone is never ruled out.
  *
  * `five` is the contour in semitones; `levels` the same on the Chao scale,
- * or null when the speaker's range isn't known.
+ * or null when the speaker's range isn't known; `stepSt` one Chao step.
  */
-export function rulesOut(five, levels = null, rules = TONE_RULES) {
+export function ruleMargins(five, levels = null, rules = TONE_RULES, stepSt = rules.stepSt) {
   let climb = 0;
   let drop = 0;
+  let low = 0;
   for (let i = 0; i < five.length; i++) {
+    if (five[i] < five[low]) low = i;
     for (let j = i + 1; j < five.length; j++) {
       climb = Math.max(climb, five[j] - five[i]);
       drop = Math.max(drop, five[i] - five[j]);
     }
   }
   const span = Math.max(...five) - Math.min(...five);
-  const level = span <= rules.flatSt;
+  // How level it is (≥ 0: level), the dip before the lowest point, and the
+  // rise from the lowest point to the end.
+  const flat = rules.flatSt - span;
+  const dip = Math.max(0, ...five.slice(0, low).map((v) => v - five[low]));
+  const endRise = five[five.length - 1] - five[low];
+  // …and the fall from the highest point to the end. "Never climbs" and
+  // "never drops" are read off these two, not off the biggest climb or
+  // drop anywhere: a second tone dips before it rises and a fourth tone
+  // rises into its fall, and neither is the tone's direction.
+  const endFall = Math.max(...five) - five[five.length - 1];
+  const NO = -Infinity;
   const meanLevel = levels ? levels.reduce((a, b) => a + b, 0) / levels.length : null;
+  const startLevel = levels ? Math.max(levels[0], levels[1]) : null;
+  // A level pitch is a first tone (high) or a half third (low). In the
+  // middle of a known range it is a syllable squeezed flat by its
+  // neighbours, which any tone can be: only high or low rules out a tone
+  // that moves.
+  const levelOut = levels ? Math.min(flat, Math.max((meanLevel - rules.highLevel) * stepSt, (rules.lowLevel - meanLevel) * stepSt)) : flat;
+  // High and level is a first tone and nothing else, however the last
+  // frames lean.
+  const levelHigh = levels ? Math.min(flat, (meanLevel - rules.highLevel) * stepSt) : NO;
   return {
-    0: false,
-    1: span >= rules.moveSt,
-    2: climb <= rules.stillSt && (level || drop >= rules.moveSt),
-    3: level && meanLevel !== null && meanLevel >= rules.highLevel,
-    4: drop <= rules.stillSt && (level || climb >= rules.moveSt),
+    0: NO,
+    1: Math.max(
+      span - rules.moveSt,
+      levels ? Math.min(flat, (rules.lowLevel - meanLevel) * stepSt) : NO,
+      // Never out of the lower half of the range, level or not.
+      levels ? (rules.lowTop - Math.max(...levels)) * stepSt : NO,
+    ),
+    2: Math.max(
+      levelHigh,
+      Math.min(rules.stillSt - endRise, Math.max(levelOut, drop - rules.moveSt)),
+      // A deep dip that comes back less than part of the way: a third tone.
+      Math.min(dip - rules.moveSt, rules.riseShare * dip - endRise),
+    ),
+    3: Math.max(
+      levelHigh,
+      levels ? Math.min((startLevel - rules.highStart) * stepSt, drop - rules.moveSt) : NO,
+      Math.min(endRise - rules.moveSt, rules.dipShare * endRise - dip),
+    ),
+    4: Math.max(levelHigh, Math.min(rules.stillSt - endFall, Math.max(levelOut, climb - rules.moveSt)), endRise - rules.moveSt),
   };
+}
+
+/** `ruleMargins` as yes or no: which tones the contour cannot be. */
+export function rulesOut(five, levels = null, rules = TONE_RULES, stepSt = rules.stepSt) {
+  const m = ruleMargins(five, levels, rules, stepSt);
+  return Object.fromEntries(Object.entries(m).map(([tone, v]) => [tone, v >= 0]));
 }
 
 /**
@@ -999,13 +1141,29 @@ export function referenceCurves({ samples, sampleRate, count, timings = null, po
 //    with `DisplayText` "马。". Azure never says which tone was said.
 //  - A wrong tone lowers the score (median 61 against 82 on single
 //    syllables) and sometimes earns the word `Mispronunciation`, but the
-//    ranges overlap widely: see AZURE_RULES.
+//    ranges overlap widely: the counts are in the proof report.
 //  - `Syllables` comes back with an empty `Syllable` and a `Grapheme`.
 // Still unverified: zh-TW and Spanish replies, a recording near 30 s, a
 // per-resource `endpoint`, and anything about a real learner's voice.
 
 const AZURE_REGION_RE = /^[a-z0-9]+$/;
-const LOCALE_RE = /^[a-z]{2,3}-[A-Z]{2}$/;
+
+/** A locale as Azure names it (`zh-CN`, `es-MX`), from whatever the app
+ *  holds: `zh`, `zh_TW`, `zh-Hant-TW`, `cmn-Hans-CN`. The same reading of a
+ *  tag as `scoresTones`. Mandarin with no region goes by its script
+ *  (Traditional → zh-TW, else zh-CN); any other language needs a region.
+ *  Throws on anything else. */
+export function azureLocale(locale) {
+  const parts = String(locale ?? "").trim().replace(/_/g, "-").split("-").filter(Boolean);
+  // Letters only, in the three subtag shapes: the value goes into a URL.
+  if (!parts.length || !/^[A-Za-z]{2,3}$/.test(parts[0]) || parts.slice(1).some((x) => !/^([A-Za-z]{2}|[A-Za-z]{4})$/.test(x))) throw new Error(`not a locale: ${JSON.stringify(locale)}`);
+  const lang = parts[0].toLowerCase();
+  const region = parts.slice(1).find((x) => /^[A-Za-z]{2}$/.test(x))?.toUpperCase();
+  const script = parts.slice(1).find((x) => /^[A-Za-z]{4}$/.test(x))?.toLowerCase();
+  if (lang === "zh" || lang === "cmn") return `zh-${region ?? (script === "hant" ? "TW" : "CN")}`;
+  if (!region) throw new Error(`not a locale Azure can assess: ${JSON.stringify(locale)}`);
+  return `${lang}-${region}`;
+}
 
 /** Azure's limit for one assessed recording, and what 16 kHz 16-bit mono
  *  makes of it in bytes (plus the header). */
@@ -1042,8 +1200,13 @@ export function azurePronunciationHeader({ referenceText, scripted = true }) {
  * regional one is verified live).
  */
 export function azurePronunciationRequest({ key, region, endpoint = "", audio, locale, referenceText, scripted = true }) {
-  if (!LOCALE_RE.test(String(locale ?? ""))) throw new Error(`not a locale: ${JSON.stringify(locale)}`);
+  const language = azureLocale(locale);
   if (!String(referenceText ?? "").trim()) throw new Error("Azure pronunciation assessment needs a reference text");
+  // The request declares 16 kHz PCM and Azure assesses at most 30 seconds:
+  // read both off the file rather than trust the caller.
+  const wav = parseWav(audio);
+  if (wav.sampleRate !== 16_000) throw new Error(`Azure pronunciation assessment needs 16 kHz audio, got ${wav.sampleRate} Hz`);
+  if (wav.samples.length > AZURE_MAX_SECONDS * wav.sampleRate) throw new Error(`Azure pronunciation assessment takes at most ${AZURE_MAX_SECONDS} seconds, got ${(wav.samples.length / wav.sampleRate).toFixed(1)}`);
   let base;
   if (endpoint) {
     const u = new URL(endpoint);
@@ -1054,7 +1217,7 @@ export function azurePronunciationRequest({ key, region, endpoint = "", audio, l
     base = `https://${region}.stt.speech.microsoft.com/speech/recognition/conversation/cognitiveservices/v1`;
   }
   return {
-    url: `${base}?language=${locale}&format=detailed`,
+    url: `${base}?language=${language}&format=detailed`,
     init: {
       method: "POST",
       headers: {
@@ -1123,14 +1286,19 @@ export function azurePronunciationResult(json) {
   };
 }
 
-/** Azure's verdict thresholds on its 0–100 syllable score, set from the
- *  live run over synthesized clips (docs/pronunciation-proof.md). Azure
- *  marks a word `Mispronunciation` at about 60, where it also marked 4 of
- *  168 correctly said phrase syllables; under 50 there were still two.
- *  Under 40 there were none, at the price of flagging only one wrong-tone
- *  syllable in nine on its own. A flag has to be right, so 40. To be
- *  revisited with real recordings. */
-export const AZURE_RULES = Object.freeze({ offBelow: 40, okFrom: 80 });
+/** Azure's verdict threshold on its 0–100 syllable score: under it, on a
+ *  word Azure marks `Mispronunciation`, the merged result flags the
+ *  syllable. Set from the live run over synthesized clips; the counts at
+ *  30, 40, 50 and 60 for right and wrong-tone syllables are printed in
+ *  docs/pronunciation-proof.md §Azure, live. A flag has to be right, so
+ *  the highest bar with no correctly said syllable under it. To be
+ *  revisited with real recordings.
+ *
+ *  There is no "ok" threshold: a high Azure score does not make an unclear
+ *  pitch reading right. In the live run that upgrade turned more
+ *  wrong-tone syllables into "ok" than right ones (Azure scores the sounds,
+ *  and a wrong tone often still scores above 80). */
+export const AZURE_RULES = Object.freeze({ offBelow: 40 });
 
 /**
  * Azure's reply and the local tone check, as one result.
@@ -1204,10 +1372,6 @@ export function mergeAzure({ azure, syllables, local, track = null }) {
     if (mine.verdict === "off") return { ...withScore, reason: "tone" };
     if (m.word.error === "Mispronunciation" && score !== null && score < AZURE_RULES.offBelow) {
       return { ...withScore, verdict: "off", confidence: round3(1 - score / 100), reason: "sound" };
-    }
-    if (mine.verdict === "unsure" && mine.reason !== "neutral" && score !== null && score >= AZURE_RULES.okFrom) {
-      const { reason: _dropped, ...rest } = withScore;
-      return { ...rest, verdict: "ok", confidence: round3(score / 100) };
     }
     return withScore;
   });

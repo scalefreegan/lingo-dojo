@@ -8,6 +8,7 @@
 //   node scripts/pronunciation-proof.mjs --fetch      first buy the missing ElevenLabs clips (PAID)
 //   node scripts/pronunciation-proof.mjs --scribe     first buy Scribe timings for the phrases (PAID)
 //   node scripts/pronunciation-proof.mjs --azure      first send the clips to Azure pronunciation assessment (PAID / free-tier quota)
+//   node scripts/pronunciation-proof.mjs --quick      skip the held-out threshold search (the slow part)
 //   node scripts/pronunciation-proof.mjs --dump       also print every syllable's verdict
 //
 // Without a flag nothing leaves this machine and nothing is paid for.
@@ -18,7 +19,12 @@
 // data/pronunciation-proof/ (gitignored; LINGO_PROOF_DIR overrides), so a
 // rerun costs nothing.
 //
-// There are no learner recordings to test on, so the samples are
+// Your own recordings: put audio files and a labels.tsv in
+// data/pronunciation-proof/recordings/ (see "Real recordings" in the
+// report, or RECORDINGS_HELP below); they are scored on every run and never
+// leave this machine.
+//
+// Until there are learner recordings to test on, the samples are
 // synthesized, and each clip is used twice over: scored against its own
 // text it is a right answer (any "off" is a false alarm); scored against
 // the same syllables with one tone changed it is a wrong answer (an "off"
@@ -48,8 +54,8 @@ const RULES = { ...TONE_RULES, ...JSON.parse(process.env.LINGO_PROOF_RULES || "{
 // ma / shi / yi / ba in each tone: sixteen single syllables.
 const SINGLES = [..."妈麻马骂诗十使是衣姨椅意八拔把爸"];
 // Short phrases, the connected-speech rules among them: third-tone sandhi
-// (你好, 很好, 我很好, 我想喝水), 不 (不是, 不客气, 他不来), 一 (一个, 一起去,
-// 一点点), the half third (我是学生, 很热), the neutral tone (谢谢, 什么).
+// (你好, 很好, 我很好, 我想喝水), 不 (不是, 不客气, 他不来), 一 (一个, 一起去),
+// the half third (我是学生, 很热), the neutral tone (谢谢, 什么).
 const PHRASES = ["你好", "不是", "一个", "很好", "谢谢", "我很好", "不客气", "一起去", "你叫什么", "我想喝水", "明天见", "今天很热", "我是学生", "他不来", "再见"];
 
 // macOS voices are free and local; a classic synthesizer, so its tones are
@@ -263,7 +269,12 @@ function voiceDirs() {
  *  other tone (the rules re-applied, since a changed tone changes its
  *  neighbours' sandhi). A syllable of a relabelling is "wrong" when no tone
  *  the label accepts is one the true text accepts there. */
+const labelCache = new Map();
 function labellings(text) {
+  if (!labelCache.has(text)) labelCache.set(text, makeLabellings(text));
+  return labelCache.get(text);
+}
+function makeLabellings(text) {
   const truth = expectedSyllables(text, readCodePoints(text, LOCALE));
   const out = [{ kind: "right", syllables: truth, wrongAt: new Set() }];
   truth.forEach((s, i) => {
@@ -292,10 +303,12 @@ const tally = () => ({
   wrong: { ok: 0, unsure: 0, off: 0 },
   confusion: Object.fromEntries([1, 2, 3, 4].map((t) => [t, { 1: 0, 2: 0, 3: 0, 4: 0, none: 0 }])),
   reasons: {},
+  pairs: {},
+  why: {},
   falseAlarms: [],
 });
 
-function scoreAll(voices, texts, { baseline, timings, key = "" }) {
+function scoreAll(voices, texts, { baseline, timings, key = "", rules = RULES }) {
   const t = tally();
   for (const v of voices) {
     for (const text of texts) {
@@ -314,7 +327,7 @@ function scoreAll(voices, texts, { baseline, timings, key = "" }) {
         else anchors = timed.map((t) => t?.startMs ?? null);
       }
       for (const label of list) {
-        const res = scoreTones({ samples: clip.samples, sampleRate: clip.sampleRate, syllables: label.syllables, timings: cuts, anchors, speaker: baseline ? v.range : null, track: clip.track, rules: RULES });
+        const res = scoreTones({ samples: clip.samples, sampleRate: clip.sampleRate, syllables: label.syllables, timings: cuts, anchors, speaker: baseline ? clip.range : null, track: clip.track, rules });
         res.syllables.forEach((s, k) => {
           // The neutral tone is not judged: leave it out of every count.
           if (truth[k].expectedTone === 0 || label.syllables[k].expectedTone === 0) return;
@@ -325,8 +338,25 @@ function scoreAll(voices, texts, { baseline, timings, key = "" }) {
           t[side][s.verdict]++;
           if (s.verdict === "unsure") t.reasons[s.reason] = (t.reasons[s.reason] ?? 0) + 1;
           if (side === "right" && s.verdict === "off") t.falseAlarms.push(`${v.name} ${text}[${k + 1}] ${s.char} expected ${s.expectedTone} heard ${s.heardTone}`);
+          if (side === "wrong") {
+            // Which tone was said for which: where the catches are and aren't.
+            const pair = `${truth[k].expectedTone}→${label.syllables[k].expectedTone}`;
+            const cell = (t.pairs[pair] ??= { n: 0, off: 0, ok: 0 });
+            cell.n++;
+            if (s.verdict === "off") cell.off++;
+            if (s.verdict === "ok") cell.ok++;
+            // Why a wrong tone got through.
+            const why = s.verdict === "off" ? "caught"
+              : s.reason === "short" || s.reason === "unvoiced" || s.reason === "untimed" ? "too little voiced sound"
+              : s.reason === "creaky" || (s.verdict === "ok" && s.margin === null) ? "creak"
+              : s.margin === null || s.margin < 0 ? (s.verdict === "ok" ? "contour fits the wrong label too (ok)" : "contour doesn't rule the label out (unsure)")
+              : s.margin < rules.offMarginSt + ([...text].length === 1 ? 0 : rules.phraseMarginSt) ? "ruled out, margin too small"
+              : s.voicedMs < rules.offMinMs ? "ruled out, voiced part too short"
+              : "ruled out, measurement not clean enough";
+            t.why[why] = (t.why[why] ?? 0) + 1;
+          }
           if (label.kind === "right") t.confusion[truth[k].expectedTone][s.heardTone ?? "none"]++;
-          if (args.has("--dump") && label.kind === "right" && key) console.log(key, v.id, text, k, s.char, "exp", s.expectedTone, "heard", s.heardTone, s.verdict, s.reason ?? "", JSON.stringify(s.belief ?? {}), s.quality ?? "", `${s.startMs}-${s.endMs}`);
+          if (args.has("--syllables") && label.kind === "right" && key) console.log(key, v.id, text, k, s.char, "exp", s.expectedTone, "heard", s.heardTone, s.verdict, s.reason ?? "", JSON.stringify(s.belief ?? {}), s.quality ?? "", `${s.startMs}-${s.endMs}`);
         });
       }
     }
@@ -392,7 +422,10 @@ const voices = voiceDirs().map((v) => {
     const scribeFile = file.replace(/\.wav$/, ".scribe.json");
     clips.set(text, { samples, sampleRate, track: trackPitch(samples, sampleRate), scribe: fs.existsSync(scribeFile) ? JSON.parse(fs.readFileSync(scribeFile, "utf8")) : null });
   }
-  // What a session would have learnt of this voice after a few turns.
+  // What a session would have learnt of this voice after a few turns: its
+  // range over every OTHER clip. The clip being scored is left out, so a
+  // syllable is never read against a range it helped to set.
+  for (const [text, clip] of clips) clip.range = speakerRange([...clips].filter(([t]) => t !== text).map(([, c]) => c.track));
   return { ...v, clips, range: speakerRange([...clips.values()].map((c) => c.track)) };
 }).filter((v) => v.clips.size);
 
@@ -412,6 +445,163 @@ const conditions = [
 const haveScribe = voices.some((v) => [...v.clips.values()].some((c) => c.scribe));
 const results = conditions.filter((c) => c.timings === "fallback" || haveScribe).map((c) => ({ ...c, tally: scoreAll(voices, c.texts, c) }));
 const perVoice = voices.map((v) => ({ name: v.name, range: v.range, single: summary(scoreAll([v], SINGLES, { baseline: true, timings: "fallback" })), phrase: summary(scoreAll([v], PHRASES, { baseline: true, timings: "fallback" })) }));
+
+// Held-out check. The thresholds a flag rests on are chosen on two voices
+// (the setting that catches most while flagging at most one right syllable
+// in the hundred or so those two voices say) and then measured on the other
+// two, which had no say in them; then the other way round.
+const GRID = {
+  moveSt: [3, 3.5, 4],
+  offMarginSt: [0, 0.5, 1],
+  phraseMarginSt: [0, 0.5, 1],
+  flatSt: [1, 1.5],
+  offQuality: [0.6, 0.75],
+  offMinMs: [80, 110],
+  highStart: [3.7, 4.2],
+  lowLevel: [2.2, 2.6],
+};
+// What stage 0's scorer did on the same clips (commit db2bce9, its report's
+// by-voice table), for the before column.
+const STAGE0 = {
+  "say-tingting": { singleCaught: 23, singleAlarms: 0, phraseCaught: 59, phraseAlarms: 0 },
+  "say-reed": { singleCaught: 18, singleAlarms: 0, phraseCaught: 25, phraseAlarms: 0 },
+  "eleven-21m00Tcm4TlvDq8ikWAM": { singleCaught: 21, singleAlarms: 1, phraseCaught: 38, phraseAlarms: 0 },
+  "eleven-pNInz6obpgDQGcFmaJgB": { singleCaught: 19, singleAlarms: 0, phraseCaught: 23, phraseAlarms: 0 },
+};
+function* grid(keys = Object.keys(GRID), at = {}) {
+  if (!keys.length) {
+    yield at;
+    return;
+  }
+  for (const v of GRID[keys[0]]) yield* grid(keys.slice(1), { ...at, [keys[0]]: v });
+}
+const counts = (group, rules) => {
+  const single = scoreAll(group, SINGLES, { baseline: true, timings: "fallback", rules });
+  const phrase = scoreAll(group, PHRASES, { baseline: true, timings: "fallback", rules });
+  const n = (t, side) => t[side].ok + t[side].unsure + t[side].off;
+  return {
+    single, phrase,
+    alarms: single.right.off + phrase.right.off, right: n(single, "right") + n(phrase, "right"),
+    caught: single.wrong.off + phrase.wrong.off, wrong: n(single, "wrong") + n(phrase, "wrong"),
+  };
+};
+function tune(group) {
+  let best = null;
+  for (const g of grid()) {
+    const c = counts(group, { ...TONE_RULES, ...g });
+    if (c.alarms > 1) continue;
+    // Most caught; among equals the one that asks for more evidence.
+    if (!best || c.caught > best.c.caught || (c.caught === best.c.caught && g.offMarginSt + g.offQuality > best.g.offMarginSt + best.g.offQuality)) best = { g, c };
+  }
+  return best;
+}
+let heldOut = null;
+if (voices.length === 4 && !process.env.LINGO_PROOF_RULES && !args.has("--quick")) {
+  // One macOS and one ElevenLabs voice, one of each sex, on each side.
+  const order = ["say-tingting", "eleven-pNInz6obpgDQGcFmaJgB", "say-reed", "eleven-21m00Tcm4TlvDq8ikWAM"].map((id) => voices.find((v) => v.id === id));
+  if (order.every(Boolean)) {
+    const halves = [order.slice(0, 2), order.slice(2)];
+    heldOut = [0, 1].map((k) => {
+      const tuned = tune(halves[k]);
+      return { tunedOn: halves[k], testedOn: halves[1 - k], rules: tuned.g, tuneCounts: tuned.c, test: counts(halves[1 - k], { ...TONE_RULES, ...tuned.g }), defaults: counts(halves[1 - k], TONE_RULES) };
+    });
+    if (args.has("--dump")) {
+      const all = tune(voices);
+      console.log("tuned on all four:", JSON.stringify(all.g), `alarms ${all.c.alarms}/${all.c.right} caught ${all.c.caught}/${all.c.wrong}`);
+      for (const h of heldOut) console.log("tuned on", h.tunedOn.map((v) => v.id).join("+"), JSON.stringify(h.rules));
+    }
+  }
+}
+
+// Real recordings, when someone has dropped some in.
+const REC_DIR = path.join(DIR, "recordings");
+const RECORDINGS_HELP = [
+  "Put recordings in `data/pronunciation-proof/recordings/` (gitignored; with `LINGO_PROOF_DIR` set, its `recordings/` folder) and list them in a `labels.tsv` beside them, one recording per line, tab-separated:",
+  "",
+  "```",
+  "# file<TAB>text<TAB>said (optional)<TAB>speaker (optional)",
+  "nihao-1.wav\t你好",
+  "ma-wrong.wav\t妈\tma3",
+  "wo-shi-xuesheng.m4a\t我是学生\two3 shi4 xue2 sheng2\tsam",
+  "```",
+  "",
+  "- `file`: WAV, M4A, MP3 or WebM; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The app's own recordings are already the right format.",
+  "- `text`: the characters the learner was asked to say.",
+  "- `said`: only when the learner said something else on purpose, to test the flags: one pinyin syllable per character with the tone as a digit (5 or 0 for neutral), as actually said. `ma3` against 妈 is a deliberate mǎ for mā. Leave it out when the recording is a good-faith attempt you have listened to and judged right.",
+  "- `speaker`: any name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings (leave it out for one speaker).",
+  "",
+  "Then run `node scripts/pronunciation-proof.mjs --quick`. Nothing is uploaded: the local scorer runs on this machine. A syllable whose `said` tone is one the text accepts counts as right (a flag on it is a false alarm); any other counts as wrong (a flag is a catch). Twenty or thirty phrases from each of two or three people, a third of them with one deliberate wrong tone, would say more than everything above.",
+].join("\n");
+let recordings = null;
+if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
+  const rows = [];
+  const problems = [];
+  for (const line of fs.readFileSync(path.join(REC_DIR, "labels.tsv"), "utf8").split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const [file, text, said = "", speaker = "speaker"] = line.split("\t").map((x) => x.trim());
+    try {
+      if (!file || !text) throw new Error("needs a file and a text");
+      const src = path.join(REC_DIR, file);
+      if (path.dirname(path.resolve(src)) !== path.resolve(REC_DIR)) throw new Error("the file must be in the recordings folder");
+      let wav = null;
+      try {
+        wav = parseWav(fs.readFileSync(src));
+      } catch (e) {
+        if (!fs.existsSync(src)) throw e;
+      }
+      if (!wav || wav.sampleRate !== 16000) {
+        const out = path.join(REC_DIR, ".wav16k", `${file}.wav`);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        if (!fs.existsSync(out) || fs.statSync(out).mtimeMs < fs.statSync(src).mtimeMs) toWav16k(src, out);
+        wav = parseWav(fs.readFileSync(out));
+      }
+      const syllables = expectedSyllables(text, readCodePoints(text, LOCALE));
+      let saidTones = null;
+      if (said) {
+        saidTones = said.split(/\s+/).map((x) => {
+          const digit = x.match(/([0-5])$/);
+          return digit ? Number(digit[1]) % 5 : parsePinyin(x).tone;
+        });
+        if (saidTones.length !== syllables.length) throw new Error(`"said" has ${saidTones.length} syllables, the text ${syllables.length}`);
+      }
+      rows.push({ file, text, speaker, syllables, saidTones, samples: wav.samples, sampleRate: wav.sampleRate, track: trackPitch(wav.samples, wav.sampleRate) });
+    } catch (e) {
+      problems.push(`${file || line}: ${e.message}`);
+    }
+  }
+  const t = { right: { ok: 0, unsure: 0, off: 0 }, wrong: { ok: 0, unsure: 0, off: 0 } };
+  const detail = [];
+  for (const row of rows) {
+    const others = rows.filter((x) => x !== row && x.speaker === row.speaker).map((x) => x.track);
+    const res = scoreTones({ samples: row.samples, sampleRate: row.sampleRate, syllables: row.syllables, speaker: others.length ? speakerRange(others) : null, track: row.track, rules: RULES });
+    const marks = res.syllables.map((x, k) => {
+      const saidTone = row.saidTones?.[k] ?? null;
+      if (row.syllables[k].expectedTone === 0 || saidTone === 0) return `${x.char} –`;
+      const wrong = saidTone !== null && !row.syllables[k].accept.includes(saidTone);
+      t[wrong ? "wrong" : "right"][x.verdict]++;
+      return `${x.char} ${x.verdict}${x.verdict === "off" ? (wrong ? " (caught)" : " (**false alarm**)") : wrong ? " (missed)" : ""}`;
+    });
+    detail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as written"} | ${marks.join(", ")} |`);
+  }
+  recordings = { rows, problems, t, detail };
+}
+
+// The trade-off: the same clips at several values of the one knob that
+// asks for more evidence before a flag.
+const tradeOff = [-1, -0.5, 0, 0.5, 1, 1.5, 2, 3].map((offMarginSt) => ({ offMarginSt, c: counts(voices, { ...RULES, offMarginSt }) }));
+
+// The classifier before any gate: the tone it names for each single
+// syllable, by voice.
+const rawByVoice = voices.map((v) => {
+  const t = scoreAll([v], SINGLES, { baseline: true, timings: "fallback" });
+  let ok = 0;
+  let n = 0;
+  for (const tone of [1, 2, 3, 4]) {
+    ok += t.confusion[tone][tone];
+    n += Object.values(t.confusion[tone]).reduce((a, b) => a + b, 0);
+  }
+  return { name: v.name, t, ok, n };
+});
 
 // What Scribe's timings look like for Chinese, from the cached replies.
 let scribeNote = "No Scribe replies are cached: run with `--scribe` (paid) to measure.";
@@ -476,11 +666,12 @@ let labelNote = "";
 // merged with the local tone check (mergeAzure, the speaker's range known).
 let azureSection = null;
 {
-  const group = () => ({ n: 0, scores: [], flagged: 0, under50: 0, mergedOff: 0, mergedTone: 0, mergedSound: 0, mergedOk: 0, mergedUnsure: 0, local: { off: 0 } });
+  const group = () => ({ n: 0, scores: [], marks: [], flagged: 0, under50: 0, mergedOff: 0, mergedTone: 0, mergedSound: 0, mergedOk: 0, mergedUnsure: 0, local: { off: 0 } });
   const g = { singleRight: group(), singleWrong: group(), phraseRight: group() };
   let replies = 0;
   let failed = 0;
   let example = null;
+  const mergedAlarms = [];
   const layouts = { flat: 0, nested: 0, multiCharWords: 0, words: 0, syllablePhonemes: 0, phonemeWords: 0 };
   for (const v of voices) {
     for (const [text, clip] of v.clips) {
@@ -505,7 +696,7 @@ let azureSection = null;
           if (w.phonemes.length === chars && w.phonemes.every((ph) => ph.tone !== null)) layouts.syllablePhonemes++;
         }
         const syllables = expectedSyllables(ref, readCodePoints(ref, LOCALE));
-        const args = { samples: clip.samples, sampleRate: clip.sampleRate, syllables, speaker: v.range, track: clip.track, rules: RULES };
+        const args = { samples: clip.samples, sampleRate: clip.sampleRate, syllables, speaker: clip.range, track: clip.track, rules: RULES };
         const merged = mergeAzure({ azure, syllables, local: (timings) => scoreTones({ ...args, timings }), track: clip.track });
         const alone = scoreTones(args);
         const right = ref === text;
@@ -514,10 +705,14 @@ let azureSection = null;
         merged.syllables.forEach((m, k) => {
           if (syllables[k].expectedTone === 0) return;
           into.n++;
-          if (typeof m.score === "number") into.scores.push(m.score);
+          if (typeof m.score === "number") {
+            into.scores.push(m.score);
+            into.marks.push({ score: m.score, mis: m.azureError === "Mispronunciation" });
+          }
           if (m.azureError === "Mispronunciation") into.flagged++;
           if (typeof m.score === "number" && m.score < AZURE_RULES.offBelow) into.under50++;
           if (m.verdict === "off") {
+            if (right) mergedAlarms.push(`${v.name.split(" (")[0]} ${text}[${k + 1}] ${m.char} expected ${m.expectedTone} heard ${m.heardTone}, margin ${m.margin}, Azure ${m.score ?? "–"}, ${m.startMs}–${m.endMs} ms`);
             into.mergedOff++;
             if (m.reason === "tone") into.mergedTone++;
             else into.mergedSound++;
@@ -530,16 +725,26 @@ let azureSection = null;
   }
   if (replies) {
     const med = (a) => (a.length ? [...a].sort((x, y) => x - y)[a.length >> 1] : NaN);
-    const line = (label, x, wrong) => `| ${label} | ${x.n} | ${med(x.scores)} | ${x.flagged} (${pct(x.flagged, x.n)}) | ${x.under50} (${pct(x.under50, x.n)}) | ${x.local.off} (${pct(x.local.off, x.n)}) | ${x.mergedOff} (${pct(x.mergedOff, x.n)}): ${x.mergedTone} tone, ${x.mergedSound} sound | ${wrong ? "caught" : "false alarms"} |`;
+    const line = (label, x, wrong) => `| ${label} | ${x.n} | ${med(x.scores)} | ${x.flagged} (${pct(x.flagged, x.n)}) | ${x.under50} (${pct(x.under50, x.n)}) | ${x.local.off} (${pct(x.local.off, x.n)}) | ${x.mergedOff} (${pct(x.mergedOff, x.n)}): ${x.mergedTone} tone, ${x.mergedSound} sound | ${wrong ? "caught" : "false alarms"} | ${x.mergedOk} (${pct(x.mergedOk, x.n)}) |`;
     const prec = (hit, alarm) => pct(hit, hit + alarm);
     azureSection = [
       `${replies} live replies from Azure Pronunciation Assessment (\`zh-CN\`, the REST short-audio endpoint in \`${"<region>"}.stt.speech.microsoft.com\`, free F0 tier, one request at a time)${failed ? `, ${failed} of them with nothing recognised` : ""}. Every clip was assessed against its own text; each single syllable also against the other three tones of the same syllable, which is the wrong-tone sample: the audio of 妈 with 马 as the reference text. There are no wrong-tone phrase samples for Azure (it needs real characters as the reference, and the proof's phrase relabellings are pinyin only).`,
       "",
-      `| | Syllables | Azure's median score | Azure marks the word \`Mispronunciation\` | Azure score under ${AZURE_RULES.offBelow} | Local scorer alone flags | Merged result flags | which are |`,
-      "| --- | --- | --- | --- | --- | --- | --- | --- |",
+      `| | Syllables | Azure's median score | Azure marks the word \`Mispronunciation\` | Azure score under ${AZURE_RULES.offBelow} | Local scorer alone flags | Merged result flags | which are | Merged result says ok |`,
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
       line("Singles, right reference", g.singleRight, false),
       line("Singles, wrong-tone reference", g.singleWrong, true),
       line("Phrases, right reference", g.phraseRight, false),
+      "",
+      "Where Azure's syllable score separates right from wrong, and where it doesn't. Syllables scoring under each bar (in brackets: those on a word Azure also marks `Mispronunciation`):",
+      "",
+      "| Score under | Singles, right | Singles, wrong tone | Phrases, right |",
+      "| --- | --- | --- | --- |",
+      ...[30, 40, 50, 60, 70].map((bar) => `| ${bar} | ${[g.singleRight, g.singleWrong, g.phraseRight].map((x) => `${x.marks.filter((k) => k.score < bar).length} (${x.marks.filter((k) => k.score < bar && k.mis).length}) of ${x.marks.length}`).join(" | ")} |`),
+      "",
+      mergedAlarms.length ? `The merged result's false alarms: ${mergedAlarms.join("; ")}.` : "The merged result flagged no correctly said syllable.",
+      "",
+      "A high Azure score is not evidence of a right tone (the median wrong-tone syllable scores above 60), so the merged result never turns an unclear pitch reading into \"ok\" on Azure's word.",
       "",
       `On the single syllables, precision of a flag as measured (three wrong for each right): Azure's own \`Mispronunciation\` mark ${prec(g.singleWrong.flagged, g.singleRight.flagged)}, the local scorer ${prec(g.singleWrong.local.off, g.singleRight.local.off)}, the merged result ${prec(g.singleWrong.mergedOff, g.singleRight.mergedOff)}. The merged result flags on the local pitch check, or on Azure's \`Mispronunciation\` mark with a score under ${AZURE_RULES.offBelow}.`,
       "",
@@ -621,8 +826,78 @@ p([
   };
   const bounds = results.map((r, i) => `${r.title.toLowerCase()}: ${r.tally.right.off} of ${sums[i].right}, so under ${(100 * upper(r.tally.right.off, sums[i].right)).toFixed(1)}%`);
   p(`These are small counts. A false-alarm rate measured on a few dozen or a couple of hundred syllables is only bounded, not known: with 95% confidence, ${bounds.join("; ")}. And that bound is for voices like these, on the set the thresholds were tuned on.`);
+  // What that bound does to precision for a learner with one tone in five
+  // wrong: the catch rate as measured, the false-alarm rate at its bound.
+  const floors = results.map((r, i) => {
+    const wrong = sums[i].wrong;
+    const recall = wrong ? r.tally.wrong.off / wrong : 0;
+    const alarm = upper(r.tally.right.off, sums[i].right);
+    return `${r.title.toLowerCase()}: at least ${(100 * (0.2 * recall) / (0.2 * recall + 0.8 * alarm)).toFixed(0)}%`;
+  });
+  p(`So "a flag can be trusted" is not established by these counts, only not contradicted. With the false-alarm rate at that upper bound and the catch rate as measured, the precision of a flag for a learner who gets one tone in five wrong is only known to be: ${floors.join("; ")}. Narrowing that takes more right syllables, from real people.`);
 }
-p("\"Range known\" gives the scorer the voice's pitch range measured over all of that voice's clips, which is what a session would know after a few turns. \"Speaker unknown\" is a first recording: only the shape of the contour counts, plus the recording's own range once it holds four syllables.");
+p("\"Range known\" gives the scorer the voice's pitch range measured over that voice's other clips (never the one being scored), which is what a session would know after a few turns. \"Speaker unknown\" is a first recording: only the shape of the contour counts, plus the recording's own range once it holds four syllables.");
+p("## The classifier before any gate");
+p("What tone the classifier names for each single syllable (speaker's range known), whatever it then decides to say about it. This is the question \"is it misreading the pitch, or just not daring to flag?\".");
+p(["| Voice | Named the labelled tone | tone 1 heard as 1/2/3/4 | tone 2 | tone 3 | tone 4 |", "| --- | --- | --- | --- | --- | --- |",
+  ...rawByVoice.map((v) => `| ${v.name.split(" (")[0]} | ${v.ok} of ${v.n} | ${[1, 2, 3, 4].map((tone) => [1, 2, 3, 4].map((h) => v.t.confusion[tone][h]).join("/") + (v.t.confusion[tone].none ? ` (+${v.t.confusion[tone].none} nothing)` : "")).join(" | ")} |`),
+  `| **All** | **${rawByVoice.reduce((n, v) => n + v.ok, 0)} of ${rawByVoice.reduce((n, v) => n + v.n, 0)}** | | | | |`].join("\n"));
+p("So the classifier mostly reads the pitch right (stage 0's named 53 of 64); the catch rate is lower than this because a flag asks for more than a best guess. What the contours of the misread and unflagged clips showed when looked at one by one: two of Rachel's first tones (妈, 八) fall by 9 and 14 semitones, a fourth tone's contour whatever the label says (Azure scores that 八 at 90 against 爸 and 61 against 八), so those two \"errors\" are probably the clips; the macOS voices say some second tones as a dip that comes back up and some third tones as a shallow dip that rises, which are each other's shapes; one fourth tone starts in the middle of the range and reads as a low third; and Adam's voice creaks, leaving a hole in the middle of several pitch tracks, which costs flags, not readings. No miss on these clips came from an octave error, from the consonant at the start, or from the range used to normalise. The misses came from the gate: stage 0 never flagged third against second or fourth in either direction (a third of all wrong labels), asked for four semitones of movement, and let a second tone's first dip or a fourth tone's first rise count as \"it climbs\" or \"it drops\".");
+p("Where the catches are and aren't, by which tone was said for which (range known; caught / marked ok / all):");
+{
+  const cellsOf = (key) => results.find((r) => r.key === key)?.tally.pairs ?? {};
+  const one = cellsOf("singleBase");
+  const two = cellsOf("phraseBase");
+  const fmt = (c) => (c ? `${c.off} / ${c.ok} / ${c.n}` : "–");
+  p(["| Said → labelled | Singles | Phrases |", "| --- | --- | --- |", ...[...new Set([...Object.keys(one), ...Object.keys(two)])].sort().map((k) => `| ${k} | ${fmt(one[k])} | ${fmt(two[k])} |`)].join("\n"));
+  p("Three pairs stay close to uncatchable by design: a third tone said for a fourth (3→4: a low fall is both), a fourth that starts low said for a third, and second against third when the second dips or the third comes back up. These voices disagree with each other about exactly those shapes, so a flag there would be a guess.");
+}
+if (heldOut) {
+  p("## Held out by voice");
+  p(`The thresholds a flag rests on were chosen on two voices and measured on the other two, which had no say in them, then the other way round. \"Chosen\" means: of ${[...grid()].length} settings (${Object.entries(GRID).map(([k, v]) => `\`${k}\` ${v.join("/")}`).join(", ")}), the one that catches the most wrong tones on the tuning voices while flagging at most one of their right syllables. Range known, cuts by energy, each clip read against the range of the voice's other clips.`);
+  const cell = (c, kind) => {
+    const t = c[kind];
+    const right = t.right.ok + t.right.unsure + t.right.off;
+    const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
+    return `${t.wrong.off} of ${wrong} (${pct(t.wrong.off, wrong)}) caught, ${t.right.off} of ${right} false alarms`;
+  };
+  const before = (group, kind) => {
+    const caught = group.reduce((n, v) => n + STAGE0[v.id][`${kind}Caught`], 0);
+    const alarms = group.reduce((n, v) => n + STAGE0[v.id][`${kind}Alarms`], 0);
+    const wrong = kind === "single" ? 48 * group.length : 144 * group.length;
+    return `${caught} of ${wrong} (${pct(caught, wrong)}) caught, ${alarms} false alarms`;
+  };
+  const names = (g) => g.map((v) => v.name.split(" (")[0]).join(" + ");
+  p(["| Tuned on | Measured on | | Stage 0 (before) | Tuned on the other two (held out) | The engine's defaults |", "| --- | --- | --- | --- | --- | --- |",
+    ...heldOut.flatMap((h) => ["single", "phrase"].map((kind) => `| ${names(h.tunedOn)} | ${names(h.testedOn)} | ${kind === "single" ? "Singles" : "Phrases"} | ${before(h.testedOn, kind)} | ${cell(h.test, kind)} | ${cell(h.defaults, kind)} |`))].join("\n"));
+  p(`Settings chosen: ${heldOut.map((h) => `on ${names(h.tunedOn)} \`${JSON.stringify(h.rules)}\``).join("; ")}. The engine's defaults are the setting chosen on all four voices where the two halves agree, and the more cautious value where they don't; the defaults column is therefore not held out, and the held-out column is the honest one. The stage 0 numbers are from that commit's report (same clips; its range included the clip being scored).`);
+  const alarms = heldOut.flatMap((h) => [...h.test.single.falseAlarms, ...h.test.phrase.falseAlarms]);
+  if (alarms.length) p(`Held-out false alarms: ${[...new Set(alarms)].join("; ")}.`);
+}
+p("## The trade-off");
+p("The same clips (all four voices, range known) at several values of `offMarginSt`: how many semitones past its bar the evidence must be before a syllable is flagged. Negative values flag contours that only nearly rule the label out.");
+{
+  const lineOf = (label, c) => {
+    const n = (t, side) => t[side].ok + t[side].unsure + t[side].off;
+    return `| ${label} | ${c.single.right.off} of ${n(c.single, "right")} | ${c.single.wrong.off} of ${n(c.single, "wrong")} (${pct(c.single.wrong.off, n(c.single, "wrong"))}) | ${c.phrase.right.off} of ${n(c.phrase, "right")} | ${c.phrase.wrong.off} of ${n(c.phrase, "wrong")} (${pct(c.phrase.wrong.off, n(c.phrase, "wrong"))}) |`;
+  };
+  p(["| `offMarginSt` | Singles: false alarms | Singles: caught | Phrases: false alarms | Phrases: caught |", "| --- | --- | --- | --- | --- |",
+    ...tradeOff.map((x) => lineOf(`${x.offMarginSt}${x.offMarginSt === RULES.offMarginSt ? " (default)" : ""}`, x.c)),
+    lineOf("default, and creaky syllables flagged too (`creakFlags`)", counts(voices, { ...RULES, creakFlags: true }))].join("\n"));
+  p("`creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.");
+}
+p("## Real recordings");
+if (recordings) {
+  const { t } = recordings;
+  const right = t.right.ok + t.right.unsure + t.right.off;
+  const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
+  p(`${recordings.rows.length} recordings from \`labels.tsv\`, ${new Set(recordings.rows.map((r) => r.speaker)).size} speaker(s). Right syllables: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Deliberately wrong syllables: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}.`);
+  p(["| File | Speaker | Text | Said | Syllables |", "| --- | --- | --- | --- | --- |", ...recordings.detail].join("\n"));
+  if (recordings.problems.length) p(`Not scored: ${recordings.problems.join("; ")}.`);
+} else {
+  p("None yet: everything above is synthesized speech. This is the next step, and the harness is ready for it.");
+}
+p(RECORDINGS_HELP);
 for (const r of results) {
   p(`### ${r.title}`);
   p("Tone the clip was said in (after the connected-speech rules) against the tone the scorer heard, right labels only:");
@@ -647,7 +922,7 @@ p("## Limitations");
 p([
   "- **Synthesized speech is not a learner.** These voices hit their tones cleanly, in quiet, at an even pace. A learner's wrong tone is rarely a clean other tone: it is a flat second tone, a fourth that barely falls, a third with no dip. Those land in \"unsure\" by design, so on real learners expect fewer catches than here, and treat the false-alarm rate as a floor until real recordings are scored.",
   "- **The wrong answers are other syllables' right answers**, not mistakes: they are well-formed tones, the easiest kind of wrong to spot.",
-  "- **The thresholds were tuned on this same set.** There is no held-out data. The by-voice table shows the spread, not generalisation.",
+  "- **The thresholds were tuned on these voices.** The held-out table tunes on two voices and measures on the other two, which is the fairest number here, but all four are synthesizers and two of them are the same engine. It shows the setting is not fitted to one voice; it does not show it fits a person.",
   "- **Nobody has tested a child's voice.** The pitch tracker searches 60–600 Hz and tones are read against the speaker's own range, so nothing in the design excludes one, but no child (and no synthesized child) is in the set.",
   `- **The labels are trusted, not checked.** A synthesizer can misread a lone character, or say it with a sentence's falling intonation; nobody listened to these clips. A clip said in the wrong tone shows up as a miss or a false alarm that isn't the scorer's fault. ${labelNote || "Run with `--scribe` for a recognizer's second opinion on the single-syllable labels."}`,
   `- **${voices.length} voices, none of them a person.** No microphone, no room, no background noise.${voices.some((v) => /premade/.test(v.name)) ? " The ElevenLabs voices are premade English voices speaking Mandarin through the app's default model, not native Mandarin voices: the account's voice list and the Voice Library search did not answer when the clips were bought, so the script fell back to two public voice ids. Their lone syllables are the least textbook clips in the set: Rachel's 妈 holds level and then drops nine semitones, which the scorer hears as a fourth tone and which may well be one." : ""}`,
@@ -660,3 +935,10 @@ p([
 fs.writeFileSync(REPORT, lines.join("\n").replace(/\n+$/, "\n"));
 console.log(`Wrote ${path.relative(REPO, REPORT)}`);
 for (const [i, r] of results.entries()) console.log(r.key.padEnd(13), JSON.stringify(sums[i]));
+if (args.has("--dump")) {
+  for (const r of results) {
+    console.log(r.key, "false alarms:", r.tally.falseAlarms.join("; "));
+    console.log(r.key, "wrong tones:", JSON.stringify(r.tally.why));
+    console.log(r.key, "said→labelled caught/ok/n:", Object.entries(r.tally.pairs).sort().map(([k, c]) => `${k} ${c.off}/${c.ok}/${c.n}`).join("  "));
+  }
+}
