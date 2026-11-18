@@ -555,6 +555,214 @@ in `scripts/tests/sounds.test.mjs`):
 
 A mainland learner sees and hears the simplified forms (`inScript`).
 
+## Pronunciation
+
+Speech-to-text is generous: a wrong tone still transcribes as the right
+word, so the dojo master never hears about it. `scripts/pronunciation.mjs`
+scores a recording against the text it was meant to be. **Stage 0 (bead
+ld-ne0.1) is the engine only**: nothing calls it yet, there is no route, no
+UI and nothing stored. v1 scores Mandarin tones (zh-CN and zh-TW;
+`scoresTones(locale)`).
+
+One result whichever engine ran:
+
+```
+{ provider: "azure" | "local",
+  syllables: [{ char, pinyin, baseTone, expectedTone, accept, heardTone,
+                verdict: "ok" | "off" | "unsure", confidence, reason?,
+                margin?, score?, startMs, endMs, pitch }],
+  overall? }
+```
+
+`verdict` is `off` only when the engine is confident; whatever it can't
+vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
+`neutral`, `untimed`, `unclear`, `omitted`). A false alarm costs more than a
+miss. `margin` is how far the contour is from the nearest right answer, in
+semitones (0 or more: every accepted tone is ruled out). `pitch` is the syllable's curve for drawing: 16 points in semitones
+above or below the speaker's median, `null` where unvoiced;
+`referenceCurves()` makes the same from the narrator's clip.
+
+**Which engine** is a pure function of the keys, `pronunciationProvider(keys)`
+over `voiceKeys()`: Azure when `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION`
+are both set, else local. No other paid service.
+
+**What should have been said.** `expectedSyllables(text, readings)` takes
+each character's dictionary reading (`readCodePoints` in
+`web/src/script/zh.ts`: pinyin-pro with the Taiwan readings and particle
+fixes, so 星期 expects qí for zh-TW and qī for zh-CN) and applies the
+connected-speech rules before anything is compared:
+
+- third-tone sandhi: the third tone before the last of a run rises (你好
+  ní hǎo); further back both readings are accepted (我很好), since the
+  grouping needs word boundaries;
+- 不 is bú before a fourth tone; 一 is yí before a fourth tone and yì before
+  the others, yī at the end and in numbers (第一, 十一, 一九九八), with both
+  accepted where only a word list could tell (一月, and any 一 after another
+  syllable, which may be the end of a word: 统一了, 唯一的); A不A and 看一看
+  accept the neutral reading too;
+- a third tone doubled into a neutral one (姐姐, 奶奶, 宝宝) may rise
+  (jiéjie) or stay low: both are accepted;
+- the half third: a third tone before another tone is low without the rise,
+  and counts as a third tone;
+- the neutral tone is not judged.
+
+Each syllable carries `accept`, every tone that counts as right, which is
+deliberately wider than `expectedTone` wherever the rule is uncertain. Not
+handled: sandhi that depends on word grouping beyond the above, 儿 endings,
+and Taiwan's fuller (less neutral) second syllables, where a zh-TW learner
+saying a full tone on a syllable the reader marks neutral is simply not
+judged.
+
+**The local scorer** (`scoreTones`) is pure JS on the 16 kHz mono WAV the
+browser already sends, with no dependency:
+
+1. `trackPitch`: YIN (de Cheveigné & Kawahara 2002) every 10 ms over
+   60–800 Hz, written out in the module (sixty lines, nothing native).
+   Octave slips are undone per voiced run (a short piece an octave from
+   the rest of its run), never across a silence. Each frame also carries
+   its zero-crossing rate, which tells creak from the hiss of s or sh.
+2. Cuts: per-syllable `timings` when the caller has extents it can trust
+   (Azure's words), else `segmentSyllables`, which cuts the speech at its
+   quietest, least voiced frames given the syllable count, kept on Scribe's
+   character times when those are passed as `anchors` (below). Its cuts
+   scale the reported confidence (`FALLBACK_TRUST`), and a flag on any
+   syllable of a phrase needs a little more margin (`phraseMarginSt`),
+   whoever made the cuts; neither is mixed into `quality`, which is only
+   how clean the pitch measurement was.
+3. `classifyContour`: five points of each syllable's voiced part against
+   tone templates on Chao's five-level scale, scaled to the speaker's own
+   range (`speakerRange`: pass one learnt from earlier turns as `speaker`;
+   without it only the shape counts, each template stretched to the
+   contour, plus the recording's own range from four syllables up). So a
+   child's voice, a low adult voice and a narrow one are read the same way.
+4. The verdict. `ok` when an accepted tone is the best match or holds a
+   third of the belief. `off` only when the contour *rules out* every
+   accepted tone, the measurement is clean, and the syllable is long
+   enough. `ruleMargins` says by how many semitones each tone is ruled
+   out, from features of the shape (the span, the dip before the lowest
+   point, the rise from it to the end, the fall from the highest point to
+   the end) and, in a voice whose range is known, of the height (where it
+   starts, how high or low it sits):
+   - tone 1 by three semitones of movement, or by sitting low (only in
+     the first two syllables of a phrase: sentences drift down, and "low"
+     is read against the whole voice);
+   - tone 2 by not coming up at the end while falling or level, or by a
+     deep dip that barely comes back;
+   - tone 4 by not coming down at the end while level or rising, or by
+     ending on a rise;
+   - tone 3 by a high level pitch, by a fall that starts high in the range
+     (so a fourth tone said for a third is caught), or by a plain rise
+     with no dip that starts at mid-range or above. All three need the
+     range, and the last is silent when the start of the syllable is
+     hidden (creak or a burst before the first voiced frame): a third tone
+     that starts at the floor has no fall to show.
+
+   With a known range the semitone bars scale with it (`scaleRange`; the
+   range counts between 7 and 12 semitones, so a very wide voice, a small
+   child's, is still held to a 12-semitone voice's bars).
+
+   Still never flagged: a low fall said for a fourth tone, and second
+   against third when the second dips or the third comes back up. A level
+   pitch in the middle of a known range rules nothing out (a syllable
+   squeezed flat by its neighbours). Creak in the vowel supports an
+   expected third tone and makes anything else `unsure` (`creakFlags`).
+   The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
+   trades catches for false alarms.
+
+How well that does on synthesized speech, and what it has not been tested
+on, is in [pronunciation-proof.md](pronunciation-proof.md), written by
+`node scripts/pronunciation-proof.mjs` (not part of `npm test`; `--fetch`,
+`--scribe` and `--azure` are the only steps that call a provider and must
+be asked for). The thresholds were chosen on two voices and measured on the
+other two; the report leads with those held-out numbers and labels
+everything else in-sample, and has the trade-off at several margins and the
+classifier's raw accuracy before any gate.
+
+**Before wiring it to a route:**
+
+- Start with single syllables and drills. Phrase flags rest on a
+  half-semitone margin (`phraseMarginSt`) that the proof clips chose.
+- Pass `speaker` only as a range built from the learner's *other*
+  recordings (`speakerRange` over earlier turns), never one that includes
+  the recording being scored.
+- `scoreTones` is synchronous and refuses more than 30 seconds
+  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`); its own
+  segmenter grows with syllables × frames². Run it off the request thread
+  (a worker, or the paid-slot queue) or pass timings.
+- Treat `unsure` as silence.
+ **Real
+recordings are the next step**: drop audio files and a `labels.tsv` into
+`data/pronunciation-proof/recordings/` (gitignored; the format is in the
+report's "Real recordings") and they are scored on every run, locally.
+
+**The Azure adapter** (`azurePronunciationRequest`,
+`azurePronunciationResult`, `mergeAzure`) was built from Microsoft's
+documentation and then **run live for zh-CN** (2026-11-18, eastus, free F0
+tier, 316 requests over the proof's synthesized clips; numbers in the
+proof's "Azure, live"). It posts the same WAV to the speech-to-text REST API
+for short audio (`<region>.stt.speech.microsoft.com`, key and region only)
+with a `Pronunciation-Assessment` header (base64 JSON: `ReferenceText`,
+`GradingSystem: HundredMark`, `Granularity: Phoneme`,
+`Dimension: Comprehensive`, `EnableMiscue`).
+
+From the docs: zh-CN, zh-TW, es-MX and es-ES are all supported locales;
+audio is WAV PCM 16 kHz mono, at most 30 seconds with assessment; over REST
+a reference text is required (unscripted assessment is an SDK feature, and
+the docs themselves recommend transcribing first and assessing against
+that), so for free speech the transcript is the reference text with miscue
+detection off.
+
+From the live service, which the docs don't say for Mandarin:
+
+- Words are Azure's own segmentation (你好 is one word), but `Phonemes`
+  holds one entry **per syllable**, named with a tone digit (`ni 3`,
+  `hao 3`; 5 is neutral), each with its own offset, duration and score. So
+  Azure gives per-syllable cuts, and `mergeAzure` uses them.
+- The digit is the **reference** reading's dictionary tone, not the tone
+  heard: 妈 assessed against 马 comes back `ma 3`, `DisplayText` "马。".
+  Azure never says which tone was said.
+- A wrong tone lowers the score, with wide overlap: on single syllables the
+  median is 61 against 82 for the right tone, and Azure's own
+  `Mispronunciation` mark caught 29% of wrong tones while also marking 4
+  of 168 correctly said phrase syllables (the proof prints the counts
+  under each score).
+
+That is why `mergeAzure` always runs the local tone check as well, on
+Azure's syllable timings: a tone flag comes from the pitch
+(`reason: "tone"`); Azure adds a flag only where it marks the word
+`Mispronunciation` and the syllable scores under 40 (`AZURE_RULES`: no
+false alarm in the run at that bar; `reason: "sound"`). A high Azure score
+never turns an unclear pitch reading into `ok`: wrong tones often score
+above 80. The builder refuses audio that is not 16 kHz or is over 30
+seconds. `scoresTones` and `azureLocale` read a locale through one parser,
+so they cannot disagree: Mandarin is `zh` or `cmn` with no region or CN, TW,
+SG or MY (`zh_TW`, `zh-Hant-TW`, `cmn-Hans-CN`), sent to Azure as zh-TW
+(Taiwan, or Traditional with no region) or zh-CN; Cantonese (`zh-HK`,
+`zh-yue`) and anything that isn't a plain tag are not scored and are
+refused. Not yet run live:
+zh-TW, Spanish, a recording near 30 seconds, a per-resource `endpoint`, a
+real learner.
+
+**Scribe's timings.** `transcriptText` keeps only `text` today. Scribe also
+returns `words[]` with `start`/`end` in seconds and, when asked with
+`timestamps_granularity=character`, a `characters[]` per word; for Chinese
+it gives one `words` entry per character (measured, see the proof). The
+times are roughly when the recognizer emitted each character, not where the
+syllable starts and ends (好 timed 460–480 ms in a clip where it sounds
+from 270 to 510), so they are useless as cuts and useful as anchors:
+`scoreTones({ anchors })` cuts by energy and keeps each piece on its
+character's time. A later stage adds the field to `elevenTranscribeRequest`
+and keeps the words beside the text; `scribeCharTimings` and `alignTimings`
+already read them. Only Azure's word timings go in as `timings`.
+
+**Later stages** (beads ld-ne0.2 to ld-ne0.4): scoring repeat-after-me,
+the character card and Practice speak-it, where the expected text is known
+and short (the scorer's best case); live turns with a coaching dial and a
+per-session `speaker` range; keeping flagged clips; the transcript's
+per-syllable marks and the side-by-side curve; the recap's tone score and
+the Practice feed. Types for `web/server/mjs.d.ts` come with the first
+server import.
+
 ## Cost (rough, Nov 2026)
 
 The header shows characters spoken this session. ElevenLabs Eleven v4 runs about
@@ -566,7 +774,7 @@ your Claude Code login.
 
 - Speech-to-text tends to quietly correct mispronunciations, so the dojo
   master can't judge *how* something sounded (the adapter tells it so).
-  Pronunciation scoring (Azure pronunciation assessment) is a follow-up.
+  The scoring engine exists (§Pronunciation) but nothing calls it yet.
 - Not streaming: each reply arrives whole, then plays line by line.
 - Only text is saved (no audio), and a saved session can be read in
   History but not picked up again: after a reload the Go tab starts fresh.
