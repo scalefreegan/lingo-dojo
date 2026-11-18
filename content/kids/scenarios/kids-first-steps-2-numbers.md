@@ -1,5 +1,5 @@
 ---
-id: kids-first-steps-numbers
+id: kids-first-steps-2-numbers
 title: Numbers 1–10
 summary: Count from one to ten with claps, jumps and a rocket countdown.
 tags: [kids, first-steps, drill, numbers, beginner]

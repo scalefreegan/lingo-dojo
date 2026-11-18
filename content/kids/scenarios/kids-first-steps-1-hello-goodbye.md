@@ -1,5 +1,5 @@
 ---
-id: kids-first-steps-hello-goodbye
+id: kids-first-steps-1-hello-goodbye
 title: Hello & goodbye
 summary: "A copy-me word game with the very first words: hello, goodbye, please, thank you, yes and no."
 tags: [kids, first-steps, drill, greetings, beginner]

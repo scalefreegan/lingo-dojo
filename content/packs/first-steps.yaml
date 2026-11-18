@@ -1,6 +1,6 @@
 title: "First steps: hello & goodbye"
 created: 2026-11-17T09:00:00-06:00
-scenario: first-steps-hello-goodbye
+scenario: first-steps-1-hello-goodbye
 quick_scenario: ""
 units:
   - intro-first-steps

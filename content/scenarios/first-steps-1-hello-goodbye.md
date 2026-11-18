@@ -1,5 +1,5 @@
 ---
-id: first-steps-hello-goodbye
+id: first-steps-1-hello-goodbye
 title: Hello & goodbye
 summary: "Your very first words, drilled slowly with the narrator: greetings, please, thank you, yes and no."
 tags: [first-steps, drill, greetings, beginner]

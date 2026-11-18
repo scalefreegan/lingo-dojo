@@ -1,5 +1,5 @@
 ---
-id: first-steps-about-me
+id: first-steps-2-about-me
 title: About me
 summary: "Say your name and where you're from, and the lifesavers: I don't understand, slower please, how do you say…?"
 tags: [first-steps, drill, introductions, beginner]

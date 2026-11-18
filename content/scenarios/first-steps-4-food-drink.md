@@ -1,5 +1,5 @@
 ---
-id: first-steps-food-drink
+id: first-steps-4-food-drink
 title: Food & drink basics
 summary: Water, coffee, bread and the rest of the first menu, plus I'd like… and the bill, please.
 tags: [first-steps, drill, food, beginner]

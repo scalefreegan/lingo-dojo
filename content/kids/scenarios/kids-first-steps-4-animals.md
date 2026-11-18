@@ -1,5 +1,5 @@
 ---
-id: kids-first-steps-animals
+id: kids-first-steps-4-animals
 title: Animals
 summary: Cat, dog, fish and friends, each with its own sound, then a who-am-I noise game.
 tags: [kids, first-steps, drill, animals, beginner]

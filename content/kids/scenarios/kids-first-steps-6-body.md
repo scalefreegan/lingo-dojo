@@ -1,5 +1,5 @@
 ---
-id: kids-first-steps-body
+id: kids-first-steps-6-body
 title: My body
 summary: Head, shoulders, hands and feet, with a touch-and-say game and a silly dance.
 tags: [kids, first-steps, drill, body, beginner]

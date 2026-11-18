@@ -1,5 +1,5 @@
 ---
-id: kids-first-steps-colors
+id: kids-first-steps-3-colors
 title: Colors
 summary: Red, blue, yellow and friends, found in things a child knows, with an I-spy guessing game.
 tags: [kids, first-steps, drill, colors, beginner]

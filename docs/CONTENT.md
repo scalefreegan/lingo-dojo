@@ -192,7 +192,7 @@ First steps session; there is no separate mode, pack field or migration.
 
 ```markdown
 ---
-id: first-steps-numbers
+id: first-steps-3-numbers
 title: Numbers 0–10
 summary: Count from zero to ten, then hear numbers out of order and catch them.
 collection: First steps

@@ -1,5 +1,5 @@
 ---
-id: first-steps-mix-it-up
+id: first-steps-6-mix-it-up
 title: Mix it up
 summary: A review of every First steps drill, with much more of the guiding in the language you're learning.
 tags: [first-steps, drill, review, beginner]

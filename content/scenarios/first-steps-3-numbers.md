@@ -1,5 +1,5 @@
 ---
-id: first-steps-numbers
+id: first-steps-3-numbers
 title: Numbers 0–10
 summary: Count from zero to ten, then hear numbers out of order and catch them.
 tags: [first-steps, drill, numbers, beginner]
