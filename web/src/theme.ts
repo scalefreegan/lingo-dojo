@@ -38,20 +38,24 @@ export function toggled(showing: Scheme): ThemeChoice {
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
 const listeners = new Set<() => void>();
+/** One query, reused by every snapshot (getSnapshot runs on each render). */
+const darkQuery: MediaQueryList | null = typeof matchMedia === "function" ? matchMedia(DARK_QUERY) : null;
 
 function systemDark(): boolean {
-  return typeof matchMedia === "function" && matchMedia(DARK_QUERY).matches;
+  return darkQuery?.matches ?? false;
 }
 
 // Storage can throw (a private window, blocked site data): the switch still
 // works for the page's life, and the next load is auto.
-let choice: ThemeChoice = (() => {
+function storedChoice(): ThemeChoice {
   try {
     return readChoice(localStorage.getItem(THEME_KEY));
   } catch {
     return "auto";
   }
-})();
+}
+
+let choice: ThemeChoice = storedChoice();
 
 function apply(): void {
   document.documentElement.dataset.theme = resolveTheme(choice, systemDark());
@@ -65,17 +69,25 @@ function subscribe(fn: () => void): () => void {
   };
 }
 
+// Another tab changed it: follow, so two tabs never disagree. A null key is
+// that tab clearing all of storage, which clears the choice too.
+function onStorage(e: StorageEvent): void {
+  if (e.key !== null && e.key !== THEME_KEY) return;
+  choice = storedChoice();
+  apply();
+}
+
 if (typeof window !== "undefined") {
   apply();
   // Auto follows the system as it changes (macOS's Auto appearance at
   // dusk). An explicit choice ignores it, but the scheme is recomputed
   // either way, which is a no-op then.
-  if (typeof matchMedia === "function") matchMedia(DARK_QUERY).addEventListener("change", apply);
-  // Another tab changed it: follow, so two tabs never disagree.
-  window.addEventListener("storage", (e) => {
-    if (e.key !== THEME_KEY) return;
-    choice = readChoice(e.newValue);
-    apply();
+  darkQuery?.addEventListener("change", apply);
+  window.addEventListener("storage", onStorage);
+  // Vite re-runs this module on an edit: the old copy's listeners go with it.
+  import.meta.hot?.dispose(() => {
+    darkQuery?.removeEventListener("change", apply);
+    window.removeEventListener("storage", onStorage);
   });
 }
 

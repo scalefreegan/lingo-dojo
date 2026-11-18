@@ -159,7 +159,9 @@ const THEME_CHOICES: { value: ThemeChoice; label: string }[] = [
 ];
 
 /** The menu's Appearance row: Auto, Light, Dark as one segmented control.
- *  It stays open on a pick, so the change is seen in place. */
+ *  It stays open on a pick, so the change is seen in place. Inside a menu
+ *  the choices are menuitemradio in a group (a menu may not own a
+ *  radiogroup: screen readers skip or misread one there). */
 function ThemeChoices() {
   const { choice, setChoice } = useTheme();
   return (
@@ -167,12 +169,12 @@ function ThemeChoices() {
       <p className="mb-1.5 text-sm text-fg-3 sm:text-xs" id="appearance-label">
         Appearance
       </p>
-      <div role="radiogroup" aria-labelledby="appearance-label" className="flex rounded-full bg-raised p-0.5">
+      <div role="group" aria-labelledby="appearance-label" className="flex rounded-full bg-raised p-0.5">
         {THEME_CHOICES.map((c) => (
           <button
             key={c.value}
             type="button"
-            role="radio"
+            role="menuitemradio"
             aria-checked={choice === c.value}
             title={c.value === "auto" ? "Follow the system's light or dark setting" : undefined}
             className={`flex-1 rounded-full px-1.5 py-1 text-sm transition-colors sm:text-xs ${
