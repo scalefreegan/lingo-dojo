@@ -140,10 +140,10 @@ A label records what the speaker was **aiming for**, not what came out. A beginn
 `data/pronunciation-proof/recordings/labels.tsv` (with `LINGO_PROOF_DIR` set, its `recordings/` folder): one recording per line, tab-separated; the recorder writes it, and it can be written by hand:
 
 ```
-# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure
+# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure<TAB>processing
 nihao-1.wav	你好
-rec-20261118-153012-ab12cd34.wav	妈	ma2	sam	adult	
-rec-20261118-153140-0f3e9a71.wav	我是学生		sam	adult	unsure
+rec-20261118-153012-ab12cd34.wav	妈	ma2	sam	adult		raw
+rec-20261118-153140-0f3e9a71.wav	我是学生		sam	adult	unsure	raw
 ```
 
 - `file`: WAV, M4A, MP3 or WebM in that folder; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The recorder's files are already the right format.
@@ -152,6 +152,7 @@ rec-20261118-153140-0f3e9a71.wav	我是学生		sam	adult	unsure
 - `speaker`: a name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings.
 - `group`: `adult` or `child` (optional).
 - `unsure`: `unsure` when the speaker ticked "not sure I said it right" (optional).
+- `processing`: `raw` when the microphone was recorded with the browser's echo cancellation, noise suppression and automatic gain off (what the recorder does now), `processed` with them on. A line without it is read as `processed`: the first recordings were made that way. When the labels hold both, the recordings report has each speaker once per setting, so a few prompts recorded again are a direct comparison.
 
 A syllable whose `said` tone is one the text accepts counts as said as shown (a flag on it is a false alarm); any other counts as wrong on purpose (a flag is a catch). Nothing is uploaded: the local scorer runs on this machine.
 
@@ -290,7 +291,7 @@ The times are not syllable boundaries. The median character span is 140 ms and 1
 
 ## Speed
 
-Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 42 ms (median of 12; slowest 45 ms). Nearly all of it is the pitch track.
+Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 35 ms (median of 12; slowest 79 ms). Nearly all of it is the pitch track.
 
 ## Settings this ran with
 

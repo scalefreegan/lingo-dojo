@@ -9,11 +9,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import { encodeWav } from "../pronunciation.mjs";
 import {
-  LABELS_HEADER, MAX_UPLOAD_BYTES, PHRASES, SINGLES, buildPrompts, checkWav, cleanSpeaker, doneKeys, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout, saidTones, speakerTable,
-  speakerTally,
+  LABELS_HEADER, MAX_UPLOAD_BYTES, PHRASES, SINGLES, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout, recordingsReport,
+  saidTones, speakerTable, speakerTally,
 } from "../pronunciation-recordings.mjs";
 import { createRecorder, loopbackHost, trackedByGit } from "../pronunciation-record.mjs";
 
@@ -84,6 +85,10 @@ describe("the prompt list", () => {
     assert.ok(!some.some((p) => p.model === "麻"));
     assert.ok(some.some((p) => p.part === "wrong" && p.text === "麻"), "麻 can still be the reference of a prompt modelled by another clip");
     assert.equal(some.filter((p) => p.part === "right").length, 29);
+    // An id names the same prompt whatever was left out: it is the place
+    // in the whole list, not in what remains.
+    const whole = new Map(buildPrompts().map((p) => [p.id, promptKey(p)]));
+    for (const p of some) assert.equal(promptKey(p), whole.get(p.id), p.id);
     assert.deepEqual(buildPrompts(() => false), []);
   });
 });
@@ -91,8 +96,8 @@ describe("the prompt list", () => {
 describe("labels.tsv", () => {
   it("writes a row and reads it back", () => {
     const rows = [
-      { file: "rec-20261118-153012-ab12cd34.wav", text: "妈", said: "ma2", speaker: "Sam", group: "adult", unsure: false },
-      { file: "rec-20261118-153140-0f3e9a71.wav", text: "我是学生", said: "", speaker: "小明", group: "child", unsure: true },
+      { file: "rec-20261118-153012-ab12cd34.wav", text: "妈", said: "ma2", speaker: "Sam", group: "adult", unsure: false, processing: "raw" },
+      { file: "rec-20261118-153140-0f3e9a71.wav", text: "我是学生", said: "", speaker: "小明", group: "child", unsure: true, processing: "processed" },
     ];
     const tsv = [LABELS_HEADER, ...rows.map(formatLabel), ""].join("\n");
     assert.deepEqual(parseLabels(tsv), { rows, problems: [] });
@@ -102,10 +107,17 @@ describe("labels.tsv", () => {
     const { rows, problems } = parseLabels("# file\ttext\tsaid\tspeaker\r\nnihao-1.wav\t你好\n\nma-wrong.wav\t妈\tma3\nx.m4a\t我是学生\two3 shi4 xue2 sheng2\tsam\n");
     assert.deepEqual(problems, []);
     assert.deepEqual(rows, [
-      { file: "nihao-1.wav", text: "你好", said: "", speaker: "speaker", group: "", unsure: false },
-      { file: "ma-wrong.wav", text: "妈", said: "ma3", speaker: "speaker", group: "", unsure: false },
-      { file: "x.m4a", text: "我是学生", said: "wo3 shi4 xue2 sheng2", speaker: "sam", group: "", unsure: false },
+      { file: "nihao-1.wav", text: "你好", said: "", speaker: "speaker", group: "", unsure: false, processing: "processed" },
+      { file: "ma-wrong.wav", text: "妈", said: "ma3", speaker: "speaker", group: "", unsure: false, processing: "processed" },
+      { file: "x.m4a", text: "我是学生", said: "wo3 shi4 xue2 sheng2", speaker: "sam", group: "", unsure: false, processing: "processed" },
     ]);
+    // The recorder's first files had six columns and no `processing`:
+    // those clips were recorded with the browser's processing on.
+    const six = parseLabels("# file\ttext\tsaid\tspeaker\tgroup\tunsure\nrec-20261118-153012-ab12cd34.wav\t妈\t\tsam\tadult\t\nrec-20261118-153140-0f3e9a71.wav\t妈\tma2\tsam\tadult\tunsure\n");
+    assert.deepEqual(six.problems, []);
+    assert.deepEqual(six.rows.map((r) => [r.said, r.unsure, r.processing]), [["", false, "processed"], ["ma2", true, "processed"]]);
+    assert.deepEqual(parseLabels("a.wav\t妈\t\tsam\tadult\t\traw").rows[0].processing, "raw");
+    assert.equal(parseLabels("a.wav\t妈\t\tsam\tadult\t\tloud").problems.length, 1);
     assert.deepEqual(saidTones(rows[2].said), [3, 4, 2, 2]);
     assert.deepEqual(saidTones("ma5 mǎ"), [0, 3]);
     assert.equal(saidTones(""), null);
@@ -117,8 +129,8 @@ describe("labels.tsv", () => {
     assert.equal(problems.length, 2);
     const line = formatLabel({ file: "a.wav", text: "妈", said: "", speaker: "sam\tadult\nb.wav\t马", group: "pirate", unsure: 1 });
     assert.equal(line.split("\n").length, 1);
-    assert.equal(line.split("\t").length, 6);
-    assert.deepEqual(parseLabels(line).rows, [{ file: "a.wav", text: "妈", said: "", speaker: "sam adult b.wav 马", group: "", unsure: true }]);
+    assert.equal(line.split("\t").length, 7);
+    assert.deepEqual(parseLabels(line).rows, [{ file: "a.wav", text: "妈", said: "", speaker: "sam adult b.wav 马", group: "", unsure: true, processing: "processed" }]);
   });
 
   it("derives what a speaker has done from the rows alone", () => {
@@ -128,6 +140,13 @@ describe("labels.tsv", () => {
     assert.ok(done.has(promptKey({ text: "妈", said: "ma2" })));
     assert.ok(!done.has(promptKey({ text: "马", said: "" })));
     assert.equal(doneKeys(rows, "nobody").size, 0);
+  });
+
+  it("knows a speaker under any capitals, with the group first given", () => {
+    const { rows } = parseLabels(["a.wav\t妈\t\tSam\tadult", "b.wav\t马\t\tsam\tadult", "c.wav\t马\t\tKim"].join("\n"));
+    assert.deepEqual(findSpeaker(rows, "SAM"), { name: "Sam", group: "adult" });
+    assert.deepEqual(findSpeaker(rows, "kim"), { name: "Kim", group: "" });
+    assert.equal(findSpeaker(rows, "sa"), null);
   });
 });
 
@@ -176,6 +195,9 @@ describe("the uploaded WAV", () => {
     assert.match(checkWav(wav(200, 200, 0.1)).error, /too short/);
     assert.match(checkWav(wav().subarray(0, 4000)).error, /length/);
     assert.match(checkWav(Buffer.concat([wav(), Buffer.alloc(2)])).error, /length/);
+    // The sizes the header states: the RIFF chunk and the fmt chunk.
+    assert.match(checkWav(patched(4, 4, 12)).error, /length/);
+    assert.match(checkWav(patched(16, 4, 18)).error, /not a WAV/);
     assert.match(checkWav(Buffer.alloc(MAX_UPLOAD_BYTES + 2)).error, /too long/);
     assert.match(checkWav(Buffer.from("ID3 this is an mp3, honestly, with more than forty-four bytes in it")).error, /not a WAV/);
     assert.match(checkWav(Buffer.alloc(10)).error, /not a WAV/);
@@ -213,6 +235,42 @@ describe("the readout and the per-speaker tally", () => {
   });
 });
 
+describe("the recordings report", () => {
+  const m = (speaker, unsure, wrong, verdict, processing = "processed") => ({ speaker, group: "adult", unsure, wrong, verdict, processing });
+  const marks = [
+    m("sam", false, false, "ok"), m("sam", false, false, "ok"), m("sam", false, false, "off"), m("sam", false, false, "unsure"),
+    m("sam", false, true, "off"), m("sam", false, true, "unsure"),
+    m("sam", true, false, "ok"), m("sam", true, true, "ok"),
+  ];
+
+  it("gives the sure clips and the doubted ones as the same split its table uses", () => {
+    const rep = recordingsReport({ clips: 6, marks, detail: ["| a.wav | sam | 妈 | as shown |  | processed | 妈 ok |"], problems: ["b.wav: not a WAV file"], date: "2026-11-18" });
+    for (const text of [rep.markdown, rep.console]) {
+      assert.ok(text.includes("6 recordings from `labels.tsv`, 1 speaker(s), 8 judged syllables."));
+      assert.ok(text.includes("In clips kept without doubt: said as shown 4 (ok 2, flagged 1, scorer not sure 1); said wrong on purpose 2 (caught 1, passed as ok 0, scorer not sure 1)."));
+      assert.ok(text.includes("counted apart: said as shown 1 (ok 1, flagged 0, scorer not sure 0); said wrong on purpose 1 (caught 0, passed as ok 1, scorer not sure 0)."));
+      // The table's denominators are the summary's numbers.
+      assert.ok(text.includes("| sam | adult | 1 of 2 (50%) | 1 of 4 (25%) | 1 of 4 (25%) | 0 of 1 (0%) | 0 of 1 (0%) |"));
+      assert.ok(text.includes("Not scored: b.wav: not a WAV file."));
+      assert.ok(!text.includes("recording setting"), "one setting: no second table");
+    }
+    assert.ok(rep.markdown.includes("| a.wav | sam | 妈 | as shown |  | processed | 妈 ok |"));
+    assert.ok(rep.markdown.includes("on 2026-11-18"));
+    assert.ok(recordingsReport({ clips: 1, marks: marks.slice(0, 2), date: "2026-11-18" }).markdown.includes("No clip was marked"));
+  });
+
+  it("splits each speaker by recording setting once both exist", () => {
+    const both = [...marks, m("sam", false, false, "ok", "raw"), m("sam", false, true, "off", "raw")];
+    const rep = recordingsReport({ clips: 8, marks: both, date: "2026-11-18" });
+    for (const text of [rep.markdown, rep.console]) {
+      assert.ok(text.includes("| Speaker, recording setting |"));
+      assert.ok(text.includes("| sam, processed | adult | 1 of 2 (50%) | 1 of 4 (25%) | 1 of 4 (25%) | 0 of 1 (0%) | 0 of 1 (0%) |"));
+      assert.ok(text.includes("| sam, raw | adult | 1 of 1 (100%) | 0 of 1 (0%) | 0 of 1 (0%) | none recorded | none recorded |"));
+    }
+    assert.ok(rep.markdown.includes("## By recording setting"));
+  });
+});
+
 describe("the recorder's HTTP handler", () => {
   let tmp;
   let dir;
@@ -221,9 +279,9 @@ describe("the recorder's HTTP handler", () => {
   let recorder;
 
   /** A raw request, so the test controls Host and Origin. */
-  function call({ method = "GET", url = "/", headers = {}, body = null, host = null }) {
+  function call({ method = "GET", url = "/", headers = {}, body = null, host = null, at = port }) {
     return new Promise((resolve, reject) => {
-      const req = http.request({ host: "127.0.0.1", port, method, path: url, headers: { Host: host ?? `127.0.0.1:${port}`, ...headers, ...(body ? { "Content-Length": body.length } : {}) } }, (res) => {
+      const req = http.request({ host: "127.0.0.1", port: at, method, path: url, headers: { Host: host ?? `127.0.0.1:${at}`, ...headers, ...(body ? { "Content-Length": body.length } : {}) } }, (res) => {
         const chunks = [];
         res.on("data", (c) => chunks.push(c));
         res.on("end", () => {
@@ -242,8 +300,28 @@ describe("the recorder's HTTP handler", () => {
       req.end(body ?? undefined);
     });
   }
-  const keep = (query, body = wav(180, 260), headers = {}) => call({ method: "POST", url: `/api/keep?${new URLSearchParams(query)}`, headers: { Origin: `http://127.0.0.1:${port}`, "Content-Type": "audio/wav", ...headers }, body });
+  /** A keep as the page posts it: the prompt's id with its text and what
+   *  was asked, and how the microphone was recorded. */
+  const keep = (query, body = wav(180, 260), headers = {}, at = port) => {
+    const prompt = recorder.prompts.find((p) => p.id === query.prompt);
+    const q = { ...(prompt ? { text: prompt.text, said: prompt.said } : {}), processing: "raw", ...query };
+    for (const k of Object.keys(q)) if (q[k] === undefined) delete q[k];
+    return call({ method: "POST", url: `/api/keep?${new URLSearchParams(q)}`, headers: { Origin: `http://127.0.0.1:${at}`, "Content-Type": "audio/wav", ...headers }, body, at });
+  };
   const files = () => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []);
+
+  let clipsDir;
+  const others = [];
+  /** A second recorder over the same clips with a recordings folder of
+   *  its own, for tests that prepare labels.tsv by hand. */
+  async function mount(name) {
+    const d = path.join(tmp, name);
+    fs.mkdirSync(d, { recursive: true });
+    const srv = http.createServer(createRecorder({ dir: d, clipsDir }).handler);
+    await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
+    others.push(srv);
+    return { dir: d, at: srv.address().port };
+  }
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-record-"));
@@ -258,6 +336,7 @@ describe("the recorder's HTTP handler", () => {
       fs.writeFileSync(path.join(clips, "say-tingting", `${text}.wav`), wav(220, 220));
     }
     fs.writeFileSync(path.join(clips, "say-reed", "麻.wav"), wav(110, 160));
+    clipsDir = clips;
     recorder = createRecorder({ dir, clipsDir: clips });
     server = http.createServer(recorder.handler);
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -265,6 +344,7 @@ describe("the recorder's HTTP handler", () => {
   });
   after(async () => {
     await new Promise((resolve) => server.close(resolve));
+    for (const srv of others) await new Promise((resolve) => srv.close(resolve));
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -330,8 +410,8 @@ describe("the recorder's HTTP handler", () => {
 
   it("refuses a bad upload without writing anything", async () => {
     const q = { prompt: "r01", speaker: "sam", group: "adult" };
-    assert.equal((await keep({ ...q, prompt: "r99" })).status, 400);
-    assert.equal((await keep({ ...q, prompt: "../x" })).status, 400);
+    assert.equal((await keep({ ...q, prompt: "r99", text: "妈", said: "" })).status, 409);
+    assert.equal((await keep({ ...q, prompt: "../x", text: "妈", said: "" })).status, 409);
     assert.equal((await keep({ ...q, speaker: "../" })).status, 400);
     assert.equal((await keep({ ...q, group: "robot" })).status, 400);
     assert.equal((await keep(q, wav(), { "Content-Type": "text/plain" })).status, 415);
@@ -347,14 +427,14 @@ describe("the recorder's HTTP handler", () => {
     const first = recorder.prompts[0];
     assert.equal(first.text, "妈");
     const before = await call({ url: "/api/progress?speaker=%20Sam%20" });
-    assert.deepEqual(before.json, { speaker: "Sam", done: [] });
+    assert.deepEqual(before.json, { speaker: "Sam", existing: null, done: [] });
 
     const res = await keep({ prompt: first.id, speaker: "Sam", group: "adult" }, wav(220, 222));
     assert.equal(res.status, 200);
     assert.equal(res.json.saved, true);
     assert.deepEqual(res.json.done, [promptKey(first)]);
     // The readout is the scorer's own words on a level tone for 妈 (tone 1).
-    assert.match(res.json.readout, /expected tone 1|not sure/);
+    assert.equal(res.json.readout, "heard tone 1, expected tone 1: matches");
 
     const saved = files().filter((f) => f.endsWith(".wav"));
     assert.equal(saved.length, 1);
@@ -362,7 +442,7 @@ describe("the recorder's HTTP handler", () => {
     assert.ok(fs.readFileSync(path.join(dir, saved[0])).equals(wav(220, 222)));
     assert.equal(fs.statSync(path.join(dir, saved[0])).mode & 0o777, 0o600);
     const text = fs.readFileSync(path.join(dir, "labels.tsv"), "utf8");
-    assert.equal(text, `${LABELS_HEADER}\n${saved[0]}\t妈\t\tSam\tadult\t\n`);
+    assert.equal(text, `${LABELS_HEADER}\n${saved[0]}\t妈\t\tSam\tadult\t\traw\n`);
 
     // A wrong-on-purpose clip from a child, marked not sure, with a name
     // that tries to be a path and a second row.
@@ -372,11 +452,11 @@ describe("the recorder's HTTP handler", () => {
     const { rows, problems } = parseLabels(fs.readFileSync(path.join(dir, "labels.tsv"), "utf8"));
     assert.deepEqual(problems, []);
     assert.equal(rows.length, 2);
-    assert.deepEqual({ ...rows[1], file: "" }, { file: "", text: "妈", said: "ma2", speaker: "kim child x wav 马", group: "child", unsure: true });
+    assert.deepEqual({ ...rows[1], file: "" }, { file: "", text: "妈", said: "ma2", speaker: "kim child x wav 马", group: "child", unsure: true, processing: "raw" });
     assert.ok(isRecordingName(rows[1].file));
     // Everything written is in the recordings folder, under generated names.
     assert.deepEqual(files().filter((f) => f !== "labels.tsv").every(isRecordingName), true);
-    assert.deepEqual(fs.readdirSync(tmp).sort(), ["clips", "recordings"]);
+    assert.deepEqual(fs.readdirSync(tmp).filter((f) => !f.startsWith("extra-")).sort(), ["clips", "recordings"]);
 
     const speakers = await call({ url: "/api/speakers" });
     assert.deepEqual(speakers.json.speakers, [{ name: "Sam", group: "adult", done: 1 }, { name: "kim child x wav 马", group: "child", done: 1 }]);
@@ -392,9 +472,119 @@ describe("the recorder's HTTP handler", () => {
     assert.match(res.json.readout, /not sure/);
     assert.equal(res.json.done.length, 2);
   });
+
+  it("files a clip under what the page says it is, or not at all", async () => {
+    const q = { speaker: "Kay", group: "adult" };
+    const stale = "This page is out of date with the recorder. Reload the page and record this one again.";
+    const count = files().length;
+    // The id is 妈's; the page thinks it was showing 马 (its list is from
+    // before a restart with a different cache).
+    const wrongText = await keep({ ...q, prompt: "r01", text: "马", said: "" });
+    assert.deepEqual([wrongText.status, wrongText.json.error], [409, stale]);
+    // The right text under another prompt's id, and the asked tone changed.
+    assert.equal((await keep({ ...q, prompt: "r03", text: "妈", said: "" })).status, 409);
+    assert.equal((await keep({ ...q, prompt: "w01", text: "妈", said: "ma3" })).status, 409);
+    // A page from before the text was posted, or the recording setting.
+    assert.equal((await keep({ ...q, prompt: "r01", text: undefined, said: undefined })).status, 409);
+    assert.equal((await keep({ ...q, prompt: "r01", processing: undefined })).status, 409);
+    assert.equal((await keep({ ...q, prompt: "r01", processing: "studio" })).status, 409);
+    assert.equal(files().length, count);
+    assert.deepEqual((await call({ url: "/api/progress?speaker=Kay" })).json, { speaker: "Kay", existing: null, done: [] });
+  });
+
+  it("a name already recorded is that person under any capitals, in the group first given", async () => {
+    // "Sam" (adult) is in the labels from the test above.
+    const asked = await call({ url: "/api/progress?speaker=sAM" });
+    assert.deepEqual([asked.json.speaker, asked.json.existing], ["Sam", { name: "Sam", group: "adult" }]);
+    assert.ok(asked.json.done.length >= 1);
+    // Never moved to another group…
+    const moved = await keep({ prompt: "r03", speaker: "sam", group: "child" });
+    assert.equal(moved.status, 409);
+    assert.match(moved.json.error, /Sam is already recorded as an adult/);
+    // …and a clip kept under other capitals is stored under the first name.
+    const kept = await keep({ prompt: "r03", speaker: "SAM", group: "adult" }, wav(120, 121));
+    assert.equal(kept.status, 200);
+    const { rows } = parseLabels(fs.readFileSync(path.join(dir, "labels.tsv"), "utf8"));
+    assert.equal(rows[rows.length - 1].speaker, "Sam");
+    assert.ok(!rows.some((r) => r.speaker === "SAM" || r.speaker === "sam"));
+    const names = (await call({ url: "/api/speakers" })).json.speakers.map((x) => x.name);
+    assert.equal(names.filter((n) => n.toLowerCase() === "sam").length, 1);
+  });
+
+  it("reads the readout against the speaker's range once there are five other clips", async () => {
+    // A low, level 妈: with no range to place it a level pitch may be a
+    // first tone; in the range of this speaker's other clips it is low,
+    // and a first tone is high.
+    const low = () => wav(100, 100);
+    const early = await keep({ prompt: "r01", speaker: "Ranger", group: "adult" }, low());
+    assert.equal(early.json.readout, "heard tone 1, expected tone 1: matches");
+    // Four more clips across an octave: a range from 100 to 200 Hz.
+    for (const [id, from, to] of [["r02", 110, 200], ["r04", 200, 105], ["r05", 190, 195], ["r06", 105, 190]]) assert.equal((await keep({ prompt: id, speaker: "Ranger", group: "adult" }, wav(from, to))).status, 200);
+    const later = await keep({ prompt: "r01", speaker: "ranger", group: "adult" }, low());
+    assert.equal(later.json.readout, "heard tone 3, expected tone 1: flagged");
+  });
+
+  it("adds a label on a line of its own, whatever the file ended with", async () => {
+    const hand = "old-1.wav\t你好\t\tPat\tadult";
+    for (const [name, existing] of [["extra-no-newline", hand], ["extra-newline", `${hand}\n`], ["extra-crlf", `${hand}\r\n`], ["extra-empty", ""]]) {
+      const other = await mount(name);
+      fs.writeFileSync(path.join(other.dir, "labels.tsv"), existing);
+      const res = await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, other.at);
+      assert.equal(res.status, 200, name);
+      const text = fs.readFileSync(path.join(other.dir, "labels.tsv"), "utf8");
+      // What was there is untouched, byte for byte.
+      assert.ok(text.startsWith(existing), name);
+      const { rows, problems } = parseLabels(text);
+      assert.deepEqual(problems, [], name);
+      assert.deepEqual(rows.map((r) => [r.text, r.speaker]), existing ? [["你好", "Pat"], ["妈", "Pat"]] : [["妈", "Pat"]], name);
+      assert.ok(isRecordingName(rows[rows.length - 1].file));
+      assert.deepEqual(res.json.done.sort(), existing ? [promptKey({ text: "你好" }), promptKey({ text: "妈" })].sort() : [promptKey({ text: "妈" })], name);
+    }
+  });
+
+  it("says so, and keeps nothing, when the label can't be written", async () => {
+    const other = await mount("extra-broken");
+    // labels.tsv is a folder: nothing can be appended to it.
+    fs.mkdirSync(path.join(other.dir, "labels.tsv"));
+    const res = await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, other.at);
+    assert.equal(res.status, 500);
+    assert.match(res.json.error, /not kept/);
+    assert.notEqual(res.json.saved, true);
+    // No clip left behind without its label.
+    assert.deepEqual(fs.readdirSync(other.dir), ["labels.tsv"]);
+
+    // It reads but can't be added to: the clip written a moment before
+    // is taken away again, and the speaker's progress doesn't move.
+    const locked = await mount("extra-locked");
+    fs.writeFileSync(path.join(locked.dir, "labels.tsv"), "old-1.wav\t你好\t\tPat\tadult\n", { mode: 0o400 });
+    const res2 = await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, locked.at);
+    assert.equal(res2.status, 500);
+    assert.match(res2.json.error, /could not be added to labels.tsv, so it was not kept/);
+    assert.deepEqual(fs.readdirSync(locked.dir), ["labels.tsv"]);
+    assert.deepEqual((await call({ url: "/api/progress?speaker=Pat", at: locked.at })).json.done, [promptKey({ text: "你好" })]);
+  });
 });
 
 describe("the recordings folder and git", () => {
+  it("is refused when a file under it is already tracked, ignored or not", () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-record-git-"));
+    try {
+      const git = (...args) => execFileSync("git", ["-C", repo, ...args], { stdio: "ignore" });
+      git("init", "-q");
+      fs.mkdirSync(path.join(repo, "data", "recordings"), { recursive: true });
+      fs.mkdirSync(path.join(repo, "data", "clean"), { recursive: true });
+      fs.writeFileSync(path.join(repo, "data", "recordings", "old.wav"), "x");
+      git("add", "data/recordings/old.wav");
+      // Ignored only after a file was added: the rule doesn't untrack it.
+      fs.writeFileSync(path.join(repo, ".gitignore"), "data/\n");
+      assert.equal(trackedByGit(path.join(repo, "data", "recordings"), repo), true);
+      assert.equal(trackedByGit(path.join(repo, "data", "clean"), repo), false);
+      assert.equal(trackedByGit(path.join(repo, "src"), repo), true);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("is safe outside the repository or under an ignored folder, and refused where git would track it", () => {
     const repo = path.resolve(import.meta.dirname, "..", "..");
     assert.equal(trackedByGit(os.tmpdir(), repo), false);

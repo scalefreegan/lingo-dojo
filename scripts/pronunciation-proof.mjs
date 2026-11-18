@@ -43,7 +43,8 @@ import {
   AZURE_RULES, FALLBACK_TRUST, TONE_RULES, TRIM_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
   trackPitch, withTone,
 } from "./pronunciation.mjs";
-import { PHRASES, SINGLES, parseLabels, saidTones as readSaid, speakerTable, speakerTally } from "./pronunciation-recordings.mjs";
+import { PHRASES, SINGLES, buildPrompts, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
+import { trackedByGit } from "./pronunciation-record.mjs";
 import { DEFAULT_ELEVEN_MODEL, elevenLibrary, elevenLibraryRequest, elevenSpeechRequest,elevenVoices, elevenVoicesRequest, voiceKeys } from "./voice.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -567,6 +568,8 @@ if (voices.length === 4 && !process.env.LINGO_PROOF_RULES && !args.has("--quick"
 
 // Real recordings, when someone has dropped some in.
 const REC_DIR = path.join(DIR, "recordings");
+// The how-to's counts come from the prompt list itself.
+const PROMPT_COUNT = { right: buildPrompts().filter((x) => x.part === "right").length, wrong: buildPrompts().filter((x) => x.part === "wrong").length };
 const RECORDINGS_HELP = [
   "### How to record your clips",
   "",
@@ -575,7 +578,7 @@ const RECORDINGS_HELP = [
   "3. Type a first name or nickname, pick Adult or Child, press **Start**.",
   "4. For each word: press **Listen** to hear it, press **Record** (or the space bar), say it, press **Stop** (or space again). The page plays your clip back.",
   "5. Press **Keep** (or Enter) if it is what you meant to say, or **Redo** (space) to try again. If you doubt you said it right, tick **Not sure I said it right** before keeping: that is useful, not a failure.",
-  "6. Part 1 is 31 words and phrases said as shown. Part 2 is 12 words said in the *wrong* tone on purpose, each with a model to copy; the page explains it when you get there.",
+  `6. Part 1 is ${PROMPT_COUNT.right} words and phrases said as shown. Part 2 is ${PROMPT_COUNT.wrong} words said in the *wrong* tone on purpose, each with a model to copy; the page explains it when you get there.`,
   "7. Stop whenever you like (**Stop for now**, or just close the tab). Every kept clip is already saved; next time, pick your name on the first screen and it carries on where you stopped.",
   "8. When you have some clips, press Ctrl-C in the terminal and run `npm run pron:proof`. It prints how the scorer did for each speaker and writes the detail to `data/pronunciation-proof/recordings/report.md`.",
   "",
@@ -592,10 +595,10 @@ const RECORDINGS_HELP = [
   "`data/pronunciation-proof/recordings/labels.tsv` (with `LINGO_PROOF_DIR` set, its `recordings/` folder): one recording per line, tab-separated; the recorder writes it, and it can be written by hand:",
   "",
   "```",
-  "# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure",
+  "# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure<TAB>processing",
   "nihao-1.wav\t你好",
-  "rec-20261118-153012-ab12cd34.wav\t妈\tma2\tsam\tadult\t",
-  "rec-20261118-153140-0f3e9a71.wav\t我是学生\t\tsam\tadult\tunsure",
+  "rec-20261118-153012-ab12cd34.wav\t妈\tma2\tsam\tadult\t\traw",
+  "rec-20261118-153140-0f3e9a71.wav\t我是学生\t\tsam\tadult\tunsure\traw",
   "```",
   "",
   "- `file`: WAV, M4A, MP3 or WebM in that folder; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The recorder's files are already the right format.",
@@ -604,6 +607,7 @@ const RECORDINGS_HELP = [
   "- `speaker`: a name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings.",
   "- `group`: `adult` or `child` (optional).",
   "- `unsure`: `unsure` when the speaker ticked \"not sure I said it right\" (optional).",
+  "- `processing`: `raw` when the microphone was recorded with the browser's echo cancellation, noise suppression and automatic gain off (what the recorder does now), `processed` with them on. A line without it is read as `processed`: the first recordings were made that way. When the labels hold both, the recordings report has each speaker once per setting, so a few prompts recorded again are a direct comparison.",
   "",
   "A syllable whose `said` tone is one the text accepts counts as said as shown (a flag on it is a false alarm); any other counts as wrong on purpose (a flag is a catch). Nothing is uploaded: the local scorer runs on this machine.",
 ].join("\n");
@@ -637,7 +641,6 @@ if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
       problems.push(`${file}: ${e.message}`);
     }
   }
-  const t = { right: { ok: 0, unsure: 0, off: 0 }, wrong: { ok: 0, unsure: 0, off: 0 } };
   const detail = [];
   const marked = [];
   for (const row of rows) {
@@ -647,56 +650,27 @@ if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
       const saidTone = row.saidTones?.[k] ?? null;
       if (row.syllables[k].expectedTone === 0 || saidTone === 0) return `${x.char} –`;
       const wrong = saidTone !== null && !row.syllables[k].accept.includes(saidTone);
-      t[wrong ? "wrong" : "right"][x.verdict]++;
-      marked.push({ speaker: row.speaker, group: row.group, unsure: row.unsure, wrong, verdict: x.verdict });
+      marked.push({ speaker: row.speaker, group: row.group, unsure: row.unsure, wrong, verdict: x.verdict, processing: row.processing });
       return `${x.char} ${x.verdict}${x.verdict === "off" ? (wrong ? " (caught)" : " (**false alarm**)") : wrong ? " (missed)" : ""}`;
     });
-    detail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as shown"} | ${row.unsure ? "yes" : ""} | ${marks.join(", ")} |`);
+    detail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as shown"} | ${row.unsure ? "yes" : ""} | ${row.processing} | ${marks.join(", ")} |`);
   }
-  recordings = { rows, problems, t, detail, bySpeaker: speakerTally(marked) };
+  recordings = { clips: rows.length, problems, detail, marks: marked };
 }
 
-/** The recordings' results: a person's, so never in the tracked report.
- *  Printed, and written beside the recordings (gitignored). */
-function recordingsReport() {
-  const { t, rows, problems, detail, bySpeaker } = recordings;
-  const right = t.right.ok + t.right.unsure + t.right.off;
-  const wrong = t.wrong.ok + t.wrong.unsure + t.wrong.off;
-  // The table below splits what this line adds together: say so, with
-  // the numbers, or the two look as if they disagree.
-  const n = (c) => c.ok + c.unsure + c.off;
-  const doubtedRight = bySpeaker.reduce((a, s) => a + n(s.doubted.right), 0);
-  const doubtedWrong = bySpeaker.reduce((a, s) => a + n(s.doubted.wrong), 0);
-  const out = [
-    "# Real recordings: how the scorer did",
-    "",
-    `Written by \`node scripts/pronunciation-proof.mjs\` on ${new Date().toISOString().slice(0, 10)}. Personal: this file stays in the gitignored recordings folder.`,
-    "",
-    `${rows.length} recordings from \`labels.tsv\`, ${bySpeaker.length} speaker(s). Syllables said as shown: ${right}, of which flagged (false alarms) ${t.right.off}, ok ${t.right.ok}, unsure ${t.right.unsure}. Syllables said wrong on purpose: ${wrong}, of which caught ${t.wrong.off}, passed as ok ${t.wrong.ok}, unsure ${t.wrong.unsure}. These totals are over every clip. Of them, ${doubtedRight} said-as-shown and ${doubtedWrong} wrong-on-purpose syllables are in clips the speaker marked "not sure I said it right"; the table below counts those apart, so its first columns are out of ${right - doubtedRight} and ${wrong - doubtedWrong}.`,
-    "",
-    "## By speaker",
-    "",
-    "A label is what the speaker was aiming for, not what came out: a flag on a beginner's \"said as shown\" clip may be a real mistake caught. Each syllable is counted once: in the \"kept without doubt\" columns, or, if its clip was marked \"not sure I said it right\", in the last two.",
-    "",
-    ...speakerTable(bySpeaker),
-    "",
-    "## Every clip",
-    "",
-    "| File | Speaker | Text | Asked to say | Marked not sure | Syllables |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...detail,
-    "",
-    ...(problems.length ? [`Not scored: ${problems.join("; ")}.`, ""] : []),
-  ];
-  return { markdown: out.join("\n"), console: ["", "Real recordings, by speaker:", ...speakerTable(bySpeaker), ...(problems.length ? [`Not scored: ${problems.join("; ")}.`] : [])].join("\n") };
-}
-
-/** Print the recordings' results and write them beside the recordings. */
+/** Print the recordings' results and write them beside the recordings
+ *  (the builder is recordingsReport in pronunciation-recordings.mjs). They
+ *  are a person's, so never in the tracked report, and never into a folder
+ *  git could commit from. */
 function writeRecordingsReport() {
-  const rec = recordingsReport();
+  const rec = recordingsReport({ ...recordings, date: new Date().toISOString().slice(0, 10) });
+  console.log(rec.console);
+  if (trackedByGit(REC_DIR)) {
+    console.error(`Not writing report.md: ${REC_DIR} is inside the repository and not gitignored (or already holds tracked files).`);
+    return;
+  }
   const file = path.join(REC_DIR, "report.md");
   fs.writeFileSync(file, rec.markdown, { mode: 0o600 });
-  console.log(rec.console);
   console.log(`Wrote ${file}`);
 }
 

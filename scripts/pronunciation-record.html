@@ -94,6 +94,13 @@
       </div>
       <p></p>
       <button id="go" class="primary">Start</button>
+      <div id="confirm" hidden>
+        <p id="confirmText"></p>
+        <div class="row">
+          <button id="confirmYes" class="primary"></button>
+          <button id="confirmNo">Use a different name</button>
+        </div>
+      </div>
       <p id="startError" class="error" role="alert"></p>
     </div>
     <div class="card small">
@@ -143,7 +150,7 @@
           <button id="keep" class="primary">Keep<kbd>Enter</kbd></button>
         </div>
         <div class="unsure">
-          <label class="choice"><input id="unsure" type="checkbox"> Not sure I said it right</label>
+          <label class="choice"><input id="unsure" type="checkbox"> Not sure I said it right<kbd>N</kbd></label>
         </div>
       </div>
       <p></p>
@@ -181,6 +188,9 @@
   var RATE = 16000;
   var MAX_MS = 12000;   // a clip stops itself here
   var MIN_MS = 400;     // shorter is a slip of the finger
+  var TAIL_MS = 250;    // kept after Stop: the end of a third tone's rise
+  // How the microphone is asked for (openMic), written into each label.
+  var PROCESSING = "raw";
 
   var $ = function (id) { return document.getElementById(id); };
   var keyOf = function (p) { return p.text + "\t" + p.said; };
@@ -191,7 +201,7 @@
   // idle | starting | recording | working | review | saving
   var state = "idle";
   var stream = null, audioCtx = null, analyser = null, recorder = null, chunks = [], startedAt = 0, stopTimer = 0, meterTimer = 0;
-  var take = null, takeUrl = null, player = null;
+  var take = null, takeUrl = null, player = null, stopping = false;
 
   /* ------------------------------ small helpers ----------------------------- */
 
@@ -207,7 +217,11 @@
   function api(path, options) {
     return fetch(path, options).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
-        if (!r.ok) throw new Error(j.error || "The recorder didn't answer. Is it still running in the terminal?");
+        if (!r.ok) {
+          var err = new Error(j.error || "The recorder didn't answer. Is it still running in the terminal?");
+          err.status = r.status;
+          throw err;
+        }
         return j;
       });
     }, function () {
@@ -254,36 +268,53 @@
       list.textContent = "";
       j.speakers.forEach(function (s) {
         var b = el("button", "", s.name + (s.group ? " (" + s.group + ")" : "") + ": " + s.done + " of " + PROMPTS.length + " done");
-        b.addEventListener("click", function () { begin(s.name, s.group || "adult"); });
+        b.addEventListener("click", function () { begin(s.name, s.group || document.querySelector("input[name=group]:checked").value, true); });
         list.appendChild(b);
       });
       $("known").hidden = !j.speakers.length;
     }).catch(function () { $("known").hidden = true; });
   }
 
-  function begin(name, grp) {
+  /** `known` is true when the name was picked from the list of people
+   *  already recorded; a typed name that turns out to be one of them is
+   *  asked about first, never merged in silently. */
+  function begin(name, grp, known) {
     $("startError").textContent = "";
+    $("confirm").hidden = true;
     if (!name.trim()) { $("startError").textContent = "Type a name or nickname first."; return; }
     api("/api/progress?speaker=" + encodeURIComponent(name)).then(function (j) {
-      speaker = j.speaker; group = grp; done = new Set(j.done); skipped = new Set();
+      if (j.existing && !known) {
+        var as = j.existing.name + (j.existing.group ? " (" + j.existing.group + ")" : "");
+        $("confirmText").textContent = "There are already clips from " + as + ". Is that you?";
+        $("confirmYes").textContent = "Carry on as " + as;
+        $("confirmYes").onclick = function () { begin(j.existing.name, j.existing.group || grp, true); };
+        $("confirm").hidden = false;
+        return null;
+      }
+      // Someone already recorded keeps the group they were first given.
+      speaker = j.speaker; group = (j.existing && j.existing.group) || grp; done = new Set(j.done); skipped = new Set();
       introSeen = false;
-      return openMic();
-    }).then(function () {
-      $("who").textContent = "· " + speaker;
-      $("readout").hidden = true;
-      show("session");
-      next();
+      return openMic().then(function () {
+        $("who").textContent = "· " + speaker;
+        $("readout").hidden = true;
+        show("session");
+        next();
+      });
     }).catch(function (e) { $("startError").textContent = e.message; });
   }
 
   /** The microphone is opened once for the session and kept open: opening
    *  it per clip takes long enough to cut off the start of a lone syllable.
-   *  The same processing as the app's recorder, since that is what the
-   *  scorer will hear there. */
+   *  Echo cancellation, noise suppression and automatic gain are asked
+   *  off: raw audio can be degraded later to match what the app records,
+   *  processed audio can't be undone; gain that moves inside a clip
+   *  misleads cuts made by energy; and the chain can weaken the lowest
+   *  part of a low voice. (The first clips were recorded with all three
+   *  on; labels without the setting are read as "processed".) */
   function openMic() {
     if (stream) return Promise.resolve();
     if (!navigator.mediaDevices || !window.MediaRecorder) return Promise.reject(new Error("This browser can't record. Try a current Chrome, Safari or Firefox."));
-    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) {
+    return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }).then(function (s) {
       stream = s;
       audioCtx = new AudioContext();
       analyser = audioCtx.createAnalyser();
@@ -295,6 +326,7 @@
   }
   function closeMic() {
     if (recorder && recorder.state !== "inactive") { recorder.onstop = null; recorder.stop(); }
+    stopping = false;
     clearTimeout(stopTimer); clearInterval(meterTimer);
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     if (audioCtx) audioCtx.close();
@@ -434,7 +466,8 @@
     };
     recorder.onstop = function () {
       clearTimeout(stopTimer); clearInterval(meterTimer);
-      var ms = performance.now() - startedAt;
+      stopping = false;
+      var ms = performance.now() - startedAt - TAIL_MS;
       if (ms < MIN_MS) {
         setState("idle");
         $("sessionError").textContent = "That was too short to hold anything. Press Record, say it, then press Stop.";
@@ -454,26 +487,57 @@
     };
     recorder.start();
   }
+  /** Stop, a moment later: people press as the last sound leaves their
+   *  mouth, and the end of a rise is the part a third tone is known by. */
   function stopRecording() {
-    if (recorder && recorder.state !== "inactive") recorder.stop();
+    if (!recorder || recorder.state === "inactive" || stopping) return;
+    stopping = true;
+    clearTimeout(stopTimer);
+    setState("working");
+    var r = recorder;
+    setTimeout(function () { if (r.state !== "inactive") r.stop(); }, TAIL_MS);
   }
 
-  /** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV: the
-   *  same steps as the app's recorder (web/src/recorder.ts toWav). The
-   *  OfflineAudioContext does the resampling and the downmix. */
-  function toWav(blob) {
+  /** Decoded straight to 16 kHz: a context at that rate makes the browser
+   *  resample as it decodes, with its proper (band-limited) resampler.
+   *  Playing a 48 kHz buffer through a 16 kHz OfflineAudioContext, as the
+   *  app's recorder does, interpolates without filtering first, and
+   *  whatever lay above 8 kHz folds back into the band. */
+  function decodeAt16k(bytes) {
+    return new OfflineAudioContext(1, 1, RATE).decodeAudioData(bytes).then(function (buf) {
+      if (buf.sampleRate !== RATE) throw new Error("decoded at " + buf.sampleRate);
+      var pcm = new Float32Array(buf.length);
+      for (var c = 0; c < buf.numberOfChannels; c++) {
+        var ch = buf.getChannelData(c);
+        for (var i = 0; i < pcm.length; i++) pcm[i] += ch[i] / buf.numberOfChannels;
+      }
+      return pcm;
+    });
+  }
+  /** The fallback, for a browser that won't decode at 16 kHz: decode at
+   *  its own rate and let an OfflineAudioContext resample and downmix. */
+  function decodeByPlayback(bytes) {
     var decodeCtx = new AudioContext();
-    return blob.arrayBuffer().then(function (ab) { return decodeCtx.decodeAudioData(ab); }).then(function (decoded) {
+    return decodeCtx.decodeAudioData(bytes).then(function (decoded) {
       decodeCtx.close();
-      var length = Math.max(1, Math.ceil(decoded.duration * RATE));
-      var offline = new OfflineAudioContext(1, length, RATE);
+      var offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * RATE)), RATE);
       var src = offline.createBufferSource();
       src.buffer = decoded;
       src.connect(offline.destination);
       src.start();
       return offline.startRendering();
-    }, function (e) { decodeCtx.close(); throw e; }).then(function (rendered) {
-      var pcm = rendered.getChannelData(0);
+    }, function (e) { decodeCtx.close(); throw e; }).then(function (rendered) { return rendered.getChannelData(0); });
+  }
+
+  /** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV, the
+   *  format the engine expects (the header is the app recorder's). */
+  function toWav(blob) {
+    return blob.arrayBuffer().then(function (ab) {
+      // decodeAudioData takes the bytes away with it: each try gets a copy.
+      var first;
+      try { first = decodeAt16k(ab.slice(0)); } catch (e) { first = Promise.reject(e); }
+      return first.catch(function () { return decodeByPlayback(ab.slice(0)); });
+    }).then(function (pcm) {
       var out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
       var ascii = function (at, s) { for (var i = 0; i < s.length; i++) out.setUint8(at + i, s.charCodeAt(i)); };
       ascii(0, "RIFF");
@@ -511,7 +575,8 @@
     if (state !== "review" || !take || !current) return;
     var p = current;
     setState("saving");
-    var q = "?prompt=" + p.id + "&speaker=" + encodeURIComponent(speaker) + "&group=" + group + ($("unsure").checked ? "&unsure=1" : "");
+    var q = "?prompt=" + p.id + "&text=" + encodeURIComponent(p.text) + "&said=" + encodeURIComponent(p.said) + "&speaker=" + encodeURIComponent(speaker)
+      + "&group=" + group + "&processing=" + PROCESSING + ($("unsure").checked ? "&unsure=1" : "");
     api("/api/keep" + q, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: take }).then(function (j) {
       done = new Set(j.done);
       done.add(keyOf(p));
@@ -522,20 +587,25 @@
     }, function (e) {
       // Nothing is lost: the take is still here to send again.
       setState("review");
-      $("sessionError").textContent = "Not saved: " + e.message + " Press Keep to try again.";
+      // A 409 is this page and the recorder disagreeing: trying again
+      // can't help, its message says what will.
+      $("sessionError").textContent = "Not saved: " + e.message + (e.status === 409 ? "" : " Press Keep to try again.");
     });
   }
 
   /* --------------------------------- wiring -------------------------------- */
 
   $("go").addEventListener("click", function () {
-    begin($("name").value, document.querySelector("input[name=group]:checked").value);
+    begin($("name").value, document.querySelector("input[name=group]:checked").value, false);
   });
+  $("confirmNo").addEventListener("click", function () { $("confirm").hidden = true; $("name").value = ""; $("name").focus(); });
   $("name").addEventListener("keydown", function (e) { if (e.key === "Enter") $("go").click(); });
   $("introGo").addEventListener("click", function () { introSeen = true; next(); });
   $("record").addEventListener("click", function () { state === "recording" ? stopRecording() : startRecording(); });
-  $("listen").addEventListener("click", listen);
-  $("play").addEventListener("click", playTake);
+  // Clicked with the mouse these would keep the focus, and the next space
+  // would press them again instead of recording.
+  $("listen").addEventListener("click", function () { listen(); this.blur(); });
+  $("play").addEventListener("click", function () { playTake(); this.blur(); });
   $("keep").addEventListener("click", keep);
   $("skip").addEventListener("click", function () { if (current) { skipped.add(current.id); next(); } });
   $("stop").addEventListener("click", function () {
@@ -551,23 +621,30 @@
     openMic().then(function () { show("session"); next(); }).catch(function (e) { $("finishedText").textContent = e.message; });
   });
 
-  // Space records and stops, wherever the focus is: a focused button must
-  // not also take the key as a click.
+  // Space records and stops, Enter keeps, but never over a control that
+  // has the focus: there the key is that control's own (space ticks the
+  // checkbox and presses a focused button; Enter presses a focused
+  // button). Record and Keep take their keys as their own click.
   document.addEventListener("keydown", function (e) {
     if ($("session").hidden || !$("intro").hidden || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+    var el = document.activeElement;
+    var tag = el && el.tagName;
+    var onButton = tag === "BUTTON";
+    var onControl = onButton || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
     var k = e.key.toLowerCase();
     if (e.code === "Space") {
+      if (onControl) return;
       e.preventDefault();
       if (state === "recording") stopRecording();
       else if (state === "idle" || state === "review") startRecording();
-    } else if (k === "enter" && state === "review") {
+    } else if (k === "enter") {
+      // Enter does nothing on a checkbox, so there it may still keep.
+      if (onButton || state !== "review") return;
       e.preventDefault();
       keep();
     } else if (k === "l") listen();
     else if (k === "p") playTake();
-  });
-  document.addEventListener("keyup", function (e) {
-    if (e.code === "Space" && !$("session").hidden && $("intro").hidden) e.preventDefault();
+    else if (k === "n" && state === "review") $("unsure").checked = !$("unsure").checked;
   });
   window.addEventListener("pagehide", closeMic);
 

@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expectedSyllables, parseWav, scoreTones, speakerRange, trackPitch } from "./pronunciation.mjs";
 import {
-  GROUPS, LABELS_HEADER, MAX_UPLOAD_BYTES, MODEL_VOICES, buildPrompts, checkWav, cleanSpeaker, doneKeys, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout,
+  GROUPS, LABELS_HEADER, MAX_UPLOAD_BYTES, MODEL_VOICES, PROCESSING, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout,
 } from "./pronunciation-recordings.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -95,8 +95,17 @@ export function createRecorder({ dir, clipsDir }) {
 
   function speakers() {
     const rows = readRows();
-    const names = [...new Set(rows.map((r) => r.speaker))];
-    return names.map((name) => ({ name, group: rows.find((r) => r.speaker === name && r.group)?.group ?? "", done: [...doneKeys(rows, name)].filter((k) => prompts.some((p) => promptKey(p) === k)).length }));
+    // One entry per person: names that differ only in capitals are one.
+    const names = [...new Set(rows.map((r) => findSpeaker(rows, r.speaker).name))];
+    const same = (r, name) => r.speaker.toLowerCase() === name.toLowerCase();
+    return names.map((name) => ({ name, group: rows.find((r) => same(r, name) && r.group)?.group ?? "", done: [...done(rows, name)].filter((k) => prompts.some((p) => promptKey(p) === k)).length }));
+  }
+
+  /** What this person has kept, under any capitals of their name. */
+  function done(rows, name) {
+    const out = new Set();
+    for (const r of rows) if (r.speaker.toLowerCase() === name.toLowerCase()) for (const k of doneKeys(rows, r.speaker)) out.add(k);
+    return out;
   }
 
   function trackOf(file) {
@@ -115,7 +124,7 @@ export function createRecorder({ dir, clipsDir }) {
     tracks.set(file, track);
     const others = [];
     for (const r of rows) {
-      if (r.speaker !== speaker || r.file === file || !isRecordingName(r.file)) continue;
+      if (r.speaker.toLowerCase() !== speaker.toLowerCase() || r.file === file || !isRecordingName(r.file)) continue;
       try {
         others.push(trackOf(r.file));
       } catch {
@@ -140,13 +149,53 @@ export function createRecorder({ dir, clipsDir }) {
     return Buffer.concat(chunks);
   }
 
+  /** One line onto labels.tsv, on a line of its own whatever the file
+   *  ended with: a hand-edited file whose last line has no newline would
+   *  otherwise swallow the new row and lose both. */
+  function appendLabel(line) {
+    if (!fs.existsSync(labelsFile)) fs.writeFileSync(labelsFile, `${LABELS_HEADER}\n`, { flag: "wx", mode: 0o600 });
+    const size = fs.statSync(labelsFile).size;
+    let glue = "";
+    if (size > 0) {
+      const fd = fs.openSync(labelsFile, "r");
+      try {
+        const last = Buffer.alloc(1);
+        fs.readSync(fd, last, 0, 1, size - 1);
+        if (last[0] !== 0x0a) glue = "\n";
+      } finally {
+        fs.closeSync(fd);
+      }
+    }
+    fs.appendFileSync(labelsFile, `${glue}${line}\n`);
+  }
+
   async function keep(req, url) {
-    const prompt = byId.get(url.searchParams.get("prompt") ?? "");
-    if (!prompt) throw new HttpError(400, "unknown prompt");
-    const speaker = cleanSpeaker(url.searchParams.get("speaker"));
-    if (!speaker) throw new HttpError(400, "pick a speaker name first");
-    const group = url.searchParams.get("group") ?? "";
+    const q = url.searchParams;
+    // The prompt is named by its text and what was asked, not by its id
+    // alone: a tab left open across a restart may hold a list this server
+    // no longer has, and a clip must never be filed under another text.
+    const text = q.get("text");
+    const said = q.get("said") ?? "";
+    const prompt = text === null ? null : prompts.find((p) => p.text === text && p.said === said);
+    if (!prompt || prompt.id !== q.get("prompt")) throw new HttpError(409, "This page is out of date with the recorder. Reload the page and record this one again.");
+    const typed = cleanSpeaker(q.get("speaker"));
+    if (!typed) throw new HttpError(400, "pick a speaker name first");
+    const group = q.get("group") ?? "";
     if (!GROUPS.includes(group)) throw new HttpError(400, "the speaker is an adult or a child");
+    const processing = q.get("processing") ?? "";
+    if (!PROCESSING.includes(processing)) throw new HttpError(409, "This page is out of date with the recorder. Reload the page and record this one again.");
+    // A name already in the labels is that person, whatever its capitals,
+    // and stays in the group it was first given.
+    let before;
+    try {
+      before = readRows();
+    } catch (e) {
+      console.error(`labels.tsv can't be read: ${e.message}`);
+      throw new HttpError(500, "labels.tsv could not be read, so the clip was not kept. The terminal has the details.");
+    }
+    const known = findSpeaker(before, typed);
+    if (known?.group && known.group !== group) throw new HttpError(409, `${known.name} is already recorded as ${known.group === "child" ? "a child" : "an adult"}. Go back to the start and pick that name, or use a different one.`);
+    const speaker = known?.name ?? typed;
     if (!/^audio\/(wav|x-wav|wave)$/.test(String(req.headers["content-type"] ?? "").split(";")[0].trim())) throw new HttpError(415, "send the recording as audio/wav");
     const wav = await body(req);
     const check = checkWav(wav);
@@ -156,17 +205,29 @@ export function createRecorder({ dir, clipsDir }) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = newFileName();
     fs.writeFileSync(path.join(dir, file), wav, { flag: "wx", mode: 0o600 });
-    if (!fs.existsSync(labelsFile)) fs.writeFileSync(labelsFile, `${LABELS_HEADER}\n`, { flag: "wx", mode: 0o600 });
-    fs.appendFileSync(labelsFile, `${formatLabel({ file, text: prompt.text, said: prompt.said, speaker, group, unsure: url.searchParams.get("unsure") === "1" })}\n`);
+    const label = { file, text: prompt.text, said: prompt.said, speaker, group, unsure: q.get("unsure") === "1", processing };
+    let rows;
+    try {
+      appendLabel(formatLabel(label));
+      // Saved means the row reads back: nothing is answered on trust.
+      rows = readRows();
+      const back = rows.find((r) => r.file === file);
+      if (!back || back.text !== label.text || back.said !== label.said || back.speaker !== label.speaker) throw new Error("the new row does not read back");
+    } catch (e) {
+      // A clip without its label is a file nobody can score: take it away
+      // again (it is this request's own file) and say so.
+      fs.rmSync(path.join(dir, file), { force: true });
+      console.error(`label not written for ${file}: ${e.message}`);
+      throw new HttpError(500, "The clip could not be added to labels.tsv, so it was not kept. The terminal has the details.");
+    }
 
-    const rows = readRows();
     let heard = null;
     try {
       heard = score(prompt, wav, file, speaker, rows);
     } catch (e) {
       console.error(`readout failed for ${file}: ${e.message}`);
     }
-    return { saved: true, readout: heard, done: [...doneKeys(rows, speaker)] };
+    return { saved: true, readout: heard, done: [...done(rows, speaker)] };
   }
 
   const json = (res, status, value) => {
@@ -204,7 +265,12 @@ export function createRecorder({ dir, clipsDir }) {
     if (url.pathname === "/api/progress") {
       const speaker = cleanSpeaker(url.searchParams.get("speaker"));
       if (!speaker) throw new HttpError(400, "type a name or nickname");
-      return json(res, 200, { speaker, done: [...doneKeys(readRows(), speaker)] });
+      // `existing` is the person already under that name (any capitals),
+      // with the group they were first given: the page asks before it
+      // carries on as them.
+      const rows = readRows();
+      const existing = findSpeaker(rows, speaker);
+      return json(res, 200, { speaker: existing?.name ?? speaker, existing, done: [...done(rows, speaker)] });
     }
     const model = url.pathname.match(/^\/model\/([rw]\d{2})$/);
     if (model) {
@@ -228,16 +294,24 @@ export function createRecorder({ dir, clipsDir }) {
   return { handler, prompts };
 }
 
-/** Would git track a file in this folder? Outside the repository: no. */
+/** Could git commit anything in this folder? Yes when a new file there
+ *  would not be ignored, and yes when a file under it is tracked already
+ *  (an ignore rule added later does not untrack it). Outside the
+ *  repository, or with no git at all: no. */
 export function trackedByGit(dir, repo = REPO) {
   const rel = path.relative(repo, path.resolve(dir));
   if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
   try {
+    if (execFileSync("git", ["-C", repo, "ls-files", "--", rel || "."], { stdio: ["ignore", "pipe", "ignore"] }).toString().trim()) return true;
+  } catch {
+    // No git, or not a repository: nothing here can be committed.
+    return false;
+  }
+  try {
     execFileSync("git", ["-C", repo, "check-ignore", "-q", path.join(rel, "probe.wav")], { stdio: "ignore" });
     return false;
   } catch (e) {
-    // Exit 1 is "not ignored"; anything else (no git, not a repository)
-    // can't commit the folder either.
+    // Exit 1 is "not ignored".
     return e.status === 1;
   }
 }
@@ -247,7 +321,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const dir = process.env.LINGO_RECORDINGS_DIR ? path.resolve(process.env.LINGO_RECORDINGS_DIR) : path.join(clipsDir, "recordings");
   const port = Number(process.env.LINGO_RECORD_PORT || DEFAULT_PORT);
   if (trackedByGit(dir)) {
-    console.error(`${dir} is inside the repository and not gitignored: recordings could be committed. Refusing to start.`);
+    console.error(`${dir} is inside the repository and not gitignored (or already holds tracked files): recordings could be committed. Refusing to start.`);
     process.exit(1);
   }
   const { handler, prompts } = createRecorder({ dir, clipsDir });

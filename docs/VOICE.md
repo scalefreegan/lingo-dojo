@@ -722,17 +722,33 @@ elsewhere. It walks a speaker (a nickname, adult or child) through the
 proof's 31 syllables and phrases said as shown, then 12 syllables said in
 another tone on purpose, each with the proof's cached clip as the model
 (a prompt with no cached clip is left out; no new paid calls). The page
-records the way the app does (`web/src/recorder.ts`: MediaRecorder, then
-decoded and resampled to 16 kHz mono PCM WAV in the browser). Clips go to
+records with MediaRecorder and writes 16 kHz mono PCM WAV in the browser,
+as the app does, with three differences: the browser's echo cancellation,
+noise suppression and automatic gain are asked off (raw audio can be
+degraded later, processed audio can't be undone); the recording is decoded
+straight at 16 kHz, so the browser's band-limited resampler does the work
+(the app's `web/src/recorder.ts` plays a 48 kHz buffer through a 16 kHz
+OfflineAudioContext, which folds whatever lay above 8 kHz back into the
+band); and it keeps recording 250 ms past Stop, for the end of a third
+tone's rise. Clips go to
 `data/pronunciation-proof/recordings/` (gitignored; the tool refuses to
-start where git would track them) under generated names, with one line
-each in `labels.tsv`: file, text, what they were asked to say when not the
-text, speaker, group, and the speaker's own "not sure I said it right".
+start, and the proof to write its report, where git would track them or
+already tracks a file) under generated names, with one line each in
+`labels.tsv`: file, text, what they were asked to say when not the text,
+speaker, group, the speaker's own "not sure I said it right", and
+`processing` (`raw` or `processed`; a line without it, as in the first
+recordings, is read as `processed`). A clip is kept only once its line
+reads back from the file. The page names a prompt by its text and what was
+asked, so a tab left open across a restart is told to reload rather than
+filing a clip under another text. A name is one person whatever its
+capitals, in the group first given; a typed name that already exists is
+asked about ("Carry on as …"), never merged silently.
 What is done is derived from that file, so a session resumes. After each
 kept clip the page prints the local scorer's verdict as a test readout,
 not a grade. `npm run pron:proof` (`pronunciation-proof.mjs --recordings`)
 scores them per speaker: catches on the deliberately wrong clips, false
-alarms on the rest, the "not sure" clips counted apart. Those results are
+alarms on the rest, the "not sure" clips counted apart, and each speaker
+once per recording setting when the labels hold both. Those results are
 a person's: they go to the terminal and to `recordings/report.md`, never
 into the tracked report. A label is what the speaker aimed for, not what
 came out, so a beginner's false-alarm count is an upper bound until
