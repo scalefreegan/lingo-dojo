@@ -12,6 +12,11 @@
    Raw values live on :root and flip with the colour scheme; the
    @theme inline block maps them to Tailwind utilities (bg-panel,
    text-fg-2, border-line, …) so components never write dark:.
+
+   The scheme is <html data-theme="light|dark">, always set: index.html's
+   inline script before the first paint, then web/src/theme.ts. "Auto"
+   (the default) resolves to the system's scheme and follows it live, so
+   the attribute, not a media query, is the one switch.
    ============================================================ */
 
 :root {
@@ -23,7 +28,7 @@
      page's end (save, export, the prompt toggle, the page's bottom padding),
      so at the very end it isn't pushed up under the bars. */
   --below-session: 13rem;
-  color-scheme: light dark;
+  color-scheme: light;
   --ground: #eef1f8;
   --panel: #ffffff;
   --raised: #e6eaf5;
@@ -60,38 +65,37 @@
   --accent-soft: #fde6d6;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #121430;
-    --panel: #1b1e3b;
-    --raised: #252948;
-    --line: #2f3456;
-    --line-strong: #464c75;
-    --fg: #eceeff;
-    --fg-2: #c4c7e6;
-    --fg-3: #8d91b6;
-    --accent: #7d8bff;
-    --accent-hover: #96a1ff;
-    --accent-edge: #4b57c9;
-    --accent-ink: #0e1030;
-    --accent-soft: #272d5c;
-    --kiai: #ffcf52;
-    --kiai-soft: #3a3320;
-    --mat: #23264a;
-    --mat-line: #272b52;
-    --heri: #3a4290;
-    --warn: #e6a94f;
-    --warn-soft: #332818;
-    --err: #ff8a8f;
-    --err-soft: #3c1f2a;
-  }
-  :root[data-mode="kids"] {
-    --accent: #ff9a52;
-    --accent-hover: #ffad70;
-    --accent-edge: #c4651f;
-    --accent-ink: #2a1306;
-    --accent-soft: #3d2a22;
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #121430;
+  --panel: #1b1e3b;
+  --raised: #252948;
+  --line: #2f3456;
+  --line-strong: #464c75;
+  --fg: #eceeff;
+  --fg-2: #c4c7e6;
+  --fg-3: #8d91b6;
+  --accent: #7d8bff;
+  --accent-hover: #96a1ff;
+  --accent-edge: #4b57c9;
+  --accent-ink: #0e1030;
+  --accent-soft: #272d5c;
+  --kiai: #ffcf52;
+  --kiai-soft: #3a3320;
+  --mat: #23264a;
+  --mat-line: #272b52;
+  --heri: #3a4290;
+  --warn: #e6a94f;
+  --warn-soft: #332818;
+  --err: #ff8a8f;
+  --err-soft: #3c1f2a;
+}
+:root[data-theme="dark"][data-mode="kids"] {
+  --accent: #ff9a52;
+  --accent-hover: #ffad70;
+  --accent-edge: #c4651f;
+  --accent-ink: #2a1306;
+  --accent-soft: #3d2a22;
 }
 
 @theme inline {

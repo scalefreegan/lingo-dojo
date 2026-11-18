@@ -6,6 +6,7 @@ import { Button } from "./ui";
 import LanguageSwitcher from "./LanguageSwitcher";
 import ProfileControl from "./ProfileControl";
 import type { Tab } from "./shared";
+import { toggled, useTheme, type ThemeChoice } from "../theme";
 
 /* The top bar: the app's name (with a "Kids" tag when that library is
  * open), the three-step flow as tabs, Library off to the side (it's a
@@ -18,7 +19,9 @@ import type { Tab } from "./shared";
  * Profile pill: which of the learner's languages this session practises.
  * Practice (flashcards over the phrase bank) is a destination too, beside
  * Library and in the menu with it below `md`; kids learners don't have it
- * (docs/DATA.md §Kids learners). */
+ * (docs/DATA.md §Kids learners). The sun/moon button flips light and dark
+ * in one tap (from `sm` up; a phone's bar has no room), and the menu's
+ * Appearance row has all three choices, Auto (follow the system) included. */
 export default function TopBar({
   tab,
   onTab,
@@ -97,6 +100,7 @@ export default function TopBar({
         )}
         {mode !== "kids" && <TabButton label="Practice" active={tab === "practice"} onClick={() => onTab("practice")} className="hidden md:flex" />}
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
+        <ThemeToggle />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")}
           practiceActive={mode === "kids" ? null : tab === "practice"} onPractice={() => onTab("practice")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
@@ -116,6 +120,72 @@ function TabButton({ label, active, onClick, className = "" }: { label: string; 
     >
       {label}
     </button>
+  );
+}
+
+/** One tap to the other scheme. The icon is what you get: a moon while
+ *  it's light, a sun while it's dark. */
+function ThemeToggle() {
+  const { scheme, setChoice } = useTheme();
+  const label = scheme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  return (
+    <Button variant="ghost" className="max-sm:hidden" aria-label={label} title={label} onClick={() => setChoice(toggled(scheme))} data-testid="theme-toggle">
+      {scheme === "dark" ? <SunIcon /> : <MoonIcon />}
+    </Button>
+  );
+}
+
+function SunIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4.5" />
+      <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z" />
+    </svg>
+  );
+}
+
+const THEME_CHOICES: { value: ThemeChoice; label: string }[] = [
+  { value: "auto", label: "Auto" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+/** The menu's Appearance row: Auto, Light, Dark as one segmented control.
+ *  It stays open on a pick, so the change is seen in place. */
+function ThemeChoices() {
+  const { choice, setChoice } = useTheme();
+  return (
+    <div className="border-b border-line px-3 pt-2 pb-2.5">
+      <p className="mb-1.5 text-sm text-fg-3 sm:text-xs" id="appearance-label">
+        Appearance
+      </p>
+      <div role="radiogroup" aria-labelledby="appearance-label" className="flex rounded-full bg-raised p-0.5">
+        {THEME_CHOICES.map((c) => (
+          <button
+            key={c.value}
+            type="button"
+            role="radio"
+            aria-checked={choice === c.value}
+            title={c.value === "auto" ? "Follow the system's light or dark setting" : undefined}
+            className={`flex-1 rounded-full px-1.5 py-1 text-sm transition-colors sm:text-xs ${
+              choice === c.value ? "bg-panel font-medium text-accent shadow-[0_1px_2px_rgb(26_28_58/0.12)]" : "text-fg-3 hover:text-fg"
+            }`}
+            onClick={() => setChoice(c.value)}
+            data-testid={`theme-${c.value}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -162,7 +232,8 @@ function OverflowMenu({
         <>
           {/* Closes the menu on an outside click, without a ref or a document listener. */}
           <button type="button" aria-hidden="true" tabIndex={-1} className="fixed inset-0 z-40 cursor-default" onClick={() => setOpen(false)} />
-          <div role="menu" className="absolute right-0 z-50 mt-1 flex w-44 flex-col overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-lg">
+          <div role="menu" className="absolute right-0 z-50 mt-1 flex w-52 flex-col overflow-hidden rounded-xl border border-line bg-panel py-1 shadow-lg">
+            <ThemeChoices />
             <button
               type="button"
               role="menuitem"
