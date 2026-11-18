@@ -17,12 +17,15 @@ slots:
     title: Character
     pick: one
     required: true
+    # A drill (First steps) has no character: the slot is skipped there.
+    scene_only: true
     description: "How the in-scene persona is voiced: as the scenario writes it, or rerolled."
   - id: warmup
     group: Session flow
     title: Warm-up
     pick: any
     required: false
+    scene_only: true
     description: Optional drills before the scene starts.
   - id: recall
     group: Session flow
@@ -62,12 +65,14 @@ slots:
     title: Interrupts
     pick: any
     required: false
+    scene_only: true
     description: Mid-stream mini-lessons, breaks between scene sections, and vocabulary spotlights.
   - id: variation
     group: Variation
     title: Variation
     pick: any
     required: false
+    scene_only: true
     description: "Ways the same scenario plays differently from one session to the next."
   - id: debrief
     group: Session flow

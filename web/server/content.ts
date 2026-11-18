@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { assemble, effectiveProfile } from "../../scripts/assemble.mjs";
-import { ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isMode, loadContent, modeRoot, normalizePack, writeExport } from "../../scripts/content.mjs";
+import { DEFAULT_LEVEL_BY_MODE, ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isMode, loadContent, modeRoot, normalizePack, writeExport } from "../../scripts/content.mjs";
 import { withDrawnScene } from "../shared/scenes.ts";
 import type {
   AssembleRequest, AssembleResult, ContentReply, DeletedPacksReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
@@ -123,7 +123,7 @@ export function contentReply(mode: Mode, learner: Learner | null, language: Lang
   // the other library (an admin browsing it) has no learner, so no profile.
   const profile = learner?.mode === mode ? learnerProfile(learner, language) : {};
   return {
-    mode, levels: LEVELS_BY_MODE[mode], root: c.root, schema: c.schema, frame: c.frame, profile, languages: c.languages,
+    mode, levels: LEVELS_BY_MODE[mode], defaultLevel: DEFAULT_LEVEL_BY_MODE[mode], root: c.root, schema: c.schema, frame: c.frame, frameDrill: c.frameDrill, profile, languages: c.languages,
     units: c.units, scenarios: c.scenarios, problems: c.problems,
   };
 }

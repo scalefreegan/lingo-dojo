@@ -442,7 +442,7 @@ test("learners: add, list, edit, archive and pick; the picked learner is on the 
   assert.equal(made.body.learner.name, "Ana");
   assert.equal(made.body.learner.languages.length, 1);
   assert.equal(made.body.learner.languages[0].target_language, "Italian");
-  assert.equal(made.body.learner.languages[0].level, "A1", "the mode's first level by default");
+  assert.equal(made.body.learner.languages[0].level, "A1", "A1 by default: Pre-A1 is opt-in");
   const kid = (await c.call("POST", "/api/learners", { name: "Bo", mode: "kids", target_language: "Spanish" })).body.learner;
   assert.equal(kid.languages[0].level, "First words");
   for (const bad of [{ mode: "adult" }, { name: "x" }, { name: "x", mode: "teen" }, { name: "x", mode: "adult", wizard: 1 }, { name: "x", mode: "adult", level: 3 }, { name: "x".repeat(81), mode: "adult" }, [], "nope"]) {

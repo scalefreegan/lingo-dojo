@@ -89,7 +89,7 @@ export default function TopBar({
       </nav>
       <div className="ml-auto flex h-full shrink-0 items-center gap-1">
         {content && (
-          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} />
+          <LanguageSwitcher learner={learner} language={language} languages={content.languages} levels={content.levels} defaultLevel={content.defaultLevel} onSwitch={onSwitchLanguage} onChanged={onLanguagesChanged} />
         )}
         {content && draft && (
           <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}

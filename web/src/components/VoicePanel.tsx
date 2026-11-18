@@ -64,8 +64,12 @@ export default function VoicePanel({
   onDrawn,
   previous = null,
   onBuildsOn,
+  drill = false,
 }: {
   mode: Mode;
+  /** The scene is a drill (First steps): the narrator is the only voice,
+   *  so no character is cast or listed. */
+  drill?: boolean;
   pack: PackInput;
   langs: VoiceLanguages;
   /** Why the session can't start (an empty random pool): Start is off and
@@ -133,6 +137,7 @@ export default function VoicePanel({
       onDrawn={onDrawn}
       previous={previous}
       onBuildsOn={onBuildsOn}
+      drill={drill}
       onClose={() => {
         onDrawn?.(null);
         onBuildsOn?.(null);
@@ -147,7 +152,7 @@ export default function VoicePanel({
  *  Go, two idle hours), and the learner and language it was started for. */
 type SavedConversation = { id: string; start: number; page: PageLearner };
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, onClose }: { mode: Mode; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
+function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, drill, onClose }: { mode: Mode; drill: boolean; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
@@ -323,8 +328,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const packRef = useRef(pack);
   const titleRef = useRef(title);
   const previousRef = useRef(previous);
+  const drillRef = useRef(drill);
   useEffect(() => {
     previousRef.current = previous;
+    drillRef.current = drill;
     budgetRef.current = budget;
     packRef.current = pack;
     titleRef.current = title;
@@ -948,7 +955,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       if (locale && (!castRef.current || castRef.current.provider !== settingsRef.current.tts || castRef.current.locale !== locale)) {
         const wanted = latestCast(before);
         const ages = Object.fromEntries(Object.values(wanted).map((n) => [n.slot, n.age]));
-        const next = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}) }, ctrl.signal);
+        const next = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: packRef.current.units, ...(Object.keys(ages).length ? { ages } : {}), ...(drillRef.current ? { drill: true } : {}) }, ctrl.signal);
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
@@ -1619,8 +1626,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
               // On a phone it keeps to two lines until tapped open (a touch
               // screen has no tooltip).
               <span className="flex items-start gap-1">
-                <span ref={castLineRef} id="voice-cast" className={`${castOpen ? "" : "line-clamp-2"} sm:line-clamp-none`} data-testid="voice-cast" title={`Voices this session: ${castSummary(cast, castWho, usedSlots)}. Random slots draw new voices each session; Restart draws again.`}>
-                  Voices this session: {castSummary(cast, castWho, usedSlots)}
+                <span ref={castLineRef} id="voice-cast" className={`${castOpen ? "" : "line-clamp-2"} sm:line-clamp-none`} data-testid="voice-cast" title={`Voices this session: ${castSummary(cast, castWho, usedSlots, drill)}. Random slots draw new voices each session; Restart draws again.`}>
+                  Voices this session: {castSummary(cast, castWho, usedSlots, drill)}
                 </span>
                 {castClamps && (
                 <button
@@ -2470,11 +2477,13 @@ const AGE_LABEL: Record<VoiceAge, string> = { child: "a child", young: "young", 
 /** "Narrator Marlene · Character (woman) Doña Carmen, old: voice Rosa ·
  *  Character (man) Alejandro": the narrator for the gender this session
  *  uses, then the scene's voices heard so far (`used`), with who the dojo
- *  master says each one is (its CAST lines) when it has said. */
-function castSummary(cast: VoiceCastReply, who: Record<string, VoiceCastNote> = {}, used?: Set<string>): string {
+ *  master says each one is (its CAST lines) when it has said. A drill
+ *  (First steps) has the narrator alone: no character to list. */
+function castSummary(cast: VoiceCastReply, who: Record<string, VoiceCastNote> = {}, used?: Set<string>, drill = false): string {
   const parts: string[] = [];
   const narrator = cast.cast[`narrator:${cast.narratorGender}`];
   if (narrator) parts.push(`Narrator ${narrator.name}`);
+  if (drill) return parts.join(" · ");
   for (const [slot, v] of Object.entries(cast.cast)) {
     const [speaker, gender] = slot.split(":");
     // Only the voices heard so far: kids mode has six slots, most unused.

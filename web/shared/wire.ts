@@ -25,6 +25,10 @@ export interface Slot {
    *  and no "-<id>" opt-out plays its default unit (scripts/content.mjs
    *  packUnits). False when the schema omits it. */
   backfill?: boolean;
+  /** A slot that only makes sense around a scene (adult character, warm-up,
+   *  interrupts, variation; kids helper, story): a drill scenario skips it.
+   *  False when the schema omits it. */
+  scene_only?: boolean;
   /** "" when the schema omits it. */
   description: string;
   /** Display heading the UI clusters slots under on the Customize tab
@@ -63,6 +67,8 @@ export interface VocabItem {
 
 /** content/scenarios/<id>.md. Only id/title/summary are required on disk;
  *  the loader fills the rest with empty values. */
+export type ScenarioFormat = "scene" | "drill";
+
 export interface Scenario {
   id: string;
   title: string;
@@ -74,6 +80,9 @@ export interface Scenario {
   collection: string | null;
   /** Filter chip on the Scene tab, e.g. "Food & drink"; null = uncategorized. */
   category: string | null;
+  /** "scene" (a character in a setting) or "drill" (First steps: the
+   *  narrator alone drills words; docs/CONTENT.md "Drills"). */
+  format: ScenarioFormat;
   /** role key (dojo_master, learner, …) → description */
   roles: Record<string, string>;
   beats: string[];
@@ -143,9 +152,14 @@ export interface ContentReply {
   /** The level picker's options for this mode (CEFR for adult, a child-sized
    *  scale for kids); a profile level outside the list is still shown. */
   levels: string[];
+  /** The level a new learner or language starts at (adult A1, not the
+   *  opt-in Pre-A1 at the top of `levels`). */
+  defaultLevel: string;
   root: string;
   schema: Schema;
   frame: string;
+  /** frame-drill.md, used instead of `frame` for a drill; "" when absent. */
+  frameDrill: string;
   profile: Profile;
   /** [] when content/languages.yaml is missing; the UI then shows free text. */
   languages: Language[];
@@ -1069,6 +1083,9 @@ export interface VoiceCastRequest {
   slots?: string[];
   /** Voice ids already playing other slots, to avoid when drawing. */
   avoid?: string[];
+  /** A drill (First steps): only the narrator speaks, so only its slots
+   *  are drawn. */
+  drill?: boolean;
 }
 
 export interface VoiceCastReply {

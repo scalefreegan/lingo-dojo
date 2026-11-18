@@ -58,7 +58,15 @@ export const SPEAKERS_BY_MODE = {
   kids: ["narrator", "sidekick", "character"],
 };
 
-export function speakersFor(mode) {
+/** A drill (First steps: a scenario with `format: drill`) has one speaker in
+ *  either mode: the narrator, drilling words with the learner. */
+export const DRILL_SPEAKERS = ["narrator"];
+
+/** The speakers a session may use: its mode's, or the narrator alone for
+ *  a drill (`{ drill: true }`). A line tagged with any other speaker is
+ *  voiced as the narrator (parseVoiceReply), never dropped. */
+export function speakersFor(mode, { drill = false } = {}) {
+  if (drill) return DRILL_SPEAKERS;
   return SPEAKERS_BY_MODE[mode] ?? SPEAKERS_BY_MODE.adult;
 }
 
@@ -177,29 +185,41 @@ const TAG = { narrator: "NARRATOR", character: "CHARACTER", sidekick: "SIDEKICK"
  *  assembled pack. It is transport, not teaching: the pack still decides what
  *  happens in the session; this only fixes the shape of the text so each line
  *  can go to the right voice. */
-export function voiceAdapter(mode = "adult") {
-  const speakers = speakersFor(mode);
+export function voiceAdapter(mode = "adult", { drill = false } = {}) {
+  const speakers = speakersFor(mode, { drill });
   const tags = speakers.map((s) => `${TAG[s]}-F:`).join(", ");
   const who = mode === "kids"
     ? "NARRATOR is you guiding, SIDEKICK is the helper character, CHARACTER is whoever the scene brings in"
     : "NARRATOR is you stepping out of the scene to guide, CHARACTER is whoever the learner talks to inside the scene";
+  // A drill (First steps) has one voice, the narrator's: no character, no
+  // scene to hand over to, nobody to cast. Its own wording for the lines
+  // that would otherwise teach the model a CHARACTER tag by example.
+  const speakerRules = drill
+    ? `- Start every line with the narrator's tag, which also says whose voice it is: NARRATOR-F for a woman, NARRATOR-M for a man. This session is a drill: you, the narrator, are the only speaker. There is no character, no scene and no other voice, so never write CHARACTER, SIDEKICK or any other tag; a line tagged anything else is spoken in the narrator's voice anyway. Keep the narrator's gender for the whole session. The tag is read by the app, not spoken: never say it out loud. Never put a tag in the middle of a line.
+- Timing between lines is yours to set. There is always a short pause between lines. To change it, start a line with <pause N> (wait N seconds first, e.g. <pause 1.5> to leave a moment after modelling a word, before you ask the learner to say it). Most lines need none.
+  <pause 1.2> NARRATOR-F: Now you: <t>gracias</t>.`
+    : `- Start every line with a speaker tag that also says whose voice it is: -F for a woman, -M for a man, e.g. ${tags} (${who}). Take the gender from your instructions and the scenario's roles (a Señora is -F, a Don is -M), keep each person's gender for the whole session, and give a new person in the scene their own. The tags are read by the app, not spoken: never say a tag out loud. One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
+- Timing between lines is yours to set. There is always a short pause between lines, and a longer one whenever the narrator and the scene hand over. To change it, start a line with <pause N> (wait N seconds first, e.g. <pause 1.5> for a beat before a reply, or while a vendor weighs the tomatoes) or <overlap N> (start N seconds before the previous line ends, for people talking over each other or cutting in, at most 1.5). Use them in the scene where the moment calls for it; most lines need neither. Never overlap the narrator.
+  <pause 1.2> CHARACTER-M: <t>Mmm… a ver, déjeme pesarlos.</t>
+  <overlap 0.4> CHARACTER-F: <t>¡Oiga, yo estaba primero!</t>`;
+  const secondExample = drill ? "  NARRATOR-F: <t>¡Muy bien!</t> One more time, slowly: <t>por favor</t>." : "  CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>";
+  const castRule = drill
+    ? "- Write no CAST lines: the narrator's voice is chosen by the app, and there is nobody else to cast."
+    : `- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, then exactly one of the words child, young, middle-aged or old, then a comma and a few words on who they are. The app picks a voice of that age; it reads only that word, in that place. It is shown, not spoken. For example:
+  CAST: CHARACTER-F old, Doña Carmen, the fruit vendor`;
   return `## How this session is delivered
 
 This session runs inside Lingo Dojo, not a live voice app. Each of your turns is turned into speech line by line, and every speaker has its own native-speaker voice, a woman's or a man's, so the voices, accents and pronunciation are handled for you. What you write is exactly what is spoken.
 
-- Start every line with a speaker tag that also says whose voice it is: -F for a woman, -M for a man, e.g. ${tags} (${who}). Take the gender from your instructions and the scenario's roles (a Señora is -F, a Don is -M), keep each person's gender for the whole session, and give a new person in the scene their own. The tags are read by the app, not spoken: never say a tag out loud. One speaker per line; begin a new line whenever the speaker changes. Never put a tag in the middle of a line.
-- Timing between lines is yours to set. There is always a short pause between lines, and a longer one whenever the narrator and the scene hand over. To change it, start a line with <pause N> (wait N seconds first, e.g. <pause 1.5> for a beat before a reply, or while a vendor weighs the tomatoes) or <overlap N> (start N seconds before the previous line ends, for people talking over each other or cutting in, at most 1.5). Use them in the scene where the moment calls for it; most lines need neither. Never overlap the narrator.
-  <pause 1.2> CHARACTER-M: <t>Mmm… a ver, déjeme pesarlos.</t>
-  <overlap 0.4> CHARACTER-F: <t>¡Oiga, yo estaba primero!</t>
+${speakerRules}
 - Write only words to be spoken aloud: no markdown, lists, emoji, stage directions, or descriptions of tone or actions in brackets or asterisks.
 - Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
   NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
-  CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>
+${secondExample}
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
   GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
-- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, then exactly one of the words child, young, middle-aged or old, then a comma and a few words on who they are. The app picks a voice of that age; it reads only that word, in that place. It is shown, not spoken. For example:
-  CAST: CHARACTER-F old, Doña Carmen, the fruit vendor
+${castRule}
 - CAST lines go just before the line they introduce; GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order. Each is on its own line with its label in capitals and no speaker tag.
 - Keep each turn short, then stop and wait for the learner.
 - The learner's words reach you as a speech-recognition transcript. It can mishear, and it often quietly fixes pronunciation, so you cannot judge how something sounded — only what was said. If a transcript looks garbled, ask the learner to say it again rather than guessing.
@@ -216,9 +236,10 @@ This session runs inside Lingo Dojo, not a live voice app. Each of your turns is
 }
 
 /** The system prompt for a voice turn: the pack as assembled, then the
- *  delivery adapter. */
-export function voiceSystemPrompt(markdown, mode = "adult") {
-  return `${String(markdown).trim()}\n\n${voiceAdapter(mode)}\n`;
+ *  delivery adapter. `{ drill: true }` for a drill scenario (First steps):
+ *  the narrator is the only speaker. */
+export function voiceSystemPrompt(markdown, mode = "adult", opts = {}) {
+  return `${String(markdown).trim()}\n\n${voiceAdapter(mode, opts)}\n`;
 }
 
 export const SESSION_START = "[session start]";
@@ -590,8 +611,8 @@ function castAge(after) {
  *  Doña Carmen, the fruit vendor". A tag without a gender, a speaker the
  *  mode doesn't have, or an age it can't read is dropped; a later line for
  *  the same slot wins. */
-export function parseCast(text, mode = "adult") {
-  const allowed = new Set(speakersFor(mode));
+export function parseCast(text, mode = "adult", opts = {}) {
+  const allowed = new Set(speakersFor(mode, opts));
   const out = new Map();
   for (const rawLine of String(text).split(/\r?\n/)) {
     const rest = metaRest(CAST_RE, rawLine);
@@ -656,10 +677,15 @@ export function parseStage(text, ids) {
 }
 
 /** The adapter's section naming this session's parts (none without a plan). */
-export function planDirective(plan) {
+export function planDirective(plan, { drill = false } = {}) {
   if (!Array.isArray(plan) || !plan.length) return "";
   const rows = plan.map((p) => `- ${p.id}: ${p.detail ?? p.title}`).join("\n");
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first. Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.`;
+  // A drill's "scene" part is the drill and its beats are the rounds; a
+  // jump to a round has no character to put in the middle of anything.
+  const parts = drill
+    ? `In this drill, the part with id scene is the drill itself and each beat part is one of its rounds: name the round you are in (or scene, between rounds). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it; for a round, start drilling that round's words right away. Parts in between are skipped.`
+    : `A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. ${parts} Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.`;
 }
 
 /** From this share of the budget on, the clock says to start closing. */
@@ -756,8 +782,8 @@ function glossLine(glosses) {
   return `\nGLOSS: ${glosses.map((g) => `${g.term} = ${g.meaning}`).join(" | ")}`;
 }
 
-export function parseVoiceReply(text, mode = "adult") {
-  const allowed = new Set(speakersFor(mode));
+export function parseVoiceReply(text, mode = "adult", opts = {}) {
+  const allowed = new Set(speakersFor(mode, opts));
   const out = [];
   let current = "narrator";
   let gender = null;
@@ -793,7 +819,9 @@ export function parseVoiceReply(text, mode = "adult") {
     if (m) {
       const tag = m[1].toLowerCase() === "helper" ? "sidekick" : m[1].toLowerCase();
       current = allowed.has(tag) ? tag : "narrator";
-      gender = m[2] ? GENDER_OF[m[2].toLowerCase()] : null;
+      // In a drill a stray CHARACTER-M line is the narrator speaking, so it
+      // keeps no gender of its own: the session's narrator voice says it.
+      gender = m[2] && (allowed.has(tag) || !opts.drill) ? GENDER_OF[m[2].toLowerCase()] : null;
       // "**NARRATOR-F:** Hola": the bold after the colon closes the tag's. In
       // "NARRATOR-F: **Hola**" it opens the text's, so it stays with the text.
       const opensBold = /\*\*\s*$/.test(m[0]) && !/^\s*(?:[-•*]\s+)?\*\*/.test(raw);
@@ -847,8 +875,8 @@ export const GENDERS = ["female", "male"];
 
 /** The voice slots of a mode: every speaker as a woman and as a man, e.g.
  *  "character:female". The dojo master tags each line with one. */
-export function voiceSlots(mode) {
-  return speakersFor(mode).flatMap((s) => GENDERS.map((g) => `${s}:${g}`));
+export function voiceSlots(mode, opts = {}) {
+  return speakersFor(mode, opts).flatMap((s) => GENDERS.map((g) => `${s}:${g}`));
 }
 
 const SLOT_RE = /^(narrator|character|sidekick)(?::(female|male))?$/;

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { assemble } from "../../scripts/assemble.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { REPO_ROOT, loadContent, modeRoot } from "../../scripts/content.mjs";
+import { REPO_ROOT, isDrill, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
@@ -373,6 +373,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
     const plan = sessionPlan(content, pack, mode);
+    // A drill (First steps) is the narrator alone: the adapter allows only
+    // its tag, and any other tag in the reply is voiced as the narrator.
+    const drill = isDrill(content.scenarios.find((s) => s.id === pack.scenario));
     const settings = await readVoiceSettings(ctx.user.id);
     // With a time budget (the pack's minutes, plus any +5 min the browser
     // added), one clock line: the browser's elapsed time since the first
@@ -385,9 +388,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // A session that builds on an earlier attempt of this scene (docs/DATA.md
     // §Revisit) carries a briefing on it, frozen when it began; adults only.
     const systemPrompt =
-      voiceSystemPrompt(markdown, mode) +
+      voiceSystemPrompt(markdown, mode, { drill }) +
       (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
-      planDirective(plan) +
+      planDirective(plan, { drill }) +
       (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "");
     const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
       const { result } = startClaude({
@@ -434,7 +437,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         // a short line from the narrator when it had nothing else to say.
         console.warn(`[lingo-dojo] voice turn: the rerun after a LOOKUP failed; using the first reply: ${(e as Error)?.message ?? e}`);
         failed = true;
-        run = parseVoiceReply(first.text, mode).length ? first : { ...first, text: `${first.text}\n${LOOKUP_FAILED_LINE}` };
+        run = parseVoiceReply(first.text, mode, { drill }).length ? first : { ...first, text: `${first.text}\n${LOOKUP_FAILED_LINE}` };
       }
       if (!failed) {
         run = {
@@ -445,9 +448,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       }
       lookup = { ...found.record, ...(failed ? { failed: true } : parseLookup(run.text) ? { repeated: true } : {}) };
     }
-    const lines = parseVoiceReply(run.text, mode);
+    const lines = parseVoiceReply(run.text, mode, { drill });
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
+    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
     if (conversation) {
       // Stored before the reply goes out, still under the lock. A failed
       // write doesn't cost the learner a reply that's already paid for: the
@@ -821,7 +824,7 @@ export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse,
   // only when the learner has none on file): an old tab that doesn't send
   // it still never draws a third language's voice.
   const nativeLocale = localeFor(ctx.learner.nativeLanguage) ?? (typeof body?.nativeLocale === "string" && LOCALE_RE.test(body.nativeLocale) ? body.nativeLocale : "");
-  const all: string[] = voiceSlots(mode);
+  const all: string[] = voiceSlots(mode, { drill: body?.drill === true });
   const slots = Array.isArray(body?.slots) ? all.filter((x) => (body.slots as unknown[]).includes(x)) : all;
   const ages: Record<string, VoiceAge> = {};
   if (body?.ages && typeof body.ages === "object") {

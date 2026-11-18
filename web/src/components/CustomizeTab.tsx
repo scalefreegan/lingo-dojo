@@ -24,6 +24,9 @@ export default function CustomizeTab({
   const changed = useMemo(() => changedSlots(content, draft), [content, draft]);
   const groups = useMemo(() => groupSlots(content.schema), [content.schema]);
   const unslotted = unslottedUnits(content);
+  // A picked drill (First steps) skips the scene-only slots: say so on
+  // their rows rather than flag a required one as missing.
+  const drill = draft.scenarioMode === "library" && content.scenarios.find((s) => s.id === draft.scenario)?.format === "drill";
 
   return (
     <div className="flex flex-col gap-6">
@@ -43,6 +46,7 @@ export default function CustomizeTab({
                   content={content}
                   open={openSlot === slot.id}
                   changed={changed.has(slot.id)}
+                  skipped={drill && !!slot.scene_only}
                   onToggle={() => setOpenSlot((cur) => (cur === slot.id ? null : slot.id))}
                   onChange={onChange}
                 />
@@ -107,6 +111,7 @@ function SlotRow({
   content,
   open,
   changed,
+  skipped = false,
   onToggle,
   onChange,
 }: {
@@ -116,12 +121,14 @@ function SlotRow({
   content: ContentReply;
   open: boolean;
   changed: boolean;
+  /** A scene-only slot while the picked scene is a drill: left out of it. */
+  skipped?: boolean;
   onToggle: () => void;
   onChange: (d: Draft) => void;
 }) {
   const one = slot.pick === "one";
   const selected = draft.units.filter((id) => units.some((u) => u.id === id));
-  const missing = slot.required && selected.length === 0;
+  const missing = !skipped && slot.required && selected.length === 0;
   const name = `slot-${slot.id}`;
   const summary = selected.length === 0 ? "None" : selected.map((id) => units.find((u) => u.id === id)?.title ?? id).join(", ");
   const rowClass = (on: boolean) =>
@@ -132,7 +139,7 @@ function SlotRow({
       <button type="button" aria-expanded={open} onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-raised">
         {changed && <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Changed from defaults" />}
         <span className="min-w-0 flex-1 font-medium text-fg">{slot.title}</span>
-        <span className={`max-w-[45%] min-w-0 truncate text-sm ${missing ? "text-warn" : "text-fg-3"}`}>{missing ? "Required — none chosen" : summary}</span>
+        <span className={`max-w-[45%] min-w-0 truncate text-sm ${missing ? "text-warn" : "text-fg-3"}`}>{skipped ? "Not used in a drill" : missing ? "Required — none chosen" : summary}</span>
         <Chevron open={open} />
       </button>
       {open && (

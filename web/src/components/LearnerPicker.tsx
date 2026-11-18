@@ -135,7 +135,7 @@ function AddLearner({ onAdded, onCancel }: { onAdded: (l: LearnerInfo) => void |
       (c) => {
         if (!live) return;
         setLibrary(c);
-        setFirst((f) => ({ ...f, level: c.levels[0] ?? "" }));
+        setFirst((f) => ({ ...f, level: c.defaultLevel || (c.levels[0] ?? "") }));
       },
       () => live && setLibrary(null),
     );
