@@ -865,10 +865,9 @@ what the microphone track reports it applied, `getSettings()`, not what
 was asked: `raw` only when all three are reported off, so a browser that
 doesn't report them all, as Safari probably doesn't (not tested), labels
 every clip `processed` even when it did record raw); the recording is decoded
-straight at 16 kHz, so the browser's band-limited resampler does the work
-(the app's `web/src/recorder.ts` plays a 48 kHz buffer through a 16 kHz
-OfflineAudioContext, which folds whatever lay above 8 kHz back into the
-band); and it keeps recording 250 ms past Stop, for the end of a third
+straight at 16 kHz, so the browser's decoder does the resampling (band-limited,
+though loosely in Chromium: see §The recorder, whose JS filter the app's
+recorder now uses instead); and it keeps recording 250 ms past Stop, for the end of a third
 tone's rise. Clips go to
 `data/pronunciation-proof/recordings/` (gitignored; the tool refuses to
 start, and the proof to write its report, where git would track them or
@@ -1118,6 +1117,114 @@ How each "Before wiring" point above was handled:
   room.
 - Off the request thread: a worker thread per recording.
 - `unsure` is shown quietly, never as a mistake (and not at all to kids).
+
+## The recorder
+
+`web/src/recorder.ts` is the app's one microphone recorder: voice turns,
+Practice speak-it and a said cloze, and the character card's tone check.
+It records with MediaRecorder (webm/opus in Chromium, mp4 in Safari) and
+hands back a 16 kHz mono 16-bit PCM WAV, the one format transcription and
+the tone check take.
+
+**The conversion** (`toWav`; the pure half is `web/src/wav16k.ts`, tested
+in `scripts/tests/wav16k.test.mjs`): decode at the browser context's own
+rate, average the channels, then low-pass and resample to 16 kHz in JS with
+a Kaiser-windowed sinc (flat to 7.2 kHz, over 80 dB down from 8.5 kHz;
+about 10 ms of work per second of audio). Until 2026-11 it played the
+decoded buffer through a 16 kHz OfflineAudioContext, which interpolates
+with no low-pass. Measured in headless Chromium 153 (ld-axq), a 48 kHz
+sine at −9 dBFS, output level against input:
+
+| tone | old (playback) | decode at 16 kHz | JS filter (now) |
+|---|---|---|---|
+| 1 kHz | 0.0 dB | 0.0 dB | 0.0 dB |
+| 4 kHz | 0.0 | −0.1 | 0.0 |
+| 6 kHz | 0.0 | −1.9 | 0.0 |
+| 7 kHz | 0.0 | −5.1 | 0.0 |
+| 7.5 kHz | 0.0 | −7.6 | −2.4 |
+| 9 kHz | 0.0 (folded to 7 kHz) | −20.3 | −96.6 |
+| 10 kHz | 0.0 (to 6 kHz) | −35.3 | −92.2 |
+| 13 kHz | 0.0 (to 3 kHz) | −76.2 | −95.5 |
+| sweep 8.5–23 kHz | 0.0 | −51.8 | −92.7 |
+
+The same through MediaRecorder (webm/opus) first, as a real turn is: within
+0.6 dB of the rows above, the JS filter at −82 dB or lower from 9 kHz (the
+codec's own floor). So the old path folded everything a microphone gives
+above 8 kHz into the band at full level: on synthesized speech with white
+room noise the in-band noise floor was 4.4 dB higher (8–24 kHz folding
+onto 0–8), and with strong noise above 8 kHz (a fan, hiss at −15 dB
+against the speech) 32 dB higher. The recording page
+(`scripts/pronunciation-record.html`) decodes straight at 16 kHz instead;
+that removes most of the aliasing but cuts 7 kHz by 5 dB and leaves 9 kHz
+only 20 dB down, so the app does its own filtering, the same in every
+browser. Safari and WebKit were not measured (ld-axq could not install
+Playwright's WebKit); WebKit's AudioBufferSourceNode also resamples a
+buffer of another rate by interpolation, so the old path most likely
+aliased there too, and the JS filter does not depend on it.
+
+What the change does, on 24 synthesized Mandarin clips (12 phrases from
+妈 to 我们走吧, macOS Tingting and Reed at 48 kHz), each clean, with white
+noise at −30 dB and with noise above 8 kHz at −15 dB against the speech
+(72 recordings), through MediaRecorder: the local tone scorer
+(`scoreTones`, no timings) gave the same verdict on 589 of 600 syllable
+verdicts (the clip's own reading and every one-syllable relabelling, as
+the proof scores them). The 11 that changed were borderline both ways
+(right "ok" 123 → 122; wrong tones passed 46 → 50 and caught 106 → 104 of
+450); decoding at 16 kHz gave exactly the same 11 changes, so they are
+the aliasing's, not the filter's. The scorer's rules were set on
+band-limited audio (the proof converts with ffmpeg), which the recorder
+now matches. Six Scribe v2 transcriptions, old against new (two Spanish
+clips with noise, one Mandarin with noise above 8 kHz), were word for
+word the same.
+
+**Browser processing** (`processing` in `startRecording`, `MicProcessing`):
+
+| use | echo cancellation | noise suppression | auto gain |
+|---|---|---|---|
+| voice turn (`conversation`) | on | on | on |
+| speak-it in a language with a tone check (Mandarin; `pitch`) | on | off | off |
+| character card's tone check (`pitch`) | on | off | off |
+| speak-it elsewhere, a said cloze (`conversation`) | on | on | on |
+
+Measured with Chromium's fake capture device
+(`--use-file-for-fake-audio-capture`), which, unlike a stubbed
+getUserMedia stream, runs the browser's own processing (the track's
+`getSettings()` reported each setting as asked, and the output shows it:
+auto gain raised a clip's speech 8 to 17 dB, noise suppression lowered the
+floor about 9 dB). On the same 24 clips, clean and with white noise (48
+recordings, 400 verdicts), each setting captured twice:
+
+| setting | right ok (of 100) | wrong caught (of 300) | wrong passed |
+|---|---|---|---|
+| all on | 74 | 73 | 37 |
+| echo cancellation only | 79 | 82 | 35 |
+| all off | 78–79 | 67–70 | 33–34 |
+
+Repeats of "all on" and "echo cancellation only" were identical; "all
+off" (captured at 44.1 kHz, the device's own rate, since Chromium opens
+it differently with no processing) moved 5 verdicts between runs, against
+37 to 44 between settings. So noise suppression and auto gain cost the
+tone check right answers, and echo cancellation alone did not. Auto gain
+did not change a quiet speaker's transcript (a Spanish clip at about −45
+dBFS, two calls) or a quiet clip's tone verdicts (1 of 23 changed).
+
+Echo cancellation stays on everywhere: Practice and the character card
+can be playing the model clip when Record is pressed, and on speakers,
+with it off, the model's voice would be transcribed (or scored) as the
+learner's answer. With nothing playing it has no far-end signal to remove.
+A voice turn keeps all three: the narrator stops when Talk is pressed,
+but other audio, the room's echo and a quiet speaker are what noise
+suppression and gain are for, and only the words matter there.
+
+Not measured: real microphones and rooms (the fake device has no room
+and no speaker output, so echo cancellation's effect with the narrator
+actually playing is reasoned, not measured); Safari's processing, where
+echo cancellation is Apple's voice-processing unit, which brings its own
+gain and noise reduction and may not let them be turned off separately
+(the recording page labels such clips `processed`); Firefox. With auto
+gain off a very quiet microphone may stay under the pause detector's
+floor (RMS 0.015), so a take ends on Stop or the idle cap rather than on
+the pause (ld-5cj).
 
 ## Cost (rough, Nov 2026)
 

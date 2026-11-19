@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
 import { scorableText, scoresTonesHere } from "../pronunciationApi";
-import { startRecording, type Recording } from "../recorder";
+import { startRecording, type MicProcessing, type Recording } from "../recorder";
 import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
 } from "../types";
@@ -790,9 +790,10 @@ function micError(e: unknown): string {
  * hint of the expected answer, and hold what was heard until the card's
  * Check sends it. A blocked microphone, an empty recording or a failed
  * transcription is a `problem`, never an answer. Speak-it and a cloze said
- * aloud share it.
+ * aloud share it. `processing` is "pitch" only where the recording will
+ * also be checked for tones (recorder.ts MicProcessing).
  */
-function useSpokenAnswer(answer: Answer) {
+function useSpokenAnswer(answer: Answer, processing: MicProcessing) {
   const [state, setState] = useState<RecState>({ step: "idle" });
   const [problem, setProblem] = useState<string | null>(null);
   const recRef = useRef<Recording | null>(null);
@@ -826,6 +827,7 @@ function useSpokenAnswer(answer: Answer) {
     let mine: Recording | null = null;
     try {
       mine = await startRecording({
+        processing,
         silenceMs: 1500,
         maxMs: 20_000,
         idleMs: 10_000,
@@ -962,7 +964,9 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
  * change the grade (stage 1).
  */
 function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
-  const spoken = useSpokenAnswer(answer);
+  // Raw for the tone check where there is one (Mandarin); elsewhere only
+  // the words matter, as in a voice turn.
+  const spoken = useSpokenAnswer(answer, scoresTonesHere(locale) ? "pitch" : "conversation");
   const [typing, setTyping] = useState(false);
   // The recording of the answer sent, for its tone check.
   const [take, setTake] = useState<Blob | null>(null);
@@ -1115,7 +1119,8 @@ function GapSentence({ before, after, locale, lang, filled }: { before: string; 
  * the card is skipped with nothing recorded.
  */
 function ClozeCard({ item, languageName, locale, speechProblem, answer, last, onNext }: CardProps) {
-  const spoken = useSpokenAnswer(answer);
+  // A said cloze is never checked for tones: only its words matter.
+  const spoken = useSpokenAnswer(answer, "conversation");
   const [saying, setSaying] = useState(false);
   const [flag, setFlag] = useState<"idle" | "busy" | "done">("idle");
   const [flagError, setFlagError] = useState<string | null>(null);
