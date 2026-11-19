@@ -1036,7 +1036,7 @@ function SpokenTones({ take, result, phraseId, locale }: { take: Blob; result: P
   const state = useToneScore(take, text, wanted);
   const model = useModelAudio(phraseId);
   if (!wanted) return null;
-  return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} />;
+  return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId }} />;
 }
 
 /** The phrase's audio, fetched on the first play and kept for the card. */

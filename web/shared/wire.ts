@@ -1085,6 +1085,8 @@ export interface PronunciationSyllable {
   expectedTone: number;
   /** Every tone that counts as right here. */
   accept: number[];
+  /** A third tone before another tone: the half third, low without the rise. */
+  half?: boolean;
   verdict: PronunciationVerdict;
   /** The tone heard, only on an `off`. */
   heardTone?: number;
@@ -1101,6 +1103,20 @@ export interface PronunciationSyllable {
   /** The tone's textbook shape, 16 points on the same scale; null for the
    *  neutral tone. */
   reference: number[] | null;
+  /** Adults with Azure only: Azure's 0–100 score for how the syllable
+   *  sounded (consonant and vowel together; for Mandarin Azure scores whole
+   *  syllables). The compare tips read it; never shown to kids. */
+  soundScore?: number;
+}
+/** A recording frame by frame (every `frameMs`), for the compare picture
+ *  (scripts/pronunciation-compare.mjs takeFrames). */
+export interface PronunciationFrames {
+  frameMs: number;
+  /** Semitones about the speaker's own centre (the median inside the
+   *  syllables), null where unvoiced or outside the syllables. */
+  pitch: (number | null)[];
+  /** dB under the recording's loudest frame, floored at −48. */
+  level: number[];
 }
 export interface PronunciationScoreReply {
   engine: "azure" | "local";
@@ -1116,7 +1132,40 @@ export interface PronunciationScoreReply {
   overall: number | null;
   /** "clipped": the recording began inside the first syllable; ask again. */
   retry: "clipped" | null;
+  /** The take frame by frame, for compare mode (never kept on the server). */
+  frames?: PronunciationFrames;
 }
+
+/** GET /api/pronunciation/model?sound=<Han>&locale=… | ?phrase=<id> — the
+ *  model clip (the narrator's cached audio for that sound or phrase),
+ *  analysed on the server once per clip (docs/VOICE.md §Compare mode).
+ *  `available: false` when this server can't decode it ("no_decoder") or
+ *  the clip couldn't be read ("unreadable"): the page draws the textbook
+ *  shapes instead. */
+export interface PronunciationModelSyllable {
+  char: string;
+  pinyin: string;
+  expectedTone: number;
+  startMs: number | null;
+  endMs: number | null;
+  /** The clip was segmented here with confidence (the engine heard the
+   *  expected tone, or a voiced neutral syllable): its own curve is drawn.
+   *  Else the textbook shape stands in, and the page says so. */
+  real: boolean;
+}
+export type PronunciationModelReply =
+  | {
+      available: true;
+      /** Who timed the syllables: Azure's per-syllable timings, or this
+       *  Mac's energy cuts. */
+      engine: "azure" | "local";
+      text: string;
+      locale: string;
+      durationMs: number;
+      frames: PronunciationFrames;
+      syllables: PronunciationModelSyllable[];
+    }
+  | { available: false; why: "no_decoder" | "unreadable" };
 
 /** POST /api/voice/cast — this session's voices, drawn at session start. */
 export interface VoiceCastRequest {

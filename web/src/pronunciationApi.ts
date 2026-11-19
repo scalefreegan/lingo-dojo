@@ -2,8 +2,27 @@
 // req() as every other call: the page's learner and language headers, the
 // 401 and the stale-learner 409 behave as everywhere.
 
-import { ApiError, req } from "./api";
-import type { PronunciationScoreReply } from "./types";
+import { ApiError, req, soundAudio } from "./api";
+import { phraseAudio } from "./practiceApi";
+import type { PronunciationModelReply, PronunciationScoreReply } from "./types";
+
+/** Where compare mode's model comes from: the character card's sound (the
+ *  same request /api/voice/sound gets) or a Practice phrase. */
+export type CompareSource = { kind: "sound"; text: string; locale: string } | { kind: "phrase"; phraseId: string };
+
+/** GET /api/pronunciation/model: the model clip's analysis (pitch,
+ *  loudness, syllable timings), made on the server from its own cached
+ *  audio for that source. */
+export function modelAnalysis(source: CompareSource, signal?: AbortSignal): Promise<PronunciationModelReply> {
+  const q = source.kind === "sound" ? new URLSearchParams({ sound: source.text, locale: source.locale }) : new URLSearchParams({ phrase: source.phraseId });
+  return req<PronunciationModelReply>(`/api/pronunciation/model?${q}`, { signal });
+}
+
+/** The model clip itself, for playback: the same audio the analysis was
+ *  made from (the server's cache hands both routes one file). */
+export async function modelClip(source: CompareSource, signal?: AbortSignal): Promise<Blob> {
+  return source.kind === "sound" ? soundAudio({ text: source.text, locale: source.locale }, signal) : (await phraseAudio(source.phraseId, signal)).blob;
+}
 
 /** Locales the server scores (Mandarin, either script; scripts/
  *  pronunciation.mjs scoresTones is the rule, this only saves a request

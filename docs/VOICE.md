@@ -1066,8 +1066,8 @@ worker thread (`scripts/pronunciation-worker.mjs`).
   recording (one syllable) has too few frames for a range of its own and the
   engine draws no curve for a syllable it did judge; the worker then draws
   it from the whole track's `f0` over the span (drawing only, never a
-  verdict). The narrator's own curve is not drawn: the cached audio is MP3,
-  and the server has no decoder.
+  verdict). The narrator's own curve is drawn only in compare mode
+  (§Compare mode), which decodes the cached clip on the server.
 
 The page (`web/src/components/ToneCheck.tsx`): one mark per character,
 read in the profile's aid (pinyin, zhuyin or none). Adults: the accent
@@ -1117,6 +1117,151 @@ How each "Before wiring" point above was handled:
   room.
 - Off the request thread: a worker thread per recording.
 - `unsure` is shown quietly, never as a mistake (and not at all to kids).
+
+### Compare mode (ld-ne0.9)
+
+After a tone check, "⇄ Compare with the model" ("👀 You and the model" for
+kids) opens one view, the same on the character card and in Practice
+speak-it (`web/src/components/CompareView.tsx`, opened from
+`ToneCheck.tsx`): the learner's take laid against the model clip the page
+already plays, with plain-word differences and playback.
+
+**What the page draws.** One time axis, the learner's take. Above, both
+pitch curves in semitones about each speaker's own median (a man and a
+woman then sit on one scale and only the shapes compare); beneath, both
+loudness envelopes (dB under each take's loudest frame, floored at −48),
+the model's above the line and the learner's below. Each syllable is a
+band labelled with its character and its reading in the profile's aid,
+and is a button. The model is time-warped per syllable onto the learner's
+spans (a piecewise-linear map through every syllable's start and end, slope
+1 outside), and the caption says so: "Aligned by syllable: the model is
+stretched to your timing". "Real lengths" turns the warp off: the model is
+only shifted so the first syllables start together, its own syllables
+marked along the top. Where the model clip couldn't be read with
+confidence, that syllable's band shows the dashed textbook (Chao) shape
+instead, and a line says which characters. The picture is SVG (no chart
+library), `vector-effect: non-scaling-stroke`, theme tokens only.
+
+**Where the learner's frames come from.** The score reply now carries
+`frames` (`{ frameMs: 10, pitch, level }`, from the worker's own pitch
+track: `takeFrames` in `scripts/pronunciation-compare.mjs`), pitch kept
+only inside the scored syllables' spans. Nothing is re-uploaded and nothing
+is stored: the page holds the take, the reply and the model's analysis in
+memory, as before. Each syllable also gains `soundScore` (adults, Azure
+only) and `half` (a half third).
+
+**The model's real curve: `GET /api/pronunciation/model`.**
+`?sound=好&locale=zh-CN` (the card: 1–4 Han characters, `isSoundText`) or
+`?phrase=<phrase id>` (Practice). `wrap(…, { learner: true })`, Mandarin
+only (422 otherwise), exactly one of the two (400), GET only (405). The
+limits come before any provider call: two analyses per user at a time and
+the score route's worker cap (429). The server fetches the clip as the
+play route would (`soundClip` in `voice.ts`, `phraseClip` in
+`practice.ts`: the audio cache, a TTS call on a miss), reads its expected
+syllables from the text, then `modelAnalysis` (`scripts/model-analysis.mjs`).
+Reply: `{ available: true, engine, text, locale, durationMs, frames,
+syllables: [{ char, pinyin, expectedTone, startMs, endMs, real }] }`, or
+`{ available: false, why: "no_decoder" | "unreadable" }` (the page then uses
+the textbook shapes). The log says only the engine, hit or made, and the
+syllable count, never the text.
+
+- **PCM: decoded on the server from its own cached clip.** The cached audio
+  is MP3 (ElevenLabs) or WAV (macOS voices, Azure).
+  `scripts/audio-decode.mjs` passes a 16 kHz mono 16-bit WAV through and
+  converts anything else with macOS `afconvert` (`-f WAVE -d LEI16@16000
+  -c 1`, its best sample-rate converter), else `ffmpeg` on the PATH, else
+  none: an argument list, never a shell, 10 s, 8 MiB in, the output checked
+  like a recording (`readScoreAudio`). Why this and not the alternatives:
+  the browser could decode the MP3, but then the model WAV would come from
+  the client and could not be trusted or cached for everyone; asking the
+  TTS provider for PCM would be a second paid call per clip and a second
+  cache entry; a JS MP3 decoder would be a new dependency. The app runs on
+  one Mac, which always has `afconvert`. With no decoder the view quietly
+  uses the textbook shapes.
+- **Padding.** A voice's clip starts on its first sound, and a lone
+  character from a macOS voice can be under the scorer's 250 ms. The
+  decoded clip gets 250 ms of silence each side before it is read
+  (`padSamples`) and the record is shifted back (`unpadRecord`), so its
+  times are the clip's own, as the page plays it.
+- **Analysis**: the same worker and engine as a learner's take, Azure's
+  timings when available (`assessWithAzure`, the per-minute cap, the paid
+  slot), else local. A syllable is `real` (its own curve drawn) when its
+  verdict is ok, or unsure/neutral with at least 6 voiced frames;
+  otherwise the textbook shape stands in.
+- **The cache** (`<audio dir>/analysis/`, `LINGO_AUDIO_DIR` or `data/audio/`):
+  `<audio key>-<24 hex of the audio's sha256>.json`, written atomically.
+  The audio key is the audio cache's (per user, voice, text…), so a record
+  is per user like the clip; the hash means a clip synthesized again is
+  analysed again. Records whose clip the audio cache has evicted are
+  removed after each write.
+- **One Azure call per clip, ever.** A ledger file `<id>.azure` is created
+  exclusively (`O_EXCL`) inside the paid slot, just before the request, and
+  never removed while its clip is kept: a failure, a crash mid-call, a
+  second request at once (here or in another process) and a deleted record
+  all find it and analyse locally. A record made without a call (no keys,
+  the cap) says `azure: "skipped"`; one later request with Azure available
+  may make the one call and replace it. Concurrent requests for one clip
+  share one analysis.
+- **No poisoning.** The route takes a phrase id or a few characters, never
+  audio; the server reads the clip from its own cache, decodes and analyses
+  it itself. A client can choose which of its own clips is analysed, and
+  nothing else.
+
+**Tips** (`compareTips` in `web/shared/compare.ts`, pure, run by the page;
+thresholds `COMPARE_RULES`). The tone scorer and its thresholds are
+untouched: tips only explain what the scorer already said, and the
+sentence names the syllable, which highlights on hover or focus.
+
+- An **off** syllable gets the rule that fits: tone 4 falling too little
+  (the model falls ≥ 5 st; yours under 60 % of that and ≥ 3 st short, "start
+  higher" when your start sits ≥ 2 st lower), tone 1 moving (the model
+  within 2.5 st of level, yours moving ≥ 3, the scorer's own bound) or sitting
+  low in a phrase (≥ 3.5 st under the model's), tone 2 rising too little
+  (model ≥ 4, yours under half and ≥ 3 short) or late (your climb after 65 %
+  of the syllable, the model's before 45 %), tone 3 dipping too little (model
+  ≥ 2.5, yours under half and ≥ 2.5 short), too short or long (as a share of
+  the take against the model's: under 0.55 or over 1.8; a lone syllable
+  under 0.45 or over 2.2 of the model's length), and carried over (heard as
+  the previous syllable's tone, starting within 1.5 st of where it ended,
+  while the model jumps ≥ 2.5). If none fits, one plain sentence of what
+  the tone should do.
+- An **ok** syllable gets a tip only when every gap is 1.6 times larger
+  (`okFactor`). An **unsure** one never gets one.
+- A syllable's curve is read only with ≥ 6 voiced frames covering half its
+  span, 8 % trimmed at each edge; and only against the model's real curve
+  (never against a textbook stand-in, except the plain tone sentence).
+- **Sound** (Azure's score under the scorer's own bar): Azure's zh-CN
+  "phonemes" are whole syllables, so the tip never says consonant or vowel:
+  it says Azure scores the whole syllable and offers the model's sound to
+  copy.
+- One tip per syllable; offs weigh double; at most three, the most useful
+  first.
+
+How the thresholds were chosen: from the scorer's own bounds where it has
+one (a first tone rules out at 3 st), then checked on generated voices
+(the engine tests' `speak()`: four learner voices × three speeds, single
+syllables and the test phrases, against one model voice). On 144 right
+takes no tip; every one of 369 confident misses got a tip on its own
+syllable and none elsewhere; 711 of 1,080 wrong takes the scorer marked
+unsure, and got none. **Synthesized voices only**: real learners, real rooms
+and real model voices are unmeasured, so the bars sit on the cautious side
+and the plain sentence is the fallback.
+
+**Playback** (Web Audio, the blob in memory and the model clip): my take,
+the model, both in turn (model, a short pause, mine), and, with a syllable
+picked, loop that syllable of either (its span from the reply or the
+model's analysis), and stop. Each button shows `aria-pressed` while it
+plays.
+
+**Kids**: no scores, no red (the kids accent and `kiai`), simpler words
+("it goes down, like a slide"), at most one tip and only for a miss, the
+pitch lane only (no loudness lane, no "real lengths", no loop): a young
+child reads one line against another, not two lanes and a toggle.
+
+**Accessibility**: every syllable, tip and control is a button or checkbox
+in tab order; the heading takes focus on open; "The picture in words"
+(adults, a `<details>`) says each syllable's shape for both voices, and for
+kids the same list is screen-reader only; status lines are live regions.
 
 ## The recorder
 

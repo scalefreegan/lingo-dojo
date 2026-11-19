@@ -2,10 +2,13 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Worker } from "node:worker_threads";
 import { REPO_ROOT } from "../../scripts/content.mjs";
-import { azurePronunciationRequest, azurePronunciationResult, scoresTones, type AzureAssessment, type ExpectedSyllable, type ScoreResult } from "../../scripts/pronunciation.mjs";
+import { azurePronunciationRequest, azurePronunciationResult, encodeWav, parseWav, scoresTones, type AzureAssessment, type ExpectedSyllable, type ScoreResult } from "../../scripts/pronunciation.mjs";
 import { azureLimiter, azureUsable, readScoreAudio, readScoreText, scoreReply, scoreSyllables, scoringEngine, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
+import { modelRecord, padSamples, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
+import { decodeTo16k } from "../../scripts/audio-decode.mjs";
+import { modelAnalysis } from "../../scripts/model-analysis.mjs";
 import { localeFor, voiceKeys } from "../../scripts/voice.mjs";
-import type { PronunciationScoreReply } from "../shared/wire.ts";
+import type { PronunciationModelReply, PronunciationScoreReply } from "../shared/wire.ts";
 // The page's own Mandarin reader, the first module the server takes from
 // web/src: the readings must be the ones the page shows over the text, or
 // the marks would sit on other syllables. It and what it imports
@@ -15,12 +18,24 @@ import type { PronunciationScoreReply } from "../shared/wire.ts";
 import { charReadings, readCodePoints } from "../src/script/zh.ts";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { paidSlot } from "./paid.ts";
+import { phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, sendJson, subPath } from "./sse.ts";
+import { isSoundText, soundClip } from "./voice.ts";
 
 // Pronunciation scoring where the text is known (stage 1, ld-ne0.2;
 // docs/VOICE.md §Pronunciation in the app):
 //
 //   POST /api/pronunciation/score?text=<Han>   WAV body → PronunciationScoreReply
+//   GET  /api/pronunciation/model?sound=<Han>&locale=<loc>  → PronunciationModelReply
+//   GET  /api/pronunciation/model?phrase=<id>               → PronunciationModelReply
+//
+// The second is compare mode's (ld-ne0.9, docs/VOICE.md §Compare mode):
+// the model clip's pitch, loudness and syllable timings, from the audio
+// the server itself cached for that sound or phrase (the same file
+// /api/voice/sound and /api/practice/audio serve), decoded on the server
+// and analysed once per clip (scripts/model-analysis.mjs: at most one
+// Azure call per clip, ever). The learner's take is never sent again: its
+// frames came back with its marks.
 //
 // Mounted with wrap's `learner: true`: the page must name the session's
 // learner and language. Mandarin only (scoresTones over the language's
@@ -63,9 +78,19 @@ const AZURE_TIMEOUT_MS = 15_000;
  *  the cap every other recording route has (voice.ts readAudio). */
 const DRAIN_MAX = 8 << 20;
 
+/** The model clip's decoder (scripts/audio-decode.mjs): a constant in the
+ *  app, swapped by the HTTP tests (their stand-in speech isn't real MP3). */
+export const MODEL = {
+  decode: (audio: Uint8Array, type: string): Promise<Uint8Array | null> => decodeTo16k(audio, type),
+};
+
 let workers = 0;
 /** One score at a time per user: a second tap while one runs is a 429. */
 const scoring = new Set<string>();
+/** Model analyses running per user: two at once (a page's request and its
+ *  React dev double, or two cards), past that a 429. */
+const modelling = new Map<string, number>();
+const MODEL_PER_USER = 2;
 const azureCalls = azureLimiter();
 
 /** Why this route stopped without an answer for the page, for the log: a
@@ -135,7 +160,7 @@ function readRecording(req: IncomingMessage, res: ServerResponse): Promise<Uint8
 
 /** The engine in a worker thread: its result, or a ScoreFailure (what the
  *  worker said is dropped: it is not for the log or the page). */
-function runScorer(wav: Uint8Array, syllables: ExpectedSyllable[], azure: AzureAssessment | null): Promise<ScoreResult> {
+function runScorer(wav: Uint8Array, syllables: ExpectedSyllable[], azure: AzureAssessment | null): Promise<{ result: ScoreResult; frames: TakeFrames; durationMs: number }> {
   return new Promise((resolve, reject) => {
     const w = new Worker(SCORER.worker, { workerData: { wav, syllables, azure } });
     let settled = false;
@@ -147,7 +172,9 @@ function runScorer(wav: Uint8Array, syllables: ExpectedSyllable[], azure: AzureA
       fn();
     };
     const timer = setTimeout(() => finish(() => reject(new ScoreFailure("timeout"))), SCORER.timeoutMs);
-    w.once("message", (m: { result?: ScoreResult; error?: string }) => finish(() => (m?.result ? resolve(m.result) : reject(new ScoreFailure("error")))));
+    w.once("message", (m: { result?: ScoreResult; frames?: TakeFrames; durationMs?: number; error?: string }) =>
+      finish(() => (m?.result && m.frames ? resolve({ result: m.result, frames: m.frames, durationMs: Number(m.durationMs) || 0 }) : reject(new ScoreFailure("error")))),
+    );
     w.once("error", () => finish(() => reject(new ScoreFailure("crash"))));
     w.once("exit", () => finish(() => reject(new ScoreFailure("crash"))));
   });
@@ -157,12 +184,16 @@ function runScorer(wav: Uint8Array, syllables: ExpectedSyllable[], azure: AzureA
  *  kind of failure only (an HTTP status at most), never the request (it
  *  carries the key) or the reply (it quotes what was said). */
 async function assessWithAzure(
-  res: ServerResponse,
+  res: ServerResponse | null,
   ctx: LearnerCtx,
   { wav, text, locale, keys }: { wav: Uint8Array; text: string; locale: string; keys: { azureKey: string; azureRegion: string } },
+  /** The model clip's one-call ledger (model-analysis.mjs): asked inside
+   *  the paid slot, right before the request goes; false means the clip's
+   *  call was made before, and none is made now. */
+  claim?: () => boolean,
 ): Promise<{ azure: AzureAssessment } | { fallback: "failed" | "busy" | "limit" }> {
   const failed = (why: string) => {
-    console.log(`[lingo-dojo] pronunciation: Azure ${why}; scoring locally`);
+    console.log(`[lingo-dojo] pronunciation: Azure ${why}; ${claim ? "reading the model clip locally" : "scoring locally"}`);
     return { fallback: "failed" as const };
   };
   let request: { url: string; init: RequestInit };
@@ -174,17 +205,23 @@ async function assessWithAzure(
     return failed("request could not be made (check AZURE_SPEECH_REGION)");
   }
   if (!azureCalls.take(ctx.user.id)) return { fallback: "limit" };
-  // A paid call: stop it when the browser gives up.
+  // A paid call: stop it when the browser gives up. Not the model clip's
+  // (no `res`): its one call is spent once claimed, and its answer is kept
+  // for the next request whether or not this browser is still there.
   const ctrl = new AbortController();
   const onClose = () => {
-    if (!res.writableEnded) ctrl.abort();
+    if (res && !res.writableEnded) ctrl.abort();
   };
-  res.on("close", onClose);
+  res?.on("close", onClose);
   try {
     let status = 0;
     const json = await paidSlot(
       ctx.user.id,
       async () => {
+        if (claim && !claim()) {
+          status = -1;
+          return null;
+        }
         const r = await fetch(request.url, { ...request.init, signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(AZURE_TIMEOUT_MS)]) });
         status = r.status;
         if (!r.ok) return null;
@@ -192,6 +229,8 @@ async function assessWithAzure(
       },
       "pronunciation checks",
     );
+    // The clip's one call was made before (another request won the claim).
+    if (json === null && status === -1) return { fallback: "failed" };
     if (json === null) return failed(`answered ${status}`);
     if (json === undefined) return failed("sent a reply that isn't JSON");
     const azure = azurePronunciationResult(json);
@@ -202,7 +241,7 @@ async function assessWithAzure(
     if (ctrl.signal.aborted) throw new HttpError(499, "cancelled");
     return failed((e as Error)?.name === "TimeoutError" ? `gave no answer in ${AZURE_TIMEOUT_MS / 1000}s` : "could not be reached");
   } finally {
-    res.off("close", onClose);
+    res?.off("close", onClose);
   }
 }
 
@@ -246,10 +285,10 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       if ("azure" in out) azure = out.azure;
       else fallback = out.fallback;
     }
-    const result = await runScorer(wav, s.syllables, azure);
+    const { result, frames } = await runScorer(wav, s.syllables, azure);
     const engine = azure ? "azure" : "local";
     console.log(`[lingo-dojo] pronunciation: ${engine}${fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
-    sendJson(res, 200, scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale }) satisfies PronunciationScoreReply);
+    sendJson(res, 200, scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale, frames }) satisfies PronunciationScoreReply);
   } finally {
     workers--;
     scoring.delete(ctx.user.id);
@@ -277,12 +316,129 @@ async function guarded(req: IncomingMessage, res: ServerResponse, ctx: LearnerCt
   }
 }
 
+/** A phrase id as the practice routes take it: anything else is a 400
+ *  before any lookup. */
+const PHRASE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** What a sound is said in (voice.ts's own rule for /api/voice/sound). */
+const LOCALE_RE = /^[a-z]{2,3}-[A-Z]{2}$/;
+
+/**
+ * GET /api/pronunciation/model: the model clip of a sound (`sound` and
+ * `locale`, as the character card plays it) or of a phrase (`phrase`, as
+ * Practice plays it), analysed for the compare picture. The clip is the
+ * server's own cached audio for exactly that request (synthesized on a
+ * miss, as the play route would); the client sends no audio. The analysis
+ * is cached per clip (model-analysis.mjs). Nothing about the learner is
+ * read or kept, and nothing is logged but the engine and the cache hit.
+ */
+async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const here = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+  if (!scoresTones(here)) throw new HttpError(422, "pronunciation checks aren't available for this language", "not_available");
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const sound = params.get("sound")?.trim() ?? null;
+  const phrase = params.get("phrase");
+  if ((sound === null) === (phrase === null)) throw new HttpError(400, "name the model: sound=<characters>&locale=… or phrase=<id>");
+  if (sound !== null && !isSoundText(sound)) throw new HttpError(400, "a sound is 1 to 4 Chinese characters");
+  const soundLocale = params.get("locale") ?? "";
+  if (sound !== null && (!LOCALE_RE.test(soundLocale) || !scoresTones(soundLocale))) throw new HttpError(400, "locale must be a Mandarin locale, like zh-CN");
+  if (phrase !== null && !PHRASE_ID_RE.test(phrase)) throw new HttpError(400, "not a phrase id");
+
+  // The limits before any provider call: one analysis per user at a time,
+  // and the scoring workers shared with the score route.
+  const running = modelling.get(ctx.user.id) ?? 0;
+  if (running >= MODEL_PER_USER) throw new HttpError(429, "the model is already being read; try again in a moment");
+  if (workers >= MAX_WORKERS) throw new HttpError(429, "pronunciation checks are busy; try again in a moment");
+  modelling.set(ctx.user.id, running + 1);
+  workers++;
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    const clip = sound !== null ? { ...(await soundClip(ctx, sound, soundLocale, ctrl.signal)), text: sound, locale: soundLocale } : await phraseClip(ctx, phrase!, ctrl.signal);
+    const t = readScoreText(clip.text);
+    if (t.error !== undefined) throw new HttpError(400, "this phrase can't be compared: its text isn't only Chinese characters");
+    const s = scoreSyllables(t.text, readCodePoints(t.text, clip.locale, { cache: false }));
+    if (s.error !== undefined) throw new HttpError(400, "this phrase can't be compared: a character has no reading");
+    const keys = voiceKeys();
+    const out = await modelAnalysis({
+      key: clip.key,
+      audio: clip.audio,
+      type: clip.type,
+      // Decoded, then padded with silence (pronunciation-compare.mjs
+      // MODEL_PAD_MS: a clip starts on its first sound) and checked like
+      // any recording; the record is shifted back to the clip's own times.
+      decode: async (audio: Uint8Array, type: string) => {
+        const decoded = await MODEL.decode(audio, type);
+        if (!decoded) return null;
+        const { samples, sampleRate } = parseWav(decoded);
+        if (sampleRate !== 16_000) throw new Error("the model clip is not 16 kHz");
+        const wav = encodeWav(padSamples(samples, sampleRate), sampleRate);
+        if (readScoreAudio(wav).error !== undefined) throw new Error("the model clip is not one the scorer reads");
+        return wav;
+      },
+      azureReady: scoringEngine({ keys }).engine === "azure",
+      assess: async (wav: Uint8Array, claim: () => boolean) => {
+        const a = await assessWithAzure(null, ctx, { wav, text: t.text, locale: clip.locale, keys }, claim);
+        return "azure" in a ? { azure: a.azure } : {};
+      },
+      analyse: async (wav: Uint8Array, azure: AzureAssessment | null) => {
+        const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure);
+        return unpadRecord(modelRecord({ result, frames, syllables: s.syllables, durationMs }));
+      },
+    });
+    if ("unavailable" in out) {
+      console.log(`[lingo-dojo] pronunciation: model clip unavailable (${out.unavailable})`);
+      return sendJson(res, 200, { available: false, why: out.unavailable } satisfies PronunciationModelReply);
+    }
+    const r = out.record;
+    console.log(`[lingo-dojo] pronunciation: model clip ${out.cached ? "hit" : "made"} (${r.engine}), ${r.syllables.length} syllables`);
+    sendJson(res, 200, {
+      available: true,
+      engine: r.engine,
+      text: t.text,
+      locale: clip.locale,
+      durationMs: r.durationMs,
+      frames: r.frames,
+      syllables: r.syllables,
+    } satisfies PronunciationModelReply);
+  } finally {
+    res.off("close", onClose);
+    workers--;
+    const left = (modelling.get(ctx.user.id) ?? 1) - 1;
+    if (left > 0) modelling.set(ctx.user.id, left);
+    else modelling.delete(ctx.user.id);
+  }
+}
+
+/** The model route's errors leave as HttpErrors with fixed sentences, like
+ *  the score route's (its URL may hold the characters). */
+async function guardedModel(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  try {
+    await model(req, res, ctx);
+  } catch (e) {
+    if (e instanceof HttpError) throw e;
+    if (res.destroyed) {
+      console.log("[lingo-dojo] pronunciation: the browser went away");
+      throw new HttpError(499, "cancelled");
+    }
+    const kind = e instanceof ScoreFailure ? e.kind : "error";
+    console.error(`[lingo-dojo] pronunciation: model clip failed (${kind})`);
+    throw new HttpError(503, "the model couldn't be read just now; try again");
+  }
+}
+
 /** /api/pronunciation, mounted with wrap's `learner: true`. */
 export async function handlePronunciation(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const parts = subPath(req).split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "score") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     return guarded(req, res, ctx);
+  }
+  if (parts.length === 1 && parts[0] === "model") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return guardedModel(req, res, ctx);
   }
   sendJson(res, 404, { error: "no such route" });
 }

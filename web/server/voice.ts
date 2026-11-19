@@ -747,27 +747,44 @@ export async function handleVoiceSound(req: IncomingMessage, res: ServerResponse
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceSoundRequest>>(req);
   const text = typeof body?.text === "string" ? body.text.trim() : "";
-  if (!text || [...text].length > MAX_SOUND_CHARS || !SOUND_RE.test(text)) {
+  if (!isSoundText(text)) {
     throw new HttpError(400, `a sound is 1 to ${MAX_SOUND_CHARS} Chinese characters`);
   }
   const locale = typeof body?.locale === "string" && LOCALE_RE.test(body.locale) ? body.locale : "";
   if (!locale) throw new HttpError(400, "locale must look like es-MX");
-  const settings = await readVoiceSettings(ctx.user.id);
-  const { provider, voice, model } = await practiceVoice(settings, locale);
-  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
   const ctrl = new AbortController();
   const onClose = () => {
     if (!res.writableEnded) ctrl.abort();
   };
   res.on("close", onClose);
   try {
-    const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, ctrl.signal)));
-    console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
+    const out = await soundClip(ctx, text, locale, ctrl.signal);
     res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
     res.end(out.audio);
   } finally {
     res.off("close", onClose);
   }
+}
+
+/** Whether `text` is something /api/voice/sound says (1–4 Han characters). */
+export function isSoundText(text: string): boolean {
+  return !!text && [...text].length <= MAX_SOUND_CHARS && SOUND_RE.test(text);
+}
+
+/**
+ * A sound's audio as /api/voice/sound serves it: the narrator's voice for
+ * `locale` (practiceVoice), through the per-user audio cache, synthesized
+ * on a miss in one of the user's paid slots. Also the compare view's model
+ * clip on the character card (pronunciation.ts), so both read one file.
+ * `text` must already be checked (isSoundText).
+ */
+export async function soundClip(ctx: LearnerCtx, text: string, locale: string, signal: AbortSignal): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
+  const settings = await readVoiceSettings(ctx.user.id);
+  const { provider, voice, model } = await practiceVoice(settings, locale);
+  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
+  const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, signal)));
+  console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
+  return { key, ...out };
 }
 
 /* --------------------------------- library -------------------------------- */

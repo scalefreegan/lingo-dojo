@@ -43,6 +43,8 @@ declare module "*/scripts/pronunciation.mjs" {
     words: unknown[];
   }
   export function scoresTones(locale: unknown): boolean;
+  export function parseWav(buffer: Uint8Array | ArrayBuffer): { sampleRate: number; samples: Float32Array };
+  export function encodeWav(samples: Float32Array, sampleRate: number): Uint8Array;
   export function azurePronunciationRequest(input: {
     key: string;
     region: string;
@@ -73,6 +75,53 @@ declare module "*/scripts/pronunciation-app.mjs" {
   export function scoreReply(
     result: ScoreResult,
     syllables: ExpectedSyllable[],
-    opts: { engine: Reply["engine"]; fallback?: Reply["fallback"]; kids?: boolean; text: string; locale: string },
+    opts: { engine: Reply["engine"]; fallback?: Reply["fallback"]; kids?: boolean; text: string; locale: string; frames?: Reply["frames"] },
   ): Reply;
+}
+
+declare module "*/scripts/pronunciation-compare.mjs" {
+  type Frames = import("../shared/wire.ts").PronunciationFrames;
+  type ModelSyllable = import("../shared/wire.ts").PronunciationModelSyllable;
+  type ExpectedSyllable = import("../../scripts/pronunciation.mjs").ExpectedSyllable;
+  type ScoreResult = import("../../scripts/pronunciation.mjs").ScoreResult;
+  export type TakeFrames = Frames;
+  /** A cached model clip's analysis (model-analysis.mjs). */
+  export interface ModelRecord {
+    v: number;
+    engine: "azure" | "local";
+    azure: "used" | "spent" | "skipped";
+    durationMs: number;
+    frames: Frames;
+    syllables: ModelSyllable[];
+  }
+  export type ModelDraft = Omit<ModelRecord, "azure">;
+  export const LEVEL_FLOOR_DB: number;
+  export const MODEL_RECORD_VERSION: number;
+  export function modelRecord(input: { result: ScoreResult; frames: Frames; syllables: ExpectedSyllable[]; durationMs: number }): ModelDraft;
+  export function isModelRecord(r: unknown): r is ModelRecord;
+  export const MODEL_PAD_MS: number;
+  export function padSamples(samples: Float32Array, sampleRate: number, ms?: number): Float32Array;
+  export function unpadRecord<T extends ModelDraft>(record: T, ms?: number): T;
+}
+
+declare module "*/scripts/audio-decode.mjs" {
+  export function isScoreWav(u8: Uint8Array): boolean;
+  export function decodeTo16k(audio: Uint8Array, type: string, opts?: { converter?: unknown; timeoutMs?: number }): Promise<Uint8Array | null>;
+}
+
+declare module "*/scripts/model-analysis.mjs" {
+  type ModelRecord = import("../../scripts/pronunciation-compare.mjs").ModelRecord;
+  type ModelDraft = import("../../scripts/pronunciation-compare.mjs").ModelDraft;
+  type AzureAssessment = import("../../scripts/pronunciation.mjs").AzureAssessment;
+  export function analysisDir(env?: Record<string, string | undefined>): string;
+  export function modelAnalysis(input: {
+    key: string;
+    audio: Uint8Array;
+    type: string;
+    decode: (audio: Uint8Array, type: string) => Promise<Uint8Array | null>;
+    azureReady: boolean;
+    assess: (wav: Uint8Array, claim: () => boolean) => Promise<{ azure?: AzureAssessment; spent?: boolean }>;
+    analyse: (wav: Uint8Array, azure: AzureAssessment | null) => Promise<ModelDraft>;
+    dir?: string;
+  }): Promise<{ record: ModelRecord; cached: boolean } | { unavailable: "no_decoder" | "unreadable" }>;
 }

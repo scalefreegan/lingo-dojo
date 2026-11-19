@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api";
+import type { CompareSource } from "../pronunciationApi";
 import { startRecording, type Recording } from "../recorder";
 import { useRubyMode } from "../script/ruby.tsx";
 import { readingIn } from "../script/script.ts";
 import type { PronunciationScoreReply, PronunciationSyllable } from "../types";
+import { CompareView } from "./CompareView";
 import { Button } from "./ui";
 import { useToneScore, type ScoreState } from "./useToneScore";
 
@@ -72,6 +74,9 @@ export interface ToneCheckProps {
   onPlayModel?: () => void;
   modelBusy?: boolean;
   modelError?: string | null;
+  /** Where the model comes from, for compare mode (CompareView): absent,
+   *  no Compare control. */
+  compare?: CompareSource;
 }
 
 /** The line under the marks. Kids: a nudge on a clear miss (whether the
@@ -93,9 +98,14 @@ function toneSummary(reply: PronunciationScoreReply, kids: boolean): string {
   return [`${ok} right`, off ? `${off} off` : "", unsure ? `${unsure} not sure` : ""].filter(Boolean).join(" · ");
 }
 
-export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, modelError = null }: ToneCheckProps) {
+export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, modelError = null, compare }: ToneCheckProps) {
   const mode = useRubyMode(reply.locale);
   const [open, setOpen] = useState<number | null>(null);
+  // Compare mode, opened from the result; a new take closes it.
+  const [comparedReply, setComparedReply] = useState<PronunciationScoreReply | null>(null);
+  const comparing = comparedReply === reply;
+  const setComparing = (on: boolean) => setComparedReply(on ? reply : null);
+  const canCompare = !!compare && !!take && !!reply.frames && reply.syllables.some((s) => s.startMs !== null);
   const takePlayer = useTakePlayer(take);
   const syl = reply.syllables;
   const off = syl.filter((s) => s.verdict === "off").length;
@@ -162,10 +172,18 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       )}
       {!kids && (
         <p className={`${fine} text-fg-3`}>
-          {reply.engine === "azure" ? "Checked with Azure's timings and this Mac's pitch reader." : "Checked on this Mac."} Tap a character to see its tone.
+          {reply.engine === "azure" ? "Checked with Azure's timings and this Mac's pitch reader." : "Checked on this Mac."} Tap a character to see its tone{canCompare ? ", or compare the whole take with the model" : ""}.
         </p>
       )}
-      {shown && <TonePicture s={shown} kids={kids} mode={mode} take={take ? takePlayer : null} onPlayModel={onPlayModel} modelBusy={modelBusy} />}
+      {shown && !comparing && <TonePicture s={shown} kids={kids} mode={mode} take={take ? takePlayer : null} onPlayModel={onPlayModel} modelBusy={modelBusy} />}
+      {canCompare && !comparing && (
+        <div className={kids ? "flex justify-center" : ""}>
+          <Button className={kids ? "px-3 py-1.5 text-base" : "px-2.5 py-1 text-sm"} onClick={() => setComparing(true)} data-testid="tone-compare">
+            {kids ? "👀 You and the model" : "⇄ Compare with the model"}
+          </Button>
+        </div>
+      )}
+      {canCompare && comparing && <CompareView reply={reply} take={take!} kids={kids} source={compare!} onClose={() => setComparing(false)} />}
       {(modelError || takePlayer.error) && (
         <p className={`${fine} ${kids ? "text-fg-2" : "text-err"}`} role="status">
           Couldn't play it: {modelError ?? takePlayer.error}
@@ -300,7 +318,7 @@ function TonePicture({ s, kids, mode, take, onPlayModel, modelBusy }: { s: Pronu
 }
 
 /** The marks for a recording already made, or a quiet line while they come. */
-export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError }: { state: ScoreState; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
+export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError, compare }: { state: ScoreState; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
   // One live region, mounted before anything changes in it, so a screen
   // reader hears "Checking the tones…" and then the summary; what is drawn
   // below is the same words, hidden from it so they aren't read twice.
@@ -318,7 +336,7 @@ export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError 
         {state.step === "scoring" && <p className={`${fine} text-fg-3`}>{said}</p>}
         {state.step === "failed" && <p className={kids ? "text-center text-base text-fg-2" : `${fine} text-fg-3`}>{said}</p>}
       </div>
-      {state.step === "done" && state.reply && <ToneCheck reply={state.reply} take={state.take} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} />}
+      {state.step === "done" && state.reply && <ToneCheck reply={state.reply} take={state.take} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} compare={compare} />}
     </>
   );
 }
@@ -338,7 +356,7 @@ type SayState = { step: "idle" } | { step: "opening" } | { step: "recording"; le
  * or after a short pause, then the marks. Recording again replaces them.
  * Keyed on the text by its caller, so another character starts afresh.
  */
-export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError }: { text: string; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
+export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, compare }: { text: string; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
   const [say, setSay] = useState<SayState>({ step: "idle" });
   const [take, setTake] = useState<Blob | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -426,7 +444,7 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError }: {
         </p>
       )}
       <div className="w-full">
-        <ToneScoreView state={score} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} />
+        <ToneScoreView state={score} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} compare={compare} />
       </div>
     </div>
   );
