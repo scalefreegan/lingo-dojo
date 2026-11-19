@@ -1127,7 +1127,7 @@ speak-it (`web/src/components/CompareView.tsx`, opened from
 already plays, with plain-word differences and playback.
 
 **What the page draws.** One time axis, the learner's take. Above, both
-pitch curves in semitones about each speaker's own median (a man and a
+pitch curves in semitones about each speaker's own centre (a man and a
 woman then sit on one scale and only the shapes compare); beneath, both
 loudness envelopes (dB under each take's loudest frame, floored at −48),
 the model's above the line and the learner's below. Each syllable is a
@@ -1158,10 +1158,15 @@ only (422 otherwise), exactly one of the two (400), GET only (405); a
 `phrase` for a kids learner is a 403, as Practice's own routes are. Two
 analyses per user at a time (429), checked before any provider call. The
 scoring workers shared with the score route are taken only around the
-worker run itself, and the converter has its own limit of two: an analysis
-waits for either (up to 15 s, then a 503) rather than holding a slot while
-its speech is synthesized or Azure answers, so Compare never turns another
-learner's score away. The server fetches the clip as the
+worker run itself, and model analyses together hold at most one of the
+two workers, so a score is turned away only when another score (or
+another score and one model run, for the length of a worker run) holds
+them; the converter has its own limit of two. An analysis waits for a
+decoder, or for a worker when Azure didn't answer, up to 15 s (then a 503,
+with nothing paid for lost); with Azure's answer in hand it waits for a
+worker as long as it takes, so that answer always reaches the record. The
+waits take no request's abort signal: requests for one clip share its
+analysis, and one browser leaving doesn't cancel it for another. The server fetches the clip as the
 play route would (`soundClip` in `voice.ts`, `phraseClip` in
 `practice.ts`: the audio cache, a TTS call on a miss), reads its expected
 syllables from the text, then `modelAnalysis` (`scripts/model-analysis.mjs`).
@@ -1242,10 +1247,23 @@ sentence names the syllable, which highlights on hover or focus.
   model's length, and only on a miss: a lone character held long to hear
   it, and said right, gets none), and carried over (heard as
   the previous syllable's tone, starting within 1.5 st of where it ended,
-  while the model jumps ≥ 2.5). If none fits, one plain sentence of what
+  while the model jumps ≥ 2.5; where the previous syllable accepts several
+  tones, its tone is the `saidTone` its reply names, and with none named
+  there is no carried tip). If none fits, one plain sentence of what
   the tone should do.
 - An **ok** syllable gets a tip only when every gap is 1.6 times larger
   (`okFactor`). An **unsure** one never gets one.
+- **Height** (a half third sitting high, a first tone sitting low) is read
+  against each speaker's centre: the median of the syllables' own median
+  pitches, one value per voiced syllable (`speakerCentre` in
+  `scripts/pronunciation-compare.mjs`), so it doesn't move with how long a
+  syllable is held (a median of every frame sat inside whichever syllable
+  lasted longest, and a learner holding 好 in 好吃 longer than the model
+  looked high on it). Height is read only when the take and the model each
+  have at least three syllables with a readable curve
+  (`heightMinSyllables`): with one the centre is the syllable itself, and
+  with two it is halfway between them, so each sits half the interval
+  above or below and a tip couldn't tell which of the two was off.
 - A syllable's curve is read only with ≥ 6 voiced frames covering half its
   span, 8 % trimmed at each edge; and only against the model's real curve
   (never against a textbook stand-in, except the plain tone sentence).

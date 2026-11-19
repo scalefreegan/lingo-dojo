@@ -82,38 +82,56 @@ const DRAIN_MAX = 8 << 20;
  *  app, swapped by the HTTP tests (their stand-in speech isn't real MP3). */
 export const MODEL = {
   decode: (audio: Uint8Array, type: string): Promise<Uint8Array | null> => decodeTo16k(audio, type),
+  /** How long a model analysis waits for a decoder, or for a worker when
+   *  Azure didn't answer, before it gives up with a 503. It waits rather
+   *  than 429s: by then its clip may have been synthesized. (Tests shorten
+   *  it.) */
+  waitMs: 15_000,
 };
 
 let workers = 0;
-/** How long a model analysis waits for a scoring worker (or a decoder)
- *  before it gives up with a 503. It waits rather than 429s: by then its
- *  clip may have been synthesized and its one Azure call made. */
-const MODEL_WAIT_MS = 15_000;
+/** Of `workers`, those running a model analysis: at most MAX_WORKERS - 1,
+ *  so a model analysis never takes the last free worker and a learner's
+ *  score is turned away only when another score holds it. */
+let modelWorkers = 0;
 /** Converters running at once for model clips (scripts/audio-decode.mjs). */
 const MAX_DECODERS = 2;
 let decoders = 0;
 
-/** Take one of `max` slots counted by `get`/`set`, waiting (in turns of
- *  50 ms) up to `waitMs`; → a release function. The score route never
- *  waits (it 429s at once); only model analyses do, so a slow one holds a
- *  worker only for its worker run. */
-async function waitForSlot(count: { get: () => number; set: (v: number) => void }, max: number, waitMs: number, signal?: AbortSignal): Promise<() => void> {
+/** Wait (in turns of 50 ms) until `free()`, up to `waitMs` (Infinity: no
+ *  limit), then `take()`; → the release function, which runs once. The
+ *  score route never waits (it 429s at once); only model analyses do, and
+ *  they hold a worker only for their worker run. No request's abort signal
+ *  is passed in: this work may be shared by several requests for one clip
+ *  (model-analysis.mjs), and one leaving must not cancel it for the rest. */
+async function waitForSlot(free: () => boolean, take: () => () => void, waitMs: number): Promise<() => void> {
   const until = Date.now() + waitMs;
-  while (count.get() >= max) {
-    if (signal?.aborted) throw new HttpError(499, "cancelled");
+  while (!free()) {
     if (Date.now() >= until) throw new HttpError(503, "pronunciation checks are busy; try again in a moment");
     await new Promise((r) => setTimeout(r, 50));
   }
-  count.set(count.get() + 1);
+  const release = take();
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    count.set(count.get() - 1);
+    release();
   };
 }
-const workerSlots = { get: () => workers, set: (v: number) => (workers = v) };
-const decoderSlots = { get: () => decoders, set: (v: number) => (decoders = v) };
+const decoderFree = () => decoders < MAX_DECODERS;
+const takeDecoder = () => {
+  decoders++;
+  return () => void decoders--;
+};
+const modelWorkerFree = () => workers < MAX_WORKERS && modelWorkers < MAX_WORKERS - 1;
+const takeModelWorker = () => {
+  workers++;
+  modelWorkers++;
+  return () => {
+    workers--;
+    modelWorkers--;
+  };
+};
 
 /** One score at a time per user: a second tap while one runs is a 429. */
 const scoring = new Set<string>();
@@ -403,7 +421,7 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       // MODEL_PAD_MS: a clip starts on its first sound) and checked like
       // any recording; the record is shifted back to the clip's own times.
       decode: async (audio: Uint8Array, type: string) => {
-        const release = await waitForSlot(decoderSlots, MAX_DECODERS, MODEL_WAIT_MS, ctrl.signal);
+        const release = await waitForSlot(decoderFree, takeDecoder, MODEL.waitMs);
         let decoded: Uint8Array | null;
         try {
           decoded = await MODEL.decode(audio, type);
@@ -424,10 +442,14 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
         const a = await assessWithAzure(null, ctx, { wav, text: t.text, locale: clip.locale, keys }, claim);
         return "azure" in a ? { azure: a.azure } : {};
       },
-      // Not cancelled by the browser leaving: the analysis is kept for the
-      // next request (its Azure answer may already be paid for).
+      // Not cancelled by a browser leaving: the analysis is shared by every
+      // request for this clip and kept for the next one. With Azure's
+      // answer in hand (paid for, and this clip's only call) it waits for a
+      // worker as long as it takes, so the answer is always written into the
+      // record; without one, up to MODEL.waitMs, then a 503 (nothing lost:
+      // no call was made, and the next request reads the clip again).
       analyse: async (wav: Uint8Array, azure: AzureAssessment | null) => {
-        const release = await waitForSlot(workerSlots, MAX_WORKERS, MODEL_WAIT_MS);
+        const release = await waitForSlot(modelWorkerFree, takeModelWorker, azure ? Infinity : MODEL.waitMs);
         try {
           const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure);
           return unpadRecord(modelRecord({ result, frames, syllables: s.syllables, durationMs }));

@@ -67,6 +67,15 @@ export const COMPARE_RULES = Object.freeze({
   // the model's. How far either moves inside the syllable is not read.
   halfModelLow: 2,
   halfGap: 3,
+  // Height (a half third sitting high, a first tone sitting low) is read
+  // only when the take and the model each have this many syllables with a
+  // readable curve. A speaker's centre is the median of the syllables'
+  // own pitches (pronunciation-compare.mjs speakerCentre): with two, it is
+  // just halfway between them, so each sits half the interval above or
+  // below it and a height tip couldn't tell which of the two was off (a
+  // first tone said too low reads as the third tone beside it said too
+  // high). From three, the median is one of the syllables themselves.
+  heightMinSyllables: 3,
   // Length, as a share of the whole take against the model's share (so
   // speaking slower overall is not "too long"); a lone syllable by its
   // length alone. Under `shortShare` or over `longShare` of the model's.
@@ -435,6 +444,10 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
   // Lengths are compared only on spans the model was timed with confidence
   // in (`real`): a stand-in span says nothing about how long the model is.
   const allTimed = model && mine.every((s, i) => spanOf(s) !== null && spanOf(model.syllables[i]) !== null && model.syllables[i].real);
+  // Enough syllables, on both sides, for a height about the centre to mean
+  // something (`heightMinSyllables`).
+  const modelReadable = model ? model.syllables.filter((m) => m.real && syllableShape(framesIn(model.frames, m.startMs, m.endMs), rules)).length : 0;
+  const heights = shapes.filter(Boolean).length >= rules.heightMinSyllables && modelReadable >= rules.heightMinSyllables;
   const mineTotal = total(mine);
   const modelTotal = model ? total(model.syllables) : 0;
   const phrase = mine.length > 1;
@@ -464,15 +477,19 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
 
     // Carried over from the syllable before.
     const prev = i > 0 ? mine[i - 1] : null;
-    if (s.verdict === "off" && s.why !== "sound" && prev && prev.verdict !== "unsure" && prev.expectedTone !== tone && s.heardTone === prev.expectedTone && L && shapes[i - 1]) {
+    // The tone the previous syllable was said in: its expected one where
+    // only that counts, else the one its reply says was heard (an ok's
+    // `saidTone`); where several count and none is named, no carried tip.
+    const prevTone = !prev ? null : prev.accept.length <= 1 ? prev.expectedTone : prev.verdict === "ok" && Number.isInteger(prev.saidTone) ? prev.saidTone! : null;
+    if (s.verdict === "off" && s.why !== "sound" && prev && prevTone !== null && prev.verdict !== "unsure" && prevTone !== tone && s.heardTone === prevTone && L && shapes[i - 1]) {
       const join = Math.abs(L.head - shapes[i - 1]!.tail);
       const Mp = modelShapes[i - 1];
       const modelJump = M && Mp ? Math.abs(M.head - Mp.tail) : null;
-      if (join <= rules.carryJoin && (modelJump === null || modelJump >= rules.carryModelJump) && TONE_WORD[prev.expectedTone] && TONE_DO[tone]) {
+      if (join <= rules.carryJoin && (modelJump === null || modelJump >= rules.carryModelJump) && TONE_WORD[prevTone] && TONE_DO[tone]) {
         cands.push({
           kind: "carried",
           weight: 2.5,
-          text: `${n} carries on the ${TONE_WORD[prev.expectedTone]} pitch of ${name(i - 1)} before it. Reset between the two: ${n} should ${TONE_DO[tone]}.`,
+          text: `${n} carries on the ${TONE_WORD[prevTone]} pitch of ${name(i - 1)} before it. Reset between the two: ${n} should ${TONE_DO[tone]}.`,
           kid: `Start ${n} fresh: it ${KID_SHAPES[tone]}.`,
         });
       }
@@ -506,7 +523,7 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
             kid: `Keep ${n} up high and flat, like a long beep!`,
           });
         }
-        if (phrase && M.mean - L.mean >= rules.lowGap * f) {
+        if (phrase && heights && M.mean - L.mean >= rules.lowGap * f) {
           cands.push({
             kind: "level_low",
             weight: (M.mean - L.mean) / (rules.lowGap * f),
@@ -537,7 +554,7 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
       // A half third is read by how low it sits, never by how far it moves:
       // a learner low and level against a model falling into the low is right.
       const half = tone === 3 && tone === s.expectedTone && !!s.half;
-      if (half && -M.mean >= rules.halfModelLow) {
+      if (half && heights && -M.mean >= rules.halfModelLow) {
         const gap = L.mean - M.mean;
         if (gap >= rules.halfGap * f) {
           cands.push({

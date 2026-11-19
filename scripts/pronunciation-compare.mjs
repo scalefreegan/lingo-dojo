@@ -2,8 +2,8 @@
 // what the server measures for the picture of a take against the model.
 //
 //  - `takeFrames`: one recording as the compare picture draws it, frame by
-//    frame (10 ms): its pitch in semitones about the speaker's own mean
-//    (so a low voice and a high one land on the same axis) and its
+//    frame (10 ms): its pitch in semitones about the speaker's own
+//    centre (so a low voice and a high one land on the same axis) and its
 //    loudness in dB under its loudest frame. Made for the learner's take
 //    by the score route (and sent back with the marks, never kept) and
 //    for the model's clip by the model route (kept: it isn't personal).
@@ -41,11 +41,34 @@ function median(values) {
  * A recording's frames for the picture: `{ frameMs, pitch, level }`.
  * `track` is a trackPitch result (its `f0`, finished for drawing, and its
  * `rms`). `spans` are the syllables' `{ startMs, endMs }` (nulls allowed):
- * the speaker's centre is the median pitch inside them, and pitch is kept
- * only there (± 20 ms). With no usable span, the whole recording counts.
- * Pitch: semitones about that centre, one decimal, null when unvoiced.
- * Level: whole dB under the loudest frame, floored at LEVEL_FLOOR_DB.
+ * pitch is kept only inside them (± 20 ms). With no usable span, the whole
+ * recording counts. Pitch: semitones about the speaker's centre, one
+ * decimal, null when unvoiced. Level: whole dB under the loudest frame,
+ * floored at LEVEL_FLOOR_DB.
+ *
+ * The centre is the median of the syllables' own median pitches, one value
+ * per voiced syllable, so it doesn't depend on how long each syllable was
+ * held: a median of every frame would sit inside whichever syllable lasted
+ * longest, and a learner holding 好 in 好吃 a little longer than the model
+ * would look higher than the model on 好 with the same pitches. One
+ * syllable: its own median. No usable span: the median of every frame.
  */
+export function speakerCentre(f0, hopMs, spans) {
+  const st = (i) => (f0[i] > 0 ? hzToSt(f0[i]) : null);
+  if (!spans.length) {
+    const all = [];
+    for (let i = 0; i < f0.length; i++) if (st(i) !== null) all.push(st(i));
+    return median(all);
+  }
+  const perSyllable = [];
+  for (const s of spans) {
+    const own = [];
+    for (let i = Math.max(0, Math.ceil(s.startMs / hopMs)); i * hopMs < s.endMs && i < f0.length; i++) if (st(i) !== null) own.push(st(i));
+    if (own.length) perSyllable.push(median(own));
+  }
+  return median(perSyllable);
+}
+
 export function takeFrames(track, spans = []) {
   const hopMs = Number(track?.hopMs) || 10;
   const f0 = track?.f0 ?? [];
@@ -53,9 +76,7 @@ export function takeFrames(track, spans = []) {
   const n = Math.min(f0.length, MAX_FRAMES);
   const usable = (Array.isArray(spans) ? spans : []).filter((s) => s && Number.isFinite(s.startMs) && Number.isFinite(s.endMs) && s.endMs > s.startMs);
   const inside = (i) => !usable.length || usable.some((s) => i * hopMs >= s.startMs - SPAN_PAD_MS && i * hopMs <= s.endMs + SPAN_PAD_MS);
-  const voiced = [];
-  for (let i = 0; i < n; i++) if (f0[i] > 0 && inside(i)) voiced.push(hzToSt(f0[i]));
-  const centre = median(voiced);
+  const centre = speakerCentre(Array.prototype.slice.call(f0, 0, n), hopMs, usable);
   const pitch = [];
   let loudest = 0;
   for (let i = 0; i < n; i++) loudest = Math.max(loudest, rms[i] || 0);

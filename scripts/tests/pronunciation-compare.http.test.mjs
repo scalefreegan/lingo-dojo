@@ -49,6 +49,9 @@ const azureCalls = [];
 const timingsByLength = new Map();
 let azureAnswer = null;
 let ttsDelayMs = 0;
+/** Azure's delay (ms) by reference text, for tests that need it slow. */
+const azureDelay = {};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input.url);
@@ -67,6 +70,7 @@ globalThis.fetch = async (input, init) => {
   if (url.hostname.endsWith(".stt.speech.microsoft.com")) {
     const header = JSON.parse(Buffer.from(init.headers["Pronunciation-Assessment"], "base64").toString("utf8"));
     azureCalls.push({ reference: header.ReferenceText, bytes: init.body.length });
+    if (azureDelay[header.ReferenceText]) await sleep(azureDelay[header.ReferenceText]);
     if (azureAnswer) return azureAnswer();
     return azureReply(header.ReferenceText, timingsByLength.get(init.body.length) ?? []);
   }
@@ -282,6 +286,72 @@ test("a slow model analysis holds no one else's scoring slot: other users' score
     for (const m of await Promise.all(slow)) assert.equal(m.status, 200, m.text);
   } finally {
     ttsDelayMs = 0;
+  }
+});
+
+test("requests sharing one clip's analysis: the first one's browser leaving doesn't cancel it for the second", async () => {
+  withAzure();
+  const [u1, u2, x] = [await someone(), await someone(), await someone()];
+  MODEL.decode = async (audio) => {
+    await sleep(700);
+    return audio;
+  };
+  try {
+    // Two other users' clips take both decoders.
+    const busy = [modelOf(u1, "大"), modelOf(u2, "大")];
+    await sleep(120);
+    // X's first tab asks for 妈 and waits for a decoder; the second tab
+    // asks for the same clip and shares that analysis.
+    const ctrl = new AbortController();
+    const first = fetch(`${base}/api/pronunciation/model?sound=${encodeURIComponent("妈")}&locale=zh-CN`, {
+      headers: { Cookie: x.jar.cookie, "X-Learner-Id": x.learnerId, "X-Language-Profile-Id": x.languageId },
+      signal: ctrl.signal,
+    }).catch((e) => e);
+    await sleep(120);
+    const second = modelOf(x, "妈");
+    await sleep(120);
+    ctrl.abort(); // the first tab is closed while both wait
+    assert.ok((await first) instanceof Error);
+    const r = await second;
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.available, true);
+    for (const b of await Promise.all(busy)) assert.equal(b.status, 200, b.text);
+  } finally {
+    MODEL.decode = realDecode;
+  }
+});
+
+test("once Azure has answered for a model clip, its answer is kept however long the workers stay busy", async () => {
+  withAzure();
+  const [s1, s2, m] = [await someone(), await someone(), await someone()];
+  const savedWait = MODEL.waitMs;
+  MODEL.waitMs = 100;
+  azureDelay["大"] = 1200;
+  try {
+    // Two scores hold both workers through their (slow) Azure calls.
+    const take = clip([4], { lowHz: 110, spanSt: 10, ms: 260 });
+    timingsByLength.set(take.wav.length, take.timings);
+    const scores = [s1, s2].map((u) => u.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("大")}`, take.wav, { "Content-Type": "audio/wav" }));
+    await sleep(150);
+    // The model clip's Azure call answers at once; its analysis then waits
+    // past MODEL.waitMs for a worker, and still makes its record from it.
+    const r = await modelOf(m, "妈");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.engine, "azure");
+    for (const s of await Promise.all(scores)) assert.equal(s.status, 200, s.text);
+    // Without an answer (Azure failed on the clip) the wait has its limit:
+    // a 503, nothing paid for is lost.
+    const n = await someone();
+    azureAnswer = () => new Response("{}", { status: 500 });
+    const again = [s1, s2].map((u) => u.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("大")}`, take.wav, { "Content-Type": "audio/wav" }));
+    await sleep(150);
+    const busy = await modelOf(n, "妈");
+    assert.equal(busy.status, 503, busy.text);
+    await Promise.all(again);
+  } finally {
+    azureAnswer = null;
+    MODEL.waitMs = savedWait;
+    delete azureDelay["大"];
   }
 });
 

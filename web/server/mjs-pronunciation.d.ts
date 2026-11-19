@@ -102,6 +102,7 @@ declare module "*/scripts/pronunciation-compare.mjs" {
   export const MODEL_RECORD_VERSION: number;
   export function modelRecord(input: { result: ScoreResult; frames: Frames; syllables: ExpectedSyllable[]; durationMs: number }): ModelDraft;
   export function isModelRecord(r: unknown): r is ModelRecord;
+  export function speakerCentre(f0: ArrayLike<number>, hopMs: number, spans: { startMs: number; endMs: number }[]): number;
   export const MODEL_PAD_MS: number;
   export function padSamples(samples: Float32Array, sampleRate: number, ms?: number): Float32Array;
   export function unpadRecord<T extends ModelDraft>(record: T, ms?: number): T;

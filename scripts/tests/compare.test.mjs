@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { COMPARE_RULES, alignTakes, compareTips, describeTakes, framesIn, mapBack, mapThrough, syllableShape, textbookCurve, warpAnchors } from "../../web/shared/compare.ts";
-import { isModelRecord, modelRecord, modelSyllableReal, takeFrames } from "../pronunciation-compare.mjs";
+import { isModelRecord, modelRecord, modelSyllableReal, speakerCentre, takeFrames } from "../pronunciation-compare.mjs";
 import { scoreReply, scoreSyllables } from "../pronunciation-app.mjs";
 import { scoreTones, trackPitch } from "../pronunciation.mjs";
 import { speak } from "../pronunciation-synth.mjs";
@@ -174,24 +174,140 @@ test("the other curve rules: level that moves, rise too small or late, dip too s
   assert.ok(!tipsFor({ mine: shallow, model: DIP, tone: 3, extra: { heardTone: 2, why: "tone", half: true } }).some((t) => t.kind === "dip_shallow"), "a half third is never read by its dip");
 });
 
+/** Tips for a three-syllable take, high – B – high (a first tone either
+ *  side), the middle one's curve against the model's: height is read only
+ *  from three syllables (COMPARE_RULES.heightMinSyllables). */
+function middleTips({ b, modelB, tone = 3, verdict = "ok", extra = {} }) {
+  const me = build([{ ms: 300, curve: LEVEL }, { ms: 300, curve: b }, { ms: 300, curve: LEVEL }]);
+  const mo = build([{ ms: 300, curve: LEVEL }, { ms: 300, curve: modelB }, { ms: 300, curve: LEVEL }]);
+  const mine = mineOf(me.spans, [{ tone: 1, verdict: "ok" }, { tone, verdict, extra }, { tone: 1, verdict: "ok" }]);
+  return compareTips({ mine, frames: me.frames, model: modelOf(mo.spans, [{ tone: 1 }, { tone }, { tone: 1 }], mo.frames) }).filter((t) => t.syllable === 1);
+}
+
 test("a half third is read by how low it sits against each voice's own centre, not by how far it moves", () => {
   const lowLevel = () => -5;
   const modelFallingLow = (x) => -1 - 5 * x; // −1 → −6: moves 5, sits low
   const half = { half: true };
   // Low and level against a model falling into the low: right, nothing to say.
-  assert.deepEqual(tipsFor({ mine: lowLevel, model: modelFallingLow, tone: 3, verdict: "ok", extra: half }), []);
+  assert.deepEqual(middleTips({ b: lowLevel, modelB: modelFallingLow, extra: half }), []);
   // The same take marked off (the scorer heard another tone): still no curve tip, only the plain one.
-  const off = tipsFor({ mine: lowLevel, model: modelFallingLow, tone: 3, extra: { ...half, heardTone: 1, why: "tone" } });
+  const off = middleTips({ b: lowLevel, modelB: modelFallingLow, verdict: "off", extra: { ...half, heardTone: 1, why: "tone" } });
   assert.deepEqual(off.map((t) => t.kind), ["tone"]);
   assert.match(off[0].text, /should be low/);
   // Sitting high in the voice: off by the normal bar, ok only well past it.
-  const [t] = tipsFor({ mine: () => 1, model: modelFallingLow, tone: 3, extra: { ...half, heardTone: 1, why: "tone" } });
+  const [t] = middleTips({ b: () => 1, modelB: modelFallingLow, verdict: "off", extra: { ...half, heardTone: 1, why: "tone" } });
   assert.equal(t.kind, "half_high");
   assert.match(t.text, /sits too high in your voice.*just low/);
-  assert.deepEqual(tipsFor({ mine: () => 1, model: modelFallingLow, tone: 3, verdict: "ok", extra: half }), [], "ok: a gap of 4.5 is under 1.6 × 3");
-  assert.equal(tipsFor({ mine: () => 3, model: modelFallingLow, tone: 3, verdict: "ok", extra: half })[0]?.kind, "half_high");
+  assert.deepEqual(middleTips({ b: () => 1, modelB: modelFallingLow, extra: half }), [], "ok: a gap of 4.5 is under 1.6 × 3");
+  assert.equal(middleTips({ b: () => 3, modelB: modelFallingLow, extra: half })[0]?.kind, "half_high");
   // A model that doesn't sit low itself says nothing about lowness.
-  assert.deepEqual(tipsFor({ mine: () => 3, model: () => 0, tone: 3, verdict: "ok", extra: half }), []);
+  assert.deepEqual(middleTips({ b: () => 3, modelB: () => 0, extra: half }), []);
+  // A lone syllable, or two: no height at all (the centre is the syllable
+  // itself, or halfway between the two).
+  assert.deepEqual(tipsFor({ mine: () => 3, model: modelFallingLow, tone: 3, verdict: "off", extra: { ...half, heardTone: 1, why: "tone" } }).map((x) => x.kind), ["tone"]);
+});
+
+/* Height through the real takeFrames: syllables held for different lengths
+ * by the learner and the model, with the same pitches. Hz, not semitones:
+ * a pitch track as trackPitch gives it, centred by takeFrames itself. */
+const HIGH = 220;
+const LOW = 220 * 2 ** (-6.5 / 12);
+function trackOf(parts, { gapMs = 100, lead = 300 } = {}) {
+  const f0 = [];
+  const rms = [];
+  const spans = [];
+  const push = (n, hz) => {
+    for (let i = 0; i < n; i++) {
+      f0.push(hz);
+      rms.push(hz ? 0.2 : 0.001);
+    }
+  };
+  push(lead / STEP, 0);
+  parts.forEach(({ ms, hz }, k) => {
+    const start = f0.length * STEP;
+    push(ms / STEP, hz);
+    spans.push({ startMs: start, endMs: f0.length * STEP });
+    push((k === parts.length - 1 ? lead : gapMs) / STEP, 0);
+  });
+  return { track: { hopMs: STEP, f0: Float32Array.from(f0), rms: Float32Array.from(rms) }, spans };
+}
+function heightTips({ mine: mineParts, model: modelParts, list, kids = false }) {
+  const me = trackOf(mineParts);
+  const mo = trackOf(modelParts);
+  const frames = takeFrames(me.track, me.spans);
+  const modelFrames = takeFrames(mo.track, mo.spans);
+  const mine = mineOf(me.spans, list);
+  const tips = compareTips({ mine, frames, model: modelOf(mo.spans, list.map((x) => ({ tone: x.tone })), modelFrames), kids });
+  return { tips, frames, modelFrames, me, mo };
+}
+const meanIn = (frames, span) => {
+  const v = framesIn(frames, span.startMs, span.endMs).filter((x) => x !== null);
+  return v.reduce((a, x) => a + x, 0) / v.length;
+};
+
+test("the centre doesn't move with how long a syllable is held: a half third held longer is not 'too high'", () => {
+  // 他好高-like: high, half third, high. The learner holds the middle one
+  // 600 ms, the model 250 ms; the pitches are the same.
+  for (const verdict of ["ok", "off"]) {
+    const extra = verdict === "off" ? { half: true, heardTone: 1, why: "tone" } : { half: true };
+    const { tips, frames, modelFrames, me, mo } = heightTips({
+      mine: [{ ms: 250, hz: HIGH }, { ms: 600, hz: LOW }, { ms: 250, hz: HIGH }],
+      model: [{ ms: 300, hz: HIGH }, { ms: 250, hz: LOW }, { ms: 300, hz: HIGH }],
+      list: [{ tone: 1, verdict: "ok" }, { tone: 3, verdict, extra }, { tone: 1, verdict: "ok" }],
+    });
+    assert.ok(Math.abs(meanIn(frames, me.spans[1]) - meanIn(modelFrames, mo.spans[1])) < 0.2, "the same height on both sides");
+    assert.ok(!tips.some((t) => t.kind === "half_high" || t.kind === "level_low"), `${verdict}: ${JSON.stringify(tips)}`);
+  }
+  // Said high for real: the tip. (The first syllable is a fourth tone here,
+  // so a middle heard level isn't read as carried on from it.)
+  const real = heightTips({
+    mine: [{ ms: 250, hz: HIGH }, { ms: 600, hz: HIGH }, { ms: 250, hz: HIGH }],
+    model: [{ ms: 300, hz: HIGH }, { ms: 250, hz: LOW }, { ms: 300, hz: HIGH }],
+    list: [{ tone: 4, verdict: "ok" },{ tone: 3, verdict: "off", extra: { half: true, heardTone: 1, why: "tone" } }, { tone: 1, verdict: "ok" }],
+  });
+  assert.deepEqual(real.tips.map((t) => [t.syllable, t.kind]), [[1, "half_high"]]);
+});
+
+test("the mirror case: a first tone held longer is not 'sitting low'", () => {
+  for (const verdict of ["ok", "off"]) {
+    const extra = verdict === "off" ? { heardTone: 2, why: "tone" } : {};
+    const { tips, frames, modelFrames, me, mo } = heightTips({
+      mine: [{ ms: 600, hz: HIGH }, { ms: 250, hz: LOW }, { ms: 250, hz: LOW }],
+      model: [{ ms: 250, hz: HIGH }, { ms: 300, hz: LOW }, { ms: 300, hz: LOW }],
+      list: [{ tone: 1, verdict, extra }, { tone: 3, verdict: "ok" }, { tone: 3, verdict: "ok" }],
+    });
+    assert.ok(Math.abs(meanIn(frames, me.spans[0]) - meanIn(modelFrames, mo.spans[0])) < 0.2);
+    assert.ok(!tips.some((t) => t.kind === "level_low" || t.kind === "half_high"), `${verdict}: ${JSON.stringify(tips)}`);
+  }
+  // Said low for real: the tip.
+  const real = heightTips({
+    mine: [{ ms: 600, hz: LOW }, { ms: 250, hz: LOW }, { ms: 250, hz: LOW }],
+    model: [{ ms: 250, hz: HIGH }, { ms: 300, hz: LOW }, { ms: 300, hz: LOW }],
+    list: [{ tone: 1, verdict: "off", extra: { heardTone: 3, why: "tone" } }, { tone: 3, verdict: "ok" }, { tone: 3, verdict: "ok" }],
+  });
+  assert.equal(real.tips.find((t) => t.syllable === 0)?.kind, "level_low");
+});
+
+test("two syllables: no height tip either way, however long each is held (好吃)", () => {
+  for (const [mineMs, modelMs] of [[350, 250], [250, 350]]) {
+    for (const verdict of ["ok", "off"]) {
+      const extra = verdict === "off" ? { half: true, heardTone: 1, why: "tone" } : { half: true };
+      const { tips } = heightTips({
+        mine: [{ ms: mineMs, hz: HIGH }, { ms: 300, hz: HIGH }],
+        model: [{ ms: modelMs, hz: LOW }, { ms: 300, hz: HIGH }],
+        list: [{ tone: 3, verdict, extra }, { tone: 1, verdict: "ok" }],
+      });
+      assert.ok(!tips.some((t) => t.kind === "half_high" || t.kind === "level_low"), JSON.stringify(tips));
+    }
+  }
+});
+
+test("speakerCentre: the median of the syllables' own pitches, not of every frame", () => {
+  const { track, spans } = trackOf([{ ms: 250, hz: HIGH }, { ms: 900, hz: LOW }, { ms: 250, hz: HIGH }]);
+  const c = speakerCentre(track.f0, STEP, spans);
+  assert.ok(Math.abs(c - 12 * Math.log2(HIGH)) < 0.01, "two of three syllables are high");
+  assert.ok(Math.abs(speakerCentre(track.f0, STEP, spans.slice(1, 2)) - 12 * Math.log2(LOW)) < 0.01, "one: its own");
+  assert.ok(Number.isFinite(speakerCentre(track.f0, STEP, [])), "no spans: every frame");
 });
 
 test("several accepted tones: a curve is compared only when the learner and the model said the same one", () => {
@@ -270,6 +386,15 @@ test("carried over: an off heard as the tone before, joined to it, while the mod
   // Heard as some other tone: not "carried".
   const other = mineOf(me.spans, [{ tone: 1, verdict: "ok" }, { tone: 2, verdict: "off", extra: { heardTone: 4, why: "tone" } }]);
   assert.notEqual(compareTips({ mine: other, frames: me.frames, model })[0]?.kind, "carried");
+  // The syllable before accepts several tones (一, 不, 我 before another
+  // third): its tone is the one its reply names, or there is no carried tip.
+  const before = (extra) => mineOf(me.spans, [{ tone: 4, verdict: "ok", extra }, { tone: 2, verdict: "off", extra: { heardTone: 1, why: "tone" } }]);
+  const kinds = (m) => compareTips({ mine: m, frames: me.frames, model }).map((x) => x.kind);
+  assert.ok(!kinds(before({ accept: [4, 1] })).includes("carried"), "none named: no carried tip");
+  assert.ok(!kinds(before({ accept: [4, 1], saidTone: 4 })).includes("carried"), "said 4: heard 1 isn't carried from it");
+  const said1 = compareTips({ mine: before({ accept: [4, 1], saidTone: 1 }), frames: me.frames, model, name: (i) => names[i] });
+  assert.equal(said1[0].kind, "carried");
+  assert.match(said1[0].text, /carries on the high level pitch/);
 });
 
 test("at most three tips, misses first; kids get one, gently, with no numbers and nothing on an ok", () => {
