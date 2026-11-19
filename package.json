@@ -15,7 +15,9 @@
     "db:backup": "node scripts/db/backup-cli.mjs",
     "db:backup:plist": "node scripts/db/backup-cli.mjs --plist",
     "db:import": "node scripts/import.mjs",
-    "user": "node scripts/user.mjs"
+    "user": "node scripts/user.mjs",
+    "pron:record": "node scripts/pronunciation-record.mjs",
+    "pron:proof": "node scripts/pronunciation-proof.mjs --recordings"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

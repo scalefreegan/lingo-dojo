@@ -690,10 +690,58 @@ classifier's raw accuracy before any gate.
   segmenter grows with syllables × frames². Run it off the request thread
   (a worker, or the paid-slot queue) or pass timings.
 - Treat `unsure` as silence.
- **Real
-recordings are the next step**: drop audio files and a `labels.tsv` into
-`data/pronunciation-proof/recordings/` (gitignored; the format is in the
-report's "Real recordings") and they are scored on every run, locally.
+
+**Real recordings are the next step**, and there is a tool for making
+them: `npm run pron:record` (`scripts/pronunciation-record.mjs`, pure half
+`scripts/pronunciation-recordings.mjs`, page `scripts/pronunciation-record.html`)
+serves one self-contained page on `http://127.0.0.1:38410`. It is not part
+of the app: no app route, no database, no login; loopback only, requests
+for any other Host refused, POSTs taken only from its own Origin, and a
+Content-Security-Policy that lets the page load and send nothing
+elsewhere. It walks a speaker (a nickname, adult or child) through the
+proof's 31 syllables and phrases said as shown, then 12 syllables said in
+another tone on purpose, each with the proof's cached clip as the model
+(a prompt with no cached clip is left out; no new paid calls). The page
+records with MediaRecorder and writes 16 kHz mono PCM WAV in the browser,
+as the app does, with three differences: the browser's echo cancellation,
+noise suppression and automatic gain are asked off (raw audio can be
+degraded later, processed audio can't be undone; each clip's label says
+what the microphone track reports it applied, `getSettings()`, not what
+was asked: `raw` only when all three are reported off, so a browser that
+doesn't report them all, as Safari probably doesn't (not tested), labels
+every clip `processed` even when it did record raw); the recording is decoded
+straight at 16 kHz, so the browser's band-limited resampler does the work
+(the app's `web/src/recorder.ts` plays a 48 kHz buffer through a 16 kHz
+OfflineAudioContext, which folds whatever lay above 8 kHz back into the
+band); and it keeps recording 250 ms past Stop, for the end of a third
+tone's rise. Clips go to
+`data/pronunciation-proof/recordings/` (gitignored; the tool refuses to
+start, and the proof to write its report, where git would track them or
+already tracks a file) under generated names, with one line each in
+`labels.tsv`: file, text, what they were asked to say when not the text,
+speaker, group, the speaker's own "not sure I said it right", and
+`processing` (`raw` or `processed`; a line without it, as in the first
+recordings, is read as `processed`). A clip is kept only once its line
+reads back from the file. The page names a prompt by its text and what was
+asked, so a tab left open across a restart is told to reload rather than
+filing a clip under another text. A name is one person whatever its
+capitals, in the group first given; a typed name that already exists is
+asked about ("Carry on as …"), never merged silently. What a key does
+is one pure function (`keyAction`, whose source the recorder puts into
+the page, so `npm test` runs the page's own code): space records and
+stops even over a focused button, only the checkbox keeps it, and the
+model clip never plays while the microphone is recording.
+What is done is derived from that file, so a session resumes. After each
+kept clip the page prints the local scorer's verdict as a test readout,
+not a grade. `npm run pron:proof` (`pronunciation-proof.mjs --recordings`)
+scores them per speaker: catches on the deliberately wrong clips, false
+alarms on the rest, the "not sure" clips counted apart, and each speaker
+once per recording setting when the labels hold both. Those results are
+a person's: they go to the terminal and to `recordings/report.md`, never
+into the tracked report. A label is what the speaker aimed for, not what
+came out, so a beginner's false-alarm count is an upper bound until
+someone fluent has listened to the flagged clips. The steps for the
+person recording are in the report's "Real recordings".
 
 **The Azure adapter** (`azurePronunciationRequest`,
 `azurePronunciationResult`, `mergeAzure`) was built from Microsoft's

@@ -114,23 +114,47 @@ The same clips (all four voices, range known) at several values of `offMarginSt`
 
 ## Real recordings
 
-None yet: everything above is synthesized speech. This is the next step, and the harness is ready for it.
+Everything above is synthesized speech. Real recordings are the next step: `npm run pron:record` collects them and `npm run pron:proof` scores them, per speaker, into `data/pronunciation-proof/recordings/report.md` and the terminal. That folder is gitignored and its results are deliberately left out of this report.
 
-Put recordings in `data/pronunciation-proof/recordings/` (gitignored; with `LINGO_PROOF_DIR` set, its `recordings/` folder) and list them in a `labels.tsv` beside them, one recording per line, tab-separated:
+### How to record your clips
+
+1. In a terminal, in the repository: `npm run pron:record`.
+2. Open <http://127.0.0.1:38410> in Chrome or Safari on the same computer, and allow the microphone when the browser asks.
+3. Type a first name or nickname, pick Adult or Child, press **Start**.
+4. For each word: press **Listen** to hear it, press **Record** (or the space bar), say it, press **Stop** (or space again). The page plays your clip back.
+5. Press **Keep** (or Enter) if it is what you meant to say, or **Redo** (space) to try again. If you doubt you said it right, tick **Not sure I said it right** before keeping: that is useful, not a failure.
+6. Part 1 is 31 words and phrases said as shown. Part 2 is 12 words said in the *wrong* tone on purpose, each with a model to copy; the page explains it when you get there.
+7. Stop whenever you like (**Stop for now**, or just close the tab). Every kept clip is already saved; next time, pick your name on the first screen and it carries on where you stopped.
+8. When you have some clips, press Ctrl-C in the terminal and run `npm run pron:proof`. It prints how the scorer did for each speaker and writes the detail to `data/pronunciation-proof/recordings/report.md`.
+
+After each kept clip the page shows a "test readout": what the scorer made of it. It is there to show the thing working and is not a grade; it is often unsure and sometimes wrong, which is what these recordings are for.
+
+The recorder is a local tool, not part of the app: it listens on 127.0.0.1 only, uses no login or database, plays the proof's cached model clips and makes no request to anywhere else. Recordings and their results stay under `data/` (gitignored): this report never includes them.
+
+### What a label means
+
+A label records what the speaker was **aiming for**, not what came out. A beginner's "said as shown" clips will hold real mistakes, so a flag on one may be a true catch that the tally counts as a false alarm. That is why the speaker's own "not sure" clips are counted apart, and why the false-alarm rate from a beginner's clips is an upper bound until someone who knows the language has listened to the flagged ones.
+
+### The labels file
+
+`data/pronunciation-proof/recordings/labels.tsv` (with `LINGO_PROOF_DIR` set, its `recordings/` folder): one recording per line, tab-separated; the recorder writes it, and it can be written by hand:
 
 ```
-# file<TAB>text<TAB>said (optional)<TAB>speaker (optional)
+# file<TAB>text<TAB>said<TAB>speaker<TAB>group<TAB>unsure<TAB>processing
 nihao-1.wav	你好
-ma-wrong.wav	妈	ma3
-wo-shi-xuesheng.m4a	我是学生	wo3 shi4 xue2 sheng2	sam
+rec-20261118-153012-ab12cd34.wav	妈	ma2	sam	adult		raw
+rec-20261118-153140-0f3e9a71.wav	我是学生		sam	adult	unsure	raw
 ```
 
-- `file`: WAV, M4A, MP3 or WebM; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The app's own recordings are already the right format.
-- `text`: the characters the learner was asked to say.
-- `said`: only when the learner said something else on purpose, to test the flags: one pinyin syllable per character with the tone as a digit (5 or 0 for neutral), as actually said. `ma3` against 妈 is a deliberate mǎ for mā. Leave it out when the recording is a good-faith attempt you have listened to and judged right.
-- `speaker`: any name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings (leave it out for one speaker).
+- `file`: WAV, M4A, MP3 or WebM in that folder; anything that isn't 16 kHz mono WAV is converted with ffmpeg (or macOS's afconvert) into `recordings/.wav16k/`. The recorder's files are already the right format.
+- `text`: the characters the speaker was shown.
+- `said`: empty when they were asked to say it as shown. Otherwise what they were asked to say instead: one pinyin syllable per character with the tone as a digit (5 or 0 for neutral). `ma2` against 妈 is a deliberate má for mā.
+- `speaker`: a name; recordings with the same name share a pitch range, each read against the range of that speaker's other recordings.
+- `group`: `adult` or `child` (optional).
+- `unsure`: `unsure` when the speaker ticked "not sure I said it right" (optional).
+- `processing`: `raw` when the microphone was recorded with the browser's echo cancellation, noise suppression and automatic gain off (what the recorder does now), `processed` with them on. A line without it is read as `processed`: the first recordings were made that way. When the labels hold both, the recordings report has each speaker once per setting, so a few prompts recorded again are a direct comparison.
 
-Then run `node scripts/pronunciation-proof.mjs --quick`. Nothing is uploaded: the local scorer runs on this machine. A syllable whose `said` tone is one the text accepts counts as right (a flag on it is a false alarm); any other counts as wrong (a flag is a catch). Twenty or thirty phrases from each of two or three people, a third of them with one deliberate wrong tone, would say more than everything above.
+A syllable whose `said` tone is one the text accepts counts as said as shown (a flag on it is a false alarm); any other counts as wrong on purpose (a flag is a catch). Nothing is uploaded: the local scorer runs on this machine.
 
 ### Single syllables, nothing known about the speaker
 
