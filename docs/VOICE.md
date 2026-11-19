@@ -559,10 +559,11 @@ A mainland learner sees and hears the simplified forms (`inScript`).
 
 Speech-to-text is generous: a wrong tone still transcribes as the right
 word, so the dojo master never hears about it. `scripts/pronunciation.mjs`
-scores a recording against the text it was meant to be. **Stage 0 (bead
-ld-ne0.1) is the engine only**: nothing calls it yet, there is no route, no
-UI and nothing stored. v1 scores Mandarin tones (zh-CN and zh-TW;
-`scoresTones(locale)`).
+scores a recording against the text it was meant to be. Stage 0 (bead
+ld-ne0.1) is the engine described here; stage 1 (ld-ne0.2) calls it where
+the text is known, Practice's speak-it and the character card (§Pronunciation
+in the app, below). Nothing is stored. v1 scores Mandarin tones (zh-CN and
+zh-TW; `scoresTones(locale)`).
 
 One result whichever engine ran:
 
@@ -972,13 +973,151 @@ character's time. A later stage adds the field to `elevenTranscribeRequest`
 and keeps the words beside the text; `scribeCharTimings` and `alignTimings`
 already read them. Only Azure's word timings go in as `timings`.
 
-**Later stages** (beads ld-ne0.2 to ld-ne0.4): scoring repeat-after-me,
-the character card and Practice speak-it, where the expected text is known
-and short (the scorer's best case); live turns with a coaching dial and a
-per-session `speaker` range; keeping flagged clips; the transcript's
-per-syllable marks and the side-by-side curve; the recap's tone score and
-the Practice feed. Types for `web/server/mjs.d.ts` come with the first
-server import.
+**Later stages** (beads ld-ne0.3, ld-ne0.4): live turns with a coaching
+dial and a per-session `speaker` range; keeping flagged clips; the
+transcript's per-syllable marks; the recap's tone score and the Practice
+feed (speak-it failing a wrong tone).
+
+### Pronunciation in the app (stage 1, ld-ne0.2)
+
+```
+POST /api/pronunciation/score?text=<Han text>[&readings=all]     body: the WAV (audio/wav)
+→ { engine: "azure" | "local",
+    fallback: null | "no_keys" | "failed" | "busy" | "limit",
+    text, locale,
+    syllables: [{ char, pinyin, expectedTone, accept, verdict,
+                  usual?      (readings=all: the usual reading, when another was heard),
+                  heardTone?  (only on "off"),
+                  why?        ("tone" | "sound", on "off"),
+                  reason?     (the engine's, on "unsure"; or "every_tone"),
+                  startMs, endMs,
+                  heard:      16 points, semitones about their own mean, null unvoiced,
+                  reference:  16 points, the tone's textbook shape (null: neutral) }],
+    overall: number | null   (null for kids),
+    retry: "clipped" | null }
+```
+
+`web/server/pronunciation.ts`, mounted with wrap's `learner: true`; the
+pure rules are `scripts/pronunciation-app.mjs`, the scoring runs in a
+worker thread (`scripts/pronunciation-worker.mjs`).
+
+- **Mandarin only.** The language's locale must pass `scoresTones`; any
+  other language is a 422 with code `not_available` and the page shows
+  nothing.
+- **Validated before any provider call.** The text is 1 to 24 Han
+  characters, with punctuation and spaces (which end a tone group and are
+  never scored), nothing else, and every character must have a reading
+  (`readCodePoints`, the page's own reader, for the language's locale). The
+  audio is a 16 kHz mono 16-bit PCM WAV of 0.25 to 30 seconds (415, 400,
+  413 otherwise; the body is capped while it is read, and one that takes
+  over 20 s to arrive is a 408). The per-user and server limits are
+  checked before the body is read.
+- **`readings=all`: the character card only.** The card sends it (and
+  Practice never does) for its one character, which is then judged against
+  every reading the card shows for it (`charReadings`, its usual one
+  first): 长 accepts cháng's second tone and zhǎng's third, 行 xíng's second
+  and háng's or hàng's, 好 hǎo and hào, 为 wèi and wéi. An ok names the
+  reading heard (`pinyin`, `expectedTone` and `reference` are that
+  reading's) and, when it isn't the usual one, `usual` names that, so the
+  page says "That's zhǎng, another reading of 长 (usually cháng)" rather
+  than just "right"; a miss is shown against the usual one. A neutral usual
+  reading stays neutral and unjudged (了 alone is le, as the card lists it,
+  not liǎo). A character whose readings take all four tones (拉, 叉, 揣, 呵)
+  can't be checked alone: "not sure" with reason `every_tone` and no score
+  (著 has no third-tone reading, so it is checked). The flag on more than
+  one character, or with any value but `all`, is a 400. Without it, a
+  single character keeps its one reading like any phrase (Practice's 好 is
+  hǎo only, 不！ bù only), and two or more characters keep their reading in
+  context (长大 zhǎng dà).
+- **Engine** (`scoringEngine`): Azure when `AZURE_SPEECH_KEY` and
+  `AZURE_SPEECH_REGION` are set, merged with the local tone check on
+  Azure's syllable timings (`mergeAzure`); the local scorer alone
+  otherwise. **The same for kids learners** (the owner's decision,
+  2026-11-19): a kids learner's recording goes to Azure for scoring, as it
+  already goes to the transcription provider in a voice session. Only the
+  reply differs (`overall` null), from the learner's mode as the session
+  holds it (`learnerMode`; a `?mode=` that disagrees is a 400). Azure
+  missing, failing (an error status, no answer in 15 s, a reply that isn't
+  JSON or has nothing recognised, a malformed `AZURE_SPEECH_REGION`, which
+  spends none of the per-minute calls), busy
+  (the user's paid slots, `paidSlot`) or past the user's
+  `AZURE_PER_MINUTE` (12 calls in a sliding minute) is never an error: the
+  local scorer answers, which mostly means more "not sure" (`fallback` says
+  why). One score at a time per user and two on the server (429 beyond).
+- **Nothing is stored.** The recording is read into memory, scored in a
+  worker thread (started per recording, stopped after 15 s), and dropped
+  with the request; the text is read with the reader's cache off
+  (`readCodePoints(text, locale, { cache: false })`), so it doesn't stay in
+  the server's memory either. No migration; log lines name the engine, the
+  syllable count and the kind of failure, never the text, the audio or
+  anything Azure replied. Every failure leaves the route as an `HttpError`
+  with a fixed message: a worker that hangs, crashes or answers something
+  unusable is a 503 (logged "scoring failed (timeout|crash|error)"), a body
+  slower than 20 s a 408, and a browser that drops the upload or the
+  connection (before or while the body is read, or under the reply) a 499
+  "cancelled", logged "the browser went away", its slots freed at once.
+  `wrap` itself logs only the path of any other error, never the query
+  string (it would hold the text). The reader's library, pinyin-pro 3.29,
+  keeps no cache of its inputs (its maps hold dictionaries only).
+- **The picture.** `heard` is the engine's `pitch` for the syllable,
+  centred on its own mean, and `reference` the tone's Chao shape (the half
+  third low without the rise) on the same scale (`stepSt`), so the page
+  compares shapes only: without the learner's range, height means little,
+  and the scorer then reads only the shape too. On the timings path a short
+  recording (one syllable) has too few frames for a range of its own and the
+  engine draws no curve for a syllable it did judge; the worker then draws
+  it from the whole track's `f0` over the span (drawing only, never a
+  verdict). The narrator's own curve is not drawn: the cached audio is MP3,
+  and the server has no decoder.
+
+The page (`web/src/components/ToneCheck.tsx`): one mark per character,
+read in the profile's aid (pinyin, zhuyin or none). Adults: the accent
+colour for ok, the error colour for a confident miss, a dotted underline in
+the text colour for not sure, never a warning; a line "2 right · 1 not
+sure". Kids: no score and no red (an error line too); ok in the accent
+colour, a miss warm (`kiai`), whether the tone or (from Azure) the sound,
+with "Let's listen and try that one again!" and a Listen button, not sure
+shown as plain text and not tappable; a check that fails (busy, 503) shows
+"Couldn't listen that time. Try once more!" (adults see the reason, in the
+quiet text colour). Live regions (`role="status"`), each with its own
+message: the check's progress and outcome ("Checking the tones…", then the
+summary or why it failed: `tone-status`, one region that stays mounted);
+"the recording started mid-word" on a clipped take; a take or model that
+couldn't play; and on the card, a microphone problem. A tap opens the
+syllable's picture: the textbook shape dashed against what was heard, the
+learner's own take (the blob in memory) and the model sound.
+
+- **Practice speak-it**: once a spoken answer is graded, its recording is
+  scored against the phrase's words, only when the grade is not "wrong" (a
+  wrong answer said other words) and the phrase is scorable. The grade
+  never changes (stage 3 fails a wrong tone). Model: the phrase's audio
+  (`/api/practice/audio/:id`), fetched on the first tap.
+- **Character card**: "Say it, check the tone" ("Your turn to say it" for
+  kids) records the character (stopping after a second's pause) and shows
+  its mark. Model: `/api/voice/sound`.
+- **First steps drills: not wired.** A drill's data names English meanings
+  (`phrases`) and the narrator chooses the words; no structured field says
+  which text a turn asks the learner to repeat, and the reference is never
+  guessed from the transcript or the narrator's last line. Wiring it needs a
+  marker the dojo master writes (a later bead).
+
+How each "Before wiring" point above was handled:
+
+- Single syllables and short phrases only (24 characters at most; the
+  card is one character, Practice phrases are short). Phrase flags still
+  rest on `phraseMarginSt`.
+- `speaker` is never passed: nothing is kept between recordings in stage
+  1, so there is no range from the learner's other recordings.
+- `timings` are Azure's through `mergeAzure` when Azure answers. The
+  local path, and any fallback, finds the speech by energy and says "not sure"
+  more often in a real room, by design.
+- Azure's spans in a real room are still unmeasured. One small check on a
+  synthesized 谢谢 (2026-11-19, three requests): the spans with half a
+  second of silence around it, with a knock 450 ms before, and with a cough
+  300 ms after, moved by 20 ms at most. Three clips of one voice, not a
+  room.
+- Off the request thread: a worker thread per recording.
+- `unsure` is shown quietly, never as a mistake (and not at all to kids).
 
 ## Cost (rough, Nov 2026)
 
@@ -991,7 +1130,8 @@ your Claude Code login.
 
 - Speech-to-text tends to quietly correct mispronunciations, so the dojo
   master can't judge *how* something sounded (the adapter tells it so).
-  The scoring engine exists (§Pronunciation) but nothing calls it yet.
+  Tones are scored only where the text is known (Practice speak-it, the
+  character card; §Pronunciation in the app), not in live turns yet.
 - Not streaming: each reply arrives whole, then plays line by line.
 - Only text is saved (no audio), and a saved session can be read in
   History but not picked up again: after a reload the Go tab starts fresh.

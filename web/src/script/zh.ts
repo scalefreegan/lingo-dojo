@@ -24,12 +24,20 @@ const toSimp: Record<string, string> = t2s.t2s;
 const cache = new Map<string, (string | null)[]>();
 const CACHE_MAX = 4000;
 
+/** Whether `text` is in the cache: for the tests, which check that the
+ *  server's reads (`cache: false`) leave nothing behind. */
+export function readingCached(text: string, locale: string): boolean {
+  return cache.has(`${isTaiwan(locale) ? "tw" : "cn"}\u0001${text}`);
+}
+
 /** Each code point of `text` read: its pinyin (tone marks) for a Chinese
- *  character, null for anything else. */
-export function readCodePoints(text: string, locale: string): (string | null)[] {
+ *  character, null for anything else. `cache: false` neither reads nor
+ *  fills the cache: the server reads a learner's text this way, so no text
+ *  it was asked to score outlives the request (server/pronunciation.ts). */
+export function readCodePoints(text: string, locale: string, { cache: useCache = true }: { cache?: boolean } = {}): (string | null)[] {
   const tw = isTaiwan(locale);
   const key = `${tw ? "tw" : "cn"}\u0001${text}`;
-  const hit = cache.get(key);
+  const hit = useCache ? cache.get(key) : undefined;
   if (hit) return hit;
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
@@ -48,6 +56,7 @@ export function readCodePoints(text: string, locale: string): (string | null)[] 
     if (tw) taiwanize(text, out);
     particleDe(text, out);
   }
+  if (!useCache) return out;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, out);
   return out;

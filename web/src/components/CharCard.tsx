@@ -6,7 +6,9 @@ import { ARPHIC_LICENSE_URL, parseRadical } from "../script/script.ts";
 import { TONE_SOUNDS, syllableParts, zhuyinSound } from "../script/sounds.ts";
 import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
 import type { PhraseSummary } from "../types";
+import { scoresTonesHere } from "../pronunciationApi";
 import { CharTerm } from "./Ruby";
+import { SayItCheck } from "./ToneCheck";
 import { Button } from "./ui";
 import { useTheme } from "../theme";
 import { useSound, type SoundPlayer } from "./useSound.ts";
@@ -39,7 +41,11 @@ type ZhReader = typeof import("../script/zh.ts");
  * reading is the character itself; another reading of a character with
  * several is said by an exemplar read only that way (zh.ts exemplars), as
  * a voice given 行 alone says xíng, never háng. A symbol or tone plays its
- * fixed exemplar (sounds.ts). The sound chart lists them all. */
+ * fixed exemplar (sounds.ts). The sound chart lists them all.
+ *
+ * Say it (Mandarin): the learner records the character and sees its tone
+ * mark and picture (ToneCheck.tsx SayItCheck, /api/pronunciation/score,
+ * which judges the character against every reading listed here). */
 
 type Chars = Record<string, ZhCharRow>;
 let charsLoad: Promise<Chars> | null = null;
@@ -277,6 +283,15 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
             {error && <p className="text-sm text-err">{error}</p>}
           </div>
         </div>
+
+        {/* Say it yourself and see the tone (Mandarin only; scored like
+            any learner's, on Azure when its keys are set, judged against
+            every reading listed above). */}
+        {scoresTonesHere(locale) && (
+          <section aria-label={kids ? "Your turn" : "Check your tone"} className="rounded-xl border border-line p-3">
+            <SayItCheck key={ch} text={ch} kids={kids} onPlayModel={() => void sound.play(ch)} modelBusy={sound.busy === ch} />
+          </section>
+        )}
 
         <div className={`flex flex-col gap-2 ${kids ? "items-center" : "items-start"}`}>
           <Button

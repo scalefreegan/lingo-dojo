@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
+import { scorableText, scoresTonesHere } from "../pronunciationApi";
 import { startRecording, type Recording } from "../recorder";
 import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
 } from "../types";
 import { MarkedText, RubyText, RubyToggle } from "./Ruby";
+import { ToneScoreView } from "./ToneCheck";
+import { useToneScore } from "./useToneScore";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* Practice over the active language's phrase bank (docs/DATA.md §Practice
@@ -769,7 +772,9 @@ type RecState =
   | { step: "opening" }
   | { step: "recording"; rec: Recording; level: number }
   | { step: "hearing" }
-  | { step: "heard"; text: string };
+  // The recording stays with what was heard: speak-it checks its tones
+  // once the answer is graded (ToneCheck), and nothing keeps it after.
+  | { step: "heard"; text: string; wav: Blob };
 
 /** Why the microphone couldn't start, in words a learner can act on. */
 function micError(e: unknown): string {
@@ -875,7 +880,7 @@ function useSpokenAnswer(answer: Answer) {
       if (!text) {
         setProblem("Nothing was heard. Try again a little closer to the microphone.");
         setState({ step: "idle" });
-      } else setState({ step: "heard", text });
+      } else setState({ step: "heard", text, wav });
     } catch (e) {
       if (ctrl.signal.aborted) return;
       setProblem(`Your answer couldn't be transcribed: ${errText(e)}. Nothing was recorded; try again or type it.`);
@@ -900,7 +905,7 @@ type Spoken = ReturnType<typeof useSpokenAnswer>;
 
 /** Record / Stop with a level meter, and what was heard with Check and
  *  Record again. `extra` goes beside Record (the drill's other ways out). */
-function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken; busy: boolean; lang?: string; onCheck: (heard: string) => void; extra?: ReactNode }) {
+function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken; busy: boolean; lang?: string; onCheck: (heard: string, wav: Blob) => void; extra?: ReactNode }) {
   const { state, problem } = spoken;
   return (
     <>
@@ -910,7 +915,7 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
             Heard: “{state.text}”
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button autoFocus variant="primary" disabled={busy} onClick={() => onCheck(state.text)}>
+            <Button autoFocus variant="primary" disabled={busy} onClick={() => onCheck(state.text, state.wav)}>
               {busy ? "Checking…" : "Check"}
             </Button>
             <Button disabled={busy} onClick={() => void spoken.record()}>
@@ -952,11 +957,15 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
  * shown, and only Check records it: a mishearing can be recorded again,
  * and a blocked microphone, an empty recording or a failed transcription
  * never becomes a review. "Type it instead" makes it a typed produce
- * flashcard.
+ * flashcard. For Mandarin, once a spoken answer is graded, its recording
+ * is checked for tones (SpokenTones): marks on the phrase, which never
+ * change the grade (stage 1).
  */
 function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
   const spoken = useSpokenAnswer(answer);
   const [typing, setTyping] = useState(false);
+  // The recording of the answer sent, for its tone check.
+  const [take, setTake] = useState<Blob | null>(null);
   const { busy, result } = answer;
   const idle = spoken.state.step === "idle";
   const target = languageName || "the language you're learning";
@@ -972,7 +981,10 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
             spoken={spoken}
             busy={busy}
             lang={item.lang || undefined}
-            onCheck={(heard) => void answer.submit({ answer: heard })}
+            onCheck={(heard, wav) => {
+              setTake(wav);
+              void answer.submit({ answer: heard });
+            }}
             extra={
               <>
                 <Button variant="ghost" className="px-2 py-1 text-sm" disabled={!idle} onClick={() => setTyping(true)}>
@@ -990,9 +1002,87 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
         // Typed, it is a produce flashcard: the review says so (mode flashcard).
         <TypedAnswer label={`Type it in ${target}`} lang={item.lang || undefined} busy={busy} onCheck={(a) => void answer.submit({ answer: a, drill: "flashcard" })} />
       )}
-      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} how={typing ? "wrote" : "said"} />}
+      {result && (
+        <Result
+          result={result}
+          item={item}
+          locale={locale}
+          answer={answer}
+          last={last}
+          onNext={onNext}
+          how={typing ? "wrote" : "said"}
+          extra={!typing && take ? <SpokenTones take={take} result={result} phraseId={item.phraseId} locale={locale} /> : undefined}
+        />
+      )}
     </>
   );
+}
+
+/**
+ * The tones of a spoken answer, on the phrase (ToneCheck). Only for a
+ * Mandarin phrase short enough to score, and only when the words were
+ * right or close: a wrong answer said other words, and marks on the
+ * expected ones would be about nothing that was said. The model sound is
+ * the phrase's own audio (the listening drill's, cached on the server),
+ * fetched on the first tap.
+ */
+function SpokenTones({ take, result, phraseId, locale }: { take: Blob; result: PracticeAnswerReply; phraseId: string; locale: string | null }) {
+  const text = result.expected.text;
+  const wanted = scoresTonesHere(locale) && scorableText(text) && result.review.verdict !== "wrong";
+  const state = useToneScore(take, text, wanted);
+  const model = useModelAudio(phraseId);
+  if (!wanted) return null;
+  return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} />;
+}
+
+/** The phrase's audio, fetched on the first play and kept for the card. */
+function useModelAudio(phraseId: string) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const el = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
+  // Bumped when the card goes: audio that arrives after that is for a card
+  // no longer shown, so it is neither kept nor played over the next one.
+  const gen = useRef(0);
+  const ctrl = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      gen.current++;
+      ctrl.current?.abort();
+      el.current?.audio.pause();
+      if (el.current) URL.revokeObjectURL(el.current.url);
+      el.current = null;
+    },
+    [phraseId],
+  );
+  async function play() {
+    setError(null);
+    const mine = gen.current;
+    try {
+      if (!el.current) {
+        if (ctrl.current) return; // already fetching: the first tap plays it
+        setBusy(true);
+        const c = new AbortController();
+        ctrl.current = c;
+        let blob: Blob;
+        try {
+          ({ blob } = await phraseAudio(phraseId, c.signal));
+        } finally {
+          if (ctrl.current === c) ctrl.current = null;
+        }
+        if (mine !== gen.current) return;
+        const url = URL.createObjectURL(blob);
+        el.current = { audio: new Audio(url), url };
+      }
+      const a = el.current.audio;
+      a.currentTime = 0;
+      await a.play();
+    } catch (e) {
+      if (mine === gen.current) setError(errText(e));
+    } finally {
+      if (mine === gen.current) setBusy(false);
+    }
+  }
+  return { play: () => void play(), busy, error };
 }
 
 /** The sentence around a gap: the context with its readings (Mandarin),

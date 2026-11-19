@@ -5,6 +5,10 @@
     "lib": ["ES2023"],
     "types": ["node"],
     "skipLibCheck": true,
+    /* The server reads Chinese with the page's own reader
+       (server/pronunciation.ts → src/script/zh.ts), whose JSON tables are
+       typed by .d.json.ts files. */
+    "allowArbitraryExtensions": true,
 
     /* Bundler mode (vite loads this config with esbuild) */
     "module": "esnext",

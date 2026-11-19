@@ -85,6 +85,22 @@ First steps drills (docs/CONTENT.md §Drills; no migration): a scenario with
 beats in `sessionPlan`, only the narrator tag in the voice prompt (others
 voiced as the narrator), and left out of a random pool that has any scene;
 the `First steps` collections and the adult `Pre-A1` level (opt-in) go with it.
+Tone checks where the text is known (pronunciation stage 1, ld-ne0.2; no
+migration, docs/VOICE.md §Pronunciation in the app): `POST
+/api/pronunciation/score?text=` (`web/server/pronunciation.ts`, pure rules
+`scripts/pronunciation-app.mjs`, the engine `scripts/pronunciation.mjs` in a
+worker thread, `scripts/pronunciation-worker.mjs`) scores a WAV against 1–24
+Han characters for a Mandarin language only (else 422 `not_available`);
+Azure whenever its keys are set (paid slot, 12 a minute per user), the local
+scorer otherwise or when Azure fails, **for kids learners too**: a kids
+learner's recording goes to Azure for scoring, as it already goes to the
+transcription provider (only the reply differs: no score, from the session's
+learner mode); the card's one character, with `readings=all` (never sent
+by Practice), is judged against every reading the card shows; nothing is stored, and every failure leaves as an
+`HttpError` so no log line carries the text in the URL.
+Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
+Practice's speak-it (grading unchanged) and the character card; First steps
+drills are not wired (no reliable target text per turn).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

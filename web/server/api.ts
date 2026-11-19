@@ -9,6 +9,7 @@ import { handleConversations } from "./conversations.ts";
 import { handleHiddenScenes } from "./hidden.ts";
 import { handlePhrases } from "./phrases.ts";
 import { handlePractice } from "./practice.ts";
+import { handlePronunciation } from "./pronunciation.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
 import { checkDatabase, setDb, type Db } from "./db.ts";
 import { HttpError, sendJson } from "./sse.ts";
@@ -93,7 +94,9 @@ export function wrap(fn: PublicHandler | UserHandler | LearnerHandler, opts: { a
         // A bad or oversized body is the client's fault, not a crash.
         const known = e instanceof HttpError;
         const status = known ? e.status : 500;
-        if (status >= 500 && !known) console.error(`[lingo-dojo] ${req.method} ${req.url}:`, e);
+        // The path only: a query string can carry what a learner wrote or
+        // said (the pronunciation route's ?text=), never for the log.
+        if (status >= 500 && !known) console.error(`[lingo-dojo] ${req.method} ${(req.url ?? "").split("?")[0]}:`, e);
         // Headers already out (an SSE stream mid-flight): there is no
         // envelope left to send, and sendJson's writeHead would throw INSIDE
         // this catch — an unhandled rejection, which under Node 26 exits the
@@ -167,6 +170,10 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       server.middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
       // Practice (practice.ts): flashcards over that same bank.
       server.middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
+      // Pronunciation checks (pronunciation.ts): a recording scored against
+      // known text for the active learner's language, Mandarin only; Azure
+      // with keys for any learner, local otherwise. Nothing is stored.
+      server.middlewares.use("/api/pronunciation", wrap(handlePronunciation, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.
       server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));

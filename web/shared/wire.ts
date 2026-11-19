@@ -469,7 +469,7 @@ export interface ErrorReply {
   error: string;
   code?: ErrorCode;
 }
-export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation";
+export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation" | "not_available";
 /** The request header naming the learner the page is rendering. */
 export type LearnerHeader = "X-Learner-Id";
 /** The request header naming the language (profile) the page is rendering. */
@@ -1066,6 +1066,56 @@ export interface VoiceSpeakRequest {
 export interface VoiceSoundRequest {
   text: string;
   locale: string;
+}
+
+/** POST /api/pronunciation/score?text=… — a WAV recording scored against
+ *  the Han text it was meant to be (docs/VOICE.md §Pronunciation in the
+ *  app). Mandarin only: any other language is a 422 `not_available`.
+ *  Nothing is stored. */
+export type PronunciationVerdict = "ok" | "off" | "unsure";
+export interface PronunciationSyllable {
+  char: string;
+  /** The dictionary reading (tone marks), as the page's reader gives it;
+   *  on the card (`readings=all`) the reading that was heard, when ok. */
+  pinyin: string;
+  /** The card only: the character's usual reading, when the learner said
+   *  another of its readings (长 said zhǎng: "cháng"). */
+  usual?: string;
+  /** The tone a speaker says here after the sandhi rules (0 neutral). */
+  expectedTone: number;
+  /** Every tone that counts as right here. */
+  accept: number[];
+  verdict: PronunciationVerdict;
+  /** The tone heard, only on an `off`. */
+  heardTone?: number;
+  /** Why it is `off`: the pitch (`tone`), or Azure's sound score (`sound`). */
+  why?: "tone" | "sound";
+  /** Why it is `unsure` (the engine's reason: short, creaky, edges, …; or
+   *  `every_tone`, a card character whose readings take all four tones). */
+  reason?: string;
+  startMs: number | null;
+  endMs: number | null;
+  /** The learner's pitch, 16 points in semitones about its own mean, null
+   *  where unvoiced; [] when nothing was measured. */
+  heard: (number | null)[];
+  /** The tone's textbook shape, 16 points on the same scale; null for the
+   *  neutral tone. */
+  reference: number[] | null;
+}
+export interface PronunciationScoreReply {
+  engine: "azure" | "local";
+  /** Why the local scorer answered: no Azure keys, or Azure failed, was
+   *  busy or at this user's limit (the same for adult and kids learners). */
+  fallback: null | "no_keys" | "failed" | "busy" | "limit";
+  text: string;
+  locale: string;
+  syllables: PronunciationSyllable[];
+  /** 0–100: the local scorer's percent of judged syllables right, or
+   *  Azure's pronunciation score; null for kids (no scores) or with
+   *  nothing judged. */
+  overall: number | null;
+  /** "clipped": the recording began inside the first syllable; ask again. */
+  retry: "clipped" | null;
 }
 
 /** POST /api/voice/cast — this session's voices, drawn at session start. */
