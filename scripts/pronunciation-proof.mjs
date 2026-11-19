@@ -9,6 +9,7 @@
 //   node scripts/pronunciation-proof.mjs --scribe     first buy Scribe timings for the phrases (PAID)
 //   node scripts/pronunciation-proof.mjs --azure      first send the clips to Azure pronunciation assessment (PAID / free-tier quota)
 //   node scripts/pronunciation-proof.mjs --quick      skip the held-out threshold search (the slow part)
+//   node scripts/pronunciation-proof.mjs --spans      print the "When the spans are wrong" table and stop (writes nothing)
 //   node scripts/pronunciation-proof.mjs --noise      print the "With lead-in noise" tables and stop (writes nothing; with --dump, the syllables that flipped and why syllables were unsure)
 //   LINGO_PROOF_AZURE_SPEAKER=<name> node scripts/pronunciation-proof.mjs --recordings --azure-recordings
 //                                                     first send that ONE speaker's own recordings to Azure, for their syllable
@@ -48,9 +49,9 @@ import {
   AZURE_RULES, FALLBACK_TRUST, TIMING_RULES, TONE_RULES, TRIM_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, encodeWav, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
   trackPitch, trimToSpeech, withTone,
 } from "./pronunciation.mjs";
-import { PHRASES, SINGLES, buildPrompts, findSpeaker, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
+import { PHRASES, SINGLES, azureSendable, buildPrompts, findSpeaker, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
 import { trackedByGit } from "./pronunciation-record.mjs";
-import { GENERATED_CASES, GENERATED_PHRASES, GENERATED_VOICES, NOISE_CONDITIONS, RATE as SYNTH_RATE, disturb, flips, sayCase, verdictsOf } from "./pronunciation-synth.mjs";
+import { GENERATED_CASES, GENERATED_PHRASES, GENERATED_VOICES, NOISE_CONDITIONS, RATE as SYNTH_RATE, SPAN_ERRORS, disturb, flips, sayCase, verdictsOf } from "./pronunciation-synth.mjs";
 import { DEFAULT_ELEVEN_MODEL, elevenLibrary, elevenLibraryRequest, elevenSpeechRequest,elevenVoices, elevenVoicesRequest, voiceKeys } from "./voice.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -334,7 +335,7 @@ function scoreAll(voices, texts, { baseline, timings, key = "", rules = RULES })
       let anchors = null;
       if (timings === "scribe" || timings === "anchored") {
         if (!clip.scribe) continue;
-        const timed = alignTimings(truth, scribeCharTimings(clip.scribe));
+        const timed = alignTimings(truth, scribeOfClip(clip.scribe));
         if (timings === "scribe") cuts = timed;
         else anchors = timed.map((t) => t?.startMs ?? null);
       }
@@ -449,12 +450,36 @@ for (const [flag, step] of [["--fetch", fetchElevenClips], ["--scribe", fetchScr
   }
 }
 
+// The synthesized clips begin with the first sound: no microphone
+// recording does (push-to-talk is pressed before speaking), and the scorer
+// takes a recording that is loud from its first frame for one that started
+// mid-word (reason "clipped"). So each clip is scored with this much
+// silence before it, and the recognisers' cached times, which are of the
+// clip as it was sent, are moved by as much.
+const LEAD_MS = 200;
+const withLead = (samples, sampleRate) => {
+  const lead = Math.round((sampleRate * LEAD_MS) / 1000);
+  const out = new Float32Array(lead + samples.length);
+  out.set(samples, lead);
+  return out;
+};
+const later = (t) => (t && t.startMs !== null && t.startMs !== undefined ? { ...t, startMs: t.startMs + LEAD_MS, endMs: t.endMs + LEAD_MS } : t);
+/** An Azure reply of a clip, parsed, on the scored clip's clock. */
+const azureOfClip = (json) => {
+  const azure = azurePronunciationResult(json);
+  return { ...azure, words: azure.words.map((w) => ({ ...later(w), phonemes: w.phonemes.map(later) })) };
+};
+/** Scribe's character times of a clip, on the scored clip's clock. */
+const scribeOfClip = (json) => scribeCharTimings(json).map(later);
+
 const voices = voiceDirs().map((v) => {
   const clips = new Map();
   for (const text of [...SINGLES, ...PHRASES]) {
     const file = clipPath(v.id, text);
     if (!fs.existsSync(file)) continue;
-    const { samples, sampleRate } = parseWav(fs.readFileSync(file));
+    const wav = parseWav(fs.readFileSync(file));
+    const sampleRate = wav.sampleRate;
+    const samples = withLead(wav.samples, sampleRate);
     const scribeFile = file.replace(/\.wav$/, ".scribe.json");
     clips.set(text, { samples, sampleRate, track: trackPitch(samples, sampleRate), scribe: fs.existsSync(scribeFile) ? JSON.parse(fs.readFileSync(scribeFile, "utf8")) : null });
   }
@@ -503,7 +528,7 @@ function azureTimingsOf(v, text, truth, clip) {
     let got = null;
     const file = azurePath(v.id, text, text);
     if (fs.existsSync(file)) {
-      const azure = azurePronunciationResult(JSON.parse(fs.readFileSync(file, "utf8")));
+      const azure = azureOfClip(JSON.parse(fs.readFileSync(file, "utf8")));
       if (azure.status === "Success" && azure.words.length) {
         mergeAzure({ azure, syllables: truth, track: clip.track, local: (timings) => {
           got = timings;
@@ -568,6 +593,71 @@ function noiseStudy() {
   const madeRows = GENERATED_CASES.map((kase) => ({ kase, flips: Object.fromEntries(NOISE_PATHS.map((way) => [way, flips(made.get(kase.base ?? kase.key)[way], made.get(kase.key)[way])])) }));
   return (noiseDone = { clipRows, madeRows, untimed });
 }
+// What the timings path says when the spans themselves are wrong
+// (SPAN_ERRORS), with its guards (TIMING_RULES: the jittered readings and
+// the lopsided check) and without, each against the unperturbed spans
+// under the same setting.
+const NO_SPAN_GUARDS = Object.freeze({ ...TIMING_RULES, jitterMs: 0, lopsided: 0 });
+let spanDone = null;
+function spanStudy() {
+  if (spanDone) return spanDone;
+  const settings = { bare: NO_SPAN_GUARDS, guarded: TIMING_RULES };
+  const kinds = () => ({ single: new Map(), phrase: new Map() });
+  const base = { bare: kinds(), guarded: kinds() };
+  // The clean verdicts under each variant's key, for flips().
+  const baseAt = Object.fromEntries(SPAN_ERRORS.map((e) => [e.key, { bare: kinds(), guarded: kinds() }]));
+  const now = Object.fromEntries(SPAN_ERRORS.map((e) => [e.key, { bare: kinds(), guarded: kinds() }]));
+  for (const v of voices) {
+    for (const [text, clip] of v.clips) {
+      const { truth, list } = labellings(text);
+      const azure = azureTimingsOf(v, text, truth, clip);
+      if (!azure) continue;
+      const kind = [...text].length === 1 ? "single" : "phrase";
+      const totalMs = (clip.samples.length / clip.sampleRate) * 1000;
+      const read = (into, tag, timings, timingRules) => list.forEach((label, li) => {
+        const res = scoreTones({ samples: clip.samples, sampleRate: clip.sampleRate, syllables: label.syllables, timings, speaker: clip.range, track: clip.track, rules: RULES, timingRules });
+        res.syllables.forEach((x, j) => {
+          if (truth[j].expectedTone === 0 || label.syllables[j].expectedTone === 0) return;
+          const side = label.wrongAt.has(j) ? "wrong" : "right";
+          if (side === "right" && label.kind !== "right") return;
+          into.set(`${v.id}|${text}|${li}|${j}${tag}`, { side, verdict: x.verdict, reason: x.reason });
+        });
+      });
+      for (const [name, timingRules] of Object.entries(settings)) {
+        const mine = new Map();
+        read(mine, "", azure, timingRules);
+        for (const [k, x] of mine) base[name][kind].set(k, x);
+        for (const error of SPAN_ERRORS) {
+          error.variants(azure, totalMs).forEach((spans, vi) => {
+            read(now[error.key][name][kind], `#${vi}`, spans, timingRules);
+            for (const [k, x] of mine) baseAt[error.key][name][kind].set(`${k}#${vi}`, x);
+          });
+        }
+      }
+    }
+  }
+  const rows = SPAN_ERRORS.map((error) => ({ error, flips: Object.fromEntries(Object.keys(settings).map((name) => [name, { single: flips(baseAt[error.key][name].single, now[error.key][name].single), phrase: flips(baseAt[error.key][name].phrase, now[error.key][name].phrase) }])) }));
+  // What the guards cost where the spans were right all along.
+  const cost = { single: flips(base.bare.single, base.guarded.single), phrase: flips(base.bare.phrase, base.guarded.phrase) };
+  const clean = Object.fromEntries(Object.keys(settings).map((name) => [name, { single: flips(base[name].single, base[name].single), phrase: flips(base[name].phrase, base[name].phrase) }]));
+  return (spanDone = { rows, cost, clean });
+}
+const spanTable = () => {
+  const { rows } = spanStudy();
+  const moved = (f) => (f.right + f.wrong ? `${f.falseOff} / ${f.wrongOk} / ${f.lost}` : "–");
+  return [
+    "| The spans given | Singles: no guards | Singles: guarded | Phrases: no guards | Phrases: guarded | Phrase syllables read |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...rows.map((r) => `| ${r.error.title} | ${moved(r.flips.bare.single)} | ${moved(r.flips.guarded.single)} | ${moved(r.flips.bare.phrase)} | ${moved(r.flips.guarded.phrase)} | ${r.flips.guarded.phrase.right + r.flips.guarded.phrase.wrong} |`),
+  ];
+};
+if (args.has("--spans")) {
+  console.log(spanTable().join("\n"));
+  const { cost, clean } = spanStudy();
+  const totals = (f) => `${f.caught} of ${f.wrong} / ${f.falseAlarms} of ${f.right} / ${f.passed}`;
+  console.log(`clean, no guards: singles ${totals(clean.bare.single)}, phrases ${totals(clean.bare.phrase)}; guarded: singles ${totals(clean.guarded.single)}, phrases ${totals(clean.guarded.phrase)}; the guards cost ${cost.single.lost} single and ${cost.phrase.lost} phrase verdicts (new false alarms ${cost.single.falseOff + cost.phrase.falseOff}, new wrong oks ${cost.single.wrongOk + cost.phrase.wrongOk})`);
+  process.exit(0);
+}
 const noiseTable = () => {
   const { clipRows, madeRows } = noiseStudy();
   const totals = (f) => `${f.caught} of ${f.wrong} / ${f.falseAlarms} of ${f.right} / ${f.passed}`;
@@ -584,7 +674,7 @@ const noiseTable = () => {
     );
   }
   out.push(
-    "**Cut by energy, before the rework** (commit e75a163, the same measurement; not rerun).",
+    "**Cut by energy, before the rework** (commit e75a163; not rerun. Measured without the lead-in the clips now get, and its mid-word row had half a second of room noise before the cut, which is not a recording that starts mid-word).",
     "",
     "| | Singles: totals | Singles: changes | Phrases: totals | Phrases: changes |",
     "| --- | --- | --- | --- | --- |",
@@ -793,18 +883,27 @@ if (recordingsTracked) {
   }
   // Azure's timings for the recordings, when their speaker chose to send
   // them (--azure-recordings): asked once per clip, the reply kept in
-  // `.azure/` beside the clips (0600), so nothing is ever sent twice. Only
-  // the speaker named in LINGO_PROOF_AZURE_SPEAKER, never group "child",
-  // and to no other provider.
+  // `.azure/` beside the clips (0600), so no clip is sent again once it
+  // has an answer (a rate-limit refusal is retried, which sends the clip
+  // again). Only the speaker named in LINGO_PROOF_AZURE_SPEAKER, only when
+  // labelled adult and nothing else on every line (azureSendable), and to
+  // no other provider.
   const replyPath = (row) => path.join(REC_DIR, ".azure", `${row.file}.json`);
   if (args.has("--azure-recordings")) {
     const who = String(process.env.LINGO_PROOF_AZURE_SPEAKER ?? "").trim().toLowerCase();
     if (!who) throw new Error("--azure-recordings needs LINGO_PROOF_AZURE_SPEAKER: the one speaker whose own clips may be sent");
     const keys = voiceKeys();
     if (pronunciationProvider(keys) !== "azure") throw new Error("no AZURE_SPEECH_KEY / AZURE_SPEECH_REGION");
-    const mine = rows.filter((r) => r.speaker.toLowerCase() === who && r.group !== "child");
+    // Decided on every label line, the ones left out as conflicts too.
+    const allowed = azureSendable(parsed.rows, who);
+    if (allowed.why) console.error(`Azure: nothing sent (${allowed.why}).`);
+    const files = new Set(allowed.send.map((r) => r.file));
+    const mine = rows.filter((r) => files.has(r.file) && r.speaker.toLowerCase() === who);
     const held = rows.length - mine.length;
     fs.mkdirSync(path.join(REC_DIR, ".azure"), { recursive: true, mode: 0o700 });
+    // The replies say what a person said and how: asked of the very file
+    // about to be written, not of the folder in general.
+    for (const row of mine) if (trackedByGit(path.dirname(replyPath(row)), undefined, path.basename(replyPath(row)))) throw new Error(`${replyPath(row)} would not be ignored by git: nothing sent`);
     let sent = 0;
     for (const row of mine) {
       if (fs.existsSync(replyPath(row))) continue;
@@ -822,11 +921,12 @@ if (recordingsTracked) {
       sent++;
       await new Promise((done) => setTimeout(done, 1200));
     }
-    console.log(`Azure: ${sent} recordings sent (one request each), ${mine.length - sent} already answered${held ? `, ${held} of other speakers or a child's NOT sent` : ""}.`);
+    console.log(`Azure: ${sent} recordings sent (one clip each, sent again only after a rate-limit refusal), ${mine.length - sent} already answered${held ? `, ${held} of other speakers or not labelled adult NOT sent` : ""}.`);
   }
   const detail = [];
   const marked = [];
   const timedMarks = [];
+  const timedDetail = [];
   let timedClips = 0;
   for (const row of rows) {
     const others = rows.filter((x) => x !== row && x.speaker === row.speaker).map((x) => x.track);
@@ -848,13 +948,19 @@ if (recordingsTracked) {
     }
     timedClips++;
     const timed = mergeAzure({ azure, syllables: row.syllables, track: row.track, local: (timings) => scoreTones({ samples: row.samples, sampleRate: row.sampleRate, syllables: row.syllables, timings, speaker: others.length ? speakerRange(others) : null, track: row.track, rules: RULES }) });
-    timed.syllables.forEach((x, k) => {
+    const timedSyllables = timed.syllables.map((x, k) => {
       const saidTone = row.saidTones?.[k] ?? null;
-      if (row.syllables[k].expectedTone === 0 || saidTone === 0) return;
-      timedMarks.push({ speaker: row.speaker, group: row.group, unsure: row.unsure, wrong: saidTone !== null && !row.syllables[k].accept.includes(saidTone), verdict: x.verdict, processing: row.processing });
+      if (row.syllables[k].expectedTone === 0 || saidTone === 0) return `${x.char} –`;
+      const wrong = saidTone !== null && !row.syllables[k].accept.includes(saidTone);
+      timedMarks.push({ speaker: row.speaker, group: row.group, unsure: row.unsure, wrong, verdict: x.verdict, processing: row.processing });
+      // A flag names what was expected and what was heard, and whose flag
+      // it is ("sound" is Azure's own, on the word; "tone" the pitch's).
+      const why = x.verdict === "off" ? ` (${wrong ? "caught" : "**false alarm**"}: expected tone ${row.syllables[k].accept.join(" or ")}, heard ${x.heardTone ?? "none"}, by ${x.reason === "sound" ? "Azure's score" : "the pitch"})` : x.verdict === "unsure" ? ` (${x.reason})` : wrong ? " (missed)" : "";
+      return `${x.char} ${x.verdict}${why}`;
     });
+    timedDetail.push(`| ${row.file} | ${row.speaker} | ${row.text} | ${row.saidTones ? row.saidTones.join(" ") : "as shown"} | ${row.unsure ? "yes" : ""} | ${row.processing} | ${timedSyllables.join(", ")} |`);
   }
-  recordings = { clips: rows.length, problems, detail, marks: marked, timed: timedClips ? { clips: timedClips, marks: timedMarks } : null };
+  recordings = { clips: rows.length, problems, detail, marks: marked, timed: timedClips ? { clips: timedClips, marks: timedMarks, detail: timedDetail } : null };
 }
 
 /** Print the recordings' results and write them beside the recordings
@@ -920,7 +1026,7 @@ if (haveScribe) {
         if (Array.isArray(w.characters) && w.characters.length) withChars++;
       }
       const truth = expectedSyllables(text, readCodePoints(text, LOCALE));
-      const timed = alignTimings(truth, scribeCharTimings(clip.scribe));
+      const timed = alignTimings(truth, scribeOfClip(clip.scribe));
       // Where the energy cuts put each syllable, to compare Scribe against.
       const energy = scoreTones({ samples: clip.samples, sampleRate: clip.sampleRate, syllables: truth, track: clip.track }).syllables;
       total += truth.length;
@@ -983,7 +1089,7 @@ let azureSection = null;
         if (!fs.existsSync(file)) continue;
         const raw = JSON.parse(fs.readFileSync(file, "utf8"));
         replies++;
-        const azure = azurePronunciationResult(raw);
+        const azure = azureOfClip(raw);
         if (azure.status !== "Success" || !azure.words.length) {
           failed++;
           continue;
@@ -1112,6 +1218,7 @@ p("# Pronunciation scoring: proof of the local tone scorer");
 p(`Written by \`node scripts/pronunciation-proof.mjs\` on ${new Date().toISOString().slice(0, 10)}. Rerun it to refresh; the clips are cached, so a rerun is free. Stage 0 of the pronunciation feature (bead ld-ne0.1); the engine is \`scripts/pronunciation.mjs\`, described in [VOICE.md](VOICE.md#pronunciation).`);
 p("## What was tested");
 p(`${clipCount} synthesized clips from ${voices.length} voices: ${voices.map((v) => `${v.name}, ${v.gender}${v.range ? `, median ${v.range.medianHz.toFixed(0)} Hz` : ""}`).join("; ")}. Each voice says ${SINGLES.length} single syllables (ma, shi, yi, ba in each of the four tones: ${SINGLES.join(" ")}) and ${PHRASES.length} phrases (${PHRASES.join("、")}).`);
+p(`The clips begin with their first sound. No microphone recording does, and the scorer takes a recording that is loud from its first frame for one that started mid-word (its first syllable is "unsure", reason "clipped"). So every clip is scored with ${LEAD_MS} ms of silence put before it, and the recognisers' cached times are moved by as much.`);
 p("There are no learner recordings, so every clip is used twice over. Scored against its own text it is a **right** answer: an \"off\" there is a false alarm. Scored against the same syllables with one tone changed it is a **wrong** answer: 妈 labelled 马 is a learner who said mā for mǎ, and an \"off\" on that syllable is a catch. The connected-speech rules are applied to each label first, so a relabelling that the rules make equivalent (你 as ní before 好) is not counted as wrong. Syllables whose true or labelled tone is neutral are left out: the scorer does not judge them.");
 p("The number that matters is how many \"off\" flags are false: a learner told a right tone was wrong stops believing the marks. A miss costs less. The set holds about three wrong labels for each right one, which flatters raw precision, so each table also restates it for a learner who gets one tone in five wrong.");
 if (heldOut) {
@@ -1252,17 +1359,35 @@ p("The same clips (all four voices, range known) at several values of `offMargin
   p("`creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.");
 }
 p("## With lead-in noise");
-p("The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a cough, another voice, a hum, and the scorer has to know where the speech is before it can read a tone. This section puts those surroundings around every cached clip and scores it again, the speaker's range known, two ways: **cut by energy** (no timings: the fallback, which has to find the speech itself) and **on syllable timings** (Azure's cached reply for the clean clip, each syllable's start and end moved by the lead-in; no new call was made). Every syllable's verdict is compared with the same syllable's verdict on the clean clip, scored the same way, because totals hide a verdict lost here and another gained there. The rule: a disturbance may cost verdicts (the third number of \"changes\"); it must not add a false alarm or a wrong tone passed as ok (the first two). The same disturbances, in small and on generated audio, are in `npm test`.");
+p("The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a cough, another voice, a hum, and the scorer has to know where the speech is before it can read a tone. This section puts those surroundings around every cached clip and scores it again, the speaker's range known, two ways: **cut by energy** (no timings: the fallback, which has to find the speech itself) and **on syllable timings** (Azure's cached reply for the CLEAN clip, each syllable's start and end moved by the lead-in; no new call was made, so Azure never heard the noisy audio). Every syllable's verdict is compared with the same syllable's verdict on the clean clip, scored the same way, because totals hide a verdict lost here and another gained there. The rule: a disturbance may cost verdicts (the third number of \"changes\"); it must not add a false alarm or a wrong tone passed as ok (the first two). The same disturbances, in small and on generated audio, are in `npm test`.");
 p(noiseTable().join("\n"));
 p(`Levels are dB against the clip's loudest 10 ms; knocks, blips and the murmur are a buzz at 220 Hz, the cough a noise burst over a falling 180 Hz buzz, the child three syllables at 300 to 380 Hz. The generated phrases (three voices, twelve tone patterns each, every syllable also relabelled with each other tone) are the cases the cached clips can't express; their timings are where the generator put each syllable. ${noiseStudy().untimed ? `${noiseStudy().untimed} clips have no usable cached Azure reply and are left out of the timings tables. ` : ""}The new wrong tone passed as ok that plain silence adds on the energy path is not noise: padding moves the 20 ms analysis frames, and a syllable on the edge of a bar falls the other way.`);
 p([
   "What the tables say:",
   "",
-  "- **On timings, nothing outside the syllables' spans changes a verdict**: blips, knocks, a cough or a child's voice in the lead-in leave every row as the clean one. The scorer measures pitch inside the spans only and takes the silence floor, the octave repairs, the range gate and the recording's own range from inside them.",
-  "- **Cut by energy, every doubt is \"unsure\".** A sound the bars can't place is read both as speech and as noise, in every combination, and a verdict stands only where all readings agree on the verdict and the tone (\"trimmed\"); sounds long enough to be a syllable that lie apart leave the whole recording unjudged (\"scattered\"), since one may be a cough or another voice. That is why a single stray blip costs most of a phrase's verdicts. The fallback is safe, not useful, in a noisy room.",
+  "- **On timings, nothing outside the spans it is given changes a verdict**: blips, knocks, a cough or a child's voice in the lead-in leave every row as the clean one. The scorer measures pitch inside the spans only and takes the silence floor, the octave repairs, the range gate and the recording's own range from inside them. **This is true by construction, and the rows assume what was not measured: that a recogniser draws the same spans on the noisy recording as on the clean one.** Azure was sent the clean clips only. A recogniser that stretches a span over a knock, or moves every span when there is a cough, gives the scorer wrong spans, and what happens then is the next section.",
+  "- **Cut by energy, every doubt is \"unsure\".** A sound the bars can't place is read both as speech and as noise, in every combination, and a verdict stands only where all readings agree on the verdict and the tone (\"trimmed\"); sounds long enough to be a syllable (60 ms of sound, which is a 90 ms voiced run in the track: a 40 ms knock is not one) that lie apart leave the whole recording unjudged (\"scattered\"), since one may be a cough or another voice. That is why a single stray blip costs most of a phrase's verdicts. **Under noise the fallback is safe, not useful**: with a cough, another voice or a hum it says nothing at all.",
+  `- **The caution costs right answers on clean clips too.** Before the rework (commit e75a163) the energy path marked 89.1% of correctly said single syllables and 70.8% of correctly said phrase syllables \"ok\"; the rework took that to 85.9% and 66.1% (an independent review's count); in this run, with the lead-in, it is ${sums[results.findIndex((r) => r.key === "singleBase")].rightOk} and ${sums[results.findIndex((r) => r.key === "phraseBase")].rightOk}. Wrong tones caught did not fall.`,
   "- **A hum** leaves everything unjudged on both paths (\"background\"): it is under the syllables too.",
-  "- **Not made safe, on either path**: a pitched knock on top of the first sound, a recording that starts mid-word, and a room that echoes. Each puts the disturbance inside the syllable, where no way of locating the speech can take it out; the rows show the false alarms and wrong oks that remain. A sound inside a timed span (a knock or cough within the last syllable's span, which Azure draws past the end of the sound) is mostly caught as two sounds in one span (\"apart\"), not always.",
+  "- **A recording that starts mid-word** is loud from its first frame: the syllable it starts in is not judged (\"clipped\"), on either path. The other syllables of a phrase are still cut by energy from a first syllable that is partly missing, and that row's phrase numbers show what is left.",
+  "- **Not made safe, on either path**: a pitched knock on top of the first sound, and a room that echoes. Each puts the disturbance inside the syllable, where no way of locating the speech can take it out; the rows show the false alarms and wrong oks that remain. A sound inside a timed span (a knock or cough within the last syllable's span, which Azure draws past the end of the sound) is mostly caught as two sounds in one span (\"apart\"), not always.",
 ].join("\n"));
+p("## When the spans are wrong");
+p(`The timings path believes its spans. This section gives it wrong ones: Azure's spans for each clean clip, moved or redrawn in ways that still pass the checks on their shape (in order, plausible lengths), and each syllable's verdict compared with its verdict on the spans as Azure gave them. Columns are new false alarms / new wrong tones passed as ok / right verdicts lost; "no guards" is the scorer reading each span as given, "guarded" is the scorer as it ships. Whether and how often Azure's spans are wrong like this on a real microphone is not known: these are the errors a reviewer thought of, not errors observed.`);
+p(spanTable().join("\n"));
+{
+  const { cost, clean } = spanStudy();
+  const totals = (f) => `${f.caught} of ${f.wrong} caught / ${f.falseAlarms} of ${f.right} false alarms / ${f.passed} passed as ok`;
+  p([
+    "The guards (`TIMING_RULES`):",
+    "",
+    `- **Edges.** Every recording is read again with all its spans ${TIMING_RULES.jitterMs} ms earlier and later, and with each boundary between two neighbours ${TIMING_RULES.jitterMs} ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart") is not held against the verdict.`,
+    `- **Lopsided.** Of two neighbouring spans, one with hardly any voice in it, or one under ${TIMING_RULES.sliverMs} ms beside one ${TIMING_RULES.lopsided} times its length: neither is judged where the other took its sound.`,
+    `- **What they cost on the spans as Azure gave them**: ${cost.single.lost} single and ${cost.phrase.lost} phrase verdicts, and no new false alarm or wrong ok. Singles: ${totals(clean.bare.single)} without the guards; ${totals(clean.guarded.single)} with. Phrases: ${totals(clean.bare.phrase)} without; ${totals(clean.guarded.phrase)} with. The timings tables in the section above are the guarded scorer.`,
+    "- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok. A wrong span costs most of its clip's verdicts either way, which is the right price.",
+    "- **A word Azure times as a whole** (no per-syllable times) is cut by energy inside that word's span only, on pitch finished on that span alone, and those cuts count for what any fallback cut does (`rough`).",
+  ].join("\n"));
+}
 p("## Real recordings");
 // Nothing of a person's recordings goes into this tracked file: not a
 // name, not a count, not a result.
@@ -1296,7 +1421,9 @@ p("## Before wiring this to a route");
 p([
   "- **Start with single syllables and drills.** Their flags have room to spare; phrase flags rest on a half-semitone margin chosen on these clips, and the held-out phrase false alarms are the highest number in this report.",
   "- **Build the speaker's range only from the learner's other recordings**, never from the one being scored, and not at all until there are a few: without a range the height rules are silent, which is the safe side.",
-  "- **Run it off the request thread, or pass timings.** The scorer is synchronous and refuses more than 30 seconds or 60 syllables; cutting syllables itself is the slow part.",
+  "- **Run it off the request thread.** The scorer is synchronous and refuses more than 30 seconds or 60 syllables. A pitch track made on one thread and scored on another is fine: the raw pitch is a field of the track (`rawF0`) and survives the copy; a track without it is tracked again from the samples, or nothing is judged.",
+  "- **Check the recogniser's spans on real noisy recordings before trusting the timings path there**: send the same speech clean and with a knock, a cough, another voice, and compare the spans that come back. Nothing in this report measures that.",
+  "- **Refuse or re-ask a recording that starts loud.** The scorer leaves its first syllable unjudged; the learner pressed the button late.",
   "- **Show unsure as nothing**, not as a soft warning: a third to a half of right syllables are unsure.",
   "- **Collect real recordings first** (the section above) and rerun this report: every number here is from four synthesizers.",
 ].join("\n"));

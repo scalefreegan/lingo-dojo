@@ -363,13 +363,17 @@ function quantile(values, q) {
  * 111(4)), written out here rather than taken as a dependency: it is sixty
  * lines, has no native part, and the tests can feed it sine sweeps.
  *
- * Returns `{ hopMs, f0, rms, periodicity, zcr }`, one entry per frame, frame
- * i centred at i × hopMs. `f0` is hertz, 0 where the frame is unvoiced (no
- * clear period, or too quiet). The steps that look at the whole recording
- * (the silence floor, octave slips, the range gate) are remembered apart
- * from it (rawPitch): scoreTones redoes those on the part of the recording
- * it takes for speech, so that a cough or another voice elsewhere can't
- * decide them. `periodicity` is 1 − YIN's dip, so 1 is a
+ * Returns `{ hopMs, f0, rawF0, rms, periodicity, zcr }`, one entry per
+ * frame, frame i centred at i × hopMs. `f0` is hertz, 0 where the frame is
+ * unvoiced (no clear period, or too quiet). `rawF0` is the same before the
+ * steps that look at the whole recording (the silence floor, octave slips,
+ * the range gate): scoreTones redoes those from it on the part of the
+ * recording it takes for speech, so that a cough or another voice
+ * elsewhere can't decide them. It is a field of the track, so it survives
+ * a copy (a worker's postMessage, a cache, JSON); scoreTones reads the
+ * pitch from `rawF0`, never from `f0`, and a track without it is not
+ * scored (it is tracked again from the samples, or nothing is judged).
+ * `periodicity` is 1 − YIN's dip, so 1 is a
  * clean period; creaky voice sits low. `zcr` is the share of samples where
  * the wave changes sign: high in the hiss of s or sh, low in creak, which
  * is how the two kinds of loud unvoiced frame are told apart.
@@ -455,16 +459,12 @@ export function trackPitch(samples, sampleRate, { fMin = F_MIN, fMax = F_MAX } =
   }
 
   for (let f = 0; f < frames; f++) if (f0[f] < fMin || f0[f] > fMax) f0[f] = 0;
-  const finished = finishPitch(f0, rms);
-  RAW_PITCH.set(finished, f0);
-  return { hopMs: HOP_MS, f0: finished, rms, periodicity, zcr };
+  return { hopMs: HOP_MS, f0: finishPitch(f0, rms), rawF0: f0, rms, periodicity, zcr };
 }
 
-// The pitch of a track before finishPitch, kept by the identity of its
-// `f0` array: a track whose f0 was copied or replaced (a fixture, a test's
-// doctored track, a trimmed one) has none, and is read as it stands.
-const RAW_PITCH = new WeakMap();
-const rawPitch = (track) => RAW_PITCH.get(track.f0) ?? null;
+/** A track's pitch before finishPitch (`rawF0`), or null when it has none
+ *  that fits its frames. */
+const rawPitch = (track) => (track?.rawF0 && Number.isFinite(track.rawF0.length) && track.rawF0.length === track.rms?.length ? track.rawF0 : null);
 
 /**
  * A pitch track's `f0` from its `raw` pitch: frames under the silence
@@ -628,8 +628,13 @@ export const TRIM_RULES = Object.freeze({
   // nothing the tracker says between or under the syllables is the voice.
   stillMs: 300,
   stillSt: 0.5,
-  // A run this long can be judged as a syllable (TONE_RULES.minFrames).
+  // A sound this long can be judged as a syllable (TONE_RULES.minFrames)…
   judgeMs: 60,
+  // …and a sound shows in the track as a voiced run about this much
+  // longer than it is: a frame's analysis window (trackPitch: 20 ms and
+  // the longest period) reaches that far either side of it. A 40 ms knock
+  // is a 70 ms run.
+  windowMs: 30,
   // More doubted runs than this and the recording is not read at all.
   maxDoubts: 3,
 });
@@ -725,7 +730,10 @@ function cutToRuns(track, { runs, peak, before = null }, isSpeech, rules) {
     if (r.to > lo && r.from < hi) outRms.fill(0, Math.max(lo, r.from - 1), Math.min(hi, r.to + 1));
   }
   const outF0 = before ? finishPitch(before, rms, keep) : Float32Array.from(f0, (v, i) => (keep[i] ? v : 0));
-  return { ...track, f0: outF0, rms: outRms, trim: { from: lo, to: hi, dropped: dropped.map((r) => ({ from: r.from, to: r.to })) } };
+  // The raw pitch goes with what was kept: scoring the trimmed track must
+  // not bring back what the trim took out.
+  const raw = before ?? rawPitch(track);
+  return { ...track, f0: outF0, ...(raw ? { rawF0: Float32Array.from(raw, (v, i) => (keep[i] ? v : 0)) } : {}), rms: outRms, trim: { from: lo, to: hi, dropped: dropped.map((r) => ({ from: r.from, to: r.to })) } };
 }
 
 /**
@@ -771,7 +779,8 @@ export function trimToSpeech(track, rules = TRIM_RULES) {
  * that is right (one kept, the other not) is among them.
  *
  * No reading at all:
- *  - "scattered": runs long enough to judge (`judgeMs`) and over the floor
+ *  - "scattered": sounds long enough to judge (`judgeMs`, measured net
+ *    of the analysis window: a run of `judgeMs + windowMs`) and over the floor
  *    lie in stretches of sound more than nearMs apart. One of them may be a cough, another
  *    voice, a chair; or the speaker paused. Energy can't tell which
  *    stretch is the speech, and reading them all as speech puts the cuts
@@ -787,13 +796,13 @@ function speechOf(raw, count, rules = TRIM_RULES) {
   // Found on the pitch before the range gate: whose median to gate
   // against is only known once the speech is.
   const before = rawPitch(raw);
-  const loose = before ? { ...raw, f0: finishPitch(before, raw.rms, null, false) } : raw;
+  const loose = { ...raw, f0: finishPitch(before, raw.rms, null, false) };
   const found = speechRuns(loose, rules);
   found.before = before;
   const core = found.runs.filter((r) => r.core);
   if (!core.length) return { tracks: [raw] };
   const near = Math.round(rules.nearMs / raw.hopMs);
-  const judge = Math.round(rules.judgeMs / raw.hopMs);
+  const judge = Math.round((rules.judgeMs + rules.windowMs) / raw.hopMs);
   // Stretches of sound: runs as loud as speech, each within nearMs of the
   // next (a syllable with 50 ms of voice between two others holds a
   // phrase together). Runs that could be judged as a syllable (core, or
@@ -826,8 +835,7 @@ function speechOf(raw, count, rules = TRIM_RULES) {
 function pitchedBackground(track, rules = TRIM_RULES) {
   const { rms, hopMs } = track;
   // Before the range gate, which would hide a hum far under the voice.
-  const before = rawPitch(track);
-  const f0 = before ? finishPitch(before, rms, null, false) : track.f0;
+  const f0 = finishPitch(rawPitch(track), rms, null, false);
   let peak = 0;
   for (let i = 0; i < f0.length; i++) if (f0[i] > 0 && rms[i] > peak) peak = rms[i];
   const soft = peak * 10 ** (rules.sureDb / 20);
@@ -1085,6 +1093,12 @@ export const TONE_RULES = Object.freeze({
   // A syllable whose loudest frame is under this share of the loudest
   // syllable's (−20 dB) is not judged (reason "soft").
   softShare: 0.1,
+  // A syllable whose span begins with the recording (within `clippedMs`)
+  // while the recording's first 20 ms are already this share of the
+  // syllable's loudest frame: the recording started inside the syllable,
+  // and the start of its contour is missing (reason "clipped").
+  clippedMs: 30,
+  clippedShare: 0.15,
 });
 
 /** Confidence multiplier for cuts made by `segmentSyllables` rather than by
@@ -1309,7 +1323,51 @@ export const TIMING_RULES = Object.freeze({
   // Spans come in order; neighbours may share this much, and a span may
   // pass the ends of the recording by as much.
   slackMs: 20,
+  // A recogniser's spans are right to some tens of milliseconds at best,
+  // and a verdict that turns on where exactly an edge was drawn is not a
+  // measurement of the tone. So the syllables are read again with all the
+  // spans moved this much earlier and later, and with each boundary
+  // between two neighbours moved this much either way, and a verdict
+  // stands only where every reading gives it, for the same tone (reason
+  // "edges" otherwise). The proof's "When the spans are wrong" has what
+  // that costs and what it stops.
+  jitterMs: 40,
+  // Spans that are not one syllable each ("lopsided"): of two neighbours
+  // (no more than `neighbourMs` apart), one with hardly any voice in it, or
+  // one under `sliverMs` beside one `lopsided` times its length. A
+  // recogniser that drew one span over most of the next syllable leaves
+  // exactly that; so does a clipped neutral syllable, which costs its
+  // neighbour a verdict.
+  neighbourMs: 100,
+  sliverMs: 100,
+  lopsided: 3,
 });
+
+/** `timings` moved about by `rules.jitterMs`: all of them earlier, all
+ *  later, and each boundary between two timed neighbours earlier and
+ *  later (the one's end and the other's start together). A variant that
+ *  would leave a span shorter than `minMs` is left out. For n syllables,
+ *  at most 2n of them. */
+export function jitteredTimings(timings, totalMs, rules = TIMING_RULES) {
+  const J = rules.jitterMs;
+  const out = [];
+  if (!(J > 0)) return out;
+  const fits = (t) => t.endMs - t.startMs >= rules.minMs;
+  for (const d of [-J, J]) {
+    const moved = timings.map((t) => (t ? { ...t, startMs: Math.max(0, t.startMs + d), endMs: Math.min(totalMs, t.endMs + d) } : t));
+    if (moved.every((t) => !t || fits(t))) out.push(moved);
+  }
+  for (let b = 0; b + 1 < timings.length; b++) {
+    if (!timings[b] || !timings[b + 1]) continue;
+    for (const d of [-J, J]) {
+      const moved = timings.slice();
+      moved[b] = { ...timings[b], endMs: timings[b].endMs + d };
+      moved[b + 1] = { ...timings[b + 1], startMs: timings[b + 1].startMs + d };
+      if (fits(moved[b]) && fits(moved[b + 1])) out.push(moved);
+    }
+  }
+  return out;
+}
 
 /** Why `timings` can't be used for `n` syllables in a recording `totalMs`
  *  long, or null when they can. A null entry is a syllable nobody timed:
@@ -1342,11 +1400,42 @@ function focusTrack(track, spans) {
   const n = track.f0.length;
   const keep = new Uint8Array(n);
   for (const t of spans) keep.fill(1, Math.max(0, Math.floor(t.startMs / track.hopMs)), Math.min(n, Math.ceil(t.endMs / track.hopMs)));
+  const raw = rawPitch(track);
   return {
     ...track,
-    f0: rawPitch(track) ? finishPitch(rawPitch(track), track.rms, keep) : Float32Array.from(track.f0, (v, i) => (keep[i] ? v : 0)),
+    f0: finishPitch(raw, track.rms, keep),
+    rawF0: Float32Array.from(raw, (v, i) => (keep[i] ? v : 0)),
     rms: Float32Array.from(track.rms, (v, i) => (keep[i] ? v : 0)),
   };
+}
+
+/** The syllables whose spans don't look like one syllable each next to
+ *  their neighbours (indexes). */
+function lopsidedSpans(timings, contours, toneRules, rules = TIMING_RULES) {
+  const out = new Set();
+  if (!(rules.lopsided > 0)) return out;
+  const length = (t) => t.endMs - t.startMs;
+  for (let i = 0; i + 1 < timings.length; i++) {
+    const a = timings[i];
+    const b = timings[i + 1];
+    // Only neighbours in time: across a pause each span stands alone.
+    if (!a || !b || b.startMs - a.endMs > rules.neighbourMs) continue;
+    const short = length(a) < length(b) ? i : i + 1;
+    const long = short === i ? i + 1 : i;
+    // One of the two has next to no voice in its span: the syllable's
+    // voice has to be somewhere, and the likeliest place is next door.
+    if ((contours[short]?.points.length ?? 0) < toneRules.minFrames || (contours[long]?.points.length ?? 0) < toneRules.minFrames) {
+      out.add((contours[short]?.points.length ?? 0) < toneRules.minFrames ? long : short);
+      if ((contours[long]?.points.length ?? 0) < toneRules.minFrames) out.add(short);
+    }
+    // A sliver beside a span several times its length: one syllable has
+    // most of the other's sound.
+    if (length(timings[short]) < rules.sliverMs && length(timings[long]) >= rules.lopsided * length(timings[short])) {
+      out.add(short);
+      out.add(long);
+    }
+  }
+  return out;
 }
 
 /** Every syllable unjudged, for one reason. */
@@ -1363,27 +1452,43 @@ const unjudged = (syllables, reason) => syllables.map((s) => ({
  *   timings               optional, one `{ startMs, endMs } | null` per
  *                         syllable, from a recogniser whose extents can be
  *                         trusted (Azure's per-syllable `Phonemes`); a null
- *                         is left unjudged
+ *                         is left unjudged, and one with `rough: true` (a
+ *                         cut made by energy inside a recogniser's word)
+ *                         counts for FALLBACK_TRUST
+ *   track                 optional, a trackPitch() result already in hand
+ *                         (with its `rawF0`; a copy is fine)
  *   anchors               optional, one time in ms (or null) per syllable
  *                         that lies inside it (Scribe's character starts,
  *                         through alignTimings): the segmenter cuts by
  *                         energy and keeps each piece on its anchor
  *   speaker               optional speakerRange() of this voice from
  *                         earlier recordings
- *   track                 optional, a trackPitch() result already in hand
+ *   rules, timingRules    TONE_RULES and TIMING_RULES unless given (the
+ *                         proof measures with a guard switched off)
  *
  * Two ways of knowing where the speech is, and they are not equals.
  *
  * **With `timings`** (the way to use this on a real microphone): pitch is
- * measured inside each syllable's span and nowhere else. The silence floor, the octave repairs, the range gate and the
- * recording's own range (`speaker` in the result) are all taken from
- * inside the spans, so nothing outside them can change a verdict: not a
- * cough, a knock, another voice or a hum in the lead-in. The timings are
- * checked first (timingsProblem): the right number, in order, each a
- * plausible length, inside the recording. If not, every syllable is
- * "unsure", reason "timings", and `timingsProblem` says why: never a
- * guess from energy. What a span itself holds is still the caller's word:
- * a sound inside it is read as the syllable (but see "apart").
+ * measured inside each syllable's span and nowhere else. The silence
+ * floor, the octave repairs, the range gate and the recording's own range
+ * (`speaker` in the result) are all taken from inside the spans, so
+ * nothing outside the spans GIVEN can change a verdict: not a cough, a
+ * knock, another voice or a hum in the lead-in. That is true by
+ * construction, and it is only as good as the spans: whether a recogniser
+ * draws the same spans on a noisy recording as on a clean one is a
+ * separate question that nothing here answers (the proof says what was
+ * and wasn't measured). So the spans are doubted too:
+ *  - checked first (timingsProblem): the right number, in order, each a
+ *    plausible length, inside the recording. If not, every syllable is
+ *    "unsure", reason "timings", and `timingsProblem` says why: never a
+ *    guess from energy;
+ *  - a verdict stands only if it survives the spans moved by
+ *    TIMING_RULES.jitterMs (jitteredTimings), reason "edges" otherwise;
+ *  - neighbours whose spans can't both be one syllable are not judged
+ *    (reason "lopsided": TIMING_RULES);
+ *  - two voiced sounds with a silence between them in one span: "apart".
+ * What these leave: spans wrong by more than the jitter in a way that
+ * still looks like syllables (the proof's "When the spans are wrong").
  *
  * **Without** (the fallback): the speech is found by energy (speechOf),
  * which can't be done reliably, so every doubt ends in "unsure": with a
@@ -1403,8 +1508,9 @@ const unjudged = (syllables, reason) => syllables.map((s) => ({
  * octave inside the syllable and stays there), "apart" (the syllable's
  * span holds two voiced sounds with a silence between them: a syllable is
  * one sound, so either the span is wrong or something else is in it),
- * "soft" (far softer than the loudest syllable), "timings", "trimmed",
- * "scattered", "background" (above), "unclear"
+ * "soft" (far softer than the loudest syllable), "timings", "edges",
+ * "lopsided", "trimmed", "scattered", "background" (above), "track" (a
+ * `track` without its raw pitch and no samples to track again), "unclear"
  * (nothing fits clearly). A creaky syllable can be "ok" when its voiced
  * part fits, never "off"; it carries `creaky: true`, and its ok is left
  * out of `overall`.
@@ -1420,13 +1526,18 @@ const unjudged = (syllables, reason) => syllables.map((s) => ({
 export const LOCAL_MAX_SECONDS = 30;
 export const LOCAL_MAX_SYLLABLES = 60;
 
-export function scoreTones({ samples, sampleRate, syllables, timings = null, anchors = null, speaker = null, track = null, rules = TONE_RULES }) {
+export function scoreTones({ samples, sampleRate, syllables, timings = null, anchors = null, speaker = null, track = null, rules = TONE_RULES, timingRules = TIMING_RULES }) {
   const n = syllables.length;
   // Refused before any work: all of it is synchronous.
   const seconds = track ? (track.f0.length * track.hopMs) / 1000 : samples.length / sampleRate;
   if (seconds > LOCAL_MAX_SECONDS + 0.5) throw new Error(`the local scorer takes at most ${LOCAL_MAX_SECONDS} seconds of audio, got ${seconds.toFixed(1)}`);
   if (n > LOCAL_MAX_SYLLABLES) throw new Error(`the local scorer takes at most ${LOCAL_MAX_SYLLABLES} syllables, got ${n}`);
-  const raw = track ?? trackPitch(samples, sampleRate);
+  // A track that lost its raw pitch on the way here (built by hand, or by
+  // an older trackPitch) can't be read span by span: the recording is
+  // tracked again, and without the samples nothing is judged. Never read
+  // from `f0` as it stands: that pitch was finished on the whole recording,
+  // and a voice in the lead-in would have had its say.
+  const raw = track && rawPitch(track) ? track : samples ? trackPitch(samples, sampleRate) : null;
   const result = (out, more) => {
     // A creaky ok is half a measurement: it is shown, not counted.
     const judged = out.filter((s) => s.verdict !== "unsure" && !(s.creaky && s.verdict === "ok"));
@@ -1436,13 +1547,28 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
   // A pitched background is under the syllables too, wherever it was
   // noticed: the one thing outside the timed spans that is looked at, and
   // it can only withhold verdicts.
+  if (!raw) return result(unjudged(syllables, "track"), { speaker: null, timed: Array.isArray(timings) ? "given" : "fallback" });
   if (pitchedBackground(raw)) return result(unjudged(syllables, "background"), { speaker: null, timed: Array.isArray(timings) ? "given" : "fallback" });
 
   if (Array.isArray(timings)) {
-    const problem = timingsProblem(timings, n, seconds * 1000);
+    const problem = timingsProblem(timings, n, seconds * 1000, timingRules);
     if (problem) return result(unjudged(syllables, "timings"), { speaker: null, timed: "given", timingsProblem: problem });
-    const read = readTones({ tr: focusTrack(raw, timings.filter(Boolean)), syllables, cuts: timings, trust: 1, speaker, rules });
-    return result(read.syllables, { speaker: read.own, timed: "given" });
+    // A span the caller marks `rough` (cut by energy inside a word the
+    // recogniser timed as a whole: mergeAzure) counts for what a fallback
+    // cut does.
+    const trust = timings.map((t) => (t?.rough ? FALLBACK_TRUST : 1));
+    const reading = (cuts) => readTones({ tr: focusTrack(raw, cuts.filter(Boolean)), syllables, cuts, trust, speaker, rules });
+    const read = reading(timings);
+    const lopsided = lopsidedSpans(timings, read.contours, rules, timingRules);
+    // The same syllables with the spans' edges moved a little: a verdict
+    // that doesn't survive that was resting on the edge (TIMING_RULES).
+    const others = jitteredTimings(timings, seconds * 1000, timingRules).map(reading);
+    const out = read.syllables.map((s, i) => {
+      if (s.verdict === "unsure") return s;
+      if (lopsided.has(i)) return { ...s, verdict: "unsure", confidence: 0, reason: "lopsided" };
+      return others.every((o) => o.syllables[i].reason === "apart" || (o.syllables[i].verdict === s.verdict && o.syllables[i].heardTone === s.heardTone)) ? s : { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
+    });
+    return result(out, { speaker: read.own, timed: "given" });
   }
 
   const anchored = Array.isArray(anchors) && anchors.length === n && anchors.some((a) => Number.isFinite(a));
@@ -1450,7 +1576,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
   const speech = speechOf(raw, n);
   if (speech.doubt) return result(unjudged(syllables, speech.doubt), { speaker: null, timed });
   // One syllable needs no cutting: its piece is the whole of the speech.
-  const reading = (tr) => readTones({ tr, syllables, cuts: segmentSyllables(tr, n, anchored ? { anchorsMs: anchors } : {}), trust: n === 1 ? 1 : FALLBACK_TRUST, speaker, rules });
+  const reading = (tr) => readTones({ tr, syllables, cuts: segmentSyllables(tr, n, anchored ? { anchorsMs: anchors } : {}), trust: syllables.map(() => (n === 1 ? 1 : FALLBACK_TRUST)), speaker, rules });
   // A run that may or may not be speech: the recording is read every way
   // (speechOf), and a verdict stands only where all the readings give it,
   // for the same tone. A doubt can cost a verdict this way; it can never
@@ -1462,7 +1588,9 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
 
 /** One reading of a recording: every syllable's verdict on the track `tr`
  *  (already reduced to the speech, or to the timed spans) at `cuts`, one
- *  `{ startMs, endMs }` or null per syllable. */
+ *  `{ startMs, endMs }` or null per syllable; `trust` is one number per
+ *  syllable. Returns the verdicts, the track's own range and each
+ *  syllable's contour. */
 function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
   const n = syllables.length;
   const own = speakerRange(tr);
@@ -1540,6 +1668,9 @@ function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
     // is loud), so the span is wrong or something else is in it (a knock
     // just after the last word, the end of the syllable before).
     if (c.quietMs >= rules.apartMs) return { ...result, reason: "apart" };
+    // The recording was already loud when it began, and this syllable is
+    // where it began: its onset was never recorded.
+    if (cut.startMs <= rules.clippedMs && Math.max(tr.rms[0] ?? 0, tr.rms[1] ?? 0) >= c.peak * rules.clippedShare) return { ...result, reason: "clipped" };
     // Far softer than the loudest syllable: its few frames over the
     // silence floor are not enough to say "ok" on, or "off".
     if (c.peak < loudest * rules.softShare) return { ...result, reason: "soft" };
@@ -1554,25 +1685,25 @@ function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
     // Creak in the middle of a vowel is what the bottom of a third tone
     // sounds like, so it supports an expected third tone (unless the voiced
     // part rules a third tone out).
-    if (creaky && s.accept.includes(3) && margins[3] < 0) return { ...result, heardTone: 3, verdict: "ok", confidence: round3(CREAKY_OK_TRUST * quality * trust) };
+    if (creaky && s.accept.includes(3) && margins[3] < 0) return { ...result, heardTone: 3, verdict: "ok", confidence: round3(CREAKY_OK_TRUST * quality * trust[i]) };
     // An accepted tone fits and nothing rules it out. Creak doesn't stand
     // in the way of that: a low voice creaks wherever a tone touches the
     // bottom of its range (the end of a fourth tone, the start of a
     // second), and the voiced part still shows the shape. It counts for
     // less, and creak can confirm but never flag (below).
     if (margin < 0 && (s.accept.includes(tone) || accepted >= rules.okBelief)) {
-      return { ...result, verdict: "ok", confidence: round3((creaky ? CREAKY_OK_TRUST : Math.max(accepted, 0.5)) * quality * trust) };
+      return { ...result, verdict: "ok", confidence: round3((creaky ? CREAKY_OK_TRUST : Math.max(accepted, 0.5)) * quality * trust[i]) };
     }
     if (creaky && !rules.creakFlags) return { ...result, reason: "creaky" };
     // Off only when the contour rules out every tone that would be right,
     // by a clear margin, on a clean and long enough measurement.
     if (margin >= rules.offMarginSt + (n > 1 ? rules.phraseMarginSt : 0) && quality >= rules.offQuality && c.voicedMs >= rules.offMinMs) {
-      return { ...result, verdict: "off", confidence: round3(quality * trust * Math.min(1, 0.6 + 0.1 * margin)) };
+      return { ...result, verdict: "off", confidence: round3(quality * trust[i] * Math.min(1, 0.6 + 0.1 * margin)) };
     }
     return { ...result, reason: creaky ? "creaky" : "unclear" };
   });
 
-  return { syllables: out, own };
+  return { syllables: out, own, contours };
 }
 
 /**
@@ -1927,9 +2058,10 @@ export const AZURE_RULES = Object.freeze({ offBelow: 40 });
  * Azure is explicit.
  *
  * `local` is `(timings) => scoreTones(...)`: the caller holds the audio.
- * A word of several characters has one Azure timing: the fallback
- * segmenter cuts inside it (`track` is needed for that; without it, even
- * shares).
+ * A word of several characters with no per-syllable timing has one Azure
+ * span: the fallback segmenter cuts inside that span and nowhere else
+ * (`track`, a trackPitch result, is needed for that; without it, even
+ * shares), and those cuts carry `rough: true` (FALLBACK_TRUST).
  */
 export function mergeAzure({ azure, syllables, local, track = null }) {
   // Azure's words → one timed entry per Chinese character.
@@ -1947,9 +2079,14 @@ export function mergeAzure({ azure, syllables, local, track = null }) {
     else if (perChar) cuts = perChar.map((ph) => ({ startMs: ph.startMs, endMs: ph.endMs }));
     else if (chars.length === 1) cuts = [{ startMs: w.startMs, endMs: w.endMs }];
     else {
-      const inside = track ? segmentSyllables(track, chars.length, { fromMs: w.startMs, toMs: w.endMs }) : [];
+      // Azure timed the word, not its characters: the cuts inside it are
+      // made by energy on the word's own span (pitch finished on that span
+      // alone, like any timed span: nothing elsewhere in the recording has
+      // a say in them), and they are marked `rough`, so scoreTones trusts
+      // them as it does any fallback cut and not as Azure's.
+      const inside = track && rawPitch(track) ? segmentSyllables(focusTrack(track, [w]), chars.length, { fromMs: w.startMs, toMs: w.endMs }) : [];
       const share = (w.endMs - w.startMs) / chars.length;
-      cuts = inside.length === chars.length ? inside : chars.map((_, i) => ({ startMs: w.startMs + i * share, endMs: w.startMs + (i + 1) * share }));
+      cuts = (inside.length === chars.length ? inside : chars.map((_, i) => ({ startMs: w.startMs + i * share, endMs: w.startMs + (i + 1) * share }))).map((c) => ({ ...c, rough: true }));
     }
     chars.forEach((char, i) => timed.push({ char, word: w, cut: cuts[i], score: perChar?.[i].score ?? w.score }));
   }

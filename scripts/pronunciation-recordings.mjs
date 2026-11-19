@@ -174,6 +174,29 @@ export function findSpeaker(rows, name) {
 }
 
 /**
+ * Which of the labelled clips may be sent to a recogniser for `who`, the
+ * one speaker who agreed to it: `{ send, held, why }`, `send` the label
+ * rows, `held` how many rows stay, `why` a sentence when nothing is sent.
+ *
+ * A person's group is the person's, not the line's: a line may leave it
+ * blank. So `who`'s clips go only when some line of that name (whatever
+ * its capitals) says "adult" and no line of that name says anything else:
+ * a child labelled "child" once and left blank afterwards has none of
+ * their clips sent, the blank ones included. Nobody else's clip is ever
+ * in `send`.
+ */
+export function azureSendable(rows, who) {
+  const want = String(who ?? "").trim().toLowerCase();
+  const none = (why) => ({ send: [], held: rows.length, why });
+  if (!want) return none("no speaker named");
+  const theirs = rows.filter((r) => String(r.speaker ?? "").toLowerCase() === want);
+  if (!theirs.length) return none("no clip is labelled with that speaker");
+  const groups = new Set(theirs.map((r) => r.group).filter(Boolean));
+  if (groups.size !== 1 || !groups.has("adult")) return none(groups.size ? `that speaker is labelled ${[...groups].join(" and ")}: only a speaker labelled adult, and nothing else, is sent` : "that speaker has no group on any line: only a speaker labelled adult is sent");
+  return { send: theirs, held: rows.length - theirs.length, why: "" };
+}
+
+/**
  * What a key press means on the recording page: `{ action, prevent }`,
  * the action one of "record", "stop", "keep", "listen", "play", "unsure"
  * or null, and whether the browser's own handling of the key is stopped.

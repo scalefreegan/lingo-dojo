@@ -113,7 +113,7 @@ export function sessionRange({ lowHz, spanSt, weak }) {
  * fifth review's (bead ld-ne0.7).
  */
 export const NOISE_CONDITIONS = Object.freeze([
-  { key: "clean", title: "The clips as they are (no lead-in)" },
+  { key: "clean", title: "The clips as they are" },
   { key: "silence", title: "Half a second of plain silence before and after", noiseDb: null },
   { key: "room", title: "Room noise at −50 dB before, under and after", noiseDb: -50 },
   { key: "blip", title: "…and a 40 ms pitched blip at −20 dB, 300 ms before the speech", noiseDb: -50, add: [{ where: "before", gapMs: 300, ms: 40, db: -20 }] },
@@ -128,7 +128,7 @@ export const NOISE_CONDITIONS = Object.freeze([
   { key: "secondVoice", title: "…and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech", noiseDb: -50, padMs: 1300, add: [{ where: "before", from: "speech", gapMs: 300, db: -10, kind: "child" }] },
   { key: "hum100", title: "…and a 100 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 100, db: -20 } },
   { key: "hum60", title: "…and a 60 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 60, db: -20 } },
-  { key: "midword", title: "…and the recording starts 60 ms into the first sound", noiseDb: -50, cutMs: 60 },
+  { key: "midword", title: "Room noise, and the recording starts 60 ms into the first sound (no lead-in)", noiseDb: -50, cutMs: 60 },
   { key: "echo", title: "…in a room with echo (reflections for 600 ms, decaying over 150 ms)", noiseDb: -50, echo: { tauMs: 150, gain: 0.5 } },
 ]);
 
@@ -239,8 +239,11 @@ export function disturb(samples, sampleRate, condition, seed = 12345) {
   const cut = condition.cutMs ? soundSpan(samples, sampleRate, peak)[0] + ms(condition.cutMs) : 0;
   const src = cut ? samples.subarray(cut) : samples;
   const pad = ms(condition.padMs ?? 500);
-  const out = new Float32Array(pad + src.length + pad);
-  out.set(src, pad);
+  // A recording that starts mid-word has no lead-in: its first sample is
+  // the cut.
+  const lead = cut ? 0 : pad;
+  const out = new Float32Array(lead + src.length + pad);
+  out.set(src, lead);
   const speech = soundSpan(out, sampleRate, peak);
   if (condition.noiseDb !== null && condition.noiseDb !== undefined) {
     const rand = makeRand(seed);
@@ -250,7 +253,7 @@ export function disturb(samples, sampleRate, condition, seed = 12345) {
   }
   for (const sound of condition.add ?? []) {
     const sig = soundOf(sound, sampleRate, level(sound.db), seed);
-    const [from, to] = sound.from === "speech" ? speech : [pad, pad + src.length];
+    const [from, to] = sound.from === "speech" ? speech : [lead, lead + src.length];
     mixIn(out, sound.where === "before" ? from - ms(sound.gapMs) - sig.length : to + ms(sound.gapMs), sig);
   }
   if (condition.hum) {
@@ -270,7 +273,7 @@ export function disturb(samples, sampleRate, condition, seed = 12345) {
       for (let i = 0; i + d < out.length; i++) out[i + d] += gain * dry[i];
     }
   }
-  return { samples: out, shiftMs: ((pad - cut) / sampleRate) * 1000 };
+  return { samples: out, shiftMs: ((lead - cut) / sampleRate) * 1000 };
 }
 
 /** disturb()'s samples alone. */
@@ -347,6 +350,42 @@ export function tallyLabellings(tally, tones, score) {
   return tally;
 }
 export const emptyTally = () => ({ right: { ok: 0, unsure: 0, off: 0 }, wrong: { ok: 0, unsure: 0, off: 0 } });
+
+/* -------------------------------- wrong spans ------------------------------- */
+
+const movedBy = (d) => (spans, totalMs) => [spans.map((t) => ({ startMs: Math.max(0, t.startMs + d), endMs: Math.min(totalMs, t.endMs + d) }))];
+const boundaryBy = (d) => (spans) => {
+  const out = [];
+  for (let b = 0; b + 1 < spans.length; b++) {
+    const t = spans.map((x) => ({ ...x }));
+    t[b].endMs += d;
+    t[b + 1].startMs += d;
+    if (t[b].endMs - t[b].startMs >= 45 && t[b + 1].endMs - t[b + 1].startMs >= 45) out.push(t);
+  }
+  return out;
+};
+
+/**
+ * Ways a recogniser's syllable spans can be wrong while still looking
+ * like spans (in order, plausible lengths: timingsProblem passes them),
+ * for measuring what the scorer then says. `variants(spans, totalMs)`
+ * answers the wrong versions of one clip's spans: one for a shift of the
+ * whole set, one per boundary for the rest (none for a single syllable).
+ */
+export const SPAN_ERRORS = Object.freeze([
+  ...[-150, -100, -50, 50, 100, 150].map((d) => ({ key: `shift${d}`, title: `All spans ${Math.abs(d)} ms ${d < 0 ? "early" : "late"}`, variants: movedBy(d) })),
+  ...[-100, -50, 50, 100].map((d) => ({ key: `boundary${d}`, title: `One boundary ${Math.abs(d)} ms ${d < 0 ? "early" : "late"}`, variants: boundaryBy(d) })),
+  {
+    key: "swallowNext",
+    title: "One span takes all of the next syllable but its last 60 ms",
+    variants: (spans) => spans.slice(0, -1).map((_, b) => spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: spans[b + 1].endMs - 60 } : k === b + 1 ? { startMs: x.endMs - 60, endMs: x.endMs } : { ...x }))),
+  },
+  {
+    key: "swallowPrev",
+    title: "One span takes all of the syllable before but its first 60 ms",
+    variants: (spans) => spans.slice(0, -1).map((_, b) => spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: x.startMs + 60 } : k === b + 1 ? { startMs: spans[b].startMs + 60, endMs: x.endMs } : { ...x }))),
+  },
+]);
 
 /* ---------------------------------- flips ---------------------------------- */
 
