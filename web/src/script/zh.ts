@@ -24,6 +24,12 @@ const toSimp: Record<string, string> = t2s.t2s;
 const cache = new Map<string, (string | null)[]>();
 const CACHE_MAX = 4000;
 
+/** Whether `text` is in the cache: for the tests, which check that the
+ *  server's reads (`cache: false`) leave nothing behind. */
+export function readingCached(text: string, locale: string): boolean {
+  return cache.has(`${isTaiwan(locale) ? "tw" : "cn"}\u0001${text}`);
+}
+
 /** Each code point of `text` read: its pinyin (tone marks) for a Chinese
  *  character, null for anything else. `cache: false` neither reads nor
  *  fills the cache: the server reads a learner's text this way, so no text

@@ -69,6 +69,8 @@ const { apiPlugins } = await import("../../web/server/api.ts");
 // The route's worker and time limits, swapped below for a worker that
 // hangs or crashes (the same module instance api.ts mounted).
 const { SCORER } = await import("../../web/server/pronunciation.ts");
+// The reader the route uses, for its cache (the same module instance).
+const { readCodePoints, readingCached } = await import("../../web/src/script/zh.ts");
 
 const testDb = await freshDb();
 let base, close;
@@ -117,6 +119,8 @@ async function logsOf(fn) {
 }
 
 const score = (who, text, wav, type = "audio/wav") => who.call("POST", `/api/pronunciation/score?text=${encodeURIComponent(text)}`, wav, { "Content-Type": type });
+/** As the character card asks: every reading of its one character. */
+const scoreCard = (who, text, wav, readings = "all") => who.call("POST", `/api/pronunciation/score?text=${encodeURIComponent(text)}&readings=${readings}`, wav, { "Content-Type": "audio/wav" });
 
 test("a score needs a session and the page's own learner; another language is not available", async () => {
   const { wav } = clip([4]);
@@ -287,25 +291,6 @@ test("a phrase: one syllable per character, punctuation kept out", async () => {
   }
 });
 
-test("a lone character is judged against every reading the card shows", async () => {
-  withoutAzure();
-  try {
-    const lin = await someone();
-    const zhang = await score(lin, "长", clip([3]).wav);
-    assert.equal(zhang.status, 200, zhang.text);
-    assert.deepEqual(pick(zhang.body.syllables[0]), ["ok", "zhǎng", 3]);
-    assert.deepEqual(pick((await score(lin, "行", clip([4]).wav)).body.syllables[0]), ["ok", "hàng", 4]);
-    const miss = (await score(lin, "为", clip([1]).wav)).body.syllables[0];
-    assert.deepEqual([...pick(miss), miss.heardTone], ["off", "wèi", 4, 1]);
-    assert.deepEqual(pick((await score(lin, "了", clip([3]).wav)).body.syllables[0]), ["unsure", "le", 0]);
-    // In a word the context reading stands: 长大 is zhǎng dà.
-    const word = await score(lin, "长大", clip([3, 4]).wav);
-    assert.deepEqual(word.body.syllables.map((x) => x.pinyin), ["zhǎng", "dà"]);
-    assert.deepEqual(word.body.syllables[0].accept, [3]);
-  } finally {
-    withAzure();
-  }
-});
 
 test("a malformed Azure region: the local scorer, nothing sent, no per-minute call spent", async () => {
   withRegion("East US");
@@ -465,6 +450,144 @@ test("the limits come before the body: a second score while one is uploading is 
     assert.equal((await held).status, 408);
   } finally {
     Object.assign(SCORER, saved);
+    withAzure();
+  }
+});
+
+test("the card's flag: a lone character judged against every reading it shows, another reading named", async () => {
+  withoutAzure();
+  try {
+    const lin = await someone();
+    const zhang = await scoreCard(lin, "长", clip([3]).wav);
+    assert.equal(zhang.status, 200, zhang.text);
+    assert.deepEqual(pick(zhang.body.syllables[0]), ["ok", "zhǎng", 3]);
+    assert.equal(zhang.body.syllables[0].usual, "cháng", "said in another reading: the usual one named");
+    const chang = (await scoreCard(lin, "长", clip([2]).wav)).body.syllables[0];
+    assert.deepEqual(pick(chang), ["ok", "cháng", 2]);
+    assert.equal(chang.usual, undefined, "the usual reading: nothing more to say");
+    assert.deepEqual(pick((await scoreCard(lin, "行", clip([4]).wav)).body.syllables[0]), ["ok", "hàng", 4]);
+    const miss = (await scoreCard(lin, "为", clip([1]).wav)).body.syllables[0];
+    assert.deepEqual([...pick(miss), miss.heardTone, miss.usual], ["off", "wèi", 4, 1, undefined]);
+    assert.deepEqual(pick((await scoreCard(lin, "了", clip([3]).wav)).body.syllables[0]), ["unsure", "le", 0]);
+    // 拉's readings take all four tones: nothing can be checked.
+    const la = await scoreCard(lin, "拉", clip([1]).wav);
+    assert.deepEqual([...pick(la.body.syllables[0]), la.body.syllables[0].reason, la.body.overall], ["unsure", "lā", 1, "every_tone", null]);
+    // The flag is only for one character alone, and only "all".
+    assert.equal((await scoreCard(lin, "长大", clip([3, 4]).wav)).status, 400);
+    assert.equal((await scoreCard(lin, "长", clip([3]).wav, "some")).status, 400);
+  } finally {
+    withAzure();
+  }
+});
+
+test("without the flag (Practice) one character keeps its one reading: 好, 不！, 长大", async () => {
+  withoutAzure();
+  try {
+    const lin = await someone();
+    // What is accepted is the point (the verdict on a generated clip is the
+    // engine's business): hǎo's tone only, never hào's; bù's, never fǒu's.
+    const hao = (await score(lin, "好", clip([4]).wav)).body.syllables[0];
+    assert.deepEqual([hao.pinyin, hao.accept, hao.usual], ["hǎo", [3], undefined]);
+    assert.deepEqual((await scoreCard(lin, "好", clip([4]).wav)).body.syllables[0].accept, [3, 4], "the card, for contrast");
+    const bu = (await score(lin, "不！", clip([3]).wav)).body.syllables[0];
+    assert.deepEqual([bu.pinyin, bu.accept, bu.usual], ["bù", [4], undefined]);
+    assert.notEqual(bu.verdict, "ok", "fǒu's third tone is not bù");
+    const word = await score(lin, "长大", clip([3, 4]).wav);
+    assert.deepEqual(word.body.syllables.map((x) => [x.pinyin, x.accept]), [["zhǎng", [3]], ["dà", [4]]]);
+    // 拉 in Practice is lā, checked.
+    assert.notEqual((await score(lin, "拉", clip([1]).wav)).body.syllables[0].reason, "every_tone");
+  } finally {
+    withAzure();
+  }
+});
+
+test("a scored text stays in neither the reader's cache nor anywhere it can be found", async () => {
+  withoutAzure();
+  try {
+    const lin = await someone();
+    const text = "你谢好大";
+    assert.equal(readingCached(text, "zh-CN"), false);
+    assert.equal((await score(lin, text, clip([2, 4, 3, 4]).wav)).status, 200);
+    assert.equal(readingCached(text, "zh-CN"), false, "the server read it with cache: false");
+    // The page's own reads still fill it.
+    readCodePoints(text, "zh-CN");
+    assert.equal(readingCached(text, "zh-CN"), true);
+  } finally {
+    withAzure();
+  }
+});
+
+test("wrap logs the path only: a failing session lookup on the score route names no text", async () => {
+  const lin = await someone();
+  const { wav } = clip([4, 4, 3]);
+  const select = testDb.db.select;
+  testDb.db.select = () => {
+    throw new Error("the database is down");
+  };
+  try {
+    const log = await logsOf(async () => {
+      const r = await score(lin, SECRET, wav);
+      assert.equal(r.status, 500, r.text);
+      assert.deepEqual(leaks(r.text), []);
+    });
+    assert.match(log, /\[lingo-dojo\] POST \/score:/);
+    assert.deepEqual(leaks(log), [], log);
+    assert.doesNotMatch(log, /text=/);
+  } finally {
+    testDb.db.select = select;
+  }
+});
+
+test("an error after the body is read, the browser still there: a 503, never 'went away'", async () => {
+  withoutAzure();
+  const saved = { ...SCORER };
+  const file = path.join(dataDir, "worker-bad-result.mjs");
+  fs.writeFileSync(file, "import { parentPort } from 'node:worker_threads'; parentPort.postMessage({ result: { syllables: null } });");
+  SCORER.worker = file;
+  try {
+    const lin = await someone();
+    const log = await logsOf(async () => {
+      const r = await score(lin, SECRET, clip([4, 4, 3]).wav);
+      assert.equal(r.status, 503, r.text);
+    });
+    assert.match(log, /scoring failed \(error\)/);
+    assert.doesNotMatch(log, /went away/);
+    assert.deepEqual(leaks(log), [], log);
+  } finally {
+    Object.assign(SCORER, saved);
+    withAzure();
+  }
+});
+
+test("a browser that drops during the session lookup frees its slot at once, not after the body timeout", async () => {
+  withoutAzure();
+  const lin = await someone();
+  const { wav } = clip([4, 4, 3]);
+  // Every database query waits 300 ms: the drop lands while the session is
+  // looked up, before the route has a listener on the body.
+  const query = testDb.client.query;
+  let slowed = 0;
+  testDb.client.query = function (...a) {
+    slowed++;
+    return new Promise((r) => setTimeout(r, 300)).then(() => query.apply(this, a));
+  };
+  try {
+    const log = await logsOf(async () => {
+      await partialUpload(lin, SECRET, wav.slice(0, 4000), { drop: true });
+      // Within the slowed lookup plus a little: never the 20 s body timeout.
+      assert.ok(await until(() => /went away/.test(captured.join("\n")), 5000), `the drop was noticed: ${captured.join(" | ")}`);
+    });
+    assert.ok(slowed > 0, "the lookup was slowed");
+    assert.deepEqual(leaks(log), [], log);
+  } finally {
+    testDb.client.query = query;
+  }
+  const t0 = Date.now();
+  try {
+    const r = await score(lin, SECRET, wav);
+    assert.equal(r.status, 200, r.text);
+    assert.ok(Date.now() - t0 < 5000);
+  } finally {
     withAzure();
   }
 });

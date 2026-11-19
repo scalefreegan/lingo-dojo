@@ -95,8 +95,8 @@ Azure whenever its keys are set (paid slot, 12 a minute per user), the local
 scorer otherwise or when Azure fails, **for kids learners too**: a kids
 learner's recording goes to Azure for scoring, as it already goes to the
 transcription provider (only the reply differs: no score, from the session's
-learner mode); a lone character (the card) is judged against every reading
-the card shows; nothing is stored, and every failure leaves as an
+learner mode); the card's one character, with `readings=all` (never sent
+by Practice), is judged against every reading the card shows; nothing is stored, and every failure leaves as an
 `HttpError` so no log line carries the text in the URL.
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
 Practice's speak-it (grading unchanged) and the character card; First steps

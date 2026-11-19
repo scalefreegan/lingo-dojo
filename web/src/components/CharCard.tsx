@@ -284,8 +284,9 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
           </div>
         </div>
 
-        {/* Say it yourself and see the tone (Mandarin only; a kids
-            learner's take is scored on this Mac alone, server-side). */}
+        {/* Say it yourself and see the tone (Mandarin only; scored like
+            any learner's, on Azure when its keys are set, judged against
+            every reading listed above). */}
         {scoresTonesHere(locale) && (
           <section aria-label={kids ? "Your turn" : "Check your tone"} className="rounded-xl border border-line p-3">
             <SayItCheck key={ch} text={ch} kids={kids} onPlayModel={() => void sound.play(ch)} modelBusy={sound.busy === ch} />

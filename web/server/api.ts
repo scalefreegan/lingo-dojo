@@ -94,7 +94,9 @@ export function wrap(fn: PublicHandler | UserHandler | LearnerHandler, opts: { a
         // A bad or oversized body is the client's fault, not a crash.
         const known = e instanceof HttpError;
         const status = known ? e.status : 500;
-        if (status >= 500 && !known) console.error(`[lingo-dojo] ${req.method} ${req.url}:`, e);
+        // The path only: a query string can carry what a learner wrote or
+        // said (the pronunciation route's ?text=), never for the log.
+        if (status >= 500 && !known) console.error(`[lingo-dojo] ${req.method} ${(req.url ?? "").split("?")[0]}:`, e);
         // Headers already out (an SSE stream mid-flight): there is no
         // envelope left to send, and sendJson's writeHead would throw INSIDE
         // this catch — an unhandled rejection, which under Node 26 exits the

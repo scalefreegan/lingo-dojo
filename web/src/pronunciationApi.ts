@@ -24,9 +24,12 @@ export function scorableText(text: string | null | undefined): boolean {
 
 /** POST /api/pronunciation/score: the recording against `text`, or null
  *  when the language isn't scored (the page then shows nothing). */
-export async function scorePronunciation(wav: Blob, text: string, signal?: AbortSignal): Promise<PronunciationScoreReply | null> {
+export async function scorePronunciation(wav: Blob, text: string, signal?: AbortSignal, { allReadings = false }: { allReadings?: boolean } = {}): Promise<PronunciationScoreReply | null> {
+  // allReadings: the character card only (one character, judged against
+  // every reading it lists); Practice never sends it.
+  const q = new URLSearchParams({ text, ...(allReadings ? { readings: "all" } : {}) });
   try {
-    return await req<PronunciationScoreReply>(`/api/pronunciation/score?${new URLSearchParams({ text })}`, {
+    return await req<PronunciationScoreReply>(`/api/pronunciation/score?${q}`, {
       method: "POST",
       headers: { "Content-Type": wav.type || "audio/wav" },
       body: wav,

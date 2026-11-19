@@ -1075,8 +1075,12 @@ export interface VoiceSoundRequest {
 export type PronunciationVerdict = "ok" | "off" | "unsure";
 export interface PronunciationSyllable {
   char: string;
-  /** The dictionary reading (tone marks), as the page's reader gives it. */
+  /** The dictionary reading (tone marks), as the page's reader gives it;
+   *  on the card (`readings=all`) the reading that was heard, when ok. */
   pinyin: string;
+  /** The card only: the character's usual reading, when the learner said
+   *  another of its readings (长 said zhǎng: "cháng"). */
+  usual?: string;
   /** The tone a speaker says here after the sandhi rules (0 neutral). */
   expectedTone: number;
   /** Every tone that counts as right here. */
@@ -1086,7 +1090,8 @@ export interface PronunciationSyllable {
   heardTone?: number;
   /** Why it is `off`: the pitch (`tone`), or Azure's sound score (`sound`). */
   why?: "tone" | "sound";
-  /** Why it is `unsure` (the engine's reason: short, creaky, edges, …). */
+  /** Why it is `unsure` (the engine's reason: short, creaky, edges, …; or
+   *  `every_tone`, a card character whose readings take all four tones). */
   reason?: string;
   startMs: number | null;
   endMs: number | null;

@@ -46,6 +46,8 @@ function unsureWhy(reason: string | undefined): string {
       return "it wasn't heard";
     case "soft":
       return "too quiet to read";
+    case "every_tone":
+      return "this character has readings in every tone, so on its own any tone could be right";
     default:
       return "the recording wasn't clear enough here to tell";
   }
@@ -80,7 +82,12 @@ function toneSummary(reply: PronunciationScoreReply, kids: boolean): string {
   const ok = syl.filter((s) => s.verdict === "ok").length;
   const off = syl.filter((s) => s.verdict === "off").length;
   const unsure = syl.length - ok - off;
-  if (kids) return off ? "Let's listen and try that one again!" : ok ? "Lovely tones!" : "";
+  // The card's character said in another of its readings: say so, so a
+  // learner aiming at the usual one isn't just told "right".
+  const other = syl.length === 1 && syl[0].verdict === "ok" ? syl[0].usual : undefined;
+  if (kids) return off ? "Let's listen and try that one again!" : other ? `That's another way to say ${syl[0].char}. Listen for the usual one!` : ok ? "Lovely tones!" : "";
+  if (other) return `That's ${syl[0].pinyin}, another reading of ${syl[0].char} (usually ${other}).`;
+  if (syl.length === 1 && syl[0].reason === "every_tone") return `${syl[0].char} has readings in every tone, so its tone can't be checked on its own.`;
   if (ok + off === 0) return "Couldn't tell the tones this time. That's not a mistake: try again a little closer to the microphone, somewhere quiet.";
   // Counts side by side, never "1 of 1 right" beside a syllable left out of the count.
   return [`${ok} right`, off ? `${off} off` : "", unsure ? `${unsure} not sure` : ""].filter(Boolean).join(" · ");
@@ -105,7 +112,7 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       <div className={`flex flex-wrap items-end gap-1 ${kids ? "justify-center" : ""}`} role="group" aria-label="Tone marks">
         {syl.map((s, i) => {
           const reading = mode === "off" ? null : readingIn(mode, s.pinyin);
-          const label = `${s.char}${s.pinyin ? ` (${s.pinyin})` : ""}: ${s.verdict === "ok" ? "tone right" : s.verdict === "off" ? (kids ? "let's try again" : s.why === "sound" ? "the sound seemed off" : `heard tone ${s.heardTone ?? "?"}, expected tone ${s.expectedTone}`) : "not sure"}`;
+          const label = `${s.char}${s.pinyin ? ` (${s.pinyin})` : ""}: ${s.verdict === "ok" ? (s.usual ? `another reading (usually ${s.usual})` : "tone right") : s.verdict === "off" ? (kids ? "let's try again" : s.why === "sound" ? "the sound seemed off" : `heard tone ${s.heardTone ?? "?"}, expected tone ${s.expectedTone}`) : "not sure"}`;
           const face = (
             <span className="flex flex-col items-center leading-tight">
               {reading && <span className="text-sm text-fg-3 sm:text-xs">{reading}</span>}
@@ -237,6 +244,7 @@ function TonePicture({ s, kids, mode, take, onPlayModel, modelBusy }: { s: Pronu
   // miss on the sound itself (Azure's `why: "sound"`) reads the same.
   if (kids) line = s.expectedTone >= 1 && s.expectedTone <= 4 ? `This one ${KID_SHAPES[s.expectedTone]}.` : "";
   else if (s.verdict === "off") line = s.why === "sound" ? "The tone may be fine; the sound itself seemed off." : `Expected tone ${s.expectedTone} (${TONE_NAMES[s.expectedTone]}); it sounded like tone ${s.heardTone} (${TONE_NAMES[s.heardTone ?? 0] ?? "?"}).`;
+  else if (s.verdict === "ok" && s.usual) line = `That's ${s.pinyin}, tone ${s.expectedTone} (${TONE_NAMES[s.expectedTone]}): another reading of ${s.char}. Its usual reading is ${s.usual}.`;
   else if (s.verdict === "ok") line = `Tone ${s.expectedTone} (${TONE_NAMES[s.expectedTone]}): sounded right.`;
   else line = `Not sure: ${unsureWhy(s.reason)}.`;
   const label = `${s.char}: the tone's shape${s.heard.length ? " and the pitch heard" : ""}`;
@@ -298,7 +306,7 @@ export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError 
   // below is the same words, hidden from it so they aren't read twice.
   const said =
     state.step === "scoring" ? (kids ? "Listening to your tones…" : "Checking the tones…")
-    : state.step === "failed" ? (kids ? "" : `The tones couldn't be checked: ${state.message}`)
+    : state.step === "failed" ? (kids ? "Couldn't listen that time. Try once more!" : `The tones couldn't be checked: ${state.message}`)
     : state.step === "done" && state.reply ? toneSummary(state.reply, kids)
     : "";
   return (
@@ -308,7 +316,7 @@ export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError 
       </p>
       <div aria-hidden={state.step !== "done" ? true : undefined}>
         {state.step === "scoring" && <p className={`${fine} text-fg-3`}>{said}</p>}
-        {state.step === "failed" && !kids && <p className={`${fine} text-fg-3`}>{said}</p>}
+        {state.step === "failed" && <p className={kids ? "text-center text-base text-fg-2" : `${fine} text-fg-3`}>{said}</p>}
       </div>
       {state.step === "done" && state.reply && <ToneCheck reply={state.reply} take={state.take} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} />}
     </>
@@ -336,7 +344,9 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError }: {
   const [problem, setProblem] = useState<string | null>(null);
   const rec = useRef<Recording | null>(null);
   const gen = useRef(0);
-  const score = useToneScore(take, text, true);
+  // The card's one character: judged against every reading it lists
+  // (readings=all), which Practice never asks for.
+  const score = useToneScore(take, text, true, [...text].length === 1);
   useEffect(
     () => () => {
       gen.current++;

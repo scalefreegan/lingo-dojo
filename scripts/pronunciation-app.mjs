@@ -54,14 +54,17 @@ export function readScoreText(raw) {
  * longer line up with the characters on the page: `{ syllables }` or
  * `{ error }`.
  *
- * `alternatives`: for a text of one character alone (the character card),
- * every reading the card shows for it, its usual one first (zh.ts
- * charReadings). Out of a word there is no context to pick one: 长 alone is
- * cháng or zhǎng, 行 xíng or háng, and a learner saying the other is right.
- * So the syllable expects the usual reading and accepts the tone of every
- * reading (`readings` travels with it, for scoreReply to name the one
- * heard). A neutral usual reading (了 le, 的 de) stays the neutral tone,
- * which is not judged. A phrase keeps its reading in context.
+ * `alternatives`: on the character card only (the route passes them only
+ * when the page asks, for a text of one character alone), every reading
+ * the card shows for it, its usual one first (zh.ts charReadings). On the
+ * card there is no context to pick one: 长 alone is cháng or zhǎng, 行 xíng
+ * or háng, and a learner saying the other is not wrong. So the syllable
+ * expects the usual reading and accepts the tone of every reading
+ * (`readings` travels with it, for scoreReply to name the one heard). A
+ * neutral usual reading (了 le, 的 de) stays the neutral tone, which is not
+ * judged. A character whose readings take all four tones (拉 lā lá lǎ là)
+ * can't be checked alone (`everyTone`: scoreReply says "not sure"). A
+ * Practice phrase, even of one character (好, 不！), keeps its one reading.
  */
 export function scoreSyllables(text, readings, { alternatives = null } = {}) {
   const cps = [...text];
@@ -73,7 +76,10 @@ export function scoreSyllables(text, readings, { alternatives = null } = {}) {
   const usual = list[0];
   const tone = parsePinyin(usual).tone;
   const tones = [...new Set(list.map((r) => parsePinyin(r).tone).filter((t) => t >= 1 && t <= 4))];
-  return { syllables: [{ ...syllables[0], pinyin: usual, baseTone: tone, expectedTone: tone, accept: tone === 0 ? [0] : [tone, ...tones.filter((t) => t !== tone)], half: false, readings: list }] };
+  const everyTone = tone !== 0 && [1, 2, 3, 4].every((t) => tones.includes(t));
+  return {
+    syllables: [{ ...syllables[0], pinyin: usual, baseTone: tone, expectedTone: tone, accept: tone === 0 ? [0] : [tone, ...tones.filter((t) => t !== tone)], half: false, readings: list, ...(everyTone ? { everyTone } : {}) }],
+  };
 }
 
 /* ---------------------------------- audio --------------------------------- */
@@ -228,22 +234,33 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
   const out = result.syllables.map((s, i) => {
     const expected = syllables[i];
     const off = s.verdict === "off";
-    // A lone character with several readings (scoreSyllables'
-    // `alternatives`): an ok names the reading whose tone was heard (行
-    // said háng is háng, not "xíng, right"); anything else keeps the usual
+    const span = { startMs: Number.isFinite(s.startMs) ? s.startMs : null, endMs: Number.isFinite(s.endMs) ? s.endMs : null };
+    // The card's character, its readings in all four tones: whatever was
+    // heard fits one, so nothing is checked.
+    if (expected?.everyTone) {
+      return {
+        char: s.char, pinyin: s.pinyin, expectedTone: s.expectedTone, accept: s.accept, verdict: "unsure", reason: "every_tone",
+        ...span, heard: centredCurve(s.pitch), reference: toneShape(s.expectedTone),
+      };
+    }
+    // The card's character with several readings (scoreSyllables'
+    // `alternatives`): an ok names the reading whose tone was heard, and
+    // `usual` the usual one when the heard one is another (行 said háng is
+    // "háng, another reading", not just "right"); a miss keeps the usual
     // reading as the one expected.
     const matched = s.verdict === "ok" && Array.isArray(expected?.readings) ? expected.readings.find((r) => parsePinyin(r).tone === s.heardTone) : null;
+    const other = matched && matched !== expected.readings[0];
     const expectedTone = matched ? s.heardTone : s.expectedTone;
     return {
       char: s.char,
       pinyin: matched ?? s.pinyin,
+      ...(other ? { usual: expected.readings[0] } : {}),
       expectedTone,
       accept: s.accept,
       verdict: s.verdict === "ok" || off ? s.verdict : "unsure",
       ...(off && Number.isInteger(s.heardTone) ? { heardTone: s.heardTone } : {}),
       ...(off ? { why: s.reason === "sound" ? "sound" : "tone" } : s.verdict !== "ok" && s.reason ? { reason: s.reason } : {}),
-      startMs: Number.isFinite(s.startMs) ? s.startMs : null,
-      endMs: Number.isFinite(s.endMs) ? s.endMs : null,
+      ...span,
       heard: centredCurve(s.pitch),
       reference: toneShape(expectedTone, { half: !!expected?.half }),
     };
@@ -254,7 +271,7 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
     text,
     locale,
     syllables: out,
-    overall: kids || !Number.isFinite(result.overall) ? null : result.overall,
+    overall: kids || !Number.isFinite(result.overall) || syllables.some((x) => x.everyTone) ? null : result.overall,
     retry: result.syllables[0]?.reason === "clipped" ? "clipped" : null,
   };
 }

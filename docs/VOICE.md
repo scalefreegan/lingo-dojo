@@ -981,14 +981,15 @@ feed (speak-it failing a wrong tone).
 ### Pronunciation in the app (stage 1, ld-ne0.2)
 
 ```
-POST /api/pronunciation/score?text=<Han text>     body: the WAV (audio/wav)
+POST /api/pronunciation/score?text=<Han text>[&readings=all]     body: the WAV (audio/wav)
 → { engine: "azure" | "local",
     fallback: null | "no_keys" | "failed" | "busy" | "limit",
     text, locale,
-    syllables: [{ char, pinyin, expectedTone, accept, verdict,     (a lone character: the reading heard, below)
+    syllables: [{ char, pinyin, expectedTone, accept, verdict,
+                  usual?      (readings=all: the usual reading, when another was heard),
                   heardTone?  (only on "off"),
                   why?        ("tone" | "sound", on "off"),
-                  reason?     (the engine's, on "unsure"),
+                  reason?     (the engine's, on "unsure"; or "every_tone"),
                   startMs, endMs,
                   heard:      16 points, semitones about their own mean, null unvoiced,
                   reference:  16 points, the tone's textbook shape (null: neutral) }],
@@ -1011,14 +1012,23 @@ worker thread (`scripts/pronunciation-worker.mjs`).
   413 otherwise; the body is capped while it is read, and one that takes
   over 20 s to arrive is a 408). The per-user and server limits are
   checked before the body is read.
-- **A character alone** (the card) is judged against every reading the
-  card shows for it (`charReadings`, its usual one first): 长 accepts
-  cháng's second tone and zhǎng's third, 行 xíng's second and háng's or
-  hàng's, 好 hǎo and hào, 为 wèi and wéi. An ok names the reading heard
-  (`pinyin`, `expectedTone` and `reference` are that reading's); a miss is
-  shown against the usual one. A neutral usual reading stays neutral and
-  unjudged (了 alone is le, as the card lists it, not liǎo). Two or more
-  characters keep their reading in context (长大 zhǎng dà).
+- **`readings=all`: the character card only.** The card sends it (and
+  Practice never does) for its one character, which is then judged against
+  every reading the card shows for it (`charReadings`, its usual one
+  first): 长 accepts cháng's second tone and zhǎng's third, 行 xíng's second
+  and háng's or hàng's, 好 hǎo and hào, 为 wèi and wéi. An ok names the
+  reading heard (`pinyin`, `expectedTone` and `reference` are that
+  reading's) and, when it isn't the usual one, `usual` names that, so the
+  page says "That's zhǎng, another reading of 长 (usually cháng)" rather
+  than just "right"; a miss is shown against the usual one. A neutral usual
+  reading stays neutral and unjudged (了 alone is le, as the card lists it,
+  not liǎo). A character whose readings take all four tones (拉, 叉, 揣, 呵)
+  can't be checked alone: "not sure" with reason `every_tone` and no score
+  (著 has no third-tone reading, so it is checked). The flag on more than
+  one character, or with any value but `all`, is a 400. Without it, a
+  single character keeps its one reading like any phrase (Practice's 好 is
+  hǎo only, 不！ bù only), and two or more characters keep their reading in
+  context (长大 zhǎng dà).
 - **Engine** (`scoringEngine`): Azure when `AZURE_SPEECH_KEY` and
   `AZURE_SPEECH_REGION` are set, merged with the local tone check on
   Azure's syllable timings (`mergeAzure`); the local scorer alone
@@ -1041,9 +1051,14 @@ worker thread (`scripts/pronunciation-worker.mjs`).
   the server's memory either. No migration; log lines name the engine, the
   syllable count and the kind of failure, never the text, the audio or
   anything Azure replied. Every failure leaves the route as an `HttpError`
-  with a fixed message (a worker that hangs or crashes is a 503, a dropped
-  upload just ends), because `wrap` logs the URL, which holds the text, of
-  any other error.
+  with a fixed message: a worker that hangs, crashes or answers something
+  unusable is a 503 (logged "scoring failed (timeout|crash|error)"), a body
+  slower than 20 s a 408, and a browser that drops the upload or the
+  connection (before or while the body is read, or under the reply) a 499
+  "cancelled", logged "the browser went away", its slots freed at once.
+  `wrap` itself logs only the path of any other error, never the query
+  string (it would hold the text). The reader's library, pinyin-pro 3.29,
+  keeps no cache of its inputs (its maps hold dictionaries only).
 - **The picture.** `heard` is the engine's `pitch` for the syllable,
   centred on its own mean, and `reference` the tone's Chao shape (the half
   third low without the rise) on the same scale (`stepSt`), so the page
@@ -1062,8 +1077,13 @@ the text colour for not sure, never a warning; a line "2 right · 1 not
 sure". Kids: no score and no red (an error line too); ok in the accent
 colour, a miss warm (`kiai`), whether the tone or (from Azure) the sound,
 with "Let's listen and try that one again!" and a Listen button, not sure
-shown as plain text and not tappable. "Checking the tones…" and the line
-are read out by one `role="status"` live region. A tap opens the
+shown as plain text and not tappable; a check that fails (busy, 503) shows
+"Couldn't listen that time. Try once more!" (adults see the reason, in the
+quiet text colour). Live regions (`role="status"`), each with its own
+message: the check's progress and outcome ("Checking the tones…", then the
+summary or why it failed: `tone-status`, one region that stays mounted);
+"the recording started mid-word" on a clipped take; a take or model that
+couldn't play; and on the card, a microphone problem. A tap opens the
 syllable's picture: the textbook shape dashed against what was heard, the
 learner's own take (the blob in memory) and the model sound.
 

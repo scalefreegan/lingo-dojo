@@ -78,12 +78,25 @@ class ScoreFailure extends Error {
   }
 }
 
+/** The browser dropped the request (the upload cut, the page left). Its
+ *  own class: `req.destroyed` can't say so, as it is also true of every
+ *  request whose body has been read to the end. */
+class BrowserGone extends Error {
+  constructor() {
+    super("pronunciation: the browser went away");
+  }
+}
+
 /** The recording, read up to the cap (413 past it) without trusting a
  *  Content-Length, within SCORER.bodyTimeoutMs (past it, a ScoreFailure
  *  "slow_body": the reply goes out and the connection is closed, the rest
- *  unread). A browser that drops the upload rejects with its own error,
- *  and req.destroyed tells guarded() it went away. */
+ *  unread). A browser that drops the upload, before or while it is read,
+ *  is a BrowserGone. */
 function readRecording(req: IncomingMessage, res: ServerResponse): Promise<Uint8Array> {
+  // Dropped while the session was looked up, before any listener here:
+  // 'close' has already fired and 'end' never will, so waiting would hold
+  // the user's slot until the body timeout.
+  if (req.destroyed || req.readableAborted) return Promise.reject(new BrowserGone());
   return new Promise((resolve, reject) => {
     // Past the cap the rest is read and dropped, so the browser gets its 413
     // rather than a broken pipe; past DRAIN_MAX it isn't read at all and the
@@ -111,8 +124,10 @@ function readRecording(req: IncomingMessage, res: ServerResponse): Promise<Uint8
         else if (!size) reject(new HttpError(400, "no audio in the body"));
         else resolve(new Uint8Array(Buffer.concat(chunks)));
       });
-    const onError = (e: Error) => done(() => reject(e));
-    const onAborted = () => done(() => reject(new Error("aborted")));
+    // Any error reading the body (a reset, an abort) or a close before its
+    // end is the browser's leaving.
+    const onError = () => done(() => reject(new BrowserGone()));
+    const onAborted = () => done(() => reject(new BrowserGone()));
     const timer = setTimeout(() => stop(new ScoreFailure("slow_body")), SCORER.bodyTimeoutMs);
     req.on("data", onData).on("end", onEnd).on("error", onError).on("aborted", onAborted).on("close", onAborted);
   });
@@ -198,11 +213,17 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   if (!["audio/wav", "audio/wave", "audio/x-wav"].includes(mime)) throw new HttpError(415, "a recording must be sent as audio/wav");
   // Before the body: the learner's mode (a `?mode=` that disagrees is a 400).
   const mode = learnerMode(req, ctx);
-  const t = readScoreText(new URL(req.url ?? "/", "http://localhost").searchParams.get("text"));
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  const t = readScoreText(params.get("text"));
   if (t.error !== undefined) throw new HttpError(400, t.error);
-  // A character alone (the card): every reading the card shows for it.
+  // `readings=all`: the character card, one character alone, judged
+  // against every reading the card shows for it. Only the card asks;
+  // Practice never does, so a phrase 好 or 不！ keeps its one reading.
+  const all = params.get("readings");
+  if (all !== null && all !== "all") throw new HttpError(400, "readings must be \"all\" or left out");
   const han = [...t.text].filter((c) => /\p{Script=Han}/u.test(c));
-  const alternatives = han.length === 1 ? charReadings(han[0], locale) : null;
+  if (all && han.length !== 1) throw new HttpError(400, "every reading is only for one character alone");
+  const alternatives = all ? charReadings(han[0], locale) : null;
   const s = scoreSyllables(t.text, readCodePoints(t.text, locale, { cache: false }), { alternatives });
   if (s.error !== undefined) throw new HttpError(400, s.error);
 
@@ -243,7 +264,9 @@ async function guarded(req: IncomingMessage, res: ServerResponse, ctx: LearnerCt
     await score(req, res, ctx);
   } catch (e) {
     if (e instanceof HttpError) throw e;
-    if ((req.destroyed && !(e instanceof ScoreFailure)) || res.destroyed) {
+    // Gone for real: the body was cut, or the connection closed under the
+    // reply. Anything else, with the browser still waiting, is a 503.
+    if (e instanceof BrowserGone || res.destroyed || req.readableAborted) {
       console.log("[lingo-dojo] pronunciation: the browser went away");
       throw new HttpError(499, "cancelled");
     }

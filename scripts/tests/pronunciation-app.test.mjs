@@ -59,6 +59,11 @@ test("scoreSyllables alternatives: a lone character accepts the tone of every re
   // A phrase keeps its reading in context; no alternatives, no change.
   assert.deepEqual(scoreSyllables("长大", readCodePoints("长大", "zh-CN"), { alternatives: charReadings("长", "zh-CN") }).syllables.map((x) => x.pinyin), ["zhǎng", "dà"]);
   assert.equal(scoreSyllables("好", ["hǎo"]).syllables[0].accept.length, 1);
+  // Readings in all four tones: nothing to check (拉 lā lá lǎ là, 揣, 呵);
+  // 著 (zhù zhuó zhe zháo zhāo) has no third tone, so it is still checked.
+  for (const ch of ["拉", "叉", "揣", "呵"]) assert.equal(card(ch).syllables[0].everyTone, true, ch);
+  assert.equal(card("著").syllables[0].everyTone, undefined);
+  assert.equal(card("长").syllables[0].everyTone, undefined);
 });
 
 test("scoreReply on a lone character: the reading heard is the one named, the usual one when none fits", () => {
@@ -81,6 +86,15 @@ test("scoreReply on a lone character: the reading heard is the one named, the us
   assert.equal(miss.reference.length > 0, true);
   // 了 said with any pitch: not judged.
   assert.deepEqual(pick(run("了", 3)), ["unsure", "le", 0]);
+  // Another reading than the usual one names the usual one; the usual one doesn't.
+  assert.equal(run("长", 3).usual, "cháng");
+  assert.equal(run("长", 2).usual, undefined);
+  assert.equal(run("为", 1).usual, undefined, "a miss");
+  // 拉: whatever is heard, not sure, with the reason, the usual reading shown.
+  for (const tone of [1, 3, 4]) {
+    const la = run("拉", tone);
+    assert.deepEqual([...pick(la), la.reason, la.heardTone, la.usual], ["unsure", "lā", 1, "every_tone", undefined, undefined], String(tone));
+  }
 });
 
 test("readScoreAudio: 16 kHz mono 16-bit PCM WAV, 0.25 to 30 seconds", () => {
