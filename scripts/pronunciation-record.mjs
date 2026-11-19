@@ -152,11 +152,9 @@ export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
 
   /** One line onto labels.tsv, on a line of its own whatever the file
    *  ended with: a hand-edited file whose last line has no newline would
-   *  otherwise swallow the new row and lose both. Returns the file's size
-   *  before the line, which is where to cut it back to. */
-  function appendLabel(line) {
-    if (!fs.existsSync(labelsFile)) fs.writeFileSync(labelsFile, `${LABELS_HEADER}\n`, { flag: "wx", mode: 0o600 });
-    const size = fs.statSync(labelsFile).size;
+   *  otherwise swallow the new row and lose both. `size` is the file's
+   *  size now (labelsSize). */
+  function appendLabel(line, size) {
     let glue = "";
     if (size > 0) {
       const fd = fs.openSync(labelsFile, "r");
@@ -169,7 +167,14 @@ export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
       }
     }
     fs.appendFileSync(labelsFile, `${glue}${line}\n`);
-    return size;
+  }
+
+  /** labels.tsv's size, made with its header first if it isn't there:
+   *  taken before a line is added, it is where to cut the file back to
+   *  if the line doesn't go in whole. */
+  function labelsSize() {
+    if (!fs.existsSync(labelsFile)) fs.writeFileSync(labelsFile, `${LABELS_HEADER}\n`, { flag: "wx", mode: 0o600 });
+    return fs.statSync(labelsFile).size;
   }
 
   async function keep(req, url) {
@@ -221,7 +226,8 @@ export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
     let rows;
     let sizeBefore = null;
     try {
-      sizeBefore = appendLabel(formatLabel(label));
+      sizeBefore = labelsSize();
+      appendLabel(formatLabel(label), sizeBefore);
       // Saved means the row reads back: nothing is answered on trust.
       rows = readRows();
       const back = rows.find((r) => r.file === file);
@@ -229,8 +235,8 @@ export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
     } catch (e) {
       // A clip without its label is a file nobody can score: take it away
       // again (it is this request's own file) and say so. And a label
-      // without its clip would show the prompt as done: the line, if it
-      // was written, comes off again.
+      // without its clip would show the prompt as done: the line, or
+      // whatever part of it was written, comes off again.
       fs.rmSync(path.join(dir, file), { force: true });
       try {
         if (sizeBefore !== null) fs.truncateSync(labelsFile, sizeBefore);

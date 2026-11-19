@@ -6,6 +6,7 @@ import {
   classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
   scoresTones, scribeCharTimings, segmentSyllables, speakerRange, trackPitch, trimToSpeech, withTone, TRIM_RULES,
 } from "../pronunciation.mjs";
+import { CURVES, GENERATED_PHRASES, LAST_SYLLABLE_CASES, NOISE_CONDITIONS, RATE, emptyTally, speak, surround, tallyLabellings } from "../pronunciation-synth.mjs";
 import { readCodePoints } from "../../web/src/script/zh.ts";
 
 // The pronunciation engine (scripts/pronunciation.mjs): provider choice, the
@@ -166,89 +167,8 @@ test("expectedSyllables over the app's own reader: Chinese characters only, each
 
 /* ------------------------------ generated speech ---------------------------- */
 
-const RATE = 16_000;
-
-// The voice the tests listen to. Deliberately not the classifier's own
-// templates: each tone is a curve in time with its own formula (Chao level
-// against x, 0 at the start of the syllable and 1 at its end), not the five
-// levels the classifier matches against; the pitch drifts down across the
-// utterance as real sentences do; every glottal period is jittered; and
-// the range a test hands the scorer is the nominal one, not what the drift
-// and the jitter actually produce.
-const CURVES = {
-  1: (x) => 4.7 - 0.25 * x, // high, sagging a little
-  2: (x) => 2.9 - 0.9 * x + 3 * x * x, // a small dip first, then up to the top
-  3: (x) => 2.7 - 6.8 * x + 7 * x * x, // down to the floor before the middle, most of the way back
-  4: (x) => 4.9 - 3.9 * x ** 1.4, // top to bottom, slowly at first
-  low: (x) => 2.3 - 1.2 * Math.sqrt(x), // the half third: low and sinking
-};
-
-/** A voice saying `shapes` one after another (keys of CURVES, or a curve of
- *  its own): a buzz of six harmonics whose pitch follows each curve between
- *  `lowHz` and `lowHz` + `spanSt` semitones, `ms` each, `gapMs` of silence
- *  between. `declineSt` is the drift down across the utterance, `jitter`
- *  the period-to-period wobble, `weak` drops the fundamental (a telephone,
- *  a small speaker), `noise` adds white noise at that amplitude. `ms` may
- *  be one length per syllable, `gaps` the silences one by one (before the
- *  first, between, after the last) and `amps` a loudness per syllable. */
-function speak(shapes, { lowHz = 110, spanSt = 10, ms = 260, gapMs = 70, gaps = null, amps = null, declineSt = 0.6, jitter = 0.004, weak = false, noise = 0, seed = 11, creakOnset = 0, ownRange = false } = {}) {
-  const lenOf = (k) => Math.round((RATE * (Array.isArray(ms) ? ms[k] : ms)) / 1000);
-  const gapOf = (k) => Math.round((RATE * (gaps ? gaps[k] : gapMs)) / 1000);
-  let total = gapOf(shapes.length);
-  for (let k = 0; k < shapes.length; k++) total += gapOf(k) + lenOf(k);
-  const out = new Float32Array(total);
-  const timings = [];
-  let state = seed;
-  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
-  let at = gapOf(0);
-  for (const [k, name] of shapes.entries()) {
-    const len = lenOf(k);
-    const curve = typeof name === "function" ? name : CURVES[name];
-    let phase = 0;
-    let wobble = 1;
-    for (let i = 0; i < len; i++) {
-      const level = curve(i / (len - 1));
-      const drift = -declineSt * ((at + i) / out.length);
-      const hz = lowHz * 2 ** ((((level - 1) / 4) * spanSt + drift) / 12) * wobble;
-      const before = phase;
-      phase += (2 * Math.PI * hz) / RATE;
-      // A new period: a new wobble.
-      if (Math.floor(phase / (2 * Math.PI)) !== Math.floor(before / (2 * Math.PI))) wobble = 1 + jitter * rand();
-      const env = Math.min(1, i / 240, (len - 1 - i) / 240);
-      let v = 0;
-      for (let h = weak ? 2 : 1; h <= 6; h++) v += Math.sin(phase * h) / h;
-      out[at + i] = 0.3 * env * v * (amps ? amps[k] : 1);
-    }
-    // Creak over the first part of the syllable: the buzz replaced by
-    // glottal pulses at irregular intervals, with no period to find.
-    if (creakOnset) {
-      const until = Math.round(len * creakOnset);
-      for (let i = 0; i < until; i++) out[at + i] = 0;
-      for (let i = 20; i < until; i += Math.round(RATE * (0.012 + 0.016 * Math.abs(rand())))) {
-        for (let k = 0; k < 90 && i + k < until; k++) out[at + i + k] += 0.5 * Math.exp(-k / 18) * Math.sin(k / 6);
-      }
-    }
-    timings.push({ startMs: (at / RATE) * 1000, endMs: ((at + len) / RATE) * 1000 });
-    at += len + gapOf(k + 1);
-  }
-  if (noise) for (let i = 0; i < out.length; i++) out[i] += noise * rand();
-  return { samples: out, timings, range: ownRange ? null : sessionRange({ lowHz, spanSt, weak }) };
-}
-
-/** What a session would know of a voice: its range measured (speakerRange)
- *  over an earlier utterance, not the numbers the generator was given. So
- *  the scorer reads every test syllable against a range that is a little
- *  narrower than the truth and not centred quite where the generator's is,
- *  as it would be in the app. */
-const sessions = new Map();
-function sessionRange({ lowHz, spanSt, weak }) {
-  const key = `${lowHz}/${spanSt}/${weak}`;
-  if (!sessions.has(key)) {
-    const earlier = speak([4, 1, 2, "low", 3, 2, 4, 1], { lowHz, spanSt, weak, declineSt: 1.5, seed: 29, ownRange: true });
-    sessions.set(key, speakerRange(trackPitch(earlier.samples, RATE)));
-  }
-  return sessions.get(key);
-}
+// The generated voice (speak, CURVES, sessionRange) lives in
+// scripts/pronunciation-synth.mjs, where the proof uses it too.
 
 /** Syllables with the given expected tones and no sandhi between them. */
 const expecting = (...ts) => ts.map((t) => ({ char: "字", pinyin: withTone("ma", t), baseTone: t, expectedTone: t, accept: [t], half: false, breakBefore: true }));
@@ -1132,16 +1052,19 @@ test("mergeAzure: Azure's timings, the local tone check on them, one result", ()
   assert.equal("overall" in empty, false);
 });
 
-/* The trim's edges: each bar in TRIM_RULES was set on one speaker's clips,
- * so each is tried just on its wrong side. A syllable may be lost to the
- * verdict (unsure); none is ever erased into an "off". */
+/* The trim's edges. Each bar in TRIM_RULES was set on one speaker's clips,
+ * so each is tried just on its wrong side, and the rule is the same every
+ * time: the trim may cost a verdict (unsure, reason "trimmed"); it never
+ * makes one. Where it can't tell speech from noise the scorer reads the
+ * recording both ways and keeps what agrees. */
 const voicedIn = (track, fromMs, toMs) => {
   let n = 0;
   for (let i = Math.floor(fromMs / HOP_MS); i < Math.ceil(toMs / HOP_MS); i++) if (track.f0[i] > 0) n++;
   return n;
 };
+const scored = (rec, said, ...labels) => scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables.map((x) => (x.reason === "trimmed" ? "trimmed" : x.verdict));
 
-test("trimming never erases a syllable: a short one after a pause over nearMs", () => {
+test("a short last syllable after a pause over nearMs: doubted, never erased into a wrong verdict", () => {
   for (const pauseMs of [150, 250, 350]) {
     // 70 ms, under runMs; the pause puts it past nearMs for two of three.
     const said = speak([4, 1, 2], { ms: [260, 260, 70], gaps: [70, 70, pauseMs, 70] });
@@ -1150,96 +1073,78 @@ test("trimming never erases a syllable: a short one after a pause over nearMs", 
     const last = said.timings[2];
     const before = voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs);
     assert.ok(before >= 3 && before * HOP_MS < TRIM_RULES.runMs, `the last syllable is a short voiced run (${before} frames)`);
-    const trimmed = trimToSpeech(raw);
-    assert.equal(voicedIn(trimmed, rec.leadMs + last.startMs, rec.leadMs + last.endMs), before, `pause ${pauseMs}: every voiced frame of it is kept`);
-    // Kept on its loudness alone when it is far: the trim says so.
-    assert.equal(Boolean(trimmed.trim.doubt), pauseMs > TRIM_RULES.nearMs, `pause ${pauseMs}`);
-    assert.deepEqual(verdicts(scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range })), ["ok", "ok", "ok"], `pause ${pauseMs}`);
-    // Labelled wrong, nothing turns "off" by the trim's doing.
-    const wrong = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 1, 4), speaker: said.range });
-    assert.deepEqual(verdicts(wrong).slice(0, 2), ["ok", "ok"], `pause ${pauseMs}`);
+    const far = pauseMs > TRIM_RULES.nearMs;
+    // By the bars alone it is noise once it is far…
+    assert.equal(voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs), far ? 0 : before, `pause ${pauseMs}`);
+    // …but two voiced runs for three syllables is a reason to doubt that,
+    // and the readings with and without it differ on the last syllable.
+    assert.deepEqual(scored(rec, said, 4, 1, 2), ["ok", "ok", far ? "trimmed" : "ok"], `pause ${pauseMs}`);
+    assert.notEqual(scored(rec, said, 4, 1, 4)[2], "off", `pause ${pauseMs}`);
+    // What both readings agree on stands: a wrong first tone is caught.
+    assert.deepEqual(scored(rec, said, 1, 1, 2).slice(0, 2), ["off", "ok"], `pause ${pauseMs}`);
   }
 });
 
-test("trimming never erases a syllable: a creaky, broken one after a pause", () => {
+test("a creaky, broken last syllable after a pause is not erased", () => {
   const said = speak([1, 4, 3], { gaps: [70, 70, 300, 70] });
   const last = said.timings[2];
   creakOver(said.samples, last.startMs + 40, last.startMs + 140, 3);
   creakOver(said.samples, last.startMs + 190, last.endMs - 20, 4);
   const rec = recording(said.samples);
-  const raw = trackPitch(rec.samples, RATE);
-  const before = voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs);
-  assert.ok(before >= 3);
-  assert.equal(voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs), before);
-  assert.deepEqual(verdicts(scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(1, 4, 3), speaker: said.range })), ["ok", "ok", "ok"]);
+  const got = scored(rec, said, 1, 4, 3);
+  assert.equal(got[0], "ok");
+  assert.ok(!got.includes("off"), got.join(" "));
 });
 
-test("a soft last syllable on either side of floorDb is scored as without the trim", () => {
+test("a soft last syllable on either side of floorDb", () => {
   for (const db of [-24, -27]) {
-    const said = speak([4, 2, "low"], { amps: [1, 1, 10 ** (db / 20)] });
+    const said = speak([4, 2, 1], { amps: [1, 1, 10 ** (db / 20)] });
     const rec = recording(said.samples);
     const raw = trackPitch(rec.samples, RATE);
     const last = said.timings[2];
     assert.ok(voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs) >= 15, `${db} dB: the soft syllable is voiced`);
-    // Under the floor the trim alone would drop it (a long run, too soft):
-    // that is what the scorer doubts.
-    const kept = voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs);
-    assert.equal(kept > 0, db > TRIM_RULES.floorDb, `${db} dB`);
-    const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 2, 3), speaker: said.range });
-    assert.deepEqual(verdicts(res), ["ok", "ok", "ok"], `${db} dB`);
-    // The untrimmed track was scored: the third piece is the third syllable.
-    assert.ok(res.syllables[2].startMs >= rec.leadMs + said.timings[1].endMs - 60, `${db} dB: cut at ${res.syllables[2].startMs}`);
+    // Under the floor the bars drop it; beside the speech, so doubted.
+    const under = db < TRIM_RULES.floorDb;
+    assert.equal(voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs) === 0, under, `${db} dB`);
+    assert.deepEqual(scored(rec, said, 4, 2, 1), ["ok", "ok", under ? "trimmed" : "ok"], `${db} dB`);
+    assert.deepEqual(scored(rec, said, 1, 2, 1).slice(0, 2), ["off", "ok"], `${db} dB`);
   }
-  // And under doubt a wrong label is "unsure" at most, where the same clip
-  // with a full-voiced last syllable is flagged.
-  const soft = speak([4, 2, 1], { amps: [1, 1, 10 ** (-27 / 20)] });
-  const softRec = recording(soft.samples);
-  const doubted = scoreTones({ samples: softRec.samples, sampleRate: RATE, syllables: phrase(4, 2, 4), speaker: soft.range }).syllables[2];
-  assert.deepEqual([doubted.verdict, doubted.reason], ["unsure", "trimmed"]);
-  const loud = speak([4, 2, 1]);
-  const loudRec = recording(loud.samples);
-  assert.equal(scoreTones({ samples: loudRec.samples, sampleRate: RATE, syllables: phrase(4, 2, 4), speaker: loud.range }).syllables[2].verdict, "off");
 });
 
-test("fewer voiced stretches left than syllables: the untrimmed track is scored", () => {
-  // A last syllable that is short (under runMs), soft (under sureDb, over
-  // floorDb) and far (over nearMs): every bar says noise. Two voiced
-  // stretches are left for three syllables, so the trim is not believed.
+test("a last syllable every bar calls noise (short, far, 18 dB under) is doubted when a syllable is missing", () => {
   const said = speak([4, 2, 1], { ms: [260, 260, 70], gaps: [70, 70, 300, 70], amps: [1, 1, 10 ** (-18 / 20)] });
   const rec = recording(said.samples);
   const raw = trackPitch(rec.samples, RATE);
   const last = said.timings[2];
-  const before = voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs);
-  assert.ok(before >= 3 && before * HOP_MS < TRIM_RULES.runMs, `${before} voiced frames`);
+  assert.ok(voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs) >= 3);
   const trimmed = trimToSpeech(raw);
-  assert.equal(voicedIn(trimmed, rec.leadMs + last.startMs, rec.leadMs + last.endMs), 0, "the trim alone drops it");
+  assert.equal(voicedIn(trimmed, rec.leadMs + last.startMs, rec.leadMs + last.endMs), 0, "the bars alone drop it");
   assert.equal(trimmed.trim.dropped.length, 1);
   for (const labels of [[4, 2, 1], [4, 2, 4]]) {
-    const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range });
-    assert.deepEqual(verdicts(res).slice(0, 2), ["ok", "ok"], `labelled ${labels}`);
-    assert.notEqual(res.syllables[2].verdict, "off", `labelled ${labels}`);
-    // The third piece is where the third syllable is, not a slice of the second.
-    assert.ok(res.syllables[2].endMs > rec.leadMs + last.startMs, `labelled ${labels}: ${res.syllables[2].startMs}-${res.syllables[2].endMs}`);
+    const got = scored(rec, said, ...labels);
+    assert.deepEqual(got, ["ok", "ok", "trimmed"], `labelled ${labels}`);
   }
 });
 
-test("a loud pitched knock is kept, not believed: nothing in that recording is off", () => {
-  // Louder than the speech and half a second before it: by loudness it
-  // could be a syllable, so it stays, the cuts go wrong as they did before
-  // there was a trim, and the wrong pieces come back unsure.
+test("a knock louder than the speech is dropped when every syllable is accounted for", () => {
+  // Three syllables, three voiced runs: nothing is missing, so the knock
+  // half a second before them is noise and the phrase is read as if it
+  // weren't there, flags included.
   const said = speak([4, 2, 1]);
   const rec = recording(said.samples, { blips: [{ atMs: 200, ms: 50, hz: 220, amp: 0.9 }] });
-  const trimmed = trimToSpeech(trackPitch(rec.samples, RATE));
-  assert.equal(trimmed.trim.doubt, true);
-  const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 2, 1), speaker: said.range });
-  assert.ok(!verdicts(res).includes("off"), verdicts(res).join(" "));
-  assert.ok(res.syllables.some((x) => x.reason === "trimmed"));
+  assert.deepEqual(scored(rec, said, 4, 2, 1), ["ok", "ok", "ok"]);
+  assert.deepEqual(scored(rec, said, 4, 2, 4), ["ok", "ok", "off"]);
+  // Two syllables run together (one voiced run for two): the knock might
+  // be the second, so both readings are taken. No reading invents a flag.
+  const fused = speak([1, 4], { gapMs: 0 });
+  const fusedRec = recording(fused.samples, { blips: [{ atMs: 200, ms: 50, hz: 220, amp: 0.9 }] });
+  assert.ok(!scored(fusedRec, fused, 1, 4).includes("off"));
 });
 
-test("a syllable with no long voiced run is still the speech, without doubt", () => {
+test("a syllable with no long voiced run is still the speech", () => {
   // (An edited track.) A clipped fourth tone the tracker broke into pieces
   // of 50 ms: none reaches runMs, so the loudest is the speech and its
-  // neighbours join it. The trim has nothing to doubt, and a flag stands.
+  // neighbours join it.
   const said = speak([4], { ms: 200 });
   const rec = recording(said.samples);
   const raw = trackPitch(rec.samples, RATE);
@@ -1247,10 +1152,64 @@ test("a syllable with no long voiced run is still the speech, without doubt", ()
   const voiced = [...raw.f0].map((f, i) => (f > 0 ? i : -1)).filter((i) => i >= 0);
   for (const [k, i] of voiced.entries()) if (k % 6 === 5) broken.f0[i] = 0;
   const trimmed = trimToSpeech(broken);
-  assert.equal(Boolean(trimmed.trim?.doubt), false);
   assert.equal(voicedIn(trimmed, 0, rec.samples.length / 16), voicedIn(broken, 0, rec.samples.length / 16));
   const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track: broken }).syllables[0];
   assert.notEqual(res.reason, "trimmed");
+});
+
+/* The proof's "With lead-in noise", in small: the same disturbances
+ * (NOISE_CONDITIONS) around generated speech. What must hold in every
+ * condition: no correctly said syllable is "off"; wrong tones passed as
+ * "ok" are not above the clean count by more than 1; single syllables are
+ * caught exactly as often as clean; phrases at least four times in five
+ * (words run together are read twice at a stray sound, and lose verdicts). */
+test("lead-in noise: no false alarm, no extra wrong ok, catches hold", () => {
+  const voice = { lowHz: 110, spanSt: 10 };
+  const said = [];
+  for (const tones of [[1], [2], [3], [4], [4, 1, 2], [2, 4, 1]]) said.push({ tones, clip: speak(tones, voice) });
+  // Words run together: one voiced run for two syllables.
+  said.push({ tones: [1, 4], clip: speak([1, 4], { ...voice, gapMs: 0 }) });
+  const run = (cond) => {
+    const t = { single: emptyTally(), phrase: emptyTally() };
+    for (const [k, { tones, clip }] of said.entries()) {
+      const samples = surround(clip.samples, RATE, cond, 77 + k);
+      const track = trackPitch(samples, RATE);
+      tallyLabellings(t[tones.length === 1 ? "single" : "phrase"], tones, (syllables) => scoreTones({ samples, sampleRate: RATE, syllables, speaker: clip.range, track }));
+    }
+    return t;
+  };
+  const clean = run(NOISE_CONDITIONS[0]);
+  assert.equal(clean.single.right.off + clean.phrase.right.off, 0);
+  assert.ok(clean.single.wrong.off >= 9 && clean.phrase.wrong.off >= 20, JSON.stringify(clean));
+  for (const cond of NOISE_CONDITIONS.slice(1)) {
+    const t = run(cond);
+    for (const kind of ["single", "phrase"]) {
+      assert.equal(t[kind].right.off, 0, `${cond.key} ${kind}: a correct syllable flagged`);
+      assert.ok(t[kind].wrong.ok <= clean[kind].wrong.ok + 1, `${cond.key} ${kind}: wrong tones passed as ok ${t[kind].wrong.ok}, clean ${clean[kind].wrong.ok}`);
+    }
+    assert.equal(t.single.wrong.off, clean.single.wrong.off, `${cond.key}: single syllables caught`);
+    assert.ok(t.phrase.wrong.off >= 0.8 * clean.phrase.wrong.off, `${cond.key}: phrases caught ${t.phrase.wrong.off}, clean ${clean.phrase.wrong.off}`);
+  }
+});
+
+test("lead-in noise: a last syllable the trim could take for noise costs verdicts, never a wrong one", () => {
+  const room = NOISE_CONDITIONS.find((c) => c.key === "room");
+  const counts = {};
+  for (const kase of LAST_SYLLABLE_CASES) {
+    const t = emptyTally();
+    for (const [k, tones] of GENERATED_PHRASES.slice(0, 3).entries()) {
+      const clip = speak(tones, { lowHz: 110, spanSt: 10, ...kase.options });
+      const samples = surround(clip.samples, RATE, room, 500 + k);
+      const track = trackPitch(samples, RATE);
+      tallyLabellings(t, tones, (syllables) => scoreTones({ samples, sampleRate: RATE, syllables, speaker: clip.range, track }));
+    }
+    counts[kase.key] = t;
+    assert.equal(t.right.off, 0, `${kase.key}: a correct syllable flagged`);
+  }
+  for (const key of ["pause", "soft"]) assert.ok(counts[key].wrong.ok <= counts.plain.wrong.ok + 1, `${key}: ${JSON.stringify(counts[key])}`);
+  // The readings still agree on part of it: some right syllables stay
+  // ok and some wrong ones are still caught.
+  for (const key of ["pause", "soft"]) assert.ok(counts[key].right.ok >= 3 && counts[key].wrong.off >= 6, `${key}: ${JSON.stringify(counts[key])}`);
 });
 
 test("no speech at all: the track comes back as it is and nothing is judged", () => {
@@ -1289,6 +1248,35 @@ test("a glitch of a frame or three at the edge of a syllable is dropped, not hel
     for (const i of at) glitched.f0[i] = end === "start" ? glitched.f0[i] / 2 : glitched.f0[i] * 2;
     const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(tone), speaker: said.range, track: glitched }).syllables[0];
     assert.deepEqual([res.verdict, res.heardTone, res.reason], ["ok", tone, undefined], `tone ${tone}, ${frames} frame(s) at the ${end}`);
+  }
+});
+
+test("a glitch in the middle of a vowel is read through; a track that flips throughout is not read at all", () => {
+  // (Edited tracks.)
+  for (const tone of [1, 2, 4]) {
+    const said = speak([tone], { ms: 320 });
+    const track = trackPitch(said.samples, RATE);
+    const voiced = [...track.f0].map((f, i) => (f > 0 ? i : -1)).filter((i) => i >= 0);
+    const score = (edited, label) => scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range, track: edited }).syllables[0];
+    // Two frames an octave down in the middle: taken out, and the vowel
+    // carries on where it was. Right is ok, and a wrong label is still caught.
+    const mid = { ...track, f0: Float32Array.from(track.f0) };
+    const m = voiced[Math.floor(voiced.length / 2)];
+    mid.f0[m] /= 2;
+    mid.f0[m + 1] /= 2;
+    assert.deepEqual([score(mid, tone).verdict, score(mid, tone).heardTone], ["ok", tone], `tone ${tone}, a glitch mid-vowel`);
+    assert.equal(score(mid, tone === 1 ? 4 : 1).verdict, "off", `tone ${tone}, a glitch mid-vowel, labelled wrong`);
+    // An octave down every other three frames, the whole vowel through
+    // (period doubling): no piece is longer than a glitch, and the guard
+    // must not switch itself off for want of one.
+    const all = { ...track, f0: Float32Array.from(track.f0) };
+    voiced.forEach((i, k) => { if (Math.floor(k / 3) % 2 === 1) all.f0[i] /= 2; });
+    for (const label of [1, 2, 3, 4]) assert.deepEqual([score(all, label).verdict, score(all, label).reason], ["unsure", "octave"], `tone ${tone} flipping throughout, labelled ${label}`);
+    // The same over the middle half only: too much of the contour is
+    // glitch to read through what is left.
+    const half = { ...track, f0: Float32Array.from(track.f0) };
+    voiced.slice(Math.floor(voiced.length / 4), Math.floor((3 * voiced.length) / 4)).forEach((i, k) => { if (Math.floor(k / 3) % 2 === 1) half.f0[i] /= 2; });
+    for (const label of [1, 2, 3, 4]) assert.notEqual(score(half, label).verdict, label === tone ? "off" : "ok", `tone ${tone} flipping in the middle, labelled ${label}`);
   }
 });
 

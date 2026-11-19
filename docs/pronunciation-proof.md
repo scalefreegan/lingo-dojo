@@ -112,6 +112,28 @@ The same clips (all four voices, range known) at several values of `offMarginSt`
 
 `creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.
 
+## With lead-in noise
+
+The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a murmur before or after the words, and the scorer first has to decide what the speech is (`trimToSpeech`). This section puts those surroundings around every cached clip and scores them again, speaker's range known and cuts by energy as in the in-sample table (its numbers are the first row). The measure of the trim is that the rows stay close to the first one: a disturbance may cost catches (more "unsure"), it must not add false alarms or wrong tones passed as ok. The same disturbances, on generated audio, are in `npm test`.
+
+| | Singles: wrong tones caught | Singles: false alarms | Singles: wrong tones passed as ok | Phrases: wrong tones caught | Phrases: false alarms | Phrases: wrong tones passed as ok |
+| --- | --- | --- | --- | --- | --- | --- |
+| The clips as they are (no lead-in) | 111 of 192 | 1 of 64 | 9 of 192 | 201 of 576 | 0 of 168 | 58 of 576 |
+| Half a second of plain silence before and after | 111 of 192 | 1 of 64 | 9 of 192 | 201 of 576 | 0 of 168 | 58 of 576 |
+| Room noise at −50 dB before, under and after | 111 of 192 | 1 of 64 | 9 of 192 | 201 of 576 | 0 of 168 | 58 of 576 |
+| …and a 40 ms pitched blip at −20 dB, 300 ms before the speech | 111 of 192 | 1 of 64 | 9 of 192 | 176 of 576 | 0 of 168 | 50 of 576 |
+| …and a pitched knock at −10 dB, 450 ms before the speech | 111 of 192 | 1 of 64 | 9 of 192 | 177 of 576 | 0 of 168 | 53 of 576 |
+| …and a pitched knock at −10 dB, 300 ms after the speech | 111 of 192 | 1 of 64 | 9 of 192 | 184 of 576 | 0 of 168 | 50 of 576 |
+| …and a voiced 120 ms murmur at −27 dB, 300 ms before the speech | 111 of 192 | 1 of 64 | 10 of 192 | 205 of 576 | 0 of 168 | 58 of 576 |
+
+| Generated three-syllable phrases, in room noise | Wrong tones caught | False alarms | Wrong tones passed as ok | Right syllables ok |
+| --- | --- | --- | --- | --- |
+| Three syllables 70 ms apart, all alike | 297 of 324 | 0 of 108 | 0 of 324 | 108 of 108 |
+| A 300 ms pause, then a 70 ms last syllable | 144 of 324 | 0 of 108 | 0 of 324 | 60 of 108 |
+| The last syllable 27 dB under the others | 179 of 324 | 0 of 108 | 0 of 324 | 60 of 108 |
+
+Levels are dB against the clip's loudest 10 ms; every added sound is a buzz at 220 Hz. The generated phrases (three voices, twelve tone patterns each, every syllable also relabelled with each other tone) are the cases the cached clips can't express: a last syllable short enough, far enough or soft enough that a trim could take it for noise. When the scorer can't tell whether a run is speech, it reads the recording both ways and keeps only the verdicts that come out the same; the rest are "unsure" (reason "trimmed"), which is what the last two rows cost.
+
 ## Real recordings
 
 Everything above is synthesized speech. Real recordings are the next step: `npm run pron:record` collects them and `npm run pron:proof` scores them, per speaker, into `data/pronunciation-proof/recordings/report.md` and the terminal. That folder is gitignored and its results are deliberately left out of this report.
@@ -291,15 +313,15 @@ The times are not syllable boundaries. The median character span is 140 ms and 1
 
 ## Speed
 
-Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 23 ms (median of 12; slowest 23 ms). Nearly all of it is the pitch track.
+Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 37 ms (median of 12; slowest 40 ms). Nearly all of it is the pitch track.
 
 ## Settings this ran with
 
-`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseStart":2.5,"lateFrom":2,"scaleRange":true,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85}`; cuts made by energy are trusted at 0.85. Before anything is cut or measured the recording is trimmed to its speech (`TRIM_RULES` = `{"runMs":80,"floorDb":-26,"nearMs":200,"sureDb":-12,"beforeMs":250,"afterMs":120,"loudShare":0.15,"bridgeMs":100}`). On these 124 clips it removes a voiced frame from 0, and in 4 of Adam's it silences unvoiced frames within 22 dB of the loudest voiced frame (the breathy end of a last syllable, past the 120 ms kept after the voicing). It is for real recordings, which have seconds of room and key noise around the speech.
+`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseStart":2.5,"lateFrom":2,"scaleRange":true,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85}`; cuts made by energy are trusted at 0.85. Before anything is cut or measured the recording is trimmed to its speech (`TRIM_RULES` = `{"runMs":80,"sureDb":-12,"floorDb":-26,"nearMs":200,"beforeMs":250,"afterMs":120,"loudShare":0.15,"bridgeMs":100}`). On these 124 clips it removes a voiced frame from 0, and in 4 of Adam's it silences unvoiced frames within 22 dB of the loudest voiced frame (the breathy end of a last syllable, past the 120 ms kept after the voicing). It is for real recordings, which have seconds of room and key noise around the speech.
 
 
 
-**What these clips cannot measure.** Every number in `TRIM_RULES`, and the half weight a creaky syllable's "ok" carries, was set on 43 real recordings from one speaker, one microphone, one room. Synthesized clips have no lead-in, no room and almost no creak, so nothing above tests those numbers, held out or not. What keeps a badly placed bar from costing a wrong flag is in the code and in `npm test` (a short syllable after a long pause, a soft one either side of the floor, a loud knock): a run as loud as the speech is always kept; when the trim removed something long enough to be a syllable, or left fewer voiced stretches than syllables, the untrimmed track is scored; and whenever the bars disagreed about a run, nothing in that recording is flagged ("unsure", reason "trimmed").
+**What these clips cannot measure.** Every number in `TRIM_RULES`, and the half weight a creaky syllable's "ok" carries, was set on 43 real recordings from one speaker, one microphone, one room; none of them is held out, and synthesized voices barely creak. What is measured instead is what the trim does when it is wrong: "With lead-in noise" above, and its small copy in `npm test`.
 
 
 

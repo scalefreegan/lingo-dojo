@@ -553,30 +553,30 @@ export function speakerRange(tracks) {
  *  EVERY number here comes from 43 real clips of ONE speaker, one
  *  microphone, one room (docs/VOICE.md §Pronunciation): the noises seen
  *  there were 30–50 ms long, 16–25 dB under the speech and 260 ms or more
- *  away from it. The synthesized proof cannot measure any of them (its
- *  clips have no lead-in, no tail and no room), so none is "held out", and
- *  another voice or room will sit differently against each bar. Two things
- *  keep a wrongly placed bar from costing a wrong verdict: `sureDb` (sound
- *  as loud as the speech is kept, whatever the other bars say), and the
- *  scorer's own doubt (speechOf): when a removed run was long enough to be
- *  a syllable, or fewer voiced stretches are left than there are syllables,
- *  it scores the untrimmed track; and whenever the bars disagreed about a
- *  run, nothing in the recording is "off", only "unsure". */
+ *  away from it. None is "held out", and another voice or room will sit
+ *  differently against each bar. What stands in for that is measured: the
+ *  proof's "With lead-in noise" section and its small copy in `npm test`
+ *  put blips, knocks and murmurs around clean clips and count what
+ *  changes.
+ *
+ *  The rule the trim is held to: it may make the scorer more cautious,
+ *  never less. Where it can't tell whether a run is speech, the scorer
+ *  reads the recording both ways and keeps only the verdicts that agree
+ *  (speechOf, scoreTones). */
 export const TRIM_RULES = Object.freeze({
-  // A voiced run this long is speech wherever it is, if it is loud enough.
+  // A voiced run this long and within `sureDb` of the loudest voiced
+  // frame is speech wherever it is.
   runMs: 80,
-  // …"loud enough": within this many dB of the loudest voiced frame. A
-  // neutral tone at the end of a phrase is soft, but not this soft.
-  floorDb: -26,
-  // A shorter voiced run is speech when it is that loud and this close to
-  // speech: the pieces of a creaky vowel, a syllable cut short.
-  nearMs: 200,
-  // A voiced run within this many dB of the loudest voiced frame is kept
-  // at any length and any distance: a short last syllable after a
-  // beginner's pause, the pieces of a creaky one. The noises were 16 dB
-  // under or more. Kept, but not known to be speech (a loud pitched knock
-  // looks the same): the scorer flags nothing in such a recording.
   sureDb: -12,
+  // A run of any length is speech when it is within `floorDb` of the
+  // loudest voiced frame and within `nearMs` of speech: a soft neutral
+  // tone at the end of a phrase, the pieces of a creaky vowel, a syllable
+  // cut short.
+  floorDb: -26,
+  nearMs: 200,
+  // What is further away than that and over the floor could still be a
+  // syllable (a short last one after a beginner's pause, one said softly)
+  // or a knock, a blip, a murmur. It is doubted, not kept: see speechOf.
   // Kept around the speech: room for an unvoiced consonant before the
   // first vowel (sh, q, a long aspirated stop) and for the end of the last.
   beforeMs: 250,
@@ -588,32 +588,18 @@ export const TRIM_RULES = Object.freeze({
   bridgeMs: 100,
 });
 
-/**
- * A pitch track with everything that isn't the speech silenced: the
- * seconds before and after it in a push-to-talk recording, and what lives
- * there (a key press, a breath, a short pitched blip of room noise). The
- * scorer used to take all of it as speech: one blip a second after a lone
- * syllable stretched its "voiced span" until the syllable read as creaky,
- * and in a phrase the cuts were spread over the silence, so pieces landed
- * in it and neighbours were merged.
- *
- * Speech is the voiced runs that are long and loud enough, plus short loud
- * ones near them (TRIM_RULES); the track is kept from a little before the
- * first to a little after the last, and inside that stretch nothing is
- * touched except stray voiced runs, which become unvoiced. Returns a new
- * track (the same arrays when there is nothing to trim); a track with no
- * speech in it is returned as it is. A trimmed track says what was done to
- * it in `trim`: the frames kept (`from`, `to`), the voiced runs removed
- * (`dropped`, frames), and `doubt` when a run was kept on its loudness
- * alone (`sureDb`), so a caller can doubt it (speechOf).
- */
-export function trimToSpeech(track, rules = TRIM_RULES) {
+/** The voiced runs of a track (frames `from`…`to`), each with what the
+ *  bars say of it: `keep`, speech by the bars alone (long and within
+ *  sureDb, or within floorDb and near such a run), and `maybe`, not kept
+ *  but over the floor: possibly a syllable.
+ *  `peak` is the loudest voiced frame. */
+function speechRuns(track, rules) {
   const { f0, rms, hopMs } = track;
   const n = f0.length;
   let peak = 0;
   for (let i = 0; i < n; i++) if (f0[i] > 0 && rms[i] > peak) peak = rms[i];
   const floor = peak * 10 ** (rules.floorDb / 20);
-  const sure = peak * 10 ** ((rules.sureDb ?? 0) / 20);
+  const sure = peak * 10 ** (rules.sureDb / 20);
   const minRun = Math.round(rules.runMs / hopMs);
   const near = Math.round(rules.nearMs / hopMs);
   const runs = [];
@@ -625,50 +611,37 @@ export function trimToSpeech(track, rules = TRIM_RULES) {
     let j = i;
     let top = 0;
     for (; j < n && f0[j] > 0; j++) if (rms[j] > top) top = rms[j];
-    runs.push({ from: i, to: j, loud: top >= floor, sure: top >= sure, keep: j - i >= minRun && top >= floor });
+    runs.push({ from: i, to: j, top, loud: top >= floor, keep: j - i >= minRun && top >= sure });
     i = j;
   }
+  // No run long enough at all (a clipped syllable, a vowel the tracker
+  // broke into pieces): the loudest run is the speech.
+  if (runs.length && !runs.some((r) => r.keep)) runs.reduce((x, y) => (y.top > x.top ? y : x)).keep = true;
   // Short loud runs join the speech they are near, and then count as
   // speech for the next one along.
-  const join = () => {
-    for (let changed = true; changed; ) {
-      changed = false;
-      for (const r of runs) {
-        if (r.keep || !r.loud) continue;
-        if (runs.some((k) => k.keep && r.from - k.to <= near && k.from - r.to <= near)) {
-          r.keep = true;
-          changed = true;
-        }
-      }
-    }
-  };
-  // No run long enough at all (a clipped syllable, a vowel the tracker
-  // broke into pieces): the loudest run is the speech, and what is near
-  // it joins it.
-  if (!runs.some((r) => r.keep) && runs.length) {
-    let loudest = runs[0];
-    let most = 0;
+  for (let changed = true; changed; ) {
+    changed = false;
     for (const r of runs) {
-      let top = 0;
-      for (let i = r.from; i < r.to; i++) if (rms[i] > top) top = rms[i];
-      if (top > most) {
-        most = top;
-        loudest = r;
+      if (r.keep || !r.loud) continue;
+      if (runs.some((k) => k.keep && r.from - k.to <= near && k.from - r.to <= near)) {
+        r.keep = true;
+        changed = true;
       }
     }
-    loudest.keep = true;
   }
-  join();
-  // What is still out but as loud as the speech stays in after all, and
-  // the trim says it wasn't sure.
-  let doubt = false;
-  for (const r of runs) {
-    if (r.keep || !r.sure) continue;
-    r.keep = true;
-    doubt = true;
-  }
-  if (doubt) join();
-  const kept = runs.filter((r) => r.keep);
+  for (const r of runs) r.maybe = !r.keep && r.loud;
+  return { runs, peak };
+}
+
+/** `track` with only the runs `isSpeech` picks left voiced, and silence
+ *  outside the stretch they span (a little kept before and after, and
+ *  further while the sound stays loud). The same track when that changes
+ *  nothing; otherwise a new one that says what was done in `trim`: the
+ *  frames kept (`from`, `to`) and the voiced runs removed (`dropped`). */
+function cutToRuns(track, { runs, peak }, isSpeech, rules) {
+  const { f0, rms, hopMs } = track;
+  const n = f0.length;
+  const kept = runs.filter(isSpeech);
   if (!kept.length) return track;
   let lo = Math.max(0, kept[0].from - Math.round(rules.beforeMs / hopMs));
   let hi = Math.min(n, kept[kept.length - 1].to + Math.round(rules.afterMs / hopMs));
@@ -677,37 +650,75 @@ export function trimToSpeech(track, rules = TRIM_RULES) {
   const loud = (i) => rms[i] >= peak * rules.loudShare;
   for (let i = lo - 1; i >= 0 && lo - i <= bridge; i--) if (loud(i)) lo = i;
   for (let i = hi; i < n && i - hi < bridge; i++) if (loud(i)) hi = i + 1;
-  if (kept.length === runs.length && lo === 0 && hi === n && !doubt) return track;
+  if (kept.length === runs.length && lo === 0 && hi === n) return track;
   const outF0 = Float32Array.from(f0);
   const outRms = Float32Array.from(rms);
-  for (const r of runs) if (!r.keep) outF0.fill(0, r.from, r.to);
+  for (const r of runs) if (!isSpeech(r)) outF0.fill(0, r.from, r.to);
   outF0.fill(0, 0, lo);
   outRms.fill(0, 0, lo);
   outF0.fill(0, hi);
   outRms.fill(0, hi);
-  return { ...track, f0: outF0, rms: outRms, trim: { from: lo, to: hi, doubt, dropped: runs.filter((r) => !r.keep).map((r) => ({ from: r.from, to: r.to })) } };
+  return { ...track, f0: outF0, rms: outRms, trim: { from: lo, to: hi, dropped: runs.filter((r) => !isSpeech(r)).map((r) => ({ from: r.from, to: r.to })) } };
 }
 
 /**
- * The track the scorer reads for `count` syllables, and whether a flag
- * may rest on it: `{ track, doubt }`. Trimming is there to take noise
- * away; it must never take a syllable away, because the segmenter would
- * then cut what is left into as many pieces as there are syllables and a
- * correctly said phrase would come back "off". So the untrimmed track is
- * used when the trim removed a voiced run long enough to be speech
- * (`runMs`: removed for being soft, and a syllable can be said softly), or
- * left fewer voiced stretches than there are syllables to find; and `doubt` is true then, and when the trim
- * kept a run on its loudness alone. Under doubt nothing is "off".
+ * A pitch track with everything that isn't the speech silenced: the
+ * seconds before and after it in a push-to-talk recording, and what lives
+ * there (a key press, a breath, a short pitched blip of room noise). The
+ * scorer used to take all of it as speech: one blip a second after a lone
+ * syllable stretched its "voiced span" until the syllable read as creaky,
+ * and in a phrase the cuts were spread over the silence, so pieces landed
+ * in it and neighbours were merged.
+ *
+ * Speech is the voiced runs that are long and loud, plus the ones near
+ * them that are not much softer (TRIM_RULES); the track is kept from a little before the
+ * first to a little after the last, and inside that stretch nothing is
+ * touched except stray voiced runs, which become unvoiced. Returns a new
+ * track (the same arrays when there is nothing to trim); a track with no
+ * speech in it is returned as it is. A trimmed track says what was done to
+ * it in `trim`: the frames kept (`from`, `to`) and the voiced runs removed
+ * (`dropped`, frames).
+ */
+export function trimToSpeech(track, rules = TRIM_RULES) {
+  return cutToRuns(track, speechRuns(track, rules), (r) => r.keep, rules);
+}
+
+/**
+ * The track the scorer reads for `count` syllables, and a second reading
+ * of it when the trim can't be sure: `{ track, alt }`. `track` is the trim
+ * by the bars. `alt` (or null) is the same with the doubted runs left in:
+ * runs the bars removed that may be speech after all,
+ *   - any removed run inside the speech or within `nearMs` of it (removed
+ *     for being soft: the soft end of a syllable, a last one said under
+ *     the floor), and
+ *   - a run far from the speech and over the floor, when the bars found
+ *     fewer voiced runs than there are syllables: a short last syllable
+ *     after a beginner's pause looks just like a knock or a blip, and only
+ *     a missing syllable is a reason to think it was one.
+ * Neither reading is believed over the other. The scorer scores both and
+ * a verdict stands only where they agree, so a doubted run that is noise
+ * costs verdicts (unsure) and can never add an "ok" or an "off" that the
+ * clean reading didn't have; and one that was a syllable can't be erased
+ * into a wrong verdict by its absence. A far run under the floor is noise
+ * without a second thought. What this leaves open: a far run that was a
+ * syllable is dropped unread when the bars found as many voiced runs as
+ * syllables without it (a creaky voice breaks one syllable into several),
+ * and words run together into fewer voiced runs than syllables are read
+ * twice at every stray sound, which costs verdicts (the proof's "With
+ * lead-in noise" has the numbers).
  */
 function speechOf(raw, count, rules = TRIM_RULES) {
-  const trimmed = trimToSpeech(raw, rules);
-  const dropped = trimmed.trim?.dropped ?? [];
-  if (!dropped.length) return { track: trimmed, doubt: Boolean(trimmed.trim?.doubt) };
-  const long = Math.round(rules.runMs / raw.hopMs);
-  if (dropped.some((r) => r.to - r.from >= long)) return { track: raw, doubt: true };
-  let islands = 0;
-  for (let i = 0; i < trimmed.f0.length; i++) if (trimmed.f0[i] > 0 && !(i > 0 && trimmed.f0[i - 1] > 0)) islands++;
-  return islands < count ? { track: raw, doubt: true } : { track: trimmed, doubt: trimmed.trim.doubt };
+  const found = speechRuns(raw, rules);
+  const kept = found.runs.filter((r) => r.keep);
+  if (!kept.length) return { track: raw, alt: null };
+  const near = Math.round(rules.nearMs / raw.hopMs);
+  const first = kept[0].from;
+  const last = kept[kept.length - 1].to;
+  const doubted = new Set(found.runs.filter((r) => !r.keep && ((r.to + near >= first && r.from - near <= last) || (r.maybe && kept.length < count))));
+  return {
+    track: cutToRuns(raw, found, (r) => r.keep, rules),
+    alt: doubted.size ? cutToRuns(raw, found, (r) => r.keep || doubted.has(r), rules) : null,
+  };
 }
 
 /* ------------------------------- segmentation ------------------------------ */
@@ -976,7 +987,7 @@ function contourOf(track, startMs, endMs) {
       last = i;
     }
   }
-  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, periodicity: 0 };
+  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, mended: 0, periodicity: 0 };
   let peak = 0;
   for (let i = a; i < b; i++) if (rms[i] > peak) peak = rms[i];
   const points = [];
@@ -995,6 +1006,8 @@ function contourOf(track, startMs, endMs) {
   // trackPitch only mends slips of 80 ms or less, and not at the edge of a
   // run or far from the run's longest piece.
   let jumps = 0;
+  // Glitches taken out of the middle of the contour (not its edges).
+  let mended = 0;
   if (track.zcr) for (let i = a; i < first; i++) if (rms[i] > peak * 0.15 && track.zcr[i] < CREAK_MAX_ZCR) lead++;
   for (let i = first; i <= last; i++) {
     if (f0[i] > 0) {
@@ -1026,15 +1039,28 @@ function contourOf(track, startMs, endMs) {
       else pieces[pieces.length - 1].push(p);
     }
     const kept = pieces.filter((piece) => piece.length > GLITCH_FRAMES);
-    if (kept.length && kept.length < pieces.length) {
-      points.length = 0;
-      points.push(...kept.flat());
-      per = 0;
-      for (const p of points) per += periodicity[p.i];
+    // No piece longer than a glitch, or a third of the contour and more
+    // in glitches: the track flips every few frames (period doubling in
+    // creak) and what is left is too little to read through. The count
+    // stands.
+    const stay = kept.reduce((sum, piece) => sum + piece.length, 0);
+    if (kept.length && (points.length - stay) * 2 <= stay) {
+      if (kept.length < pieces.length) {
+        points.length = 0;
+        points.push(...kept.flat());
+        per = 0;
+        for (const p of points) per += periodicity[p.i];
+      }
+      // What counts is a jump between pieces that stay: with a glitch in
+      // the middle of a vowel taken out, the vowel carries on where it was.
+      jumps = 0;
+      for (let k = 1; k < kept.length; k++) if (Math.abs(kept[k][0].st - kept[k - 1][kept[k - 1].length - 1].st) >= JUMP_ST) jumps++;
+      const firstKept = pieces.indexOf(kept[0]);
+      const lastKept = pieces.indexOf(kept[kept.length - 1]);
+      for (let k = firstKept + 1; k < lastKept; k++) if (pieces[k].length <= GLITCH_FRAMES) mended++;
     }
-    jumps = Math.max(0, kept.length - 1);
   }
-  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, periodicity: per / points.length };
+  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, mended, periodicity: per / points.length };
 }
 
 /** Five evenly spaced medians over the voiced points, the onset trimmed:
@@ -1147,9 +1173,9 @@ const round3 = (v) => Math.round(v * 1000) / 1000;
  * every accepted tone, on a clean measurement: ruleMargins) or "unsure"
  * with a `reason`: "short", "unvoiced", "creaky", "neutral" (expected
  * neutral: not judged in v1), "untimed", "octave" (the pitch track jumps an
- * octave inside the syllable and stays there), "trimmed" (the contour
- * rules the tone out, but the trim to the speech wasn't sure what was
- * speech in this recording, and a flag never rests on that), "unclear" (nothing fits
+ * octave inside the syllable and stays there), "trimmed" (the trim to the
+ * speech wasn't sure whether some run was speech, and the two ways of
+ * reading the recording gave this syllable different verdicts), "unclear" (nothing fits
  * clearly). A creaky syllable can be "ok" when its voiced part fits, never
  * "off"; it carries `creaky: true`, and its ok is left out of `overall`.
  * `confidence` is 0…1: how firmly the verdict stands, times how clean the
@@ -1172,14 +1198,32 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
   if (n > LOCAL_MAX_SYLLABLES) throw new Error(`the local scorer takes at most ${LOCAL_MAX_SYLLABLES} syllables, got ${n}`);
   // Only the speech: the lead-in, the tail and the noises in them are
   // silenced before anything is cut or measured.
-  const { track: tr, doubt: trimDoubt } = speechOf(track ?? trackPitch(samples, sampleRate), n);
+  const speech = speechOf(track ?? trackPitch(samples, sampleRate), n);
+  const read = readTones({ tr: speech.track, syllables, timings, anchors, speaker, rules });
+  let out = read.syllables;
+  if (speech.alt) {
+    // The trim doubted a run: the recording is read with it too, and a
+    // verdict stands only where both readings give it. The trim can cost
+    // a verdict this way; it can never make one.
+    const other = readTones({ tr: speech.alt, syllables, timings, anchors, speaker, rules }).syllables;
+    out = out.map((s, i) => (s.verdict === other[i].verdict ? s : { ...s, verdict: "unsure", confidence: 0, reason: "trimmed" }));
+  }
+  // A creaky ok is half a measurement: it is shown, not counted.
+  const judged = out.filter((s) => s.verdict !== "unsure" && !(s.creaky && s.verdict === "ok"));
+  return {
+    provider: "local",
+    syllables: out,
+    ...(judged.length ? { overall: Math.round((100 * judged.filter((s) => s.verdict === "ok").length) / judged.length) } : {}),
+    speaker: read.own,
+    timed: read.timed,
+  };
+}
+
+/** One reading of a recording: every syllable's verdict on the track
+ *  `tr`, which scoreTones has already trimmed to the speech. */
+function readTones({ tr, syllables, timings, anchors, speaker, rules }) {
+  const n = syllables.length;
   const own = speakerRange(tr);
-  // Voiced runs the trim took out as noise (frames). A syllable whose
-  // voiced part is within `nearMs` of one is never "off": such a run was
-  // removed for being soft, and if it was the soft end of that syllable,
-  // the contour was read without part of itself.
-  const reach = Math.round(TRIM_RULES.nearMs / tr.hopMs);
-  const removed = tr.trim?.dropped ?? [];
 
   // Timings: all given, or all cut here. A mix (some characters untimed)
   // keeps the given ones and leaves the rest unjudged rather than guessing
@@ -1259,7 +1303,10 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     // five points are partly the tracker's mistake, and nothing is read
     // off them. Before the creak rule below: a slipped stretch reads low,
     // which is just what that rule takes for a third tone.
-    if (c.jumps) return { ...result, reason: "octave" };
+    // The same when a glitch was taken out of the middle of a vowel that
+    // is creaky as well: two signs at once that the tracker lost the
+    // voice there, and too little left to say "ok" on.
+    if (c.jumps || (c.mended && creaky)) return { ...result, reason: "octave" };
     // Creak in the middle of a vowel is what the bottom of a third tone
     // sounds like, so it supports an expected third tone (unless the voiced
     // part rules a third tone out).
@@ -1276,21 +1323,12 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     // Off only when the contour rules out every tone that would be right,
     // by a clear margin, on a clean and long enough measurement.
     if (margin >= rules.offMarginSt + (n > 1 ? rules.phraseMarginSt : 0) && quality >= rules.offQuality && c.voicedMs >= rules.offMinMs) {
-      if (trimDoubt || removed.some((r) => r.from - reach <= c.points[c.points.length - 1].i && r.to + reach > c.points[0].i)) return { ...result, reason: "trimmed" };
       return { ...result, verdict: "off", confidence: round3(quality * trust * Math.min(1, 0.6 + 0.1 * margin)) };
     }
     return { ...result, reason: creaky ? "creaky" : "unclear" };
   });
 
-  // A creaky ok is half a measurement: it is shown, not counted.
-  const judged = out.filter((s) => s.verdict !== "unsure" && !(s.creaky && s.verdict === "ok"));
-  return {
-    provider: "local",
-    syllables: out,
-    ...(judged.length ? { overall: Math.round((100 * judged.filter((s) => s.verdict === "ok").length) / judged.length) } : {}),
-    speaker: own,
-    timed: given ? "given" : anchored ? "anchored" : "fallback",
-  };
+  return { syllables: out, own, timed: given ? "given" : anchored ? "anchored" : "fallback" };
 }
 
 /**

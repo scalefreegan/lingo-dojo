@@ -9,6 +9,7 @@
 //   node scripts/pronunciation-proof.mjs --scribe     first buy Scribe timings for the phrases (PAID)
 //   node scripts/pronunciation-proof.mjs --azure      first send the clips to Azure pronunciation assessment (PAID / free-tier quota)
 //   node scripts/pronunciation-proof.mjs --quick      skip the held-out threshold search (the slow part)
+//   node scripts/pronunciation-proof.mjs --noise      print the "With lead-in noise" tables and stop (writes nothing)
 //   node scripts/pronunciation-proof.mjs --fixtures   also rewrite the pitch-track fixtures the tests replay
 //   node scripts/pronunciation-proof.mjs --dump       also print every syllable's verdict
 //
@@ -45,6 +46,7 @@ import {
 } from "./pronunciation.mjs";
 import { PHRASES, SINGLES, buildPrompts, findSpeaker, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
 import { trackedByGit } from "./pronunciation-record.mjs";
+import { GENERATED_PHRASES, GENERATED_VOICES, LAST_SYLLABLE_CASES, NOISE_CONDITIONS, RATE as SYNTH_RATE, emptyTally, speak, surround, tallyLabellings } from "./pronunciation-synth.mjs";
 import { DEFAULT_ELEVEN_MODEL, elevenLibrary, elevenLibraryRequest, elevenSpeechRequest,elevenVoices, elevenVoicesRequest, voiceKeys } from "./voice.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -475,6 +477,55 @@ const conditions = [
 ];
 const haveScribe = voices.some((v) => [...v.clips.values()].some((c) => c.scribe));
 const results = conditions.filter((c) => c.timings === "fallback" || haveScribe).map((c) => ({ ...c, tally: scoreAll(voices, c.texts, c) }));
+
+// With lead-in noise: the same clips with what a push-to-talk recording
+// has around the speech (NOISE_CONDITIONS), scored as "speaker's range
+// known, cuts by energy" above. The range stays the one from the clean
+// clips: the surroundings are what is being tested, not the range.
+const noiseRows = NOISE_CONDITIONS.map((cond) => {
+  const noisy = voices.map((v) => ({
+    ...v,
+    clips: new Map([...v.clips].map(([text, clip], k) => {
+      if (cond.key === "clean") return [text, clip];
+      const samples = surround(clip.samples, clip.sampleRate, cond, 12345 + k);
+      return [text, { ...clip, samples, track: trackPitch(samples, clip.sampleRate), scribe: null }];
+    })),
+  }));
+  return { cond, single: scoreAll(noisy, SINGLES, { baseline: true, timings: "fallback" }), phrase: scoreAll(noisy, PHRASES, { baseline: true, timings: "fallback" }) };
+});
+// And what the cached clips can't express: a last syllable the trim could
+// take for noise, generated (pronunciation-synth.mjs), in room noise.
+const room = NOISE_CONDITIONS.find((c) => c.key === "room");
+const lastRows = LAST_SYLLABLE_CASES.map((kase) => {
+  const t = emptyTally();
+  for (const voice of GENERATED_VOICES) {
+    for (const [k, tones] of GENERATED_PHRASES.entries()) {
+      const said = speak(tones, { ...voice, ...kase.options, seed: 11 + k });
+      const samples = surround(said.samples, SYNTH_RATE, room, 500 + k);
+      const track = trackPitch(samples, SYNTH_RATE);
+      tallyLabellings(t, tones, (syllables) => scoreTones({ samples, sampleRate: SYNTH_RATE, syllables, speaker: said.range, track, rules: RULES }));
+    }
+  }
+  return { kase, t };
+});
+const noiseTable = () => {
+  const n = (c) => c.ok + c.unsure + c.off;
+  const cells = (t) => `${t.wrong.off} of ${n(t.wrong)} | ${t.right.off} of ${n(t.right)} | ${t.wrong.ok} of ${n(t.wrong)}`;
+  return [
+    "| | Singles: wrong tones caught | Singles: false alarms | Singles: wrong tones passed as ok | Phrases: wrong tones caught | Phrases: false alarms | Phrases: wrong tones passed as ok |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    ...noiseRows.map((r) => `| ${r.cond.title} | ${cells(r.single)} | ${cells(r.phrase)} |`),
+    "",
+    "| Generated three-syllable phrases, in room noise | Wrong tones caught | False alarms | Wrong tones passed as ok | Right syllables ok |",
+    "| --- | --- | --- | --- | --- |",
+    ...lastRows.map((r) => `| ${r.kase.title} | ${cells(r.t)} | ${r.t.right.ok} of ${n(r.t.right)} |`),
+  ];
+};
+if (args.has("--noise")) {
+  console.log(noiseTable().join("\n"));
+  for (const r of noiseRows) for (const kind of ["single", "phrase"]) if (r[kind].falseAlarms.length) console.log(r.cond.key, kind, "false alarms:", r[kind].falseAlarms.join("; "));
+  process.exit(0);
+}
 const perVoice = voices.map((v) => ({ name: v.name, range: v.range, single: summary(scoreAll([v], SINGLES, { baseline: true, timings: "fallback" })), phrase: summary(scoreAll([v], PHRASES, { baseline: true, timings: "fallback" })) }));
 
 // Pitch tracks of a few clips, for the tests to replay without the audio:
@@ -625,7 +676,14 @@ if (recordingsTracked) {
   const problems = [...parsed.problems];
   // One person per name whatever its capitals, as the recorder has it:
   // one range, one line in the tables.
-  const people = parsed.rows.map((r) => ({ ...r, speaker: findSpeaker(parsed.rows, r.speaker).name }));
+  // A name given two groups is a conflict to report, not one to settle
+  // here: those lines are left out, and said so.
+  const people = [];
+  for (const r of parsed.rows) {
+    const who = findSpeaker(parsed.rows, r.speaker);
+    if (r.group && who.group && r.group !== who.group) problems.push(`${r.file}: speaker "${r.speaker}" is ${r.group} here and "${who.name}" is ${who.group} in an earlier line (one name, two groups: fix labels.tsv)`);
+    else people.push({ ...r, speaker: who.name });
+  }
   for (const label of people) {
     const { file, text } = label;
     try {
@@ -1037,6 +1095,10 @@ p("The same clips (all four voices, range known) at several values of `offMargin
     lineOf("default, and creaky syllables flagged too (`creakFlags`)", counts(voices, { ...RULES, creakFlags: true }))].join("\n"));
   p("`creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.");
 }
+p("## With lead-in noise");
+p("The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a murmur before or after the words, and the scorer first has to decide what the speech is (`trimToSpeech`). This section puts those surroundings around every cached clip and scores them again, speaker's range known and cuts by energy as in the in-sample table (its numbers are the first row). The measure of the trim is that the rows stay close to the first one: a disturbance may cost catches (more \"unsure\"), it must not add false alarms or wrong tones passed as ok. The same disturbances, on generated audio, are in `npm test`.");
+p(noiseTable().join("\n"));
+p("Levels are dB against the clip's loudest 10 ms; every added sound is a buzz at 220 Hz. The generated phrases (three voices, twelve tone patterns each, every syllable also relabelled with each other tone) are the cases the cached clips can't express: a last syllable short enough, far enough or soft enough that a trim could take it for noise. When the scorer can't tell whether a run is speech, it reads the recording both ways and keeps only the verdicts that come out the same; the rest are \"unsure\" (reason \"trimmed\"), which is what the last two rows cost.");
 p("## Real recordings");
 // Nothing of a person's recordings goes into this tracked file: not a
 // name, not a count, not a result.
@@ -1063,7 +1125,7 @@ p(`Scoring a 3-second, 16 kHz recording on this machine (${process.arch}, Node $
 p("## Settings this ran with");
 p(`\`TONE_RULES\` = \`${JSON.stringify(RULES)}\`${process.env.LINGO_PROOF_RULES ? " (overridden by LINGO_PROOF_RULES: not the engine's defaults)" : ""}; cuts made by energy are trusted at ${FALLBACK_TRUST}. Before anything is cut or measured the recording is trimmed to its speech (\`TRIM_RULES\` = \`${JSON.stringify(TRIM_RULES)}\`). ${trimNote}`);
 p("");
-p(`**What these clips cannot measure.** Every number in \`TRIM_RULES\`, and the half weight a creaky syllable's "ok" carries, was set on 43 real recordings from one speaker, one microphone, one room. Synthesized clips have no lead-in, no room and almost no creak, so nothing above tests those numbers, held out or not. What keeps a badly placed bar from costing a wrong flag is in the code and in \`npm test\` (a short syllable after a long pause, a soft one either side of the floor, a loud knock): a run as loud as the speech is always kept; when the trim removed something long enough to be a syllable, or left fewer voiced stretches than syllables, the untrimmed track is scored; and whenever the bars disagreed about a run, nothing in that recording is flagged ("unsure", reason "trimmed").`);
+p(`**What these clips cannot measure.** Every number in \`TRIM_RULES\`, and the half weight a creaky syllable's "ok" carries, was set on 43 real recordings from one speaker, one microphone, one room; none of them is held out, and synthesized voices barely creak. What is measured instead is what the trim does when it is wrong: "With lead-in noise" above, and its small copy in \`npm test\`.`);
 p("");
 p(`**Creaky syllables.** A creaky syllable may be "ok" when its voiced part fits (it is never "off"), is marked \`creaky\`, and is left out of \`overall\`. That rule let more wrong tones pass as ok when it was introduced: phrases on Scribe's cuts went from 52 to 58 of 576, single syllables with nothing known about the speaker from 24 to 25 of 192 (the commit before against the commit with it, same clips). In this run: ${creakNote}.`);
 p("## Before wiring this to a route");

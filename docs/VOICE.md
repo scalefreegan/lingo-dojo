@@ -628,23 +628,31 @@ browser already sends, with no dependency:
    words, with key presses and short pitched blips in it; taken as speech
    they made a lone syllable read as creaky (one blip stretches its voiced
    span) and spread a phrase's cuts into the silence. Speech is the voiced
-   runs of 80 ms or more within 26 dB of the loudest voiced frame, plus
-   shorter ones that loud within 200 ms of those; 250 ms is kept before
-   the first and 120 ms after the last, and further for as long as the
-   sound stays loud (a creaky last syllable). Every number in `TRIM_RULES`
-   was chosen on 43 real clips from ONE speaker (as was the half weight of
-   a creaky `ok`), and the synthesized proof cannot measure any of them:
-   its clips have no lead-in, no room and almost no creak. So the trim is
-   never trusted with a flag. A voiced run within 12 dB of the loudest is
-   kept at any length and distance (a short last syllable after a
-   beginner's pause; `sureDb`). The scorer goes back to the untrimmed
-   track when the trim removed a run long enough to be a syllable (soft,
-   but 80 ms) or left fewer voiced stretches than there are syllables.
-   And when the bars disagreed about a run (kept on loudness alone, or
-   either fallback), or a run was removed within 200 ms of a syllable's
-   voiced part, a contour that rules the tone out is `unsure`, reason
-   `trimmed`, never `off`. The edges (a pause just over 200 ms, a run
-   just under 80 ms, a syllable just under the floor) are in `npm test`.
+   runs of 80 ms or more within 12 dB of the loudest voiced frame, plus
+   any run within 26 dB that is within 200 ms of speech; 250 ms is kept
+   before the first and 120 ms after the last, and further for as long as
+   the sound stays loud (a creaky last syllable). Every number in
+   `TRIM_RULES` was chosen on 43 real clips from ONE speaker (as was the
+   half weight of a creaky `ok`); none is held out.
+
+   The rule the trim is held to: it may make the scorer more cautious,
+   never less. Some runs it can't place: one the bars removed inside the
+   speech or within 200 ms of it (a soft last syllable, under the floor),
+   and, when the bars found fewer voiced runs than there are syllables,
+   any run over the floor further away (a short last syllable after a
+   beginner's pause looks just like a knock). `scoreTones` then reads the
+   recording twice, without those runs and with them, and a verdict
+   stands only where both readings give it; the rest is `unsure`, reason
+   `trimmed`. A doubted run that was noise therefore costs verdicts and
+   can't add an `ok` or an `off` the clean reading didn't have, and one
+   that was a syllable can't be erased into a wrong verdict. What this
+   costs is measured: the proof's "With lead-in noise" puts blips, knocks
+   and a murmur around every cached clip (single syllables are unchanged;
+   phrases whose words run together lose verdicts at a stray sound), and
+   `npm test` runs the same disturbances on generated audio
+   (`scripts/pronunciation-synth.mjs`). Left open: a far run that was a
+   syllable is dropped unread when the bars found as many voiced runs as
+   syllables without it.
 3. Cuts: per-syllable `timings` when the caller has extents it can trust
    (Azure's words), else `segmentSyllables`, which cuts the speech at its
    quietest, least voiced frames given the syllable count, kept on Scribe's
@@ -696,12 +704,15 @@ browser already sends, with no dependency:
    the syllable is `unsure` (`creakFlags` lets creaky syllables be
    flagged; off). A pitch track that jumps seven semitones or more
    between neighbouring frames is cut there; a piece of three frames or
-   fewer is a glitch at the edge of a voiced run, or the neighbouring
-   syllable's pitch where two meet without a gap, and is dropped. Only a
-   jump between two longer pieces is an octave slip the tracker didn't
-   mend (it mends 80 ms or less): `unsure`, reason `octave`, whatever the
-   label, and checked before the creaky-third rule (a slipped stretch
-   reads low, which is what that rule looks for).
+   fewer is a glitch (at the edge of a voiced run, in the middle of a
+   vowel, or the neighbouring syllable's pitch where two meet without a
+   gap) and is dropped. A jump that remains between the pieces that stay
+   is an octave slip the tracker didn't mend (it mends 80 ms or less), and
+   so is a contour with no piece longer than a glitch, or a third of it
+   and more in glitches, or a glitch taken out of the middle of a vowel
+   that is creaky as well: `unsure`, reason `octave`, whatever the label,
+   and checked before the creaky-third rule (a slipped stretch reads low,
+   which is what that rule looks for).
    The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
    trades catches for false alarms.
 
@@ -743,7 +754,9 @@ as the app does, with three differences: the browser's echo cancellation,
 noise suppression and automatic gain are asked off (raw audio can be
 degraded later, processed audio can't be undone; each clip's label says
 what the microphone track reports it applied, `getSettings()`, not what
-was asked); the recording is decoded
+was asked: `raw` only when all three are reported off, so a browser that
+doesn't report them all, as Safari probably doesn't (not tested), labels
+every clip `processed` even when it did record raw); the recording is decoded
 straight at 16 kHz, so the browser's band-limited resampler does the work
 (the app's `web/src/recorder.ts` plays a 48 kHz buffer through a 16 kHz
 OfflineAudioContext, which folds whatever lay above 8 kHz back into the

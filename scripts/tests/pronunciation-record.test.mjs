@@ -293,6 +293,9 @@ describe("the page's keys", () => {
     assert.deepEqual(act("Enter", "none", "review"), { action: "keep", prevent: true });
     assert.deepEqual(act("Enter", "checkbox", "review"), { action: "keep", prevent: true });
     assert.deepEqual(act("Enter", "button", "review"), { action: null, prevent: false });
+    // One rule for every button, "Stop for now" included: space records
+    // (the page says so under the buttons), Enter presses the button.
+    assert.deepEqual(act("Space", "button", "review"), { action: "record", prevent: true });
     for (const state of ["idle", "recording", "working", "saving"]) assert.equal(act("Enter", "none", state).action, null, state);
   });
 
@@ -426,6 +429,7 @@ describe("the recorder's HTTP handler", () => {
     assert.ok(html.includes(PAGE_FUNCTIONS));
     assert.match(html, /keyAction\(\{ code: e\.code, key: e\.key, focus: focusKind\(\), state: state \}\)/);
     assert.match(html, /processing = processingOf\(/);
+    assert.match(html, /Space always records and stops, wherever the focus is, except on the tick box/);
     // Listen plays only when nothing is being recorded; Skip gives the
     // focus back after a click.
     assert.match(html, /function listen\(\) \{ if \(current && \(state === "idle" \|\| state === "review"\)\)/);
@@ -720,10 +724,14 @@ describe("the proof and the recordings folder", () => {
         fs.writeFileSync(path.join(rec, `c${k}.wav`), tone(180 + 10 * k, 181 + 10 * k));
         lines.push(`c${k}.wav\t妈\t\t${name}\tadult`);
       }
+      // And the same name as a child: a conflict, reported and left out,
+      // never folded into the adult.
+      lines.push("c0.wav\t妈\t\tmia\tchild");
       fs.writeFileSync(path.join(rec, "labels.tsv"), `${lines.join("\n")}\n`);
       const run = proof(dir);
       assert.equal(run.status, 0, run.stderr);
       assert.match(run.stdout, /3 recordings from `labels.tsv`, 1 speaker\(s\), 3 judged syllables\./);
+      assert.match(run.stdout, /Not scored: c0\.wav: speaker "mia" is child here and "Mia" is adult in an earlier line/);
       const report = fs.readFileSync(path.join(rec, "report.md"), "utf8");
       assert.equal(report.split("\n").filter((l) => /^\| Mia \| adult \|/.test(l)).length, 1);
       assert.ok(!/\| (mia|MIA) \|/.test(report));
