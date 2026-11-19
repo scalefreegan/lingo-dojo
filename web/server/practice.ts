@@ -286,7 +286,29 @@ async function speechProblem(ctx: LearnerCtx): Promise<string | null> {
  * The browser keeps it no longer than the page does (no-store).
  */
 async function phraseAudio(res: ServerResponse, ctx: LearnerCtx, phraseId: string): Promise<void> {
-  const { phrase } = await op(() => practiceCard(rawDb(), ctx.language, phraseId, "listen"));
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    const out = await phraseClip(ctx, phraseId, ctrl.signal);
+    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
+    res.end(out.audio);
+  } finally {
+    res.off("close", onClose);
+  }
+}
+
+/**
+ * A phrase's audio as /api/practice/audio/:phraseId serves it (the same
+ * checks, key and cache), with its text and cache key: also the compare
+ * view's model clip on Practice speak-it (pronunciation.ts), so both read
+ * one file. 404 for a phrase this language can't practise.
+ */
+export async function phraseClip(ctx: LearnerCtx, phraseId: string, signal: AbortSignal): Promise<{ key: string; text: string; locale: string; audio: Buffer; type: string; cached: boolean }> {
+  if (!isUuid(phraseId)) throw new HttpError(404, "no such phrase");
+  const { phrase } = await op(() => practiceCard(rawDb(), ctx.language, phraseId.toLowerCase(), "listen"));
   const text = (phrase.text ?? "").trim();
   if (!text) throw new HttpError(409, "this phrase has no words to say");
   const locale = targetLocale(ctx);
@@ -294,19 +316,9 @@ async function phraseAudio(res: ServerResponse, ctx: LearnerCtx, phraseId: strin
   const settings = await readVoiceSettings(ctx.user.id);
   const { provider, voice, model } = await practiceVoice(settings, locale);
   const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
-  const ctrl = new AbortController();
-  const onClose = () => {
-    if (!res.writableEnded) ctrl.abort();
-  };
-  res.on("close", onClose);
-  try {
-    const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, ctrl.signal)));
-    console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
-    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
-    res.end(out.audio);
-  } finally {
-    res.off("close", onClose);
-  }
+  const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, signal)));
+  console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
+  return { key, text, locale, ...out };
 }
 
 /** What the recorder sends (recorder.ts toWav): a WAV, by whichever name. */

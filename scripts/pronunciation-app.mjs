@@ -230,7 +230,7 @@ export function centredCurve(pitch) {
  * "clipped" when the recording began inside the first syllable: the page
  * asks for it again.
  */
-export function scoreReply(result, syllables, { engine, fallback = null, kids = false, text, locale }) {
+export function scoreReply(result, syllables, { engine, fallback = null, kids = false, text, locale, frames = null }) {
   const out = result.syllables.map((s, i) => {
     const expected = syllables[i];
     const off = s.verdict === "off";
@@ -257,9 +257,18 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
       ...(other ? { usual: expected.readings[0] } : {}),
       expectedTone,
       accept: s.accept,
+      ...(expected?.half && expectedTone === 3 ? { half: true } : {}),
       verdict: s.verdict === "ok" || off ? s.verdict : "unsure",
       ...(off && Number.isInteger(s.heardTone) ? { heardTone: s.heardTone } : {}),
+      // Where several tones count (我 before 很; a card character's
+      // readings), the one an "ok" heard: compare mode reads the curve
+      // against it, not against a tone the learner didn't aim for.
+      ...(s.verdict === "ok" && Array.isArray(s.accept) && s.accept.length > 1 && s.accept.includes(s.heardTone) ? { saidTone: s.heardTone } : {}),
       ...(off ? { why: s.reason === "sound" ? "sound" : "tone" } : s.verdict !== "ok" && s.reason ? { reason: s.reason } : {}),
+      // Azure's 0–100 score for how the syllable sounded (its consonant and
+      // vowel together: for Mandarin Azure scores whole syllables), for the
+      // compare tips. Adults only: no scores in kids mode.
+      ...(!kids && engine === "azure" && Number.isFinite(s.score) ? { soundScore: Math.round(s.score) } : {}),
       ...span,
       heard: centredCurve(s.pitch),
       reference: toneShape(expectedTone, { half: !!expected?.half }),
@@ -273,6 +282,9 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
     syllables: out,
     overall: kids || !Number.isFinite(result.overall) || syllables.some((x) => x.everyTone) ? null : result.overall,
     retry: result.syllables[0]?.reason === "clipped" ? "clipped" : null,
+    // The whole take frame by frame, for the compare picture (pronunciation-
+    // compare.mjs takeFrames): sent back with the marks, never kept.
+    ...(frames ? { frames } : {}),
   };
 }
 

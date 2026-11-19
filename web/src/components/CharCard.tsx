@@ -289,7 +289,7 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
             every reading listed above). */}
         {scoresTonesHere(locale) && (
           <section aria-label={kids ? "Your turn" : "Check your tone"} className="rounded-xl border border-line p-3">
-            <SayItCheck key={ch} text={ch} kids={kids} onPlayModel={() => void sound.play(ch)} modelBusy={sound.busy === ch} />
+            <SayItCheck key={ch} text={ch} kids={kids} onPlayModel={() => void sound.play(ch)} modelBusy={sound.busy === ch} compare={{ kind: "sound", text: ch, locale }} />
           </section>
         )}
 

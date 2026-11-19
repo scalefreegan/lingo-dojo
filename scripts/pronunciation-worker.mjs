@@ -5,11 +5,15 @@
 //
 // workerData: { wav (Uint8Array), syllables (expectedSyllables), azure (an
 // azurePronunciationResult, or null for the local scorer alone) }.
-// Posts { result } (the engine's result) or { error }. The recording lives
+// Posts { result, frames } (the engine's result, and the recording's frames
+// for the compare picture: scripts/pronunciation-compare.mjs takeFrames) or
+// { error }. The model route (compare mode) runs the same worker on the
+// model's clip. The recording lives
 // only in this thread's memory and the request's, and goes with them.
 
 import { parentPort, workerData } from "node:worker_threads";
 import { mergeAzure, parseWav, pitchCurve, scoreTones, trackPitch } from "./pronunciation.mjs";
+import { takeFrames } from "./pronunciation-compare.mjs";
 
 try {
   const { wav, syllables, azure } = workerData;
@@ -30,7 +34,10 @@ try {
   for (const s of result.syllables) {
     if ((s.verdict === "ok" || s.verdict === "off") && !s.pitch?.length && Number.isFinite(s.startMs) && Number.isFinite(s.endMs) && s.endMs > s.startMs) s.pitch = pitchCurve(track, s.startMs, s.endMs, 100);
   }
-  parentPort.postMessage({ result });
+  // The compare picture's frames: pitch about the speaker's own centre
+  // inside the syllables' spans, loudness everywhere.
+  const frames = takeFrames(track, result.syllables);
+  parentPort.postMessage({ result, frames, durationMs: (samples.length / sampleRate) * 1000 });
 } catch (e) {
   parentPort.postMessage({ error: String(e?.message || e) });
 }
