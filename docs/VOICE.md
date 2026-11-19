@@ -576,7 +576,8 @@ One result whichever engine ran:
 
 `verdict` is `off` only when the engine is confident; whatever it can't
 vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
-`neutral`, `untimed`, `octave`, `trimmed`, `unclear`, `omitted`). A syllable read through creak also carries
+`neutral`, `untimed`, `octave`, `apart`, `soft`, `timings`, `trimmed`,
+`scattered`, `background`, `unclear`, `omitted`). A syllable read through creak also carries
 `creaky: true`; a creaky `ok` is half a measurement and is left out of
 `overall`. A false alarm costs more than a
 miss. `margin` is how far the contour is from the nearest right answer, in
@@ -623,44 +624,75 @@ browser already sends, with no dependency:
    Octave slips are undone per voiced run (a short piece an octave from
    the rest of its run), never across a silence. Each frame also carries
    its zero-crossing rate, which tells creak from the hiss of s or sh.
-2. `trimToSpeech`: everything that isn't the speech is silenced first.
-   A push-to-talk recording has a second of room before and after the
-   words, with key presses and short pitched blips in it; taken as speech
-   they made a lone syllable read as creaky (one blip stretches its voiced
-   span) and spread a phrase's cuts into the silence. Speech is the voiced
-   runs of 80 ms or more within 12 dB of the loudest voiced frame, plus
-   any run within 26 dB that is within 200 ms of speech; 250 ms is kept
-   before the first and 120 ms after the last, and further for as long as
-   the sound stays loud (a creaky last syllable). Every number in
-   `TRIM_RULES` was chosen on 43 real clips from ONE speaker (as was the
-   half weight of a creaky `ok`); none is held out.
+2. Where the speech is. A push-to-talk recording has a second of room
+   before and after the words, with key presses, knocks, coughs, another
+   voice, a hum. There are two ways of knowing where the syllables are,
+   and they are not equals.
 
-   The rule the trim is held to: it may make the scorer more cautious,
-   never less. Some runs it can't place: one the bars removed inside the
-   speech or within 200 ms of it (a soft last syllable, under the floor),
-   and, when the bars found fewer voiced runs than there are syllables,
-   any run over the floor further away (a short last syllable after a
-   beginner's pause looks just like a knock). `scoreTones` then reads the
-   recording twice, without those runs and with them, and a verdict
-   stands only where both readings give it; the rest is `unsure`, reason
-   `trimmed`. A doubted run that was noise therefore costs verdicts and
-   can't add an `ok` or an `off` the clean reading didn't have, and one
-   that was a syllable can't be erased into a wrong verdict. What this
-   costs is measured: the proof's "With lead-in noise" puts blips, knocks
-   and a murmur around every cached clip (single syllables are unchanged;
-   phrases whose words run together lose verdicts at a stray sound), and
-   `npm test` runs the same disturbances on generated audio
-   (`scripts/pronunciation-synth.mjs`). Left open: a far run that was a
-   syllable is dropped unread when the bars found as many voiced runs as
-   syllables without it.
-3. Cuts: per-syllable `timings` when the caller has extents it can trust
-   (Azure's words), else `segmentSyllables`, which cuts the speech at its
-   quietest, least voiced frames given the syllable count, kept on Scribe's
-   character times when those are passed as `anchors` (below). Its cuts
-   scale the reported confidence (`FALLBACK_TRUST`), and a flag on any
-   syllable of a phrase needs a little more margin (`phraseMarginSt`),
-   whoever made the cuts; neither is mixed into `quality`, which is only
-   how clean the pitch measurement was.
+   **With `timings`** (one `{ startMs, endMs }` per syllable from a
+   recogniser whose extents can be trusted: Azure's per-syllable
+   `Phonemes`, through `mergeAzure`). This is the way to score a real
+   microphone. Pitch is measured inside each span and nowhere else: the
+   silence floor, the octave repairs, the range gate and the recording's
+   own range are all redone on the spans' frames alone (`trackPitch`
+   keeps the pitch from before those steps for this), so nothing outside
+   the spans can change a verdict. The timings are checked first
+   (`timingsProblem`, `TIMING_RULES`): one per syllable, in order, each
+   40 to 1500 ms, inside the recording. If not, every syllable is
+   `unsure`, reason `timings`, and the result's `timingsProblem` says why:
+   never a guess from energy. Scribe's character times are where the
+   recogniser emitted a character, not a syllable's extent: they are
+   `anchors` for the energy cuts at most, never `timings`.
+
+   **Without** (the fallback). The speech has to be found by energy
+   (`TRIM_RULES`: voiced runs of 80 ms or more within 12 dB of the loudest
+   voiced frame are speech by any measure; 250 ms is kept before the
+   first and 120 ms after the last). Five rounds of review each found a
+   sound that the bars took for speech or speech they took for noise, so
+   the bars are not believed. The rule: any doubt about where the speech
+   is ends in `unsure`, for an `ok` as much as for an `off`.
+   - A run that may or may not be speech (anything else within 200 ms of
+     the sure runs; in a phrase, any run within 26 dB wherever it is) is
+     read both ways, in every combination with the other doubted runs (up
+     to three: eight readings), and a verdict stands only where all
+     readings give the same verdict and the same tone. The rest is
+     `trimmed`.
+   - Sounds long enough to be a syllable (60 ms) that lie more than 200 ms
+     apart leave the whole recording unjudged, `scattered`: one may be a
+     cough, another voice, a chair, or the speaker paused, and reading
+     them all as speech puts the cuts on the wrong characters.
+   Every number in `TRIM_RULES` was chosen on 43 real clips from ONE
+   speaker (as was the half weight of a creaky `ok`); none is held out.
+   `trimToSpeech` is the bars' opinion alone, for drawing and the proof.
+
+   **Either way**, a pitched background (a voiced stretch of 300 ms or
+   more, softer than the speech, holding its pitch within half a
+   semitone: mains hum, a fan) leaves everything unjudged, `background`:
+   it is under the syllables too. It is the one thing outside the timed
+   spans that is looked at, and it can only withhold verdicts.
+
+   What this costs and what it still lets through is measured, per
+   syllable against the clean clip: the proof's "With lead-in noise"
+   (`scripts/pronunciation-synth.mjs` makes the disturbances), and in
+   small in `npm test`. On timings nothing outside the spans moves a
+   verdict. By energy, a stray sound costs most of a phrase's verdicts
+   and makes none. **Not made safe on either path**, because the
+   disturbance is inside the syllable: a pitched knock on top of the
+   first sound, a recording that starts mid-word (a route should refuse a
+   recording whose first frames are already loud), and a room that
+   echoes.
+3. Cuts: the `timings`, or else `segmentSyllables`, which cuts the speech
+   at its quietest, least voiced frames given the syllable count, kept on
+   Scribe's character times when those are passed as `anchors` (below);
+   no piece may be longer than three even shares, which bounds the search.
+   Its cuts scale the reported confidence (`FALLBACK_TRUST`), and a flag
+   on any syllable of a phrase needs a little more margin
+   (`phraseMarginSt`), whoever made the cuts; neither is mixed into
+   `quality`, which is only how clean the pitch measurement was. A span
+   that holds two voiced sounds with 50 ms or more of silence between
+   them is not one syllable (`apart`: the span is wrong, or a knock is in
+   it), and a syllable whose loudest frame is 20 dB under the loudest
+   syllable's is too soft to judge (`soft`).
 4. `classifyContour`: five points of each syllable's voiced part against
    tone templates on Chao's five-level scale, scaled to the speaker's own
    range (`speakerRange`: pass one learnt from earlier turns as `speaker`;
@@ -732,10 +764,15 @@ classifier's raw accuracy before any gate.
 - Pass `speaker` only as a range built from the learner's *other*
   recordings (`speakerRange` over earlier turns), never one that includes
   the recording being scored.
+- Pass `timings` (Azure's, through `mergeAzure`). Without them the
+  scorer has to find the speech by energy, and in a room with any stray
+  sound it will mostly say `unsure`.
 - `scoreTones` is synchronous and refuses more than 30 seconds
-  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`); its own
-  segmenter grows with syllables × frames². Run it off the request thread
-  (a worker, or the paid-slot queue) or pass timings.
+  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`). That
+  much takes about a third of a second, most of it the pitch track (the
+  proof's "Speed"); the energy path reads the recording up to eight
+  times, some 40 ms each at that length. Run it off the request thread
+  (a worker, or the paid-slot queue).
 - Treat `unsure` as silence.
 
 **Real recordings are the next step**, and there is a tool for making
@@ -789,6 +826,17 @@ into the tracked report. A label is what the speaker aimed for, not what
 came out, so a beginner's false-alarm count is an upper bound until
 someone fluent has listened to the flagged clips. The steps for the
 person recording are in the report's "Real recordings".
+
+Real recordings are scored by energy unless their speaker decides
+otherwise: nothing sends a person's voice to Azure or any other provider
+by default, and in a real room the energy path mostly answers `unsure`
+(above). The timings path needs per-syllable timings. The proof has one
+opt-in step for that, `--recordings --azure-recordings` with
+`LINGO_PROOF_AZURE_SPEAKER` naming the one speaker whose own clips may
+go to Azure Pronunciation Assessment (never a child's; one request per
+clip, the reply kept in the gitignored `recordings/.azure/`, 0600, so
+nothing is sent twice); the clips that have a reply are then reported
+both ways. Only the speaker can decide to run it.
 
 **The Azure adapter** (`azurePronunciationRequest`,
 `azurePronunciationResult`, `mergeAzure`) was built from Microsoft's

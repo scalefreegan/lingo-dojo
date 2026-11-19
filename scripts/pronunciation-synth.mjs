@@ -98,11 +98,19 @@ export function sessionRange({ lowHz, spanSt, weak }) {
 /**
  * What a push-to-talk recording has around the speech, as conditions to
  * score under. Levels are dB against the clip's loudest 10 ms. Each `add`
- * is a pitched sound (a buzz of five harmonics): `where` "before" or
- * "after" the speech, `gapMs` between it and the speech, `ms` long.
+ * is a sound `ms` long put `where` ("before" or "after"), `gapMs` away
+ * from the clip's edge or, with `from: "speech"`, from where the speech
+ * itself starts and ends (a negative gap overlaps it). Its `kind`: a
+ * pitched buzz of five harmonics (the default), a "cough" (a noise burst
+ * over a falling buzz) or a "child" (three syllables of a 300–380 Hz
+ * voice). `hum` runs under the whole recording, `echo` is a room's
+ * reflections, `cutMs` starts the clip that far into its first sound and
+ * `padMs` is the lead-in and tail (half a second unless given).
+ *
  * The first clips from a real microphone had 30–50 ms pitched blips 16–25
  * dB under the speech, 260 ms or more away; the knocks and the murmur are
- * what the trim was later found to mistake for speech.
+ * what the trim was later found to mistake for speech; the rest are the
+ * fifth review's (bead ld-ne0.7).
  */
 export const NOISE_CONDITIONS = Object.freeze([
   { key: "clean", title: "The clips as they are (no lead-in)" },
@@ -112,12 +120,25 @@ export const NOISE_CONDITIONS = Object.freeze([
   { key: "knockBefore", title: "…and a pitched knock at −10 dB, 450 ms before the speech", noiseDb: -50, add: [{ where: "before", gapMs: 450, ms: 40, db: -10 }] },
   { key: "knockAfter", title: "…and a pitched knock at −10 dB, 300 ms after the speech", noiseDb: -50, add: [{ where: "after", gapMs: 300, ms: 40, db: -10 }] },
   { key: "murmur", title: "…and a voiced 120 ms murmur at −27 dB, 300 ms before the speech", noiseDb: -50, add: [{ where: "before", gapMs: 300, ms: 120, db: -27 }] },
+  { key: "nearKnockBefore", title: "…and a knock at −10 dB ending 100 ms before the first sound", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 100, ms: 40, db: -10 }] },
+  { key: "nearKnockAfter", title: "…and a knock at −10 dB 100 ms after the last sound", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 100, ms: 40, db: -10 }] },
+  { key: "knockOnset", title: "…and a knock at −10 dB over the first 20 ms of the speech", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: -20, ms: 40, db: -10 }] },
+  { key: "coughBefore", title: "…and a cough 6 dB louder than the speech, 300 ms before it", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 300, ms: 150, db: 6, kind: "cough" }] },
+  { key: "coughAfter", title: "…and a cough 6 dB louder than the speech, 300 ms after it", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 300, ms: 150, db: 6, kind: "cough" }] },
+  { key: "secondVoice", title: "…and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech", noiseDb: -50, padMs: 1300, add: [{ where: "before", from: "speech", gapMs: 300, db: -10, kind: "child" }] },
+  { key: "hum100", title: "…and a 100 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 100, db: -20 } },
+  { key: "hum60", title: "…and a 60 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 60, db: -20 } },
+  { key: "midword", title: "…and the recording starts 60 ms into the first sound", noiseDb: -50, cutMs: 60 },
+  { key: "echo", title: "…in a room with echo (reflections for 600 ms, decaying over 150 ms)", noiseDb: -50, echo: { tauMs: 150, gain: 0.5 } },
 ]);
 
-/** `samples` as `condition` has it: half a second added before and after,
- *  with the condition's noise and sounds. "clean" returns the samples. */
-export function surround(samples, sampleRate, condition, seed = 12345) {
-  if (condition.key === "clean") return samples;
+const makeRand = (seed) => {
+  let state = seed;
+  return () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+};
+
+/** The loudest 10 ms of `samples`, as an RMS. */
+function peak10(samples, sampleRate) {
   const frame = Math.round(sampleRate * 0.01);
   let peak = 0;
   for (let i = 0; i + frame <= samples.length; i += frame) {
@@ -125,32 +146,135 @@ export function surround(samples, sampleRate, condition, seed = 12345) {
     for (let k = 0; k < frame; k++) sum += samples[i + k] ** 2;
     peak = Math.max(peak, Math.sqrt(sum / frame));
   }
-  const pad = Math.round(sampleRate * 0.5);
-  const out = new Float32Array(pad + samples.length + pad);
-  out.set(samples, pad);
-  if (condition.noiseDb !== null && condition.noiseDb !== undefined) {
-    let state = seed;
-    const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
-    // Uniform noise of that RMS.
-    const level = peak * 10 ** (condition.noiseDb / 20) * Math.sqrt(3);
-    for (let i = 0; i < out.length; i++) out[i] += level * rand();
-  }
-  for (const sound of condition.add ?? []) {
-    const n = Math.round((sampleRate * sound.ms) / 1000);
-    const gap = Math.round((sampleRate * sound.gapMs) / 1000);
-    const at = sound.where === "before" ? pad - gap - n : pad + samples.length + gap;
-    const buzz = new Float32Array(n);
+  return peak;
+}
+
+/** Where the sound is: the first and last 10 ms over a tenth of `peak`
+ *  (sample indexes). */
+function soundSpan(samples, sampleRate, peak) {
+  const frame = Math.round(sampleRate * 0.01);
+  let a = -1;
+  let b = -1;
+  for (let i = 0; i + frame <= samples.length; i += frame) {
     let sum = 0;
-    for (let i = 0; i < n; i++) {
-      for (let h = 1; h <= 5; h++) buzz[i] += Math.sin((2 * Math.PI * (sound.hz ?? 220) * h * i) / sampleRate) / h;
-      sum += buzz[i] ** 2;
+    for (let k = 0; k < frame; k++) sum += samples[i + k] ** 2;
+    if (Math.sqrt(sum / frame) > peak * 0.1) {
+      if (a < 0) a = i;
+      b = i + frame;
     }
-    const gain = (peak * 10 ** (sound.db / 20)) / Math.sqrt(sum / n);
-    const fade = Math.round(sampleRate * 0.005);
-    for (let i = 0; i < n && at + i < out.length; i++) if (at + i >= 0) out[at + i] += buzz[i] * gain * Math.min(1, i / fade, (n - 1 - i) / fade);
   }
+  return a < 0 ? [0, samples.length] : [a, b];
+}
+
+/** A buzz of `harmonics` at `hz` (gliding `glide` semitones over its
+ *  length), `ms` long, at RMS `rms`, faded 5 ms at each end. */
+function buzzOf(sampleRate, ms, hz, rms, { harmonics = 5, glide = 0 } = {}) {
+  const n = Math.round((sampleRate * ms) / 1000);
+  const out = new Float32Array(n);
+  let sum = 0;
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    if (glide) phase += (2 * Math.PI * hz * 2 ** ((glide * i) / n / 12)) / sampleRate;
+    else phase = (2 * Math.PI * hz * i) / sampleRate;
+    for (let h = 1; h <= harmonics; h++) out[i] += Math.sin(phase * h) / h;
+    sum += out[i] ** 2;
+  }
+  const gain = rms / Math.sqrt(sum / n);
+  const fade = Math.round(sampleRate * 0.005);
+  for (let i = 0; i < n; i++) out[i] *= gain * Math.min(1, i / fade, (n - 1 - i) / fade);
   return out;
 }
+
+/** A burst of noise shaped like half a sine, at RMS `rms`. */
+function burstOf(sampleRate, ms, rms, seed) {
+  const rand = makeRand(seed);
+  const n = Math.round((sampleRate * ms) / 1000);
+  const out = new Float32Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    out[i] = rand() * Math.sin((Math.PI * i) / n);
+    sum += out[i] ** 2;
+  }
+  const gain = rms / Math.sqrt(sum / n);
+  for (let i = 0; i < n; i++) out[i] *= gain;
+  return out;
+}
+
+function soundOf(sound, sampleRate, rms, seed) {
+  if (sound.kind === "cough") {
+    // Half noise, over a voiced buzz at 180 Hz that sinks.
+    const out = burstOf(sampleRate, sound.ms, rms, seed + 7);
+    const voiced = buzzOf(sampleRate, sound.ms, 180, rms, { glide: -3 });
+    for (let i = 0; i < out.length; i++) out[i] = 0.5 * out[i] + voiced[i];
+    return out;
+  }
+  if (sound.kind === "child") {
+    const parts = [[320, 5], [380, -8], [300, 4]].map(([hz, glide]) => buzzOf(sampleRate, 220, hz, rms, { harmonics: 6, glide }));
+    const gap = Math.round(sampleRate * 0.06);
+    const out = new Float32Array(parts.reduce((sum, part) => sum + part.length + gap, 0));
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.length + gap;
+    }
+    return out;
+  }
+  if (sound.kind === "noise") return burstOf(sampleRate, sound.ms, rms, seed + 7);
+  return buzzOf(sampleRate, sound.ms, sound.hz ?? 220, rms);
+}
+
+const mixIn = (out, at, sound) => {
+  for (let i = 0; i < sound.length; i++) if (at + i >= 0 && at + i < out.length) out[at + i] += sound[i];
+};
+
+/** `samples` as `condition` has it: `{ samples, shiftMs }`, where
+ *  `shiftMs` is how much later a moment of the clip now is (the lead-in,
+ *  less what `cutMs` took off the front): what timings of the clean clip
+ *  must be moved by. "clean" returns the samples. */
+export function disturb(samples, sampleRate, condition, seed = 12345) {
+  if (condition.key === "clean") return { samples, shiftMs: 0 };
+  const ms = (v) => Math.round((sampleRate * v) / 1000);
+  const peak = peak10(samples, sampleRate);
+  const level = (db) => peak * 10 ** (db / 20);
+  const cut = condition.cutMs ? soundSpan(samples, sampleRate, peak)[0] + ms(condition.cutMs) : 0;
+  const src = cut ? samples.subarray(cut) : samples;
+  const pad = ms(condition.padMs ?? 500);
+  const out = new Float32Array(pad + src.length + pad);
+  out.set(src, pad);
+  const speech = soundSpan(out, sampleRate, peak);
+  if (condition.noiseDb !== null && condition.noiseDb !== undefined) {
+    const rand = makeRand(seed);
+    // Uniform noise of that RMS.
+    const noise = level(condition.noiseDb) * Math.sqrt(3);
+    for (let i = 0; i < out.length; i++) out[i] += noise * rand();
+  }
+  for (const sound of condition.add ?? []) {
+    const sig = soundOf(sound, sampleRate, level(sound.db), seed);
+    const [from, to] = sound.from === "speech" ? speech : [pad, pad + src.length];
+    mixIn(out, sound.where === "before" ? from - ms(sound.gapMs) - sig.length : to + ms(sound.gapMs), sig);
+  }
+  if (condition.hum) {
+    // Mains hum: the fundamental and two harmonics.
+    const a = (level(condition.hum.db) * Math.SQRT2) / 1.15;
+    const w = (2 * Math.PI * condition.hum.hz) / sampleRate;
+    for (let i = 0; i < out.length; i++) out[i] += a * (Math.sin(w * i) + 0.5 * Math.sin(2 * w * i) + 0.25 * Math.sin(3 * w * i));
+  }
+  if (condition.echo) {
+    // A room: 120 reflections 20 to 600 ms late, each softer with its delay.
+    const rand = makeRand(seed + 3);
+    const dry = Float32Array.from(out);
+    for (let t = 0; t < 120; t++) {
+      const delay = 20 + Math.abs(rand()) * 580;
+      const gain = condition.echo.gain * Math.exp(-delay / condition.echo.tauMs) * (rand() > 0 ? 1 : -1);
+      const d = ms(delay);
+      for (let i = 0; i + d < out.length; i++) out[i + d] += gain * dry[i];
+    }
+  }
+  return { samples: out, shiftMs: ((pad - cut) / sampleRate) * 1000 };
+}
+
+/** disturb()'s samples alone. */
+export const surround = (samples, sampleRate, condition, seed = 12345) => disturb(samples, sampleRate, condition, seed).samples;
 
 /* ----------------------------- generated phrases ---------------------------- */
 
@@ -158,17 +282,51 @@ export function surround(samples, sampleRate, condition, seed = 12345) {
 export const phraseOf = (...tones) => tones.map((t, i) => ({ char: "字", pinyin: withTone("ma", t), baseTone: t, expectedTone: t, accept: [t], half: false, breakBefore: i === 0 }));
 
 /**
- * Three-syllable phrases whose last syllable is the kind a trim to the
- * speech can take for noise, which the cached clips can't express: said
- * short after a beginner's pause, or said softly. `options` go to speak().
+ * Three-syllable phrases the cached clips can't express, generated: a
+ * last syllable a trim to the speech can take for noise (said short after
+ * a beginner's pause, or softly), a sound between the syllables, and a
+ * first syllable a 40 ms creak gap breaks in two. `options` go to
+ * speak(); `between` is a sound put in the middle of each gap (`own`: at
+ * the speaker's own pitch); `split` says the first syllable in two halves;
+ * `base` names the case whose verdicts this one is compared with.
  */
-export const LAST_SYLLABLE_CASES = Object.freeze([
+export const GENERATED_CASES = Object.freeze([
   { key: "plain", title: "Three syllables 70 ms apart, all alike", options: {} },
-  { key: "pause", title: "A 300 ms pause, then a 70 ms last syllable", options: { ms: [260, 260, 70], gaps: [70, 70, 300, 70] } },
-  { key: "soft", title: "The last syllable 27 dB under the others", options: { amps: [1, 1, 10 ** (-27 / 20)] } },
+  { key: "pause", base: "plain", title: "A 300 ms pause, then a 70 ms last syllable", options: { ms: [260, 260, 70], gaps: [70, 70, 300, 70] } },
+  { key: "soft", base: "plain", title: "The last syllable 27 dB under the others", options: { amps: [1, 1, 10 ** (-27 / 20)] } },
+  { key: "gap150", title: "Three syllables 150 ms apart", options: { gaps: [70, 150, 150, 70] } },
+  { key: "click", base: "gap150", title: "…and a 40 ms pitched click at −10 dB in each gap", options: { gaps: [70, 150, 150, 70] }, between: { ms: 40, db: -10 } },
+  { key: "uh", base: "gap150", title: "…and a voiced 60 ms \"uh\" at −20 dB in each gap", options: { gaps: [70, 150, 150, 70] }, between: { ms: 60, db: -20, own: true } },
+  { key: "breath", base: "gap150", title: "…and a 100 ms breath at −20 dB in each gap", options: { gaps: [70, 150, 150, 70] }, between: { ms: 100, db: -20, kind: "noise" } },
+  { key: "split", title: "The first syllable broken in two by a 40 ms creak gap", split: true, options: { ms: [130, 130, 260, 260], gaps: [70, 40, 70, 70, 70] } },
+  { key: "pauseSplit", base: "split", title: "…and a 300 ms pause, then a 70 ms last syllable", split: true, options: { ms: [130, 130, 260, 70], gaps: [70, 40, 70, 300, 70] } },
 ]);
+export const LAST_SYLLABLE_CASES = Object.freeze(GENERATED_CASES.slice(0, 3));
 export const GENERATED_VOICES = Object.freeze([{ lowHz: 110, spanSt: 10 }, { lowHz: 90, spanSt: 14 }, { lowHz: 250, spanSt: 12 }]);
 export const GENERATED_PHRASES = Object.freeze([[4, 1, 2], [1, 4, 2], [2, 4, 1], [4, 2, 1], [1, 2, 4], [2, 1, 4], [4, 4, 1], [1, 1, 4], [2, 2, 1], [4, 1, 3], [1, 2, 3], [2, 4, 3]]);
+
+const ROOM = NOISE_CONDITIONS.find((c) => c.key === "room");
+
+/** `tones` said by `voice` as `kase` has it, in room noise with half a
+ *  second before and after: `{ samples, timings, range }`, the timings one
+ *  per syllable, where it really is in `samples`. */
+export function sayCase(kase, tones, voice, k = 0) {
+  const half = (tone, second) => (x) => CURVES[tone](second ? 0.5 + x / 2 : x / 2);
+  const shapes = kase.split ? [half(tones[0], false), half(tones[0], true), ...tones.slice(1)] : tones;
+  const said = speak(shapes, { ...voice, ...kase.options, seed: 11 + k });
+  const spans = kase.split ? [{ startMs: said.timings[0].startMs, endMs: said.timings[1].endMs }, ...said.timings.slice(2)] : said.timings;
+  let samples = said.samples;
+  if (kase.between) {
+    samples = Float32Array.from(samples);
+    const rms = peak10(said.samples, RATE) * 10 ** (kase.between.db / 20);
+    for (let i = 0; i + 1 < spans.length; i++) {
+      const sig = soundOf({ ...kase.between, hz: kase.between.own ? voice.lowHz * 1.3 : 220 }, RATE, rms, 7 + i);
+      mixIn(samples, Math.round((RATE * (spans[i].endMs + spans[i + 1].startMs)) / 2000 - sig.length / 2), sig);
+    }
+  }
+  const d = disturb(samples, RATE, ROOM, 500 + k);
+  return { samples: d.samples, timings: spans.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs })), range: said.range };
+}
 
 /**
  * One generated phrase scored under its own tones and under every
@@ -189,3 +347,55 @@ export function tallyLabellings(tally, tones, score) {
   return tally;
 }
 export const emptyTally = () => ({ right: { ok: 0, unsure: 0, off: 0 }, wrong: { ok: 0, unsure: 0, off: 0 } });
+
+/* ---------------------------------- flips ---------------------------------- */
+
+/** The same labellings as tallyLabellings, kept per syllable: sets
+ *  `into[id|label|syllable]` to `{ side, verdict }` so a disturbed clip
+ *  can be compared with the clean one syllable by syllable. Totals hide
+ *  flips: one verdict lost and another gained look like nothing. */
+export function verdictsOf(into, id, tones, score) {
+  score(phraseOf(...tones)).syllables.forEach((s, j) => into.set(`${id}|right|${j}`, { side: "right", verdict: s.verdict }));
+  tones.forEach((said, k) => {
+    for (const label of [1, 2, 3, 4]) {
+      if (label === said) continue;
+      const labels = tones.map((t, i) => (i === k ? label : t));
+      into.set(`${id}|${label}@${k}|${k}`, { side: "wrong", verdict: score(phraseOf(...labels)).syllables[k].verdict });
+    }
+  });
+  return into;
+}
+
+/**
+ * What a disturbance did, syllable by syllable: `now` against `base`
+ * (maps of `{ side, verdict }` under the same keys; a key `base` lacks is
+ * skipped). `falseOff` and `wrongOk` are the two things that must not
+ * grow: a correctly said syllable now flagged that wasn't, a wrong tone
+ * now passed as ok that wasn't. `lost` is the price that may be paid: a
+ * right "ok" or a caught wrong tone that is no longer one.
+ */
+export function flips(base, now) {
+  const out = { right: 0, wrong: 0, caught: 0, falseAlarms: 0, passed: 0, falseOff: 0, wrongOk: 0, lost: 0, keys: { falseOff: [], wrongOk: [] } };
+  for (const [key, x] of now) {
+    const b = base.get(key);
+    if (!b) continue;
+    out[x.side]++;
+    if (x.side === "wrong") {
+      if (x.verdict === "off") out.caught++;
+      if (x.verdict === "ok") out.passed++;
+      if (x.verdict === "ok" && b.verdict !== "ok") {
+        out.wrongOk++;
+        out.keys.wrongOk.push(key);
+      }
+      if (b.verdict === "off" && x.verdict !== "off") out.lost++;
+    } else {
+      if (x.verdict === "off") out.falseAlarms++;
+      if (x.verdict === "off" && b.verdict !== "off") {
+        out.falseOff++;
+        out.keys.falseOff.push(key);
+      }
+      if (b.verdict === "ok" && x.verdict !== "ok") out.lost++;
+    }
+  }
+  return out;
+}
