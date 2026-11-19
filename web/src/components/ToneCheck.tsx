@@ -363,6 +363,7 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError }: {
     setSay({ step: "opening" });
     try {
       const r = await startRecording({
+        processing: "pitch",
         silenceMs: 1000,
         maxMs: 8000,
         idleMs: 6000,

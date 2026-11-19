@@ -13,6 +13,8 @@
  * actually spoken, and then waits the full silence they chose. A long think
  * before the first word never ends the turn. */
 
+import { downmix, encodeWav16k, resampleTo16k } from "./wav16k";
+
 export interface Recording {
   /** Stop and return the WAV, plus whether any speech was heard. `wav` is
    *  null when there is nothing to send: a tap too short to hold audio. */
@@ -21,7 +23,27 @@ export interface Recording {
   cancel(): void;
 }
 
+/** What the browser may do to the microphone before the recorder gets it,
+ *  chosen per use (docs/VOICE.md §The recorder):
+ *  - "conversation" (a voice turn): echo cancellation, noise suppression
+ *    and automatic gain, all on. Only the words matter, and gain helps a
+ *    quiet speaker be transcribed.
+ *  - "pitch" (Practice speak-it, the character card's tone check): noise
+ *    suppression and automatic gain off, since both reshape the signal the
+ *    tone scorer measures (gain that moves within a syllable is a contour
+ *    of its own). Echo cancellation stays on: the model clip may still be
+ *    playing when the learner presses record, and on speakers it would be
+ *    heard, and transcribed, as their answer. */
+export type MicProcessing = "conversation" | "pitch";
+
+const PROCESSING: Record<MicProcessing, MediaTrackConstraints> = {
+  conversation: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  pitch: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+};
+
 export interface RecordOptions {
+  /** What the browser may do to the signal first (MicProcessing). */
+  processing: MicProcessing;
   /** End the turn after this much quiet once speech has started; null =
    *  only the learner ends it. */
   silenceMs: number | null;
@@ -46,10 +68,8 @@ const SPEECH_MIN_MS = 200;
 const MIN_TURN_MS = 400;
 
 export async function startRecording(opts: RecordOptions): Promise<Recording> {
-  const { silenceMs, maxMs = 60_000, idleMs = 20_000, onLevel, onAutoStop } = opts;
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-  });
+  const { processing, silenceMs, maxMs = 60_000, idleMs = 20_000, onLevel, onAutoStop } = opts;
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: PROCESSING[processing] });
   // The mic is live from here: if any setup step throws, release it rather
   // than leave the browser's recording indicator on with nothing behind it.
   let ctx: AudioContext | null = null;
@@ -156,10 +176,18 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
   };
 }
 
-const RATE = 16_000;
-
-/** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV. The
- *  OfflineAudioContext does the resampling and the downmix. */
+/** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV. Decoded
+ *  at the rate the browser's own context runs (44.1 or 48 kHz: its decoder
+ *  loses nothing a microphone gives), then downmixed, low-passed and
+ *  resampled to 16 kHz in JS (wav16k.ts).
+ *
+ *  Not by playing the buffer through a 16 kHz OfflineAudioContext, as this
+ *  did until 2026-11: Chromium plays a buffer of another rate by
+ *  interpolating with no low-pass, so a 10 or 13 kHz tone came out at full
+ *  level, folded to 6 or 3 kHz. Nor by decoding straight into a 16 kHz
+ *  context, as the recording page does: the decoder then filters, but
+ *  loosely (in Chromium 7 kHz down 5 dB and 9 kHz only 20 dB down). The
+ *  numbers are in docs/VOICE.md §The recorder. */
 export async function toWav(blob: Blob): Promise<Blob> {
   const decodeCtx = new AudioContext();
   let decoded: AudioBuffer;
@@ -168,34 +196,8 @@ export async function toWav(blob: Blob): Promise<Blob> {
   } finally {
     void decodeCtx.close();
   }
-  const length = Math.max(1, Math.ceil(decoded.duration * RATE));
-  const offline = new OfflineAudioContext(1, length, RATE);
-  const src = offline.createBufferSource();
-  src.buffer = decoded;
-  src.connect(offline.destination);
-  src.start();
-  const pcm = (await offline.startRendering()).getChannelData(0);
-
-  const out = new DataView(new ArrayBuffer(44 + pcm.length * 2));
-  const ascii = (at: number, s: string) => {
-    for (let i = 0; i < s.length; i++) out.setUint8(at + i, s.charCodeAt(i));
-  };
-  ascii(0, "RIFF");
-  out.setUint32(4, 36 + pcm.length * 2, true);
-  ascii(8, "WAVE");
-  ascii(12, "fmt ");
-  out.setUint32(16, 16, true); // fmt chunk size
-  out.setUint16(20, 1, true); // PCM
-  out.setUint16(22, 1, true); // mono
-  out.setUint32(24, RATE, true);
-  out.setUint32(28, RATE * 2, true); // byte rate
-  out.setUint16(32, 2, true); // block align
-  out.setUint16(34, 16, true); // bits per sample
-  ascii(36, "data");
-  out.setUint32(40, pcm.length * 2, true);
-  for (let i = 0; i < pcm.length; i++) {
-    const s = Math.max(-1, Math.min(1, pcm[i]));
-    out.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-  }
-  return new Blob([out], { type: "audio/wav" });
+  const channels: Float32Array[] = [];
+  for (let c = 0; c < decoded.numberOfChannels; c++) channels.push(decoded.getChannelData(c));
+  const pcm = resampleTo16k(downmix(channels), decoded.sampleRate);
+  return new Blob([encodeWav16k(pcm)], { type: "audio/wav" });
 }

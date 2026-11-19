@@ -1317,6 +1317,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     let mine: Recording | null = null;
     try {
       mine = await startRecording({
+        processing: "conversation",
         silenceMs: s.turn === "pause" ? s.silenceMs : null,
         onLevel: setLevel,
         // Only the recording that is current may end the turn.
