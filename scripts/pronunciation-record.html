@@ -189,8 +189,13 @@
   var MAX_MS = 12000;   // a clip stops itself here
   var MIN_MS = 400;     // shorter is a slip of the finger
   var TAIL_MS = 250;    // kept after Stop: the end of a third tone's rise
-  // How the microphone is asked for (openMic), written into each label.
-  var PROCESSING = "raw";
+  // How the microphone was recorded, written into each label: what the
+  // browser says it applied (openMic), not what was asked for.
+  var processing = "processed";
+
+  // keyAction and processingOf: the recorder puts their source here from
+  // pronunciation-recordings.mjs, where the tests run the same functions.
+  __SHARED__
 
   var $ = function (id) { return document.getElementById(id); };
   var keyOf = function (p) { return p.text + "\t" + p.said; };
@@ -316,6 +321,9 @@
     if (!navigator.mediaDevices || !window.MediaRecorder) return Promise.reject(new Error("This browser can't record. Try a current Chrome, Safari or Firefox."));
     return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }).then(function (s) {
       stream = s;
+      // Asking is not getting: the label says what the track reports.
+      var track = s.getAudioTracks()[0];
+      processing = processingOf(track && track.getSettings ? track.getSettings() : null);
       audioCtx = new AudioContext();
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 1024;
@@ -569,14 +577,16 @@
     player.play().catch(function () {});
   }
   function playTake() { if (takeUrl) playUrl(takeUrl); }
-  function listen() { if (current && state !== "recording") playUrl("/model/" + current.id); }
+  /** Never while the microphone is recording, which it still is for a
+   *  moment after Stop ("working"): the model would be in the take. */
+  function listen() { if (current && (state === "idle" || state === "review")) playUrl("/model/" + current.id); }
 
   function keep() {
     if (state !== "review" || !take || !current) return;
     var p = current;
     setState("saving");
     var q = "?prompt=" + p.id + "&text=" + encodeURIComponent(p.text) + "&said=" + encodeURIComponent(p.said) + "&speaker=" + encodeURIComponent(speaker)
-      + "&group=" + group + "&processing=" + PROCESSING + ($("unsure").checked ? "&unsure=1" : "");
+      + "&group=" + group + "&processing=" + processing + ($("unsure").checked ? "&unsure=1" : "");
     api("/api/keep" + q, { method: "POST", headers: { "Content-Type": "audio/wav" }, body: take }).then(function (j) {
       done = new Set(j.done);
       done.add(keyOf(p));
@@ -607,7 +617,7 @@
   $("listen").addEventListener("click", function () { listen(); this.blur(); });
   $("play").addEventListener("click", function () { playTake(); this.blur(); });
   $("keep").addEventListener("click", keep);
-  $("skip").addEventListener("click", function () { if (current) { skipped.add(current.id); next(); } });
+  $("skip").addEventListener("click", function () { this.blur(); if (current) { skipped.add(current.id); next(); } });
   $("stop").addEventListener("click", function () {
     closeMic(); dropTake();
     $("welcomeBack").textContent = "Your clips are saved. Pick your name below to carry on where you stopped.";
@@ -621,30 +631,33 @@
     openMic().then(function () { show("session"); next(); }).catch(function (e) { $("finishedText").textContent = e.message; });
   });
 
-  // Space records and stops, Enter keeps, but never over a control that
-  // has the focus: there the key is that control's own (space ticks the
-  // checkbox and presses a focused button; Enter presses a focused
-  // button). Record and Keep take their keys as their own click.
-  document.addEventListener("keydown", function (e) {
-    if ($("session").hidden || !$("intro").hidden || e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
+  // What a key means is decided by keyAction (see there). Space is taken
+  // on keydown; a focused button would also click on the keyup, so that
+  // is stopped too.
+  var focusKind = function () {
     var el = document.activeElement;
     var tag = el && el.tagName;
-    var onButton = tag === "BUTTON";
-    var onControl = onButton || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA";
-    var k = e.key.toLowerCase();
-    if (e.code === "Space") {
-      if (onControl) return;
-      e.preventDefault();
-      if (state === "recording") stopRecording();
-      else if (state === "idle" || state === "review") startRecording();
-    } else if (k === "enter") {
-      // Enter does nothing on a checkbox, so there it may still keep.
-      if (onButton || state !== "review") return;
-      e.preventDefault();
-      keep();
-    } else if (k === "l") listen();
-    else if (k === "p") playTake();
-    else if (k === "n" && state === "review") $("unsure").checked = !$("unsure").checked;
+    if (tag === "BUTTON") return "button";
+    if (tag === "INPUT" && (el.type === "checkbox" || el.type === "radio")) return "checkbox";
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return "text";
+    return "none";
+  };
+  var inSession = function () { return !$("session").hidden && $("intro").hidden; };
+  document.addEventListener("keydown", function (e) {
+    if (!inSession() || e.metaKey || e.ctrlKey || e.altKey) return;
+    var act = keyAction({ code: e.code, key: e.key, focus: focusKind(), state: state });
+    if (act.prevent) e.preventDefault();
+    if (e.repeat) return;
+    if (act.action === "record") startRecording();
+    else if (act.action === "stop") stopRecording();
+    else if (act.action === "keep") keep();
+    else if (act.action === "listen") listen();
+    else if (act.action === "play") playTake();
+    else if (act.action === "unsure") $("unsure").checked = !$("unsure").checked;
+  });
+  document.addEventListener("keyup", function (e) {
+    if (!inSession() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyAction({ code: e.code, key: e.key, focus: focusKind(), state: state }).prevent) e.preventDefault();
   });
   window.addEventListener("pagehide", closeMic);
 

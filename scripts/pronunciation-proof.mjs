@@ -41,9 +41,9 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
   AZURE_RULES, FALLBACK_TRUST, TONE_RULES, TRIM_RULES, alignTimings, azurePronunciationRequest, azurePronunciationResult, mergeAzure, pronunciationProvider, applySandhi, expectedSyllables, parseWav, scoreTones, scribeCharTimings, speakerRange,
-  trackPitch, withTone,
+  trackPitch, trimToSpeech, withTone,
 } from "./pronunciation.mjs";
-import { PHRASES, SINGLES, buildPrompts, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
+import { PHRASES, SINGLES, buildPrompts, findSpeaker, parseLabels, recordingsReport, saidTones as readSaid } from "./pronunciation-recordings.mjs";
 import { trackedByGit } from "./pronunciation-record.mjs";
 import { DEFAULT_ELEVEN_MODEL, elevenLibrary, elevenLibraryRequest, elevenSpeechRequest,elevenVoices, elevenVoicesRequest, voiceKeys } from "./voice.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
@@ -459,7 +459,8 @@ const voices = voiceDirs().map((v) => {
   return { ...v, clips, range: speakerRange([...clips.values()].map((c) => c.track)) };
 }).filter((v) => v.clips.size);
 
-if (!voices.length) {
+// (Scoring only the recordings needs none of them.)
+if (!voices.length && !args.has("--recordings")) {
   console.error(`No clips in ${DIR}. Run with --say (free) and/or --fetch (paid).`);
   process.exit(1);
 }
@@ -612,11 +613,20 @@ const RECORDINGS_HELP = [
   "A syllable whose `said` tone is one the text accepts counts as said as shown (a flag on it is a false alarm); any other counts as wrong on purpose (a flag is a catch). Nothing is uploaded: the local scorer runs on this machine.",
 ].join("\n");
 let recordings = null;
-if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
+// Asked once, before anything is written there: a converted clip
+// (`.wav16k/`) is a person's voice as much as the report is about one.
+const recordingsTracked = fs.existsSync(path.join(REC_DIR, "labels.tsv")) && trackedByGit(REC_DIR);
+if (recordingsTracked) {
+  console.error(`Not scoring the recordings: ${REC_DIR} is inside the repository and not gitignored (or already holds tracked files), so nothing is written there.`);
+  if (args.has("--recordings")) process.exit(1);
+} else if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
   const parsed = parseLabels(fs.readFileSync(path.join(REC_DIR, "labels.tsv"), "utf8"));
   const rows = [];
   const problems = [...parsed.problems];
-  for (const label of parsed.rows) {
+  // One person per name whatever its capitals, as the recorder has it:
+  // one range, one line in the tables.
+  const people = parsed.rows.map((r) => ({ ...r, speaker: findSpeaker(parsed.rows, r.speaker).name }));
+  for (const label of people) {
     const { file, text } = label;
     try {
       const src = path.join(REC_DIR, file);
@@ -665,10 +675,6 @@ if (fs.existsSync(path.join(REC_DIR, "labels.tsv"))) {
 function writeRecordingsReport() {
   const rec = recordingsReport({ ...recordings, date: new Date().toISOString().slice(0, 10) });
   console.log(rec.console);
-  if (trackedByGit(REC_DIR)) {
-    console.error(`Not writing report.md: ${REC_DIR} is inside the repository and not gitignored (or already holds tracked files).`);
-    return;
-  }
   const file = path.join(REC_DIR, "report.md");
   fs.writeFileSync(file, rec.markdown, { mode: 0o600 });
   console.log(`Wrote ${file}`);
@@ -919,6 +925,37 @@ p("The engine's defaults on the four voices they were tuned on.");
 const head = ["| | Singles, speaker unknown | Singles, range known | Phrases, speaker unknown | Phrases, range known" + (haveScribe ? " | Phrases, Scribe anchors, range known | Phrases, Scribe times as cuts, range known |" : " |")];
 head.push(`| --- | --- | --- | --- | ---${haveScribe ? " | --- | --- |" : " |"}`);
 const sums = results.map((r) => summary(r.tally));
+// What the trim does to these clips, counted rather than asserted.
+const trimNote = (() => {
+  let clips = 0;
+  let voicedLost = 0;
+  const tails = [];
+  for (const v of voices) {
+    let touched = 0;
+    for (const clip of v.clips.values()) {
+      clips++;
+      const trimmed = trimToSpeech(clip.track);
+      let peak = 0;
+      for (let i = 0; i < clip.track.f0.length; i++) if (clip.track.f0[i] > 0 && clip.track.rms[i] > peak) peak = clip.track.rms[i];
+      let voiced = false;
+      let loud = false;
+      for (let i = 0; i < clip.track.f0.length; i++) {
+        if (clip.track.f0[i] > 0 && !(trimmed.f0[i] > 0)) voiced = true;
+        // "Loud": within 22 dB of the loudest voiced frame.
+        if (clip.track.rms[i] > 0.08 * peak && !(trimmed.rms[i] > 0)) loud = true;
+      }
+      if (voiced) voicedLost++;
+      if (loud) touched++;
+    }
+    if (touched) tails.push(`${touched} of ${v.name.split(" (")[0]}'s`);
+  }
+  const loudNote = tails.length ? `in ${tails.join(", ")} it silences unvoiced frames within 22 dB of the loudest voiced frame (the breathy end of a last syllable, past the ${TRIM_RULES.afterMs} ms kept after the voicing)` : "it silences no frame within 22 dB of the loudest voiced frame";
+  return `On these ${clips} clips it removes a voiced frame from ${voicedLost}, and ${loudNote}. It is for real recordings, which have seconds of room and key noise around the speech.`;
+})();
+const creakNote = ["phraseScribe", "single"].map((key) => {
+  const r = results.find((x) => x.key === key);
+  return r ? `${r.tally.wrong.ok} of ${r.tally.wrong.ok + r.tally.wrong.off + r.tally.wrong.unsure} (${r.title.toLowerCase()})` : null;
+}).filter(Boolean).join(" and ");
 const row = (label, f) => `| ${label} | ${sums.map(f).join(" | ")} |`;
 p([
   ...head,
@@ -1024,7 +1061,11 @@ p(scribeNote);
 p("## Speed");
 p(`Scoring a 3-second, 16 kHz recording on this machine (${process.arch}, Node ${process.version}): ${timing}. Nearly all of it is the pitch track.`);
 p("## Settings this ran with");
-p(`\`TONE_RULES\` = \`${JSON.stringify(RULES)}\`${process.env.LINGO_PROOF_RULES ? " (overridden by LINGO_PROOF_RULES: not the engine's defaults)" : ""}; cuts made by energy are trusted at ${FALLBACK_TRUST}. Before anything is cut or measured the recording is trimmed to its speech (\`TRIM_RULES\` = \`${JSON.stringify(TRIM_RULES)}\`): on these clips that removes no voiced frame and no loud one, so it changes nothing here; it is for real recordings, which have seconds of room and key noise around the speech. Its numbers were chosen on 43 real clips from one speaker and are set on the keeping side.`);
+p(`\`TONE_RULES\` = \`${JSON.stringify(RULES)}\`${process.env.LINGO_PROOF_RULES ? " (overridden by LINGO_PROOF_RULES: not the engine's defaults)" : ""}; cuts made by energy are trusted at ${FALLBACK_TRUST}. Before anything is cut or measured the recording is trimmed to its speech (\`TRIM_RULES\` = \`${JSON.stringify(TRIM_RULES)}\`). ${trimNote}`);
+p("");
+p(`**What these clips cannot measure.** Every number in \`TRIM_RULES\`, and the half weight a creaky syllable's "ok" carries, was set on 43 real recordings from one speaker, one microphone, one room. Synthesized clips have no lead-in, no room and almost no creak, so nothing above tests those numbers, held out or not. What keeps a badly placed bar from costing a wrong flag is in the code and in \`npm test\` (a short syllable after a long pause, a soft one either side of the floor, a loud knock): a run as loud as the speech is always kept; when the trim removed something long enough to be a syllable, or left fewer voiced stretches than syllables, the untrimmed track is scored; and whenever the bars disagreed about a run, nothing in that recording is flagged ("unsure", reason "trimmed").`);
+p("");
+p(`**Creaky syllables.** A creaky syllable may be "ok" when its voiced part fits (it is never "off"), is marked \`creaky\`, and is left out of \`overall\`. That rule let more wrong tones pass as ok when it was introduced: phrases on Scribe's cuts went from 52 to 58 of 576, single syllables with nothing known about the speaker from 24 to 25 of 192 (the commit before against the commit with it, same clips). In this run: ${creakNote}.`);
 p("## Before wiring this to a route");
 p([
   "- **Start with single syllables and drills.** Their flags have room to spare; phrase flags rest on a half-semitone margin chosen on these clips, and the held-out phrase false alarms are the highest number in this report.",

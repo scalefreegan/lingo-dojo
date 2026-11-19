@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expectedSyllables, parseWav, scoreTones, speakerRange, trackPitch } from "./pronunciation.mjs";
 import {
-  GROUPS, LABELS_HEADER, MAX_UPLOAD_BYTES, MODEL_VOICES, PROCESSING, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout,
+  GROUPS, LABELS_HEADER, MAX_UPLOAD_BYTES, MODEL_VOICES, PAGE_FUNCTIONS, PROCESSING, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout,
 } from "./pronunciation-recordings.mjs";
 import { readCodePoints } from "../web/src/script/zh.ts";
 
@@ -74,8 +74,9 @@ export function loopbackHost(host, port) {
  * The tool as a request handler, so a test can mount it on any port.
  *   dir       where recordings and labels.tsv go
  *   clipsDir  the proof's clip cache (model audio)
+ *   parse     how labels.tsv is read (a test puts a failing reader here)
  */
-export function createRecorder({ dir, clipsDir }) {
+export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
   const findModel = modelFinder(clipsDir);
   const prompts = buildPrompts((text) => Boolean(findModel(text)));
   const byId = new Map(prompts.map((p) => [p.id, p]));
@@ -85,12 +86,12 @@ export function createRecorder({ dir, clipsDir }) {
   // re-reading every file on every clip.
   const tracks = new Map();
 
-  const readRows = () => (fs.existsSync(labelsFile) ? parseLabels(fs.readFileSync(labelsFile, "utf8")).rows : []);
+  const readRows = () => (fs.existsSync(labelsFile) ? parse(fs.readFileSync(labelsFile, "utf8")).rows : []);
 
   function page() {
     const nonce = crypto.randomBytes(16).toString("base64");
     const data = JSON.stringify({ prompts, groups: GROUPS }).replace(/</g, "\\u003c");
-    return { nonce, html: template.replaceAll("__NONCE__", nonce).replace("__DATA__", () => data) };
+    return { nonce, html: template.replaceAll("__NONCE__", nonce).replace("__SHARED__", () => PAGE_FUNCTIONS).replace("__DATA__", () => data) };
   }
 
   function speakers() {
@@ -151,7 +152,8 @@ export function createRecorder({ dir, clipsDir }) {
 
   /** One line onto labels.tsv, on a line of its own whatever the file
    *  ended with: a hand-edited file whose last line has no newline would
-   *  otherwise swallow the new row and lose both. */
+   *  otherwise swallow the new row and lose both. Returns the file's size
+   *  before the line, which is where to cut it back to. */
   function appendLabel(line) {
     if (!fs.existsSync(labelsFile)) fs.writeFileSync(labelsFile, `${LABELS_HEADER}\n`, { flag: "wx", mode: 0o600 });
     const size = fs.statSync(labelsFile).size;
@@ -167,6 +169,7 @@ export function createRecorder({ dir, clipsDir }) {
       }
     }
     fs.appendFileSync(labelsFile, `${glue}${line}\n`);
+    return size;
   }
 
   async function keep(req, url) {
@@ -186,20 +189,29 @@ export function createRecorder({ dir, clipsDir }) {
     if (!PROCESSING.includes(processing)) throw new HttpError(409, "This page is out of date with the recorder. Reload the page and record this one again.");
     // A name already in the labels is that person, whatever its capitals,
     // and stays in the group it was first given.
-    let before;
-    try {
-      before = readRows();
-    } catch (e) {
-      console.error(`labels.tsv can't be read: ${e.message}`);
-      throw new HttpError(500, "labels.tsv could not be read, so the clip was not kept. The terminal has the details.");
-    }
-    const known = findSpeaker(before, typed);
-    if (known?.group && known.group !== group) throw new HttpError(409, `${known.name} is already recorded as ${known.group === "child" ? "a child" : "an adult"}. Go back to the start and pick that name, or use a different one.`);
-    const speaker = known?.name ?? typed;
+    const who = () => {
+      let rows;
+      try {
+        rows = readRows();
+      } catch (e) {
+        console.error(`labels.tsv can't be read: ${e.message}`);
+        throw new HttpError(500, "labels.tsv could not be read, so the clip was not kept. The terminal has the details.");
+      }
+      const known = findSpeaker(rows, typed);
+      if (known?.group && known.group !== group) throw new HttpError(409, `${known.name} is already recorded as ${known.group === "child" ? "a child" : "an adult"}. Go back to the start and pick that name, or use a different one.`);
+      return known?.name ?? typed;
+    };
+    // Asked before the upload is read, to refuse early…
+    who();
     if (!/^audio\/(wav|x-wav|wave)$/.test(String(req.headers["content-type"] ?? "").split(";")[0].trim())) throw new HttpError(415, "send the recording as audio/wav");
     const wav = await body(req);
     const check = checkWav(wav);
     if (!check.ok) throw new HttpError(400, check.error);
+    // …and again now that it has arrived: another tab may have kept a clip
+    // under the same name, in other capitals or the other group, while
+    // this one was uploading. Nothing below waits, so this answer holds
+    // until the label is written.
+    const speaker = who();
 
     // Saved first; the readout below can fail without losing the clip.
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -207,16 +219,24 @@ export function createRecorder({ dir, clipsDir }) {
     fs.writeFileSync(path.join(dir, file), wav, { flag: "wx", mode: 0o600 });
     const label = { file, text: prompt.text, said: prompt.said, speaker, group, unsure: q.get("unsure") === "1", processing };
     let rows;
+    let sizeBefore = null;
     try {
-      appendLabel(formatLabel(label));
+      sizeBefore = appendLabel(formatLabel(label));
       // Saved means the row reads back: nothing is answered on trust.
       rows = readRows();
       const back = rows.find((r) => r.file === file);
       if (!back || back.text !== label.text || back.said !== label.said || back.speaker !== label.speaker) throw new Error("the new row does not read back");
     } catch (e) {
       // A clip without its label is a file nobody can score: take it away
-      // again (it is this request's own file) and say so.
+      // again (it is this request's own file) and say so. And a label
+      // without its clip would show the prompt as done: the line, if it
+      // was written, comes off again.
       fs.rmSync(path.join(dir, file), { force: true });
+      try {
+        if (sizeBefore !== null) fs.truncateSync(labelsFile, sizeBefore);
+      } catch (e2) {
+        console.error(`labels.tsv could not be cut back after ${file}: ${e2.message}. Remove its line by hand.`);
+      }
       console.error(`label not written for ${file}: ${e.message}`);
       throw new HttpError(500, "The clip could not be added to labels.tsv, so it was not kept. The terminal has the details.");
     }

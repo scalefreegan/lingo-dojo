@@ -9,12 +9,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import { encodeWav } from "../pronunciation.mjs";
 import {
-  LABELS_HEADER, MAX_UPLOAD_BYTES, PHRASES, SINGLES, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, newFileName, parseLabels, promptKey, readout, recordingsReport,
-  saidTones, speakerTable, speakerTally,
+  LABELS_HEADER, MAX_UPLOAD_BYTES, PAGE_FUNCTIONS, PHRASES, SINGLES, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, keyAction, newFileName, parseLabels,
+  processingOf, promptKey, readout, recordingsReport, saidTones, speakerTable, speakerTally,
 } from "../pronunciation-recordings.mjs";
 import { createRecorder, loopbackHost, trackedByGit } from "../pronunciation-record.mjs";
 
@@ -271,6 +271,61 @@ describe("the recordings report", () => {
   });
 });
 
+describe("the page's keys", () => {
+  const act = (code, focus, state) => keyAction({ code, key: code === "Space" ? " " : code === "Enter" ? "Enter" : code.replace("Key", "").toLowerCase(), focus, state });
+
+  it("space records and stops, over a focused button too; only the checkbox keeps it", () => {
+    for (const focus of ["none", "button"]) {
+      assert.deepEqual(act("Space", focus, "idle"), { action: "record", prevent: true }, focus);
+      assert.deepEqual(act("Space", focus, "review"), { action: "record", prevent: true }, focus);
+      assert.deepEqual(act("Space", focus, "recording"), { action: "stop", prevent: true }, focus);
+      // Busy: nothing happens, and above all the focused button (Skip,
+      // after a mouse click) is not pressed.
+      for (const state of ["working", "saving"]) assert.deepEqual(act("Space", focus, state), { action: null, prevent: true }, `${focus} ${state}`);
+    }
+    for (const state of ["idle", "recording", "working", "review", "saving"]) {
+      assert.deepEqual(act("Space", "checkbox", state), { action: null, prevent: false }, state);
+      assert.deepEqual(act("Space", "text", state), { action: null, prevent: false }, state);
+    }
+  });
+
+  it("enter keeps a take, except over a button, which it presses", () => {
+    assert.deepEqual(act("Enter", "none", "review"), { action: "keep", prevent: true });
+    assert.deepEqual(act("Enter", "checkbox", "review"), { action: "keep", prevent: true });
+    assert.deepEqual(act("Enter", "button", "review"), { action: null, prevent: false });
+    for (const state of ["idle", "recording", "working", "saving"]) assert.equal(act("Enter", "none", state).action, null, state);
+  });
+
+  it("the model is never played while the microphone records, the tail after Stop included", () => {
+    assert.equal(act("KeyL", "none", "idle").action, "listen");
+    assert.equal(act("KeyL", "button", "review").action, "listen");
+    for (const state of ["recording", "working", "saving"]) assert.equal(act("KeyL", "none", state).action, null, state);
+    assert.equal(act("KeyP", "none", "review").action, "play");
+    assert.equal(act("KeyP", "none", "idle").action, null);
+    assert.equal(act("KeyN", "none", "review").action, "unsure");
+    assert.equal(act("KeyN", "none", "recording").action, null);
+    assert.equal(act("KeyL", "text", "idle").action, null);
+    assert.equal(act("KeyX", "none", "review").action, null);
+  });
+
+  it("a clip is raw only when the browser says all three kinds of processing are off", () => {
+    assert.equal(processingOf({ echoCancellation: false, noiseSuppression: false, autoGainControl: false }), "raw");
+    assert.equal(processingOf({ echoCancellation: false, noiseSuppression: true, autoGainControl: false }), "processed");
+    assert.equal(processingOf({ echoCancellation: false, noiseSuppression: false }), "processed");
+    assert.equal(processingOf({}), "processed");
+    assert.equal(processingOf(null), "processed");
+  });
+
+  it("the page gets these functions' own source", () => {
+    assert.ok(PAGE_FUNCTIONS.includes(String(keyAction)) && PAGE_FUNCTIONS.includes(String(processingOf)));
+    // What the page runs is what was tested: the source evaluates to a
+    // function that answers the same.
+    const again = new Function(`${PAGE_FUNCTIONS}; return { keyAction, processingOf };`)();
+    assert.deepEqual(again.keyAction({ code: "Space", key: " ", focus: "button", state: "idle" }), { action: "record", prevent: true });
+    assert.equal(again.processingOf({ echoCancellation: false, noiseSuppression: false, autoGainControl: false }), "raw");
+  });
+});
+
 describe("the recorder's HTTP handler", () => {
   let tmp;
   let dir;
@@ -295,8 +350,10 @@ describe("the recorder's HTTP handler", () => {
           resolve({ status: res.statusCode, headers: res.headers, raw, json });
         });
       });
-      req.on("error", reject);
-      // A refused upload may be answered and closed before it is all sent.
+      // A refused upload may be answered and closed before it is all sent:
+      // the write then fails (EPIPE) a moment before the answer is read,
+      // so an error only counts if no answer follows it.
+      req.on("error", (e) => setTimeout(() => reject(e), 500));
       req.end(body ?? undefined);
     });
   }
@@ -314,10 +371,10 @@ describe("the recorder's HTTP handler", () => {
   const others = [];
   /** A second recorder over the same clips with a recordings folder of
    *  its own, for tests that prepare labels.tsv by hand. */
-  async function mount(name) {
+  async function mount(name, options = {}) {
     const d = path.join(tmp, name);
     fs.mkdirSync(d, { recursive: true });
-    const srv = http.createServer(createRecorder({ dir: d, clipsDir }).handler);
+    const srv = http.createServer(createRecorder({ dir: d, clipsDir, ...options }).handler);
     await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
     others.push(srv);
     return { dir: d, at: srv.address().port };
@@ -363,7 +420,16 @@ describe("the recorder's HTTP handler", () => {
     assert.match(csp, /connect-src 'self'/);
     const nonce = csp.match(/script-src 'nonce-([^']+)'/)[1];
     assert.ok(html.includes(`<script nonce="${nonce}">`));
-    assert.ok(!html.includes("__NONCE__") && !html.includes("__DATA__"));
+    assert.ok(!html.includes("__NONCE__") && !html.includes("__DATA__") && !html.includes("__SHARED__"));
+    // The key handling and the label's recording setting are the tested
+    // functions, and the page uses them.
+    assert.ok(html.includes(PAGE_FUNCTIONS));
+    assert.match(html, /keyAction\(\{ code: e\.code, key: e\.key, focus: focusKind\(\), state: state \}\)/);
+    assert.match(html, /processing = processingOf\(/);
+    // Listen plays only when nothing is being recorded; Skip gives the
+    // focus back after a click.
+    assert.match(html, /function listen\(\) \{ if \(current && \(state === "idle" \|\| state === "review"\)\)/);
+    assert.match(html, /\$\("skip"\)\.addEventListener\("click", function \(\) \{ this\.blur\(\);/);
     // No link, script, image, font or stylesheet from another origin: the
     // only URL in the page is the SVG namespace, which is never fetched.
     assert.deepEqual([...new Set(html.match(/https?:\/\/[^\s"'<)]+/g))], ["http://www.w3.org/2000/svg"]);
@@ -555,6 +621,8 @@ describe("the recorder's HTTP handler", () => {
 
     // It reads but can't be added to: the clip written a moment before
     // is taken away again, and the speaker's progress doesn't move.
+    // (Root writes through a read-only mode: nothing to see there.)
+    if (process.getuid?.() === 0) return;
     const locked = await mount("extra-locked");
     fs.writeFileSync(path.join(locked.dir, "labels.tsv"), "old-1.wav\t你好\t\tPat\tadult\n", { mode: 0o400 });
     const res2 = await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, locked.at);
@@ -562,6 +630,107 @@ describe("the recorder's HTTP handler", () => {
     assert.match(res2.json.error, /could not be added to labels.tsv, so it was not kept/);
     assert.deepEqual(fs.readdirSync(locked.dir), ["labels.tsv"]);
     assert.deepEqual((await call({ url: "/api/progress?speaker=Pat", at: locked.at })).json.done, [promptKey({ text: "你好" })]);
+  });
+
+  it("takes the line off again when it was written but doesn't read back", async () => {
+    // A reader that loses the newest row once the file has two: the append
+    // succeeds and the check after it fails.
+    const existing = `${LABELS_HEADER}\nold-1.wav\t你好\t\tPat\tadult\t\traw\n`;
+    const other = await mount("extra-readback", { parse: (text) => { const all = parseLabels(text); return all.rows.length > 1 ? { ...all, rows: all.rows.slice(0, -1) } : all; } });
+    fs.writeFileSync(path.join(other.dir, "labels.tsv"), existing);
+    const res = await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, other.at);
+    assert.equal(res.status, 500);
+    assert.match(res.json.error, /could not be added to labels.tsv, so it was not kept/);
+    // Neither the clip nor its line is left: the file is byte for byte
+    // what it was, so the prompt is not "done" on resume.
+    assert.deepEqual(fs.readdirSync(other.dir), ["labels.tsv"]);
+    assert.equal(fs.readFileSync(path.join(other.dir, "labels.tsv"), "utf8"), existing);
+
+    // The same with no trailing newline before: the glue goes too.
+    const bare = await mount("extra-readback-bare", { parse: (text) => { const all = parseLabels(text); return all.rows.length > 1 ? { ...all, rows: all.rows.slice(0, -1) } : all; } });
+    fs.writeFileSync(path.join(bare.dir, "labels.tsv"), existing.trimEnd());
+    assert.equal((await keep({ prompt: "r01", speaker: "Pat", group: "adult" }, wav(220, 222), {}, bare.at)).status, 500);
+    assert.equal(fs.readFileSync(path.join(bare.dir, "labels.tsv"), "utf8"), existing.trimEnd());
+  });
+
+  it("checks the name again once the upload has arrived", async () => {
+    // Two tabs: "Lee" as an adult starts a slow upload; "lee" as a child
+    // keeps a clip meanwhile. The first must not land in the other group.
+    const other = await mount("extra-race");
+    const body = wav(220, 222);
+    const q = new URLSearchParams({ prompt: "r01", text: "妈", said: "", speaker: "Lee", group: "adult", processing: "raw" });
+    const slow = http.request({ host: "127.0.0.1", port: other.at, method: "POST", path: `/api/keep?${q}`, headers: { Host: `127.0.0.1:${other.at}`, Origin: `http://127.0.0.1:${other.at}`, "Content-Type": "audio/wav", "Content-Length": body.length } });
+    const answer = new Promise((resolve, reject) => {
+      slow.on("error", reject);
+      slow.on("response", (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }));
+      });
+    });
+    slow.write(body.subarray(0, 2000));
+    // The server has the headers and half the clip; the other tab finishes first.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal((await keep({ prompt: "r03", speaker: "lee", group: "child" }, wav(180, 260), {}, other.at)).status, 200);
+    slow.end(body.subarray(2000));
+    const late = await answer;
+    assert.equal(late.status, 409);
+    assert.match(late.json.error, /lee is already recorded as a child/);
+    const { rows } = parseLabels(fs.readFileSync(path.join(other.dir, "labels.tsv"), "utf8"));
+    assert.deepEqual(rows.map((r) => [r.speaker, r.group]), [["lee", "child"]]);
+    assert.equal(fs.readdirSync(other.dir).filter(isRecordingName).length, 1);
+  });
+});
+
+describe("the proof and the recordings folder", () => {
+  const repo = path.resolve(import.meta.dirname, "..", "..");
+  const proof = (dir) => spawnSync(process.execPath, [path.join(repo, "scripts", "pronunciation-proof.mjs"), "--recordings"], { cwd: repo, encoding: "utf8", env: { ...process.env, LINGO_PROOF_DIR: dir, LINGO_PROOF_REPORT: path.join(dir, "never-written.md") } });
+  const tone = (from, to) => Buffer.from(encodeWav(Float32Array.from({ length: 8000 }, (_, i) => {
+    const x = (2 * Math.PI * (from + ((to - from) * i) / 8000) * i) / 16_000;
+    return 0.3 * (Math.sin(x) + Math.sin(2 * x) / 2 + Math.sin(3 * x) / 3);
+  }), 16_000));
+
+  it("writes nothing where git would track it: asked before a clip is converted", () => {
+    // A folder inside the repository that no ignore rule covers, holding a
+    // clip that would have to be converted (into .wav16k/, a voice).
+    const dir = fs.mkdtempSync(path.join(repo, "scripts", "tests", ".tmp-proof-"));
+    try {
+      const rec = path.join(dir, "recordings");
+      fs.mkdirSync(rec);
+      assert.equal(trackedByGit(rec, repo), true);
+      fs.writeFileSync(path.join(rec, "a.m4a"), "not audio");
+      fs.writeFileSync(path.join(rec, "labels.tsv"), "a.m4a\t妈\t\tsam\tadult\n");
+      const run = proof(dir);
+      assert.equal(run.status, 1, run.stderr);
+      assert.match(run.stderr, /Not scoring the recordings: .* nothing is written there/);
+      assert.deepEqual(fs.readdirSync(rec).sort(), ["a.m4a", "labels.tsv"]);
+      assert.deepEqual(fs.readdirSync(dir), ["recordings"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scores recordings outside the repository, one person per name whatever its capitals", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-proof-rec-"));
+    try {
+      const rec = path.join(dir, "recordings");
+      fs.mkdirSync(rec);
+      const lines = [];
+      for (const [k, name] of ["Mia", "mia", "MIA"].entries()) {
+        fs.writeFileSync(path.join(rec, `c${k}.wav`), tone(180 + 10 * k, 181 + 10 * k));
+        lines.push(`c${k}.wav\t妈\t\t${name}\tadult`);
+      }
+      fs.writeFileSync(path.join(rec, "labels.tsv"), `${lines.join("\n")}\n`);
+      const run = proof(dir);
+      assert.equal(run.status, 0, run.stderr);
+      assert.match(run.stdout, /3 recordings from `labels.tsv`, 1 speaker\(s\), 3 judged syllables\./);
+      const report = fs.readFileSync(path.join(rec, "report.md"), "utf8");
+      assert.equal(report.split("\n").filter((l) => /^\| Mia \| adult \|/.test(l)).length, 1);
+      assert.ok(!/\| (mia|MIA) \|/.test(report));
+      assert.ok(!fs.existsSync(path.join(dir, "never-written.md")));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

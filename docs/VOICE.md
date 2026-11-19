@@ -576,7 +576,9 @@ One result whichever engine ran:
 
 `verdict` is `off` only when the engine is confident; whatever it can't
 vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
-`neutral`, `untimed`, `octave`, `unclear`, `omitted`). A false alarm costs more than a
+`neutral`, `untimed`, `octave`, `trimmed`, `unclear`, `omitted`). A syllable read through creak also carries
+`creaky: true`; a creaky `ok` is half a measurement and is left out of
+`overall`. A false alarm costs more than a
 miss. `margin` is how far the contour is from the nearest right answer, in
 semitones (0 or more: every accepted tone is ruled out). `pitch` is the syllable's curve for drawing: 16 points in semitones
 above or below the speaker's median, `null` where unvoiced;
@@ -629,10 +631,20 @@ browser already sends, with no dependency:
    runs of 80 ms or more within 26 dB of the loudest voiced frame, plus
    shorter ones that loud within 200 ms of those; 250 ms is kept before
    the first and 120 ms after the last, and further for as long as the
-   sound stays loud (a creaky last syllable). These numbers (`TRIM_RULES`)
-   were chosen on 43 real clips from one speaker, so each is set on the
-   keeping side; on the synthesized proof clips the trim removes no
-   voiced frame and no loud one.
+   sound stays loud (a creaky last syllable). Every number in `TRIM_RULES`
+   was chosen on 43 real clips from ONE speaker (as was the half weight of
+   a creaky `ok`), and the synthesized proof cannot measure any of them:
+   its clips have no lead-in, no room and almost no creak. So the trim is
+   never trusted with a flag. A voiced run within 12 dB of the loudest is
+   kept at any length and distance (a short last syllable after a
+   beginner's pause; `sureDb`). The scorer goes back to the untrimmed
+   track when the trim removed a run long enough to be a syllable (soft,
+   but 80 ms) or left fewer voiced stretches than there are syllables.
+   And when the bars disagreed about a run (kept on loudness alone, or
+   either fallback), or a run was removed within 200 ms of a syllable's
+   voiced part, a contour that rules the tone out is `unsure`, reason
+   `trimmed`, never `off`. The edges (a pause just over 200 ms, a run
+   just under 80 ms, a syllable just under the floor) are in `npm test`.
 3. Cuts: per-syllable `timings` when the caller has extents it can trust
    (Azure's words), else `segmentSyllables`, which cuts the speech at its
    quietest, least voiced frames given the syllable count, kept on Scribe's
@@ -683,9 +695,13 @@ browser already sends, with no dependency:
    its range, the end of a fourth tone as much as a third), and otherwise
    the syllable is `unsure` (`creakFlags` lets creaky syllables be
    flagged; off). A pitch track that jumps seven semitones or more
-   between neighbouring frames inside the syllable is an octave slip the
-   tracker didn't mend (it mends 80 ms or less): `unsure`, reason
-   `octave`, whatever the label.
+   between neighbouring frames is cut there; a piece of three frames or
+   fewer is a glitch at the edge of a voiced run, or the neighbouring
+   syllable's pitch where two meet without a gap, and is dropped. Only a
+   jump between two longer pieces is an octave slip the tracker didn't
+   mend (it mends 80 ms or less): `unsure`, reason `octave`, whatever the
+   label, and checked before the creaky-third rule (a slipped stretch
+   reads low, which is what that rule looks for).
    The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
    trades catches for false alarms.
 
@@ -725,7 +741,9 @@ another tone on purpose, each with the proof's cached clip as the model
 records with MediaRecorder and writes 16 kHz mono PCM WAV in the browser,
 as the app does, with three differences: the browser's echo cancellation,
 noise suppression and automatic gain are asked off (raw audio can be
-degraded later, processed audio can't be undone); the recording is decoded
+degraded later, processed audio can't be undone; each clip's label says
+what the microphone track reports it applied, `getSettings()`, not what
+was asked); the recording is decoded
 straight at 16 kHz, so the browser's band-limited resampler does the work
 (the app's `web/src/recorder.ts` plays a 48 kHz buffer through a 16 kHz
 OfflineAudioContext, which folds whatever lay above 8 kHz back into the
@@ -742,7 +760,11 @@ reads back from the file. The page names a prompt by its text and what was
 asked, so a tab left open across a restart is told to reload rather than
 filing a clip under another text. A name is one person whatever its
 capitals, in the group first given; a typed name that already exists is
-asked about ("Carry on as …"), never merged silently.
+asked about ("Carry on as …"), never merged silently. What a key does
+is one pure function (`keyAction`, whose source the recorder puts into
+the page, so `npm test` runs the page's own code): space records and
+stops even over a focused button, only the checkbox keeps it, and the
+model clip never plays while the microphone is recording.
 What is done is derived from that file, so a session resumes. After each
 kept clip the page prints the local scorer's verdict as a test readout,
 not a grade. `npm run pron:proof` (`pronunciation-proof.mjs --recordings`)

@@ -173,6 +173,53 @@ export function findSpeaker(rows, name) {
   return { name: first.speaker, group: rows.find((r) => r.speaker === first.speaker && r.group)?.group ?? "" };
 }
 
+/**
+ * What a key press means on the recording page: `{ action, prevent }`,
+ * the action one of "record", "stop", "keep", "listen", "play", "unsure"
+ * or null, and whether the browser's own handling of the key is stopped.
+ * Pure, and written in the page's plain JavaScript: the recorder puts this
+ * function's own source into the page (PAGE_FUNCTIONS), so the page and
+ * the tests run the same code.
+ *   code, key  from the keyboard event
+ *   focus      what has the focus: "checkbox", "text", "button" or "none"
+ *   state      "idle", "recording", "working", "review" or "saving"
+ *
+ * Space always means record or stop, also over a focused button (a button
+ * clicked with the mouse keeps the focus, and space would press it again:
+ * Skip, for one, would skip a prompt at every press). Only the checkbox
+ * keeps space for itself. Enter keeps the take unless a button has the
+ * focus, where it presses that button.
+ */
+export function keyAction({ code, key, focus, state }) {
+  var none = { action: null, prevent: false };
+  var k = String(key || "").toLowerCase();
+  if (focus === "text") return none;
+  if (code === "Space" || k === " ") {
+    if (focus === "checkbox") return none;
+    return { action: state === "recording" ? "stop" : state === "idle" || state === "review" ? "record" : null, prevent: true };
+  }
+  if (k === "enter") return focus === "button" || state !== "review" ? none : { action: "keep", prevent: true };
+  // The model is never played while the microphone is recording, which
+  // includes the moment after Stop ("working"): with echo cancellation
+  // off it would be in the take.
+  if (k === "l") return { action: state === "idle" || state === "review" ? "listen" : null, prevent: false };
+  if (k === "p") return { action: state === "review" ? "play" : null, prevent: false };
+  if (k === "n") return { action: state === "review" ? "unsure" : null, prevent: false };
+  return none;
+}
+
+/** How a clip was recorded, from what the browser says it applied to the
+ *  microphone track (MediaStreamTrack.getSettings()), not from what was
+ *  asked: "raw" only when all three kinds of processing are reported off.
+ *  A browser that doesn't say counts as "processed". */
+export function processingOf(settings) {
+  var s = settings || {};
+  return s.echoCancellation === false && s.noiseSuppression === false && s.autoGainControl === false ? "raw" : "processed";
+}
+
+/** The source of the functions above, as the page's script declares them. */
+export const PAGE_FUNCTIONS = `${keyAction}\n  ${processingOf}`;
+
 /** What makes a prompt done for a speaker: the text and what was asked. */
 export const promptKey = ({ text, said = "" }) => `${text}\t${said}`;
 
