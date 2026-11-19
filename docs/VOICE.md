@@ -576,7 +576,11 @@ One result whichever engine ran:
 
 `verdict` is `off` only when the engine is confident; whatever it can't
 vouch for is `unsure`, with a `reason` (`short`, `unvoiced`, `creaky`,
-`neutral`, `untimed`, `unclear`, `omitted`). A false alarm costs more than a
+`neutral`, `untimed`, `octave`, `apart`, `soft`, `clipped`, `timings`,
+`edges`, `lopsided`, `trimmed`, `scattered`, `background`, `track`,
+`unclear`, `omitted`). A syllable read through creak also carries
+`creaky: true`; a creaky `ok` is half a measurement and is left out of
+`overall`. A false alarm costs more than a
 miss. `margin` is how far the contour is from the nearest right answer, in
 semitones (0 or more: every accepted tone is ruled out). `pitch` is the syllable's curve for drawing: 16 points in semitones
 above or below the speaker's median, `null` where unvoiced;
@@ -621,21 +625,144 @@ browser already sends, with no dependency:
    Octave slips are undone per voiced run (a short piece an octave from
    the rest of its run), never across a silence. Each frame also carries
    its zero-crossing rate, which tells creak from the hiss of s or sh.
-2. Cuts: per-syllable `timings` when the caller has extents it can trust
-   (Azure's words), else `segmentSyllables`, which cuts the speech at its
-   quietest, least voiced frames given the syllable count, kept on Scribe's
-   character times when those are passed as `anchors` (below). Its cuts
-   scale the reported confidence (`FALLBACK_TRUST`), and a flag on any
-   syllable of a phrase needs a little more margin (`phraseMarginSt`),
-   whoever made the cuts; neither is mixed into `quality`, which is only
-   how clean the pitch measurement was.
-3. `classifyContour`: five points of each syllable's voiced part against
+   The track carries its pitch twice: `f0`, finished on the whole
+   recording (silence floor, octave repairs, range gate), for drawing;
+   and `rawF0`, from before those steps, which is what `scoreTones`
+   reads. It is a plain field, so a track survives a structured copy (a
+   worker's `postMessage`, a cache that keeps typed arrays). It does not
+   survive JSON, which turns a typed array into an object with no
+   length: such a track is not used at all. A track without a usable
+   `rawF0` is tracked again from the samples, and with no samples
+   nothing is judged (`track`). The recording's length (the 30-second
+   limit, "inside the recording") is taken from the samples when they
+   are passed, else from a usable track; never from a copy's arrays.
+2. Where the speech is. A push-to-talk recording has a second of room
+   before and after the words, with key presses, knocks, coughs, another
+   voice, a hum. There are two ways of knowing where the syllables are,
+   and they are not equals.
+
+   **With `timings`** (one `{ startMs, endMs }` per syllable from a
+   recogniser whose extents can be trusted: Azure's per-syllable
+   `Phonemes`, through `mergeAzure`). This is the way to score a real
+   microphone. Pitch is measured inside each span and nowhere else: the
+   silence floor, the octave repairs, the range gate and the recording's
+   own range are all redone on the spans' frames alone (from `rawF0`),
+   so nothing outside the spans it is given can change a verdict.
+
+   That is true by construction and only as good as the spans. **It
+   assumes the recogniser draws the same spans on a noisy recording as
+   on a clean one, and that has not been measured**: the proof's noise
+   rows on timings reuse Azure's spans for the clean clips. So the spans
+   are doubted too (`TIMING_RULES`):
+   - Checked first (`timingsProblem`): one per syllable, in order, each
+     40 to 1500 ms, inside the recording. If not, every syllable is
+     `unsure`, reason `timings`, and the result's `timingsProblem` says
+     why: never a guess from energy.
+   - `edges`: the recording is read again with all spans 40 ms earlier
+     and later and with each boundary between neighbours 40 ms either
+     way (`jitteredTimings`, at most 2n more readings), and a verdict
+     stands only where every reading gives it for the same tone. (A
+     reading where the moved span merely takes in a separate sound,
+     `apart`, is not held against it.) A span that a move would leave
+     under 40 ms (a short one at the end of the recording) stays put in
+     that reading while the others move; a syllable whose own span moved
+     in no reading at all is `edges` too, since no readings agreeing is
+     not agreement. The result's `readings` says how many were made.
+   - `lopsided`: of two neighbouring spans, one with hardly any voice in
+     it, or one under 100 ms beside one three times its length. One span
+     has the other's sound; neither is judged.
+   - A word Azure times as a whole is cut by energy inside that word's
+     span only, and those cuts are marked `rough`: they count for what a
+     fallback cut does (`FALLBACK_TRUST`).
+   What the guards cost and what wrong spans still get through is the
+   proof's "When the spans are wrong" (and in small in `npm test`).
+   **The jitter, sliver and lopsided values were chosen on the same
+   clips and the same span errors that table measures: it is in-sample.**
+   What it supports: spans 50 ms off, or with one boundary 50 ms off,
+   are mostly withheld (2 to 6 wrong tones still pass as ok in some 750
+   to 1500 phrase syllables). A span that swallowed its neighbour is
+   withheld when the neighbour is left a sliver (60 ms: 0 and 1 wrong
+   ok), which is the case the sliver bar was set for; leave the
+   neighbour 110, 130 or 160 ms and 14, 9 and 8 wrong tones pass as ok,
+   with one false alarm. Spans 100 ms off and more pass some wrong tones
+   as ok as well. On generated syllables run together (20 ms apart,
+   `npm test`) the off-design rows and the 100 ms rows also produce
+   false alarms.
+
+   Scribe's character times are where the
+   recogniser emitted a character, not a syllable's extent: they are
+   `anchors` for the energy cuts at most, never `timings`.
+
+   **Without** (the fallback). The speech has to be found by energy
+   (`TRIM_RULES`: voiced runs of 80 ms or more within 12 dB of the loudest
+   voiced frame are speech by any measure; 250 ms is kept before the
+   first and 120 ms after the last). Five rounds of review each found a
+   sound that the bars took for speech or speech they took for noise, so
+   the bars are not believed. The rule: any doubt about where the speech
+   is ends in `unsure`, for an `ok` as much as for an `off`.
+   - A run that may or may not be speech (anything else within 200 ms of
+     the sure runs; in a phrase, any run within 26 dB wherever it is) is
+     read both ways, in every combination with the other doubted runs (up
+     to three: eight readings), and a verdict stands only where all
+     readings give the same verdict and the same tone. The rest is
+     `trimmed`.
+   - Sounds long enough to be a syllable that lie more than 200 ms
+     apart leave the whole recording unjudged, `scattered`: one may be a
+     cough, another voice, a chair, or the speaker paused, and reading
+     them all as speech puts the cuts on the wrong characters. "Long
+     enough" is 60 ms of sound, which is a voiced run of 90 ms in the
+     track (a frame's analysis window reaches some 15 ms past each end of
+     a sound): a 40 ms knock is a 70 ms run and is not one. It is
+     doubted instead, like any other stray run.
+   - More than three doubted runs: not read at all (`trimmed`).
+   Every number in `TRIM_RULES` was chosen on 43 real clips from ONE
+   speaker (as was the half weight of a creaky `ok`); none is held out.
+   `trimToSpeech` is the bars' opinion alone, for drawing and the proof.
+
+   **Either way**, a pitched background (a voiced stretch of 300 ms or
+   more, softer than the speech, holding its pitch within half a
+   semitone: mains hum, a fan) leaves everything unjudged, `background`:
+   it is under the syllables too. It is the one thing outside the timed
+   spans that is looked at, and it can only withhold verdicts.
+
+   What this costs and what it still lets through is measured, per
+   syllable against the clean clip: the proof's "With lead-in noise"
+   (`scripts/pronunciation-synth.mjs` makes the disturbances), and in
+   small in `npm test`. On timings nothing outside the given spans moves
+   a verdict (with the assumption above). By energy, a stray sound costs
+   most of a phrase's verdicts and makes none: under noise the fallback
+   is safe, not useful, and its caution costs right answers on clean
+   clips as well (the rework took right syllables marked `ok` from 89.1%
+   to 85.9% for single syllables and from 70.8% to 66.1% in phrases).
+
+   A recording that is loud in its first 20 ms started inside a
+   syllable: the syllable whose span begins there (it starts under 20 ms
+   in, `clippedMs`) is not judged (`clipped`), on either path. A route should ask for such a recording
+   again. (The proof scores its synthesized clips, which begin with
+   their first sound, behind 200 ms of silence for this reason.)
+
+   **Not made safe on either path**, because the disturbance is inside
+   the syllable: a pitched knock on top of the first sound, and a room
+   that echoes.
+3. Cuts: the `timings`, or else `segmentSyllables`, which cuts the speech
+   at its quietest, least voiced frames given the syllable count, kept on
+   Scribe's character times when those are passed as `anchors` (below);
+   no piece may be longer than three even shares, which bounds the search.
+   Its cuts scale the reported confidence (`FALLBACK_TRUST`), and a flag
+   on any syllable of a phrase needs a little more margin
+   (`phraseMarginSt`), whoever made the cuts; neither is mixed into
+   `quality`, which is only how clean the pitch measurement was. A span
+   that holds two voiced sounds with 50 ms or more of silence between
+   them is not one syllable (`apart`: the span is wrong, or a knock is in
+   it), and a syllable whose loudest frame is 20 dB under the loudest
+   syllable's is too soft to judge (`soft`).
+4. `classifyContour`: five points of each syllable's voiced part against
    tone templates on Chao's five-level scale, scaled to the speaker's own
    range (`speakerRange`: pass one learnt from earlier turns as `speaker`;
    without it only the shape counts, each template stretched to the
    contour, plus the recording's own range from four syllables up). So a
    child's voice, a low adult voice and a narrow one are read the same way.
-4. The verdict. `ok` when an accepted tone is the best match or holds a
+5. The verdict. `ok` when an accepted tone is the best match or holds a
    third of the belief. `off` only when the contour *rules out* every
    accepted tone, the measurement is clean, and the syllable is long
    enough. `ruleMargins` says by how many semitones each tone is ruled
@@ -664,8 +791,23 @@ browser already sends, with no dependency:
    Still never flagged: a low fall said for a fourth tone, and second
    against third when the second dips or the third comes back up. A level
    pitch in the middle of a known range rules nothing out (a syllable
-   squeezed flat by its neighbours). Creak in the vowel supports an
-   expected third tone and makes anything else `unsure` (`creakFlags`).
+   squeezed flat by its neighbours). Creak in the vowel can confirm
+   but never flag: it supports an expected third tone, any other tone is
+   `ok` when its voiced part fits and nothing rules it out (at half
+   confidence: a low voice creaks wherever a tone touches the bottom of
+   its range, the end of a fourth tone as much as a third), and otherwise
+   the syllable is `unsure` (`creakFlags` lets creaky syllables be
+   flagged; off). A pitch track that jumps seven semitones or more
+   between neighbouring frames is cut there; a piece of three frames or
+   fewer is a glitch (at the edge of a voiced run, in the middle of a
+   vowel, or the neighbouring syllable's pitch where two meet without a
+   gap) and is dropped. A jump that remains between the pieces that stay
+   is an octave slip the tracker didn't mend (it mends 80 ms or less), and
+   so is a contour with no piece longer than a glitch, or a third of it
+   and more in glitches, or a glitch taken out of the middle of a vowel
+   that is creaky as well: `unsure`, reason `octave`, whatever the label,
+   and checked before the creaky-third rule (a slipped stretch reads low,
+   which is what that rule looks for).
    The thresholds are `TONE_RULES`; `offMarginSt` is the one knob that
    trades catches for false alarms.
 
@@ -685,10 +827,22 @@ classifier's raw accuracy before any gate.
 - Pass `speaker` only as a range built from the learner's *other*
   recordings (`speakerRange` over earlier turns), never one that includes
   the recording being scored.
+- Pass `timings` (Azure's, through `mergeAzure`). Without them the
+  scorer has to find the speech by energy, and in a room with any stray
+  sound it will mostly say `unsure`. `timings` that are not a list are a
+  timings problem (`timings`), never a quiet fall back to energy.
+- Before trusting the timings path in a real room, check the
+  recogniser's spans there: the same speech clean and with a knock, a
+  cough, another voice, and compare the spans that come back. The proof
+  does not measure this.
 - `scoreTones` is synchronous and refuses more than 30 seconds
-  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`); its own
-  segmenter grows with syllables × frames². Run it off the request thread
-  (a worker, or the paid-slot queue) or pass timings.
+  (`LOCAL_MAX_SECONDS`) or 60 syllables (`LOCAL_MAX_SYLLABLES`). That
+  much takes about a third of a second, most of it the pitch track (the
+  proof's "Speed"); the energy path reads the recording up to eight
+  times, the timings path once and then up to 2n times with the spans
+  moved (under 100 ms in all for 60 syllables). Run it off the request
+  thread (a worker, or the paid-slot queue); a track made on one thread
+  can be scored on another, since `rawF0` travels with it.
 - Treat `unsure` as silence.
 
 **Real recordings are the next step**, and there is a tool for making
@@ -742,6 +896,21 @@ into the tracked report. A label is what the speaker aimed for, not what
 came out, so a beginner's false-alarm count is an upper bound until
 someone fluent has listened to the flagged clips. The steps for the
 person recording are in the report's "Real recordings".
+
+Real recordings are scored by energy unless their speaker decides
+otherwise: nothing sends a person's voice to Azure or any other provider
+by default, and in a real room the energy path mostly answers `unsure`
+(above). The timings path needs per-syllable timings. The proof has one
+opt-in step for that, `--recordings --azure-recordings` with
+`LINGO_PROOF_AZURE_SPEAKER` naming the one speaker whose own clips may
+go to Azure Pronunciation Assessment. Clips go only when that name is
+labelled adult on some line and nothing else on any (`azureSendable`: a
+child labelled once and left blank afterwards has nothing sent). One
+clip each, sent again only after a rate-limit refusal; the reply is kept
+in the gitignored `recordings/.azure/`, 0600, and a clip with a reply is
+never sent again. The clips that have a reply are then reported both
+ways, with every clip's verdicts on the timings path in the gitignored
+report. Only the speaker can decide to run it.
 
 **The Azure adapter** (`azurePronunciationRequest`,
 `azurePronunciationResult`, `mergeAzure`) was built from Microsoft's

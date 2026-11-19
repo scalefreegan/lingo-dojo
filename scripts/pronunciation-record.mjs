@@ -323,8 +323,9 @@ export function createRecorder({ dir, clipsDir, parse = parseLabels }) {
 /** Could git commit anything in this folder? Yes when a new file there
  *  would not be ignored, and yes when a file under it is tracked already
  *  (an ignore rule added later does not untrack it). Outside the
- *  repository, or with no git at all: no. */
-export function trackedByGit(dir, repo = REPO) {
+ *  repository, or with no git at all: no. `probe` is the name of the new
+ *  file asked about (ignore rules can go by extension). */
+export function trackedByGit(dir, repo = REPO, probe = "probe.wav") {
   const rel = path.relative(repo, path.resolve(dir));
   if (rel.startsWith("..") || path.isAbsolute(rel)) return false;
   try {
@@ -334,7 +335,7 @@ export function trackedByGit(dir, repo = REPO) {
     return false;
   }
   try {
-    execFileSync("git", ["-C", repo, "check-ignore", "-q", path.join(rel, "probe.wav")], { stdio: "ignore" });
+    execFileSync("git", ["-C", repo, "check-ignore", "-q", path.join(rel, probe)], { stdio: "ignore" });
     return false;
   } catch (e) {
     // Exit 1 is "not ignored".

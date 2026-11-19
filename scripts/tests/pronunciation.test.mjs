@@ -4,8 +4,9 @@ import fs from "node:fs";
 import {
   LOCAL_MAX_SECONDS, LOCAL_MAX_SYLLABLES, AZURE_MAX_SECONDS, AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, azureLocale, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
   classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
-  scoresTones, scribeCharTimings, segmentSyllables, speakerRange, trackPitch, withTone,
+  scoresTones, scribeCharTimings, segmentSyllables, speakerRange, timingsProblem, trackPitch, trimToSpeech, withTone, FALLBACK_TRUST, TIMING_RULES, TRIM_RULES, jitteredTimings,
 } from "../pronunciation.mjs";
+import { CURVES, GENERATED_CASES, GENERATED_PHRASES, NOISE_CONDITIONS, RATE, SPAN_ERRORS, disturb, flips, sayCase, speak, verdictsOf } from "../pronunciation-synth.mjs";
 import { readCodePoints } from "../../web/src/script/zh.ts";
 
 // The pronunciation engine (scripts/pronunciation.mjs): provider choice, the
@@ -166,90 +167,28 @@ test("expectedSyllables over the app's own reader: Chinese characters only, each
 
 /* ------------------------------ generated speech ---------------------------- */
 
-const RATE = 16_000;
-
-// The voice the tests listen to. Deliberately not the classifier's own
-// templates: each tone is a curve in time with its own formula (Chao level
-// against x, 0 at the start of the syllable and 1 at its end), not the five
-// levels the classifier matches against; the pitch drifts down across the
-// utterance as real sentences do; every glottal period is jittered; and
-// the range a test hands the scorer is the nominal one, not what the drift
-// and the jitter actually produce.
-const CURVES = {
-  1: (x) => 4.7 - 0.25 * x, // high, sagging a little
-  2: (x) => 2.9 - 0.9 * x + 3 * x * x, // a small dip first, then up to the top
-  3: (x) => 2.7 - 6.8 * x + 7 * x * x, // down to the floor before the middle, most of the way back
-  4: (x) => 4.9 - 3.9 * x ** 1.4, // top to bottom, slowly at first
-  low: (x) => 2.3 - 1.2 * Math.sqrt(x), // the half third: low and sinking
-};
-
-/** A voice saying `shapes` one after another (keys of CURVES, or a curve of
- *  its own): a buzz of six harmonics whose pitch follows each curve between
- *  `lowHz` and `lowHz` + `spanSt` semitones, `ms` each, `gapMs` of silence
- *  between. `declineSt` is the drift down across the utterance, `jitter`
- *  the period-to-period wobble, `weak` drops the fundamental (a telephone,
- *  a small speaker), `noise` adds white noise at that amplitude. */
-function speak(shapes, { lowHz = 110, spanSt = 10, ms = 260, gapMs = 70, declineSt = 0.6, jitter = 0.004, weak = false, noise = 0, seed = 11, creakOnset = 0, ownRange = false } = {}) {
-  const gap = Math.round((RATE * gapMs) / 1000);
-  const len = Math.round((RATE * ms) / 1000);
-  const out = new Float32Array(gap + shapes.length * (len + gap));
-  const timings = [];
-  let state = seed;
-  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
-  let at = gap;
-  for (const name of shapes) {
-    const curve = typeof name === "function" ? name : CURVES[name];
-    let phase = 0;
-    let wobble = 1;
-    for (let i = 0; i < len; i++) {
-      const level = curve(i / (len - 1));
-      const drift = -declineSt * ((at + i) / out.length);
-      const hz = lowHz * 2 ** ((((level - 1) / 4) * spanSt + drift) / 12) * wobble;
-      const before = phase;
-      phase += (2 * Math.PI * hz) / RATE;
-      // A new period: a new wobble.
-      if (Math.floor(phase / (2 * Math.PI)) !== Math.floor(before / (2 * Math.PI))) wobble = 1 + jitter * rand();
-      const env = Math.min(1, i / 240, (len - 1 - i) / 240);
-      let v = 0;
-      for (let h = weak ? 2 : 1; h <= 6; h++) v += Math.sin(phase * h) / h;
-      out[at + i] = 0.3 * env * v;
-    }
-    // Creak over the first part of the syllable: the buzz replaced by
-    // glottal pulses at irregular intervals, with no period to find.
-    if (creakOnset) {
-      const until = Math.round(len * creakOnset);
-      for (let i = 0; i < until; i++) out[at + i] = 0;
-      for (let i = 20; i < until; i += Math.round(RATE * (0.012 + 0.016 * Math.abs(rand())))) {
-        for (let k = 0; k < 90 && i + k < until; k++) out[at + i + k] += 0.5 * Math.exp(-k / 18) * Math.sin(k / 6);
-      }
-    }
-    timings.push({ startMs: (at / RATE) * 1000, endMs: ((at + len) / RATE) * 1000 });
-    at += len + gap;
-  }
-  if (noise) for (let i = 0; i < out.length; i++) out[i] += noise * rand();
-  return { samples: out, timings, range: ownRange ? null : sessionRange({ lowHz, spanSt, weak }) };
-}
-
-/** What a session would know of a voice: its range measured (speakerRange)
- *  over an earlier utterance, not the numbers the generator was given. So
- *  the scorer reads every test syllable against a range that is a little
- *  narrower than the truth and not centred quite where the generator's is,
- *  as it would be in the app. */
-const sessions = new Map();
-function sessionRange({ lowHz, spanSt, weak }) {
-  const key = `${lowHz}/${spanSt}/${weak}`;
-  if (!sessions.has(key)) {
-    const earlier = speak([4, 1, 2, "low", 3, 2, 4, 1], { lowHz, spanSt, weak, declineSt: 1.5, seed: 29, ownRange: true });
-    sessions.set(key, speakerRange(trackPitch(earlier.samples, RATE)));
-  }
-  return sessions.get(key);
-}
+// The generated voice (speak, CURVES, sessionRange) lives in
+// scripts/pronunciation-synth.mjs, where the proof uses it too.
 
 /** Syllables with the given expected tones and no sandhi between them. */
 const expecting = (...ts) => ts.map((t) => ({ char: "字", pinyin: withTone("ma", t), baseTone: t, expectedTone: t, accept: [t], half: false, breakBefore: true }));
 /** The same as one phrase: only the first follows a break. */
 const phrase = (...ts) => expecting(...ts).map((s, i) => ({ ...s, breakBefore: i === 0 }));
 const verdicts = (r) => r.syllables.map((s) => s.verdict);
+// Samples with silence before them: a recording that is loud from its
+// first frame is taken for one that started mid-word ("clipped").
+const led = (samples, ms = 100) => {
+  const out = new Float32Array(samples.length + (RATE * ms) / 1000);
+  out.set(samples, (RATE * ms) / 1000);
+  return out;
+};
+// Spans as a recogniser draws them: each syllable with the silence around
+// it shared out between neighbours (the generator's own timings are the
+// voiced part to the frame, which no recogniser gives).
+const spansOf = (timings, shiftMs = 0, edgeMs = 30) => timings.map((x, i) => ({
+  startMs: shiftMs + (i ? (timings[i - 1].endMs + x.startMs) / 2 : x.startMs - edgeMs),
+  endMs: shiftMs + (i + 1 < timings.length ? (x.endMs + timings[i + 1].startMs) / 2 : x.endMs + edgeMs),
+}));
 
 test("WAV: what encodeWav writes parseWav reads back, and a non-PCM file is refused", () => {
   const { samples } = speak([1], { ms: 50 });
@@ -449,8 +388,13 @@ test("scoreTones: declination, a narrow voice with no range, a weak fundamental 
   const own = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 4, 3), timings: narrow.timings });
   assert.ok(!verdicts(own).includes("off"), JSON.stringify(verdicts(own)));
   assert.deepEqual(own.syllables.map((s) => s.heardTone).slice(1, 3), [2, 4]);
-  const wrong = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 1, 3), timings: narrow.timings });
+  const wrong = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 1, 3), timings: spansOf(narrow.timings) });
   assert.equal(wrong.syllables[2].verdict, "off");
+  // On spans cut to the frame where the voice stops, moving them 40 ms
+  // loses the end of so small a fall: the flag doesn't survive that, and
+  // isn't given.
+  const tight = scoreTones({ samples: narrow.samples, sampleRate: RATE, syllables: expecting(1, 2, 1, 3), timings: narrow.timings });
+  assert.deepEqual([tight.syllables[2].verdict, tight.syllables[2].reason], ["unsure", "edges"]);
   // No fundamental (a phone's speaker), and white noise 20 dB under the voice.
   for (const how of [{ weak: true }, { noise: 0.03 }, { jitter: 0.02 }]) {
     const v = speak([1, 4, 2, 1], how);
@@ -550,6 +494,15 @@ test("scoreTones refuses more than it can do quickly: over 30 seconds, over 60 s
   assert.equal(scoreTones({ track, syllables: expecting(1), speaker: one.range }).syllables[0].verdict, "ok");
 });
 
+// A track to edit by hand: scoreTones reads the pitch from `rawF0`, so the
+// edit has to be there. The one array is both, and what is edited is then
+// finished again like any tracker output (an edit of 80 ms or less an
+// octave away is mended, as it would be from the tracker).
+const edited = (track) => {
+  const f0 = Float32Array.from(track.f0);
+  return { ...track, f0, rawF0: f0 };
+};
+
 // Pitch tracks of real proof clips (synthesized voices; written by
 // `node scripts/pronunciation-proof.mjs --fixtures`): what the scorer sees
 // on audio it did not generate itself.
@@ -557,7 +510,8 @@ const TRACKS = JSON.parse(fs.readFileSync(new URL("./fixtures/pronunciation/trac
 const replay = (voice, text, readings = null) => {
   const f = TRACKS.find((x) => x.voice === voice && x.text === text);
   assert.ok(f, `${voice} ${text}`);
-  const track = { hopMs: f.hopMs, f0: Float32Array.from(f.f0), rms: Float32Array.from(f.rms), periodicity: Float32Array.from(f.periodicity), zcr: Float32Array.from(f.zcr) };
+  // The fixture holds the finished pitch only: it stands in for the raw.
+  const track = { hopMs: f.hopMs, f0: Float32Array.from(f.f0), rawF0: Float32Array.from(f.f0), rms: Float32Array.from(f.rms), periodicity: Float32Array.from(f.periodicity), zcr: Float32Array.from(f.zcr) };
   return scoreTones({ track, syllables: expectedSyllables(text, readings ?? f.readings), speaker: f.range });
 };
 
@@ -579,6 +533,190 @@ test("recorded pitch tracks: no flag on any correctly said syllable, the near mi
   assert.equal(replay("Tingting", "妈", ["mà"]).syllables[0].verdict, "off");
   assert.equal(replay("Reed", "麻", ["mà"]).syllables[0].verdict, "off");
   assert.equal(replay("Tingting", "骂", ["má"]).syllables[0].verdict, "off");
+});
+
+/** `speech` as a push-to-talk recording: a lead-in and a tail of room
+ *  noise around it, and whatever else is asked for. `blips` are short
+ *  pitched sounds ({ atMs, ms, hz, amp }, times from the start of the
+ *  recording), `clickAtMs` a key press (a short decaying thump). */
+function recording(speech, { leadMs = 700, tailMs = 1200, noise = 0.004, blips = [], clickAtMs = null, seed = 5 } = {}) {
+  const lead = Math.round((RATE * leadMs) / 1000);
+  const out = new Float32Array(lead + speech.length + Math.round((RATE * tailMs) / 1000));
+  let state = seed;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  for (let i = 0; i < out.length; i++) out[i] = noise * rand();
+  for (let i = 0; i < speech.length; i++) out[lead + i] += speech[i];
+  for (const b of blips) {
+    const from = Math.round((RATE * b.atMs) / 1000);
+    const len = Math.round((RATE * b.ms) / 1000);
+    for (let i = 0; i < len && from + i < out.length; i++) {
+      const x = (2 * Math.PI * b.hz * i) / RATE;
+      out[from + i] += b.amp * Math.min(1, i / 40, (len - i) / 40) * (Math.sin(x) + Math.sin(2 * x) / 2 + Math.sin(3 * x) / 3);
+    }
+  }
+  if (clickAtMs !== null) {
+    const from = Math.round((RATE * clickAtMs) / 1000);
+    for (let k = 0; k < 240 && from + k < out.length; k++) out[from + k] += 0.25 * Math.exp(-k / 40) * Math.sin(k / 3);
+  }
+  return { samples: out, leadMs, speechEndMs: leadMs + (speech.length / RATE) * 1000 };
+}
+
+test("trimToSpeech: the noise and blips around a syllable no longer count as speech", () => {
+  for (const seed of [11, 23, 57]) {
+    const said = speak([2], { seed });
+    // 700 ms of room noise, the syllable, a 40 ms pitched blip half a
+    // second later and 20 dB under it, another before it, a key press at
+    // the very end: a lone syllable as a person records it.
+    const rec = recording(said.samples, { blips: [{ atMs: 80, ms: 40, hz: 150, amp: 0.02 }, { atMs: 1650, ms: 40, hz: 260, amp: 0.02 }], clickAtMs: 2150 });
+    const raw = trackPitch(rec.samples, RATE);
+    const voicedAt = (track) => [...track.f0].map((f, i) => (f > 0 ? i * HOP_MS : -1)).filter((ms) => ms >= 0);
+    // The test is only a test if the tracker heard the blips as voice.
+    assert.ok(voicedAt(raw).some((ms) => ms > rec.speechEndMs + 300), "the trailing blip is voiced in the raw track");
+    const trimmed = trimToSpeech(raw);
+    const kept = voicedAt(trimmed);
+    assert.ok(kept.length >= 20);
+    assert.ok(kept[0] >= rec.leadMs && kept[kept.length - 1] <= rec.speechEndMs, `voiced only in the syllable (${kept[0]}–${kept[kept.length - 1]})`);
+    // Every voiced frame of the syllable itself is still there, unchanged.
+    for (let i = 0; i < raw.f0.length; i++) if (raw.f0[i] > 0 && i * HOP_MS >= rec.leadMs && i * HOP_MS <= rec.speechEndMs) assert.equal(trimmed.f0[i], raw.f0[i]);
+    // Outside the kept stretch there is no level left to cut on.
+    assert.equal(trimmed.rms[5], 0);
+    assert.equal(trimmed.rms[trimmed.rms.length - 2], 0);
+    assert.notEqual(trimmed, raw);
+    assert.equal(raw.rms[5] > 0, true, "the input is not changed");
+
+    // And so the syllable is read as what it is, and as wrong when it is.
+    const right = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(2), speaker: said.range }).syllables[0];
+    assert.deepEqual([right.verdict, right.heardTone], ["ok", 2], `seed ${seed}: ${right.reason}`);
+    assert.ok(right.startMs >= rec.leadMs - TRIM_RULES.beforeMs && right.endMs <= rec.speechEndMs + TRIM_RULES.afterMs + HOP_MS);
+    assert.equal(scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range }).syllables[0].verdict, "off");
+  }
+});
+
+test("a phrase in a long recording: read as it is on timings; cut by energy, a stray blip costs verdicts and makes none", () => {
+  const said = speak([1, 4, 2]);
+  const blips = [{ atMs: 60, ms: 30, hz: 140, amp: 0.02 }, { atMs: 2900, ms: 50, hz: 120, amp: 0.02 }];
+  const rec = recording(said.samples, { leadMs: 900, tailMs: 1500, blips, clickAtMs: 3350 });
+  const timings = said.timings.map((t) => ({ startMs: t.startMs + rec.leadMs, endMs: t.endMs + rec.leadMs }));
+  const score = (labels, more = {}) => scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, ...more });
+  // With timings the blips and the click are not in any span: nothing of
+  // them is measured.
+  const timed = score([1, 4, 2], { timings });
+  assert.deepEqual(verdicts(timed), ["ok", "ok", "ok"]);
+  assert.deepEqual(timed.syllables.map((x) => x.heardTone), [1, 4, 2]);
+  assert.equal(timed.timed, "given");
+  assert.equal(score([1, 1, 2], { timings }).syllables[1].verdict, "off");
+  // Without them a blip over the floor might be a syllable: the recording
+  // is read with it and without it, and what the readings disagree on is
+  // unsure. No correct syllable is flagged, no wrong one passed.
+  const r = score([1, 4, 2]);
+  assert.ok(!verdicts(r).includes("off"), JSON.stringify(r.syllables.map((x) => [x.verdict, x.reason])));
+  assert.notEqual(score([1, 1, 2]).syllables[1].verdict, "ok");
+  // The same phrase with nothing but room noise around it is read by
+  // energy as it is, each piece on its own syllable.
+  const quiet = recording(said.samples, { leadMs: 900, tailMs: 1500 });
+  const q = scoreTones({ samples: quiet.samples, sampleRate: RATE, syllables: phrase(1, 4, 2), speaker: said.range });
+  assert.deepEqual(verdicts(q), ["ok", "ok", "ok"]);
+  q.syllables.forEach((x, k) => {
+    const mid = (x.startMs + x.endMs) / 2 - quiet.leadMs;
+    assert.ok(mid > said.timings[k].startMs && mid < said.timings[k].endMs, `piece ${k + 1} is on syllable ${k + 1}`);
+  });
+  assert.equal(scoreTones({ samples: quiet.samples, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range }).syllables[1].verdict, "off");
+});
+
+test("trimToSpeech never cuts into speech: a quiet consonant before the vowel, a soft last syllable, a clean clip", () => {
+  // A clip with nothing around the speech comes back as it is.
+  const clean = speak([1, 4]);
+  const cleanTrack = trackPitch(clean.samples, RATE);
+  assert.equal(trimToSpeech(cleanTrack), cleanTrack);
+
+  // 180 ms of quiet hiss (an sh, 20 dB under the vowel) right before the
+  // vowel, in a recording with a long lead-in: the hiss is kept.
+  const vowel = speak([4]).samples;
+  const hissMs = 180;
+  const hiss = new Float32Array(Math.round((RATE * hissMs) / 1000));
+  let state = 3;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  for (let i = 0; i < hiss.length; i++) hiss[i] = 0.03 * rand();
+  const sh = new Float32Array(hiss.length + vowel.length);
+  sh.set(hiss);
+  sh.set(vowel, hiss.length);
+  const rec = recording(sh);
+  const raw = trackPitch(rec.samples, RATE);
+  const trimmed = trimToSpeech(raw);
+  for (let ms = rec.leadMs + 20; ms < rec.leadMs + hissMs; ms += HOP_MS) assert.equal(trimmed.rms[ms / HOP_MS], raw.rms[ms / HOP_MS], `the consonant at ${ms} ms is kept`);
+
+  // A neutral tone at the end: 90 ms long, 18 dB under the syllable
+  // before it, after a 120 ms stop closure. Short and soft, and still
+  // speech: all of its voiced frames are kept.
+  const first = speak([4], { gapMs: 0 }).samples;
+  const soft = speak([(x) => 2.2 - 0.6 * x], { ms: 90, gapMs: 0, seed: 29 }).samples;
+  const word = new Float32Array(first.length + Math.round(RATE * 0.12) + soft.length);
+  word.set(first);
+  for (let i = 0; i < soft.length; i++) word[first.length + Math.round(RATE * 0.12) + i] = soft[i] * 0.125;
+  const rec2 = recording(word);
+  const raw2 = trackPitch(rec2.samples, RATE);
+  const trimmed2 = trimToSpeech(raw2);
+  const softFrom = rec2.leadMs + ((first.length / RATE) * 1000) + 120;
+  let softVoiced = 0;
+  for (let i = 0; i < raw2.f0.length; i++) {
+    if (!(raw2.f0[i] > 0) || i * HOP_MS < softFrom || i * HOP_MS > rec2.speechEndMs) continue;
+    softVoiced++;
+    assert.equal(trimmed2.f0[i], raw2.f0[i]);
+  }
+  assert.ok(softVoiced >= 5, `the soft syllable is voiced in the raw track (${softVoiced} frames)`);
+});
+
+/** Creak over part of a syllable: the buzz replaced by glottal pulses at
+ *  irregular intervals, loud but with no period to find. */
+function creakOver(samples, fromMs, toMs, seed = 7) {
+  let state = seed;
+  const rand = () => ((state = (state * 1103515245 + 12345) & 0x7fffffff) / 0x3fffffff) - 1;
+  const from = Math.round((RATE * fromMs) / 1000);
+  const to = Math.round((RATE * toMs) / 1000);
+  for (let i = from; i < to; i++) samples[i] = 0;
+  for (let i = from + 20; i < to; i += Math.round(RATE * (0.012 + 0.016 * Math.abs(rand())))) {
+    for (let k = 0; k < 90 && i + k < to; k++) samples[i + k] += 0.5 * Math.exp(-k / 18) * Math.sin(k / 6);
+  }
+  return samples;
+}
+
+test("creak can confirm a tone but never flag one", () => {
+  for (const seed of [11, 23, 57]) {
+    // A fourth tone in a low voice: the fall is there, and the middle of it
+    // breaks into creak for 100 ms, as a low voice does near its floor.
+    const said = speak([4], { ms: 320, seed });
+    const at = said.timings[0];
+    creakOver(said.samples, at.startMs + 130, at.startMs + 230, seed);
+    const right = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(4), speaker: said.range }).syllables[0];
+    assert.deepEqual([right.verdict, right.heardTone], ["ok", 4], `seed ${seed}: ${right.reason}`);
+    // …counted for less than a clean one.
+    const cleanOk = speak([4], { ms: 320, seed });
+    assert.ok(right.confidence < scoreTones({ samples: cleanOk.samples, sampleRate: RATE, syllables: expecting(4), speaker: cleanOk.range }).syllables[0].confidence);
+    // Labelled as a first tone the same clip is plainly wrong, and still
+    // not flagged: creak is where the tracker is least to be trusted.
+    for (const wrong of [1, 2]) {
+      const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(wrong), speaker: said.range }).syllables[0];
+      assert.deepEqual([res.verdict, res.reason], ["unsure", "creaky"], `seed ${seed}, labelled ${wrong}`);
+    }
+  }
+});
+
+test("an octave jump inside a vowel makes the syllable unsure, not off", () => {
+  // A level first tone whose track drops an octave for 130 ms in the
+  // middle and comes back: longer than the 80 ms the tracker mends by
+  // itself, which is how a low voice near creak comes out of it.
+  const said = speak([1], { ms: 400 });
+  const track = trackPitch(said.samples, RATE);
+  const ok = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track }).syllables[0];
+  assert.equal(ok.verdict, "ok");
+  const slipped = edited(track);
+  const from = Math.round((said.timings[0].startMs + 130) / HOP_MS);
+  for (let i = from; i < from + 13; i++) slipped.f0[i] /= 2;
+  const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track: slipped }).syllables[0];
+  assert.deepEqual([res.verdict, res.reason, res.confidence], ["unsure", "octave", 0]);
+  // The steepest real movement is not a jump: a fourth tone said fast.
+  const fast = speak([4], { ms: 140, spanSt: 14 });
+  assert.equal(scoreTones({ samples: fast.samples, sampleRate: RATE, syllables: expecting(4), speaker: fast.range }).syllables[0].verdict, "ok");
 });
 
 test("unsure, not off: short, unvoiced, neutral, untimed, and anything under the bar", () => {
@@ -925,8 +1063,13 @@ test("mergeAzure: Azure's timings, the local tone check on them, one result", ()
   assert.equal(r.overall, 78);
   assert.deepEqual(r.syllables.map((s) => s.heardTone), [1, 4, 2, 1]);
   // Azure liked the second 妈 (88) but the pitch fell: the tone flag stands.
-  assert.deepEqual(r.syllables.map((s) => s.verdict), ["ok", "off", "ok", "off"]);
-  assert.deepEqual(r.syllables.map((s) => s.reason), [undefined, "tone", undefined, "tone"]);
+  // The last two are cut by energy inside Azure's one word: 骂 said level
+  // is not passed as ok, and whatever is said of either counts for no
+  // more than a fallback cut.
+  assert.deepEqual(r.syllables.map((s) => s.verdict).slice(0, 3), ["ok", "off", "ok"]);
+  assert.notEqual(r.syllables[3].verdict, "ok");
+  assert.deepEqual(r.syllables.map((s) => s.reason).slice(0, 3), [undefined, "tone", undefined]);
+  assert.ok(r.syllables[2].confidence <= FALLBACK_TRUST && r.syllables[0].confidence > FALLBACK_TRUST, JSON.stringify(r.syllables.map((s) => s.confidence)));
   assert.deepEqual(r.syllables.map((s) => s.score), [96, 88, 90, 90]);
   assert.ok(r.syllables.every((s) => s.pitch.length === 16 && s.endMs > s.startMs));
 
@@ -957,4 +1100,763 @@ test("mergeAzure: Azure's timings, the local tone check on them, one result", ()
   const empty = mergeAzure({ azure: azurePronunciationResult({ RecognitionStatus: "NoMatch" }), syllables, local: () => assert.fail("not called") });
   assert.deepEqual(empty.syllables.map((s) => [s.verdict, s.reason]), syllables.map(() => ["unsure", "untimed"]));
   assert.equal("overall" in empty, false);
+});
+
+/* The trim's edges. Each bar in TRIM_RULES was set on one speaker's clips,
+ * so each is tried just on its wrong side, and the rule is the same every
+ * time: the trim may cost a verdict (unsure, reason "trimmed"); it never
+ * makes one. Where it can't tell speech from noise the scorer reads the
+ * recording both ways and keeps what agrees. */
+const voicedIn = (track, fromMs, toMs) => {
+  let n = 0;
+  for (let i = Math.floor(fromMs / HOP_MS); i < Math.ceil(toMs / HOP_MS); i++) if (track.f0[i] > 0) n++;
+  return n;
+};
+const scored = (rec, said, ...labels) => scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables.map((x) => (x.reason === "trimmed" ? "trimmed" : x.verdict));
+
+test("a short last syllable after a pause: doubted when near, the whole recording unjudged when far", () => {
+  for (const pauseMs of [150, 250, 350]) {
+    // 70 ms, under runMs; the pause puts it past nearMs for two of three.
+    const said = speak([4, 1, 2], { ms: [260, 260, 70], gaps: [70, 70, pauseMs, 70] });
+    const rec = recording(said.samples);
+    const raw = trackPitch(rec.samples, RATE);
+    const last = said.timings[2];
+    const before = voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs);
+    assert.ok(before >= 3 && before * HOP_MS < TRIM_RULES.runMs, `the last syllable is a short voiced run (${before} frames)`);
+    const far = pauseMs > TRIM_RULES.nearMs;
+    // By the bars alone it is noise once it is far…
+    assert.equal(voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs), far ? 0 : before, `pause ${pauseMs}`);
+    // …and energy can't tell it from a knock (70 ms of sound is as long
+    // as a knock's run in the track): it is doubted, the recording is read
+    // with it and without, and it is never erased into a verdict.
+    const got = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range }).syllables;
+    assert.ok(!got.some((x) => x.verdict === "off"), `pause ${pauseMs}`);
+    if (far) assert.deepEqual([got[2].verdict, got[2].reason], ["unsure", "trimmed"], `pause ${pauseMs}`);
+    assert.notEqual(scored(rec, said, 4, 1, 4)[2], "off", `pause ${pauseMs}`);
+    assert.notEqual(scored(rec, said, 1, 1, 2)[0], "ok", `pause ${pauseMs}`);
+    // With timings the pause is no puzzle: the first two are read, and a
+    // wrong first tone is caught.
+    const timings = said.timings.map((t) => ({ startMs: t.startMs + rec.leadMs, endMs: t.endMs + rec.leadMs }));
+    const timed = (...labels) => scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables.map((x) => x.verdict);
+    assert.deepEqual(timed(4, 1, 2).slice(0, 2), ["ok", "ok"], `pause ${pauseMs}`);
+    assert.deepEqual(timed(1, 1, 2).slice(0, 2), ["off", "ok"], `pause ${pauseMs}`);
+  }
+});
+
+test("a creaky, broken last syllable after a pause is not erased", () => {
+  const said = speak([1, 4, 3], { gaps: [70, 70, 300, 70] });
+  const last = said.timings[2];
+  creakOver(said.samples, last.startMs + 40, last.startMs + 140, 3);
+  creakOver(said.samples, last.startMs + 190, last.endMs - 20, 4);
+  const rec = recording(said.samples);
+  const got = scored(rec, said, 1, 4, 3);
+  assert.equal(got[0], "ok");
+  assert.ok(!got.includes("off"), got.join(" "));
+});
+
+test("a soft last syllable on either side of floorDb is doubted, and too soft to judge", () => {
+  for (const db of [-24, -27]) {
+    const said = speak([4, 2, 1], { amps: [1, 1, 10 ** (db / 20)] });
+    const rec = recording(said.samples);
+    const raw = trackPitch(rec.samples, RATE);
+    const last = said.timings[2];
+    assert.ok(voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs) >= 15, `${db} dB: the soft syllable is voiced`);
+    // Under the floor the bars drop it.
+    const under = db < TRIM_RULES.floorDb;
+    assert.equal(voicedIn(trimToSpeech(raw), rec.leadMs + last.startMs, rec.leadMs + last.endMs) === 0, under, `${db} dB`);
+    // Either way it is not one of the runs that are speech by any
+    // measure, so the recording is read with it and without it: no
+    // reading flags a correct syllable or passes a wrong one.
+    for (const labels of [[4, 2, 1], [4, 2, 4]]) {
+      const got = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables;
+      assert.ok(!got.slice(0, 2).some((x) => x.verdict === "off"), `${db} dB ${labels}`);
+      assert.equal(got[2].verdict, "unsure", `${db} dB ${labels}: ${got[2].reason}`);
+    }
+    assert.notEqual(scored(rec, said, 1, 2, 1)[0], "ok", `${db} dB`);
+    // On timings the loud syllables are read, and the soft one is "soft".
+    const timings = said.timings.map((t) => ({ startMs: t.startMs + rec.leadMs, endMs: t.endMs + rec.leadMs }));
+    const timed = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(1, 2, 1), speaker: said.range, timings }).syllables;
+    assert.deepEqual(timed.map((x) => x.verdict), ["off", "ok", "unsure"], `${db} dB`);
+    assert.equal(timed[2].reason, "soft", `${db} dB`);
+  }
+});
+
+test("a last syllable every bar calls noise (short, far, 18 dB under) is never erased into a verdict", () => {
+  const said = speak([4, 2, 1], { ms: [260, 260, 70], gaps: [70, 70, 300, 70], amps: [1, 1, 10 ** (-18 / 20)] });
+  const rec = recording(said.samples);
+  const raw = trackPitch(rec.samples, RATE);
+  const last = said.timings[2];
+  assert.ok(voicedIn(raw, rec.leadMs + last.startMs, rec.leadMs + last.endMs) >= 3);
+  const trimmed = trimToSpeech(raw);
+  assert.equal(voicedIn(trimmed, rec.leadMs + last.startMs, rec.leadMs + last.endMs), 0, "the bars alone drop it");
+  assert.equal(trimmed.trim.dropped.length, 1);
+  for (const labels of [[4, 2, 1], [4, 2, 4], [1, 2, 1], [4, 4, 1]]) {
+    const got = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables;
+    // The last is never judged; the other two only where the reading
+    // with it and the reading without agree, and then rightly.
+    assert.deepEqual([got[2].verdict, got[2].reason], ["unsure", "trimmed"], `labelled ${labels}`);
+    got.slice(0, 2).forEach((x, k) => assert.notEqual(x.verdict, labels[k] === [4, 2][k] ? "off" : "ok", `labelled ${labels}: ${JSON.stringify(got.map((y) => [y.verdict, y.reason]))}`));
+  }
+});
+
+test("a knock louder than the speech: nothing is judged by energy, everything on timings", () => {
+  // Half a second before the phrase, 50 ms, louder than any syllable. The
+  // old trim dropped it when it counted as many voiced runs as syllables;
+  // a creak gap in one syllable makes that count lie (the fifth review).
+  // Energy can't say which of the two stretches is the speech.
+  const said = speak([4, 2, 1]);
+  const rec = recording(said.samples, { blips: [{ atMs: 200, ms: 50, hz: 220, amp: 0.9 }] });
+  for (const labels of [[4, 2, 1], [4, 2, 4]]) {
+    const got = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables;
+    assert.ok(got.every((x) => x.verdict === "unsure"), `${labels}: ${JSON.stringify(got.map((x) => [x.verdict, x.reason]))}`);
+  }
+  const timings = said.timings.map((t) => ({ startMs: t.startMs + rec.leadMs, endMs: t.endMs + rec.leadMs }));
+  const timed = (...labels) => scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables.map((x) => x.verdict);
+  assert.deepEqual(timed(4, 2, 1), ["ok", "ok", "ok"]);
+  assert.deepEqual(timed(4, 2, 4), ["ok", "ok", "off"]);
+  // Two syllables run together (one voiced run for two): no reading
+  // invents a flag.
+  const fused = speak([1, 4], { gapMs: 0 });
+  const fusedRec = recording(fused.samples, { blips: [{ atMs: 200, ms: 50, hz: 220, amp: 0.9 }] });
+  assert.ok(!scored(fusedRec, fused, 1, 4).includes("off"));
+});
+
+test("a syllable with no long voiced run is still the speech", () => {
+  // (An edited track.) A clipped fourth tone the tracker broke into pieces
+  // of 50 ms: none reaches runMs, so the loudest is the speech and its
+  // neighbours join it.
+  const said = speak([4], { ms: 200 });
+  const rec = recording(said.samples);
+  const raw = trackPitch(rec.samples, RATE);
+  const broken = edited(raw);
+  const voiced = [...raw.f0].map((f, i) => (f > 0 ? i : -1)).filter((i) => i >= 0);
+  for (const [k, i] of voiced.entries()) if (k % 6 === 5) broken.f0[i] = 0;
+  const trimmed = trimToSpeech(broken);
+  assert.equal(voicedIn(trimmed, 0, rec.samples.length / 16), voicedIn(broken, 0, rec.samples.length / 16));
+  const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(1), speaker: said.range, track: broken }).syllables[0];
+  assert.notEqual(res.reason, "trimmed");
+});
+
+/* The proof's "With lead-in noise", in small: the same disturbances
+ * (NOISE_CONDITIONS, GENERATED_CASES) around generated speech, scored both
+ * ways (cut by energy; on the generator's own syllable timings), every
+ * syllable's verdict compared with the same syllable's on the clean clip
+ * (flips). What must hold: no new false "off" and no new wrong "ok". What
+ * may happen: verdicts lost. */
+// Not made safe on either path, and said so (docs/VOICE.md, the proof):
+// the disturbance is inside the syllable.
+const NOT_SAFE = new Set(["knockOnset", "echo"]);
+
+test("lead-in noise, per syllable: no new false alarm and no new wrong ok, by energy or on timings", () => {
+  const voice = { lowHz: 110, spanSt: 10 };
+  const said = [];
+  for (const tones of [[1], [2], [3], [4], [4, 1, 2], [2, 4, 1]]) said.push({ tones, clip: speak(tones, voice) });
+  // Words run together: one voiced run for two syllables.
+  said.push({ tones: [1, 4], clip: speak([1, 4], { ...voice, gapMs: 0 }) });
+  const run = (cond) => {
+    const maps = { energy: new Map(), timings: new Map() };
+    for (const [k, { tones, clip }] of said.entries()) {
+      const d = disturb(clip.samples, RATE, cond, 77 + k);
+      const track = trackPitch(d.samples, RATE);
+      const timings = spansOf(clip.timings, d.shiftMs);
+      for (const way of ["energy", "timings"]) {
+        verdictsOf(maps[way], `${k}`, tones, (syllables) => scoreTones({ samples: d.samples, sampleRate: RATE, syllables, speaker: clip.range, track, timings: way === "timings" ? timings : null }));
+      }
+    }
+    return maps;
+  };
+  const clean = run(NOISE_CONDITIONS[0]);
+  for (const way of ["energy", "timings"]) {
+    const t = flips(clean[way], clean[way]);
+    assert.equal(t.falseAlarms, 0, way);
+    // On timings a verdict must also survive the spans moved (edges).
+    assert.ok(t.caught >= (way === "energy" ? 29 : 26), `${way}: clean catches ${t.caught} of ${t.wrong}`);
+  }
+  // Outside every span, so on timings not one verdict moves.
+  const OUTSIDE = new Set(["silence", "room", "blip", "knockBefore", "knockAfter", "murmur", "nearKnockBefore", "nearKnockAfter", "coughBefore", "coughAfter", "secondVoice"]);
+  const lost = {};
+  for (const cond of NOISE_CONDITIONS.slice(1)) {
+    if (NOT_SAFE.has(cond.key)) continue;
+    const now = run(cond);
+    for (const way of ["energy", "timings"]) {
+      const t = flips(clean[way], now[way]);
+      assert.deepEqual([t.falseOff, t.wrongOk], [0, 0], `${cond.key}, ${way}: ${JSON.stringify(t.keys)}`);
+      assert.equal(t.falseAlarms, 0, `${cond.key}, ${way}`);
+      lost[`${cond.key} ${way}`] = t.lost;
+    }
+    if (OUTSIDE.has(cond.key)) assert.equal(lost[`${cond.key} timings`], 0, `${cond.key}: a verdict changed on timings`);
+  }
+  // Plain silence and room noise cost the energy path nothing; a cough, a
+  // second voice and a hum cost it everything (and the hum, timings too).
+  assert.equal(lost["silence energy"] + lost["room energy"], 0);
+  const all = flips(clean.energy, clean.energy);
+  const judged = [...clean.energy.values()].filter((x) => (x.side === "right" ? x.verdict === "ok" : x.verdict === "off")).length;
+  assert.ok(all.caught > 0 && judged > 0);
+  for (const key of ["coughBefore", "secondVoice", "hum100"]) assert.equal(lost[`${key} energy`], judged, key);
+  assert.ok(lost["hum100 timings"] > 0);
+});
+
+test("generated phrases, per syllable: a sound between the syllables, a pause, a creak gap make no new false alarm or wrong ok", () => {
+  const voice = { lowHz: 110, spanSt: 10 };
+  const made = new Map();
+  for (const kase of GENERATED_CASES) {
+    const maps = { energy: new Map(), timings: new Map() };
+    for (const [k, tones] of GENERATED_PHRASES.slice(0, 4).entries()) {
+      const said = sayCase(kase, tones, voice, k);
+      const track = trackPitch(said.samples, RATE);
+      for (const way of ["energy", "timings"]) {
+        verdictsOf(maps[way], `${k}`, tones, (syllables) => scoreTones({ samples: said.samples, sampleRate: RATE, syllables, speaker: said.range, track, timings: way === "timings" ? said.timings : null }));
+      }
+    }
+    made.set(kase.key, maps);
+  }
+  for (const kase of GENERATED_CASES) {
+    for (const way of ["energy", "timings"]) {
+      const t = flips(made.get(kase.base ?? kase.key)[way], made.get(kase.key)[way]);
+      assert.deepEqual([t.falseAlarms, t.falseOff, t.wrongOk], [0, 0, 0], `${kase.key}, ${way}: ${JSON.stringify(t.keys)}`);
+    }
+  }
+  // The fifth review's case: a creak gap splits the first syllable (four
+  // voiced runs for three syllables) and a 70 ms last syllable follows a
+  // 300 ms pause. Counting runs dropped it unread and moved the cuts onto
+  // the wrong characters: 57 of 108 correct syllables flagged.
+  const split = flips(made.get("split").energy, made.get("pauseSplit").energy);
+  assert.equal(split.falseAlarms + split.passed, 0);
+  // On timings a click or an "uh" between the syllables changes nothing.
+  for (const key of ["click", "uh", "breath"]) assert.equal(flips(made.get("gap150").timings, made.get(key).timings).lost, 0, key);
+});
+
+test("timings are checked before they are used: a bad set is unsure, never a guess from energy", () => {
+  const said = speak([4, 1, 2]);
+  const rec = recording(said.samples);
+  const good = said.timings.map((t) => ({ startMs: t.startMs + rec.leadMs, endMs: t.endMs + rec.leadMs }));
+  const total = (rec.samples.length / RATE) * 1000;
+  assert.equal(timingsProblem(good, 3, total), null);
+  assert.equal(timingsProblem([good[0], null, good[2]], 3, total), null, "an untimed syllable is allowed");
+  const bad = {
+    count: good.slice(0, 2),
+    order: [good[1], good[0], good[2]],
+    overlap: [good[0], { startMs: good[0].endMs - 100, endMs: good[1].endMs }, good[2]],
+    short: [good[0], { startMs: good[1].startMs, endMs: good[1].startMs + 20 }, good[2]],
+    long: [{ startMs: 0, endMs: TIMING_RULES.maxMs + 100 }, good[1], good[2]].map((t, i) => (i ? { startMs: t.startMs + 2000, endMs: t.endMs + 2000 } : t)),
+    outside: [good[0], good[1], { startMs: total + 100, endMs: total + 300 }],
+    numbers: [good[0], { startMs: NaN, endMs: 500 }, good[2]],
+  };
+  for (const [what, timings] of Object.entries(bad)) {
+    assert.equal(typeof timingsProblem(timings, 3, what === "long" ? total + 4000 : total), "string", what);
+    if (what === "long") continue;
+    const r = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range, timings });
+    assert.deepEqual(r.syllables.map((x) => [x.verdict, x.reason, x.heardTone]), Array(3).fill(["unsure", "timings", null]), what);
+    assert.equal(typeof r.timingsProblem, "string", what);
+    assert.equal(r.timed, "given", what);
+    assert.equal(r.overall, undefined, what);
+  }
+  // One syllable nobody timed: the others are judged, that one is not.
+  const part = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range, timings: [good[0], null, good[2]] });
+  assert.deepEqual(part.syllables.map((x) => x.reason ?? x.verdict), ["ok", "untimed", "ok"]);
+});
+
+test("on timings nothing outside the spans has a say: the same result with a cough and another voice around the speech", () => {
+  const said = speak([4, 1, 2, 3]);
+  const syllables = phrase(4, 1, 2, 3);
+  const score = (cond) => {
+    const d = disturb(said.samples, RATE, cond, 5);
+    const timings = said.timings.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs }));
+    // No range supplied: the recording's own is used, and that too must
+    // come from inside the spans.
+    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables, timings });
+    return { verdicts: r.syllables.map((x) => [x.verdict, x.heardTone, x.margin, x.voicedMs]), range: r.speaker && [r.speaker.lowHz, r.speaker.medianHz, r.speaker.highHz].map((v) => Math.round(v)) };
+  };
+  const room = NOISE_CONDITIONS.find((c) => c.key === "room");
+  assert.deepEqual(score(room).verdicts.map((x) => x[0]), ["ok", "ok", "ok", "ok"]);
+  for (const key of ["coughBefore", "coughAfter", "secondVoice", "knockBefore", "nearKnockBefore"]) {
+    const cond = NOISE_CONDITIONS.find((c) => c.key === key);
+    // Against the same recording without the sound (the same lead-in, so
+    // the same room noise under the speech): equal to the last digit.
+    assert.deepEqual(score(cond), score({ ...room, padMs: cond.padMs }), key);
+  }
+});
+
+test("two sounds in one span are not one syllable: a knock inside the last syllable's span is \"apart\"", () => {
+  const said = speak([4, 1]);
+  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "nearKnockAfter"), 5);
+  // A recogniser draws the last span past the end of the sound: here 250
+  // ms past it, over the knock.
+  const timings = said.timings.map((t, i) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs + (i === 1 ? 250 : 0) }));
+  for (const labels of [[4, 1], [4, 4], [4, 2]]) {
+    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables;
+    assert.deepEqual([r[0].verdict, r[1].verdict, r[1].reason], ["ok", "unsure", "apart"], `${labels}`);
+  }
+});
+
+test("a pitched background leaves everything unjudged, with timings or without", () => {
+  const said = speak([4, 1, 2]);
+  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "hum100"), 5);
+  const timings = said.timings.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs }));
+  for (const more of [{}, { timings }]) {
+    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range, ...more });
+    assert.deepEqual(r.syllables.map((x) => x.reason), ["background", "background", "background"]);
+    assert.equal(r.speaker, null, "no range is learnt from it");
+  }
+});
+
+test("the longest recording the scorer takes is scored in well under a second's work per reading", () => {
+  // 27 seconds, 60 syllables: the segmentation search used to be
+  // syllables × frames² (over a second); each piece's search is bounded now.
+  const said = speak(Array.from({ length: 60 }, (_, i) => 1 + (i % 4)), { ms: 300, gapMs: 150 });
+  const track = trackPitch(said.samples, RATE);
+  assert.ok(said.samples.length / RATE > 26 && said.samples.length / RATE < 30);
+  const t0 = performance.now();
+  const cuts = segmentSyllables(track, 60);
+  const took = performance.now() - t0;
+  assert.equal(cuts.length, 60);
+  cuts.forEach((c, k) => {
+    const mid = (c.startMs + c.endMs) / 2;
+    assert.ok(mid > said.timings[k].startMs - 60 && mid < said.timings[k].endMs + 60, `piece ${k + 1} is on syllable ${k + 1}`);
+  });
+  // Generous: about 40 ms on the machine this was written on.
+  assert.ok(took < 400, `${took.toFixed(0)} ms`);
+});
+
+test("no speech at all: the track comes back as it is and nothing is judged", () => {
+  const rec = recording(new Float32Array(RATE / 2), { noise: 0.004 });
+  const raw = trackPitch(rec.samples, RATE);
+  assert.equal(trimToSpeech(raw), raw);
+  const res = scoreTones({ samples: rec.samples, sampleRate: RATE, syllables: expecting(1) });
+  assert.deepEqual([res.syllables[0].verdict, res.syllables[0].reason, res.overall], ["unsure", "unvoiced", undefined]);
+});
+
+/* The jump guard, through the real path (audio in) wherever a jump can be
+ * made in audio at all: the tracker mends or drops most of what a
+ * generator can produce, so two cases edit a track, and say so. */
+test("a jump at a syllable join is not a slip: close syllables in a child's range are all read", () => {
+  // 10 ms between syllables: a fourth tone starts an octave above the end
+  // of the one before, and the frame at the join belongs to the neighbour.
+  for (const [lowHz, spanSt] of [[250, 12], [230, 16]]) {
+    for (const tones of [[4, 4], [4, 1], [1, 4, 1], [2, 4, 1], [3, 4]]) {
+      for (const seed of [11, 23, 57]) {
+        const said = speak(tones, { lowHz, spanSt, gapMs: 10, ms: 220, seed });
+        const res = scoreTones({ samples: led(said.samples), sampleRate: RATE, syllables: phrase(...tones), speaker: said.range });
+        assert.deepEqual(verdicts(res), tones.map(() => "ok"), `${lowHz} Hz [${tones}] seed ${seed}: ${res.syllables.map((x) => x.reason ?? "").join(" ")}`);
+      }
+    }
+  }
+});
+
+test("a glitch of a frame or three at the edge of a syllable is dropped, not held against it", () => {
+  // (An edited track: the tracker itself absorbs a generated edge glitch.)
+  for (const [tone, frames, end] of [[2, 1, "start"], [2, 3, "start"], [4, 2, "end"], [1, 1, "start"]]) {
+    const said = speak([tone], { ms: 320 });
+    const track = trackPitch(said.samples, RATE);
+    const glitched = edited(track);
+    const voiced = [...track.f0].map((f, i) => (f > 0 ? i : -1)).filter((i) => i >= 0);
+    const at = end === "start" ? voiced.slice(0, frames) : voiced.slice(-frames);
+    for (const i of at) glitched.f0[i] = end === "start" ? glitched.f0[i] / 2 : glitched.f0[i] * 2;
+    const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(tone), speaker: said.range, track: glitched }).syllables[0];
+    assert.deepEqual([res.verdict, res.heardTone, res.reason], ["ok", tone, undefined], `tone ${tone}, ${frames} frame(s) at the ${end}`);
+  }
+});
+
+test("a glitch in the middle of a vowel is read through; a track that flips throughout is not read at all", () => {
+  // (Edited tracks.)
+  for (const tone of [1, 2, 4]) {
+    const said = speak([tone], { ms: 320 });
+    const track = trackPitch(said.samples, RATE);
+    const voiced = [...track.f0].map((f, i) => (f > 0 ? i : -1)).filter((i) => i >= 0);
+    const score = (edited, label) => scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range, track: edited }).syllables[0];
+    // Two frames an octave down in the middle: taken out, and the vowel
+    // carries on where it was. Right is ok, and a wrong label is still caught.
+    const mid = edited(track);
+    const m = voiced[Math.floor(voiced.length / 2)];
+    mid.f0[m] /= 2;
+    mid.f0[m + 1] /= 2;
+    assert.deepEqual([score(mid, tone).verdict, score(mid, tone).heardTone], ["ok", tone], `tone ${tone}, a glitch mid-vowel`);
+    assert.equal(score(mid, tone === 1 ? 4 : 1).verdict, "off", `tone ${tone}, a glitch mid-vowel, labelled wrong`);
+    // An octave down every other three frames, the whole vowel through
+    // (period doubling): no piece is longer than a glitch, and the guard
+    // must not switch itself off for want of one.
+    const all = edited(track);
+    voiced.forEach((i, k) => { if (Math.floor(k / 3) % 2 === 1) all.f0[i] /= 2; });
+    for (const label of [1, 2, 3, 4]) assert.deepEqual([score(all, label).verdict, score(all, label).reason], ["unsure", "octave"], `tone ${tone} flipping throughout, labelled ${label}`);
+    // The same over the middle half only: too much of the contour is
+    // glitch to read through what is left.
+    const half = edited(track);
+    voiced.slice(Math.floor(voiced.length / 4), Math.floor((3 * voiced.length) / 4)).forEach((i, k) => { if (Math.floor(k / 3) % 2 === 1) half.f0[i] /= 2; });
+    for (const label of [1, 2, 3, 4]) assert.notEqual(score(half, label).verdict, label === tone ? "off" : "ok", `tone ${tone} flipping in the middle, labelled ${label}`);
+  }
+});
+
+test("a sustained octave jump, said into the microphone, is unsure", () => {
+  // The voice itself drops an octave for 130 ms in the middle of a level
+  // tone and comes back (the generator's levels: 4.8 is an octave at this
+  // span). Longer than the tracker mends, so it reaches the scorer.
+  for (const seed of [11, 23, 57]) {
+    const said = speak([(x) => CURVES[1](x) - (x > 0.33 && x < 0.33 + 130 / 400 ? 4.8 : 0)], { ms: 400, seed });
+    for (const label of [1, 2, 3, 4]) {
+      const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range });
+      assert.deepEqual([res.syllables[0].verdict, res.syllables[0].reason], ["unsure", "octave"], `seed ${seed}, labelled ${label}`);
+      assert.equal(res.overall, undefined);
+    }
+  }
+});
+
+test("the jump check comes before the creaky third tone: a slipped, creaky rise is not an ok third tone", () => {
+  // (An edited track.) A second tone whose track sits an octave low for
+  // 120 ms with four creaky frames inside: low and creaky is what the
+  // third-tone rule looks for, and it is the tracker's doing.
+  for (const seed of [11, 23, 57]) {
+    const said = speak([2], { ms: 360, seed });
+    const track = trackPitch(said.samples, RATE);
+    const slipped = edited(track);
+    const from = Math.round((said.timings[0].startMs + 60) / HOP_MS);
+    for (let i = from; i < from + 12; i++) slipped.f0[i] /= 2;
+    for (let i = from + 3; i < from + 7; i++) slipped.f0[i] = 0;
+    const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: expecting(3), speaker: said.range, track: slipped }).syllables[0];
+    assert.deepEqual([res.verdict, res.reason], ["unsure", "octave"], `seed ${seed}`);
+  }
+});
+
+test("a creaky ok is marked, left out of overall, and keeps its mark through mergeAzure", () => {
+  const said = speak([4, 1], { ms: 320 });
+  const first = said.timings[0];
+  creakOver(said.samples, first.startMs + 130, first.startMs + 230, 11);
+  const res = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: phrase(4, 1), speaker: said.range });
+  assert.deepEqual(res.syllables.map((x) => [x.verdict, x.creaky ?? false]), [["ok", true], ["ok", false]]);
+  assert.equal(res.overall, 100);
+  // Only the clean syllable is counted: flagged, it is the whole score.
+  const wrong = scoreTones({ samples: said.samples, sampleRate: RATE, syllables: phrase(4, 4), speaker: said.range });
+  assert.deepEqual([verdicts(wrong), wrong.overall], [["ok", "off"], 0]);
+  // A creaky ok alone is no score at all.
+  const alone = speak([4], { ms: 320 });
+  creakOver(alone.samples, alone.timings[0].startMs + 130, alone.timings[0].startMs + 230, 11);
+  const one = scoreTones({ samples: alone.samples, sampleRate: RATE, syllables: expecting(4), speaker: alone.range });
+  assert.deepEqual([one.syllables[0].verdict, one.syllables[0].creaky, one.overall], ["ok", true, undefined]);
+
+  const ticks = (ms) => Math.round(ms * 10_000);
+  const word = (text, t, score) => ({ Word: text, Offset: ticks(t.startMs), Duration: ticks(t.endMs - t.startMs), AccuracyScore: score, ErrorType: "None" });
+  const reply = { RecognitionStatus: "Success", DisplayText: "骂妈。", NBest: [{ Display: "骂妈。", AccuracyScore: 90, FluencyScore: 90, CompletenessScore: 100, PronScore: 90, Words: [word("骂", said.timings[0], 91), word("妈", said.timings[1], 93)] }] };
+  const syllables = expectedSyllables("骂妈", ["mà", "mā"]);
+  const merged = mergeAzure({ azure: azurePronunciationResult(reply), syllables, local: (cuts) => scoreTones({ samples: said.samples, sampleRate: RATE, syllables, timings: cuts, speaker: said.range }) });
+  assert.deepEqual(merged.syllables.map((x) => [x.char, x.verdict, x.creaky ?? false, x.score]), [["骂", "ok", true, 91], ["妈", "ok", false, 93]]);
+});
+
+/* --------- the review of the timings rework: copies, wrong spans --------- */
+
+test("a copied track is read like the original; one without its raw pitch is tracked again or not judged", () => {
+  // A child's voice in the lead-in: read from the finished `f0` (floor,
+  // octave repairs and range gate set by the whole recording) it changes
+  // verdicts. The raw pitch is a field of the track, so a copy through
+  // structuredClone (a worker's postMessage) has it.
+  const cond = NOISE_CONDITIONS.find((c) => c.key === "secondVoice");
+  for (const tones of [[4, 1, 2, 3], [2, 4], [1]]) {
+    const said = speak(tones);
+    const d = disturb(said.samples, RATE, cond, 5);
+    const track = trackPitch(d.samples, RATE);
+    assert.equal(track.rawF0.length, track.f0.length);
+    const timings = spansOf(said.timings, d.shiftMs);
+    const syllables = phrase(...tones);
+    const read = (more) => scoreTones({ sampleRate: RATE, syllables, timings, ...more }).syllables.map((x) => [x.verdict, x.reason, x.heardTone, x.margin, x.voicedMs]);
+    const mine = read({ samples: d.samples, track });
+    assert.deepEqual(read({ samples: d.samples, track: structuredClone(track) }), mine, `${tones}: a clone`);
+    assert.deepEqual(read({ track: structuredClone(track) }), mine, `${tones}: a clone, no samples`);
+    // Through JSON a typed array is no array: the raw pitch is gone, the
+    // recording is tracked again from the samples…
+    const bare = { ...track, rawF0: undefined };
+    assert.deepEqual(read({ samples: d.samples, track: bare }), mine, `${tones}: no raw pitch, samples`);
+    const json = JSON.parse(JSON.stringify(track));
+    assert.deepEqual(read({ samples: d.samples, track: json }), mine, `${tones}: through JSON`);
+    // The recording's length comes from the samples, never from the
+    // copy's arrays (which have no length: NaN, and every limit passes):
+    // as many readings with the spans moved as for the original…
+    const count = (more) => scoreTones({ sampleRate: RATE, syllables, timings, ...more }).readings;
+    assert.ok(count({ samples: d.samples, track }) >= 3, `${tones}: ${count({ samples: d.samples, track })} readings`);
+    assert.equal(count({ samples: d.samples, track: json }), count({ samples: d.samples, track }), `${tones}: readings through JSON`);
+    assert.equal(count({ track: structuredClone(track) }), count({ samples: d.samples, track }), `${tones}: readings from a clone alone`);
+    // …spans past the end are still a timings problem…
+    const total = (d.samples.length / RATE) * 1000;
+    const past = timings.map((t, i) => (i + 1 === timings.length ? { startMs: total - 100, endMs: total + 300 } : t));
+    const refused = scoreTones({ samples: d.samples, sampleRate: RATE, syllables, timings: past, track: json });
+    assert.match(refused.timingsProblem ?? "", /outside the recording/, `${tones}`);
+    // …and the copy alone is no track: nothing is judged from it.
+    assert.ok(scoreTones({ sampleRate: RATE, syllables, timings, track: json }).syllables.every((x) => x.reason === "track"), `${tones}`);
+    // …and without samples nothing is judged, by timings or by energy:
+    // never read from the finished pitch as it stands.
+    for (const more of [{ timings }, { timings: null }]) {
+      const r = scoreTones({ sampleRate: RATE, syllables, track: bare, ...more });
+      assert.ok(r.syllables.every((x) => x.verdict === "unsure" && x.reason === "track"), `${tones}`);
+      assert.equal(r.overall, undefined);
+    }
+    // The same spans on the same speech without the voice: the same result.
+    const quiet = disturb(said.samples, RATE, { ...NOISE_CONDITIONS.find((c) => c.key === "room"), padMs: cond.padMs }, 5);
+    assert.deepEqual(read({ samples: quiet.samples, track: structuredClone(trackPitch(quiet.samples, RATE)) }), mine, `${tones}: against the quiet recording`);
+  }
+  // Forty seconds of samples are refused whatever track comes with them:
+  // none, a good one, one copied through JSON.
+  const long = new Float32Array(RATE * 40);
+  const short = trackPitch(speak([1]).samples, RATE);
+  for (const track of [null, short, JSON.parse(JSON.stringify(short)), { hopMs: 10 }]) {
+    assert.throws(() => scoreTones({ samples: long, sampleRate: RATE, syllables: expecting(1), track }), /at most 30 seconds/);
+  }
+  // A track alone over the limit is refused by its own length.
+  const frames = (LOCAL_MAX_SECONDS + 2) * 100;
+  const tooLong = { hopMs: 10, f0: new Float32Array(frames), rawF0: new Float32Array(frames), rms: new Float32Array(frames), periodicity: new Float32Array(frames), zcr: new Float32Array(frames) };
+  assert.throws(() => scoreTones({ syllables: expecting(1), track: tooLong }), /at most 30 seconds/);
+  // A trimmed track carries the raw pitch of what it kept and no more.
+  const said = speak([4, 1]);
+  const rec = recording(said.samples, { blips: [{ atMs: 200, ms: 40, hz: 220, amp: 0.05 }] });
+  const trimmed = trimToSpeech(trackPitch(rec.samples, RATE));
+  assert.ok(trimmed.trim.from > 30);
+  assert.equal(voicedIn({ ...trimmed, f0: trimmed.rawF0 }, 0, trimmed.trim.from * HOP_MS), 0);
+});
+
+test("jitteredTimings: the whole set earlier and later, each boundary both ways, nothing shorter than a syllable", () => {
+  const spans = [{ startMs: 100, endMs: 300 }, { startMs: 300, endMs: 370 }, null, { startMs: 600, endMs: 900 }];
+  const J = TIMING_RULES.jitterMs;
+  const got = jitteredTimings(spans, 1000);
+  assert.deepEqual(got[0], [{ startMs: 100 - J, endMs: 300 - J }, { startMs: 300 - J, endMs: 370 - J }, null, { startMs: 600 - J, endMs: 900 - J }]);
+  assert.deepEqual(got[1][3], { startMs: 600 + J, endMs: 900 + J });
+  // One boundary between timed neighbours: later would leave the second
+  // span 30 ms, so only earlier; none across the untimed syllable.
+  assert.equal(got.length, 3);
+  assert.deepEqual([got[2][0], got[2][1]], [{ startMs: 100, endMs: 300 - J }, { startMs: 300 - J, endMs: 370 }]);
+  assert.ok(jitteredTimings([{ startMs: 0, endMs: 300 }], 320).every((t) => t[0].startMs >= 0 && t[0].endMs <= 320));
+  assert.deepEqual(jitteredTimings(spans, 1000, { ...TIMING_RULES, jitterMs: 0 }), []);
+  // A short last span at the end of the recording can't move later. It
+  // stays put in that variant and the other two still move: five of the
+  // six variants (the sixth, its boundary moved later, would leave it 30
+  // ms and nothing else moves in it).
+  const tail = [{ startMs: 200, endMs: 450 }, { startMs: 450, endMs: 700 }, { startMs: 700, endMs: 770 }];
+  const moved = jitteredTimings(tail, 770);
+  assert.equal(moved.length, 5);
+  assert.deepEqual(moved[1], [{ startMs: 200 + J, endMs: 450 + J }, { startMs: 450 + J, endMs: 700 + J }, { startMs: 700, endMs: 770 }]);
+  // Every syllable has a variant in which its own span moved.
+  for (let i = 0; i < 3; i++) assert.ok(moved.some((t) => t[i].startMs !== tail[i].startMs || t[i].endMs !== tail[i].endMs), `syllable ${i + 1}`);
+  // A lone 70 ms span that is the whole recording can't move either way:
+  // no variant at all, and an unknown length gives none rather than NaN.
+  assert.deepEqual(jitteredTimings([{ startMs: 0, endMs: 70 }], 70), []);
+  assert.deepEqual(jitteredTimings(tail, NaN), []);
+});
+
+test("no moved reading is not agreement: a syllable whose span could not be moved is not judged", () => {
+  const said = speak([4, 1, 2]);
+  const samples = led(said.samples, 500);
+  const timings = spansOf(said.timings, 500);
+  const read = (timingRules) => scoreTones({ samples, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range, timings, timingRules });
+  assert.deepEqual(verdicts(read(TIMING_RULES)), ["off", "ok", "ok"]);
+  // A jitter no span can make inside this recording: no reading with the
+  // spans moved, so nothing vouches for the edges.
+  const none = read({ ...TIMING_RULES, jitterMs: 5000 });
+  assert.equal(none.readings, 1);
+  assert.deepEqual(none.syllables.map((x) => [x.verdict, x.reason]), [["unsure", "edges"], ["unsure", "edges"], ["unsure", "edges"]]);
+  assert.equal(none.overall, undefined);
+  // With the guard switched off on purpose (the proof's "no guards"), the
+  // one reading stands.
+  assert.deepEqual(verdicts(read({ ...TIMING_RULES, jitterMs: 0 })), ["off", "ok", "ok"]);
+  // The short last span at the very end of the recording: the others
+  // keep their readings (the sliver and its neighbour are lopsided; the
+  // first syllable's flag stands).
+  const end = said.timings[2].startMs + 500 + 70;
+  const cut = samples.slice(0, Math.round((end * RATE) / 1000));
+  const tail = [timings[0], { startMs: timings[1].startMs, endMs: end - 70 }, { startMs: end - 70, endMs: end }];
+  const r = scoreTones({ samples: cut, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range, timings: tail });
+  assert.equal(r.readings, 6);
+  assert.equal(verdicts(r)[0], "off", JSON.stringify(r.syllables.map((x) => [x.verdict, x.reason])));
+});
+
+test("timings that are not a list are a timings problem, not a fall back to energy", () => {
+  const said = speak([4, 1]);
+  const samples = led(said.samples, 300);
+  for (const timings of [{ startMs: 300, endMs: 600 }, "0-300", 0, {}]) {
+    const r = scoreTones({ samples, sampleRate: RATE, syllables: phrase(4, 1), speaker: said.range, timings });
+    assert.deepEqual([r.timed, typeof r.timingsProblem], ["given", "string"], JSON.stringify(timings));
+    assert.ok(r.syllables.every((x) => x.verdict === "unsure" && x.reason === "timings"));
+  }
+  for (const timings of [null, undefined]) assert.equal(scoreTones({ samples, sampleRate: RATE, syllables: phrase(4, 1), speaker: said.range, timings }).timed, "fallback");
+});
+
+/* The proof's "When the spans are wrong", in small: generated phrases,
+ * the spans a recogniser would draw, and the same spans wrong in ways
+ * that still look like spans (SPAN_ERRORS). Compared syllable by syllable
+ * with the right spans. */
+test("wrong spans: with the guards no new false alarm and no new wrong ok; without them, wrong oks", () => {
+  const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0 };
+  const clipsAt = (gapMs) => [[4, 1, 2], [2, 4, 1], [1, 3, 4], [3, 2, 2], [1, 4], [4, 4, 1, 2]].map((tones, k) => {
+    const said = speak(tones, { seed: 11 + k, ms: 240, gapMs });
+    const samples = led(said.samples, 500);
+    return { tones, samples, spans: spansOf(said.timings, 500), range: said.range, track: trackPitch(samples, RATE), total: (samples.length / RATE) * 1000 };
+  });
+  let clips = clipsAt(60);
+  const study = (timingRules) => {
+    const score = (c, spans) => (syllables) => scoreTones({ samples: c.samples, sampleRate: RATE, syllables, speaker: c.range, track: c.track, timings: spans, timingRules });
+    const base = new Map();
+    clips.forEach((c, k) => verdictsOf(base, `${k}`, c.tones, score(c, c.spans)));
+    const out = { clean: flips(base, base) };
+    for (const e of SPAN_ERRORS) {
+      const now = new Map();
+      const at = new Map();
+      clips.forEach((c, k) => e.variants(c.spans, c.total).forEach((spans, vi) => {
+        assert.equal(timingsProblem(spans, c.tones.length, c.total), null, `${e.key}: still looks like spans`);
+        for (const [key, x] of verdictsOf(new Map(), `${k}`, c.tones, score(c, spans))) {
+          now.set(`${key}#${vi}`, x);
+          at.set(`${key}#${vi}`, base.get(key));
+        }
+      }));
+      out[e.key] = flips(at, now);
+    }
+    return out;
+  };
+  const guarded = study(TIMING_RULES);
+  const bare = study(BARE);
+  // What the guards cost on right spans: some catches, no false alarm.
+  assert.equal(guarded.clean.falseAlarms + bare.clean.falseAlarms, 0);
+  assert.ok(guarded.clean.caught >= 30 && guarded.clean.caught <= bare.clean.caught, `${guarded.clean.caught} of ${guarded.clean.wrong}, ${bare.clean.caught} without`);
+  for (const e of SPAN_ERRORS) {
+    const g = guarded[e.key];
+    assert.deepEqual([g.falseOff, g.wrongOk, g.falseAlarms], [0, 0, 0], `${e.key}: ${JSON.stringify(g.keys)}`);
+  }
+  // Without them the same wrong spans pass wrong tones as ok.
+  assert.ok(bare["shift-150"].wrongOk + bare.shift150.wrongOk > 0, JSON.stringify([bare["shift-150"].wrongOk, bare.shift150.wrongOk]));
+
+  // Syllables 20 ms apart, run together as in speech. With a real silence
+  // between them (above) a span that swallowed its neighbour is caught as
+  // two sounds ("apart") whatever else is switched off; here only the
+  // lopsided check stands between it and a verdict.
+  clips = clipsAt(20);
+  const close = study(TIMING_RULES);
+  const noLopsided = study({ ...TIMING_RULES, lopsided: 0 });
+  assert.equal(close.clean.falseAlarms, 0);
+  for (const key of ["shift-50", "shift50", "boundary-50", "boundary50", "swallowNext", "swallowPrev"]) {
+    assert.deepEqual([close[key].falseOff, close[key].wrongOk], [0, 0], `${key}, 20 ms apart: ${JSON.stringify(close[key].keys)}`);
+  }
+  for (const key of ["swallowNext", "swallowPrev"]) {
+    assert.ok(noLopsided[key].falseOff > 0 && noLopsided[key].wrongOk > 0, `${key} without the lopsided check: ${noLopsided[key].falseOff} / ${noLopsided[key].wrongOk}`);
+  }
+  // NOT safe, and asserted so that nobody reads the zeros above as more
+  // than they are: off the design the guards were fitted to (a neighbour
+  // left 110 ms: no sliver), and spans 100 ms out, run-together syllables
+  // still get false alarms and wrong oks. The proof's table has the same
+  // rows on the synthesized voices.
+  assert.ok(close.swallowNext110.falseOff + close.swallowNext110.wrongOk > 0);
+  assert.ok(close.shift100.falseOff + close.shift100.wrongOk > 0);
+});
+
+test("lopsided spans: a span that took its neighbour's sound, and the sliver left beside it, are not judged", () => {
+  // 20 ms between the syllables: run together, as in speech (with a real
+  // silence between them the swallowing span is "apart" first).
+  const said = speak([4, 1, 2], { ms: 240, gapMs: 20 });
+  const samples = led(said.samples, 500);
+  const spans = spansOf(said.timings, 500);
+  const read = (timings, ...labels) => scoreTones({ samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables.map((x) => x.reason ?? x.verdict);
+  assert.equal(read(spans, 4, 1, 2)[0], "ok");
+  assert.equal(read(spans, 1, 1, 2)[0], "off");
+  // The first span runs on over the second syllable, which keeps 60 ms.
+  const swallowed = [{ startMs: spans[0].startMs, endMs: spans[1].endMs - 60 }, { startMs: spans[1].endMs - 60, endMs: spans[1].endMs }, spans[2]];
+  assert.equal(timingsProblem(swallowed, 3, 5000), null);
+  for (const labels of [[4, 1, 2], [1, 1, 2], [3, 4, 2]]) {
+    const got = read(swallowed, ...labels);
+    assert.ok(got.slice(0, 2).every((x) => !["ok", "off"].includes(x)), `${labels}: ${got}`);
+    assert.equal(got[0], "lopsided", `${labels}: ${got}`);
+  }
+  // Across a pause each span stands alone: a short syllable after one is
+  // not held against the long one before it.
+  const paused = speak([4, 1], { ms: [300, 90], gaps: [70, 400, 70] });
+  const p = [{ startMs: paused.timings[0].startMs + 470, endMs: paused.timings[0].endMs + 530 }, { startMs: paused.timings[1].startMs + 470, endMs: paused.timings[1].endMs + 530 }];
+  assert.equal(scoreTones({ samples: led(paused.samples, 500), sampleRate: RATE, syllables: phrase(4, 1), speaker: paused.range, timings: p }).syllables[0].verdict, "ok");
+});
+
+test("a word Azure timed as one: cut inside its own span, on that span's pitch alone, and marked rough", () => {
+  const said = speak([1, 4, 2]);
+  const ticks = (ms) => Math.round(ms * 10_000);
+  const word = (text, a, b) => ({ Word: text, Offset: ticks(a), Duration: ticks(b - a), AccuracyScore: 90, ErrorType: "None" });
+  const syllables = expectedSyllables("妈骂麻", ["mā", "mà", "má"]);
+  const cutsOf = (samples, shift) => {
+    const reply = { RecognitionStatus: "Success", NBest: [{ Display: "妈骂麻", PronScore: 90, Words: [word("妈", said.timings[0].startMs + shift, said.timings[0].endMs + shift), word("骂麻", said.timings[1].startMs + shift - 20, said.timings[2].endMs + shift + 20)] }] };
+    let got = null;
+    mergeAzure({ azure: azurePronunciationResult(reply), syllables, track: trackPitch(samples, RATE), local: (timings) => {
+      got = timings;
+      return null;
+    } });
+    return got.map((t) => ({ startMs: t.startMs - shift, endMs: t.endMs - shift, rough: Boolean(t.rough) }));
+  };
+  const quiet = disturb(said.samples, RATE, { ...NOISE_CONDITIONS.find((c) => c.key === "room"), padMs: 1300 }, 5);
+  const loud = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "secondVoice"), 5);
+  const a = cutsOf(quiet.samples, quiet.shiftMs);
+  assert.deepEqual(a.map((t) => t.rough), [false, true, true]);
+  // Inside the word's span, each on its syllable…
+  assert.ok(a[1].startMs >= said.timings[1].startMs - 20 && a[2].endMs <= said.timings[2].endMs + 20, JSON.stringify(a));
+  assert.ok(Math.abs(a[1].endMs - (said.timings[1].endMs + said.timings[2].startMs) / 2) <= 60, JSON.stringify(a));
+  // …and the same cuts with another voice in the lead-in.
+  assert.deepEqual(cutsOf(loud.samples, loud.shiftMs), a);
+});
+
+test("by energy: two readings that agree on the verdict but hear different tones are not a verdict", () => {
+  // A level syllable, and 30 ms after it a soft rising sound that may be
+  // its end or may be something else. Labelled second tone: read without
+  // the sound it is "off, heard 1"; read with it, "off" again but for
+  // another tone. Two different measurements don't make one flag.
+  const said = speak([1, 2], { ms: [260, 100], gaps: [70, 30, 70], amps: [1, 10 ** (-14 / 20)] });
+  const samples = led(said.samples, 500);
+  const alone = speak([1]);
+  assert.equal(scoreTones({ samples: led(alone.samples, 500), sampleRate: RATE, syllables: expecting(2), speaker: alone.range }).syllables[0].verdict, "off");
+  const got = scoreTones({ samples, sampleRate: RATE, syllables: expecting(2), speaker: said.range }).syllables[0];
+  assert.deepEqual([got.verdict, got.reason, got.confidence], ["unsure", "trimmed", 0]);
+});
+
+test("by energy: more doubted sounds than maxDoubts and the recording is not read at all, nor every way", () => {
+  const said = speak([4, 1, 2]);
+  const blip = speak([1], { ms: 40, lowHz: 220, gaps: [0, 0] }).samples;
+  const withBlips = (count) => {
+    const samples = led(said.samples, 1500);
+    for (let k = 0; k < count; k++) for (let i = 0; i < blip.length; i++) samples[Math.round(RATE * (0.05 + k * 0.11)) + i] += 0.3 * blip[i];
+    return samples;
+  };
+  // Twelve doubted sounds would be 4096 readings; a cap of three makes it
+  // none. (About 30 ms here; a second is generous.)
+  const t0 = performance.now();
+  const r = scoreTones({ samples: withBlips(12), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range });
+  const took = performance.now() - t0;
+  assert.deepEqual(r.syllables.map((x) => [x.verdict, x.reason]), [["unsure", "trimmed"], ["unsure", "trimmed"], ["unsure", "trimmed"]]);
+  assert.ok(took < 1000, `${took.toFixed(0)} ms`);
+  // One past the cap is already refused: every syllable, whatever the
+  // readings would have agreed on.
+  const four = scoreTones({ samples: withBlips(TRIM_RULES.maxDoubts + 1), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range });
+  assert.ok(four.syllables.every((x) => x.reason === "trimmed"));
+  assert.equal(four.syllables[0].startMs, null, "not read: no cuts were made");
+});
+
+test("a pitched knock far from the speech: one syllable is read as if it weren't there, a phrase both ways", () => {
+  // 40 ms of knock is a 70 ms voiced run in the track (the analysis
+  // window): not long enough to be a syllable, so not "scattered".
+  const cond = NOISE_CONDITIONS.find((c) => c.key === "knockBefore");
+  const room = NOISE_CONDITIONS.find((c) => c.key === "room");
+  for (const tone of [1, 2, 4]) {
+    const said = speak([tone]);
+    const read = (c, label) => scoreTones({ samples: disturb(said.samples, RATE, c, 5).samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range }).syllables.map((x) => [x.verdict, x.reason, x.heardTone]);
+    for (const label of [1, 2, 3, 4]) assert.deepEqual(read(cond, label), read(room, label), `tone ${tone} labelled ${label}`);
+    assert.equal(read(cond, tone)[0][0], "ok");
+  }
+  const phraseSaid = speak([4, 1, 2]);
+  const got = scoreTones({ samples: disturb(phraseSaid.samples, RATE, cond, 5).samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: phraseSaid.range }).syllables;
+  assert.ok(got.every((x) => x.reason !== "scattered" && x.verdict !== "off"), JSON.stringify(got.map((x) => [x.verdict, x.reason])));
+});
+
+test("a recording that starts inside the first syllable: that syllable is not judged, by energy or on timings", () => {
+  const said = speak([4, 1, 2]);
+  const cond = NOISE_CONDITIONS.find((c) => c.key === "midword");
+  const d = disturb(said.samples, RATE, cond, 5);
+  assert.ok(d.shiftMs < 0, "the recording starts at the cut: no lead-in");
+  const timings = spansOf(said.timings, d.shiftMs).map((t) => ({ startMs: Math.max(0, t.startMs), endMs: t.endMs }));
+  for (const more of [{}, { timings }]) {
+    for (const labels of [[4, 1, 2], [1, 1, 2], [2, 1, 2]]) {
+      const got = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, ...more }).syllables;
+      assert.deepEqual([got[0].verdict, got[0].reason], ["unsure", "clipped"], `${labels} ${more.timings ? "timings" : "energy"}`);
+    }
+  }
+  // "Begins with the recording" is a first span that starts under
+  // clippedMs (20 ms) in: the two frames looked at are inside it.
+  const from = (startMs) => scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range, timings: timings.map((t, i) => (i ? t : { ...t, startMs })) }).syllables[0].reason;
+  assert.deepEqual([from(0), from(10), from(TONE_RULES.clippedMs - 1)], ["clipped", "clipped", "clipped"]);
+  assert.notEqual(from(TONE_RULES.clippedMs), "clipped");
+  // The same speech with a lead-in is read.
+  assert.equal(scoreTones({ samples: led(said.samples, 300), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range }).syllables[0].verdict, "ok");
 });

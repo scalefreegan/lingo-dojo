@@ -13,13 +13,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { after, before, describe, it } from "node:test";
 import { encodeWav } from "../pronunciation.mjs";
 import {
-  LABELS_HEADER, MAX_UPLOAD_BYTES, PAGE_FUNCTIONS, PHRASES, SINGLES, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, keyAction, newFileName, parseLabels,
+  LABELS_HEADER, MAX_UPLOAD_BYTES, PAGE_FUNCTIONS, PHRASES, SINGLES, azureSendable, buildPrompts, checkWav, cleanSpeaker, doneKeys, findSpeaker, formatLabel, isRecordingName, keyAction, newFileName, parseLabels,
   processingOf, promptKey, readout, recordingsReport, saidTones, speakerTable, speakerTally,
 } from "../pronunciation-recordings.mjs";
 import { createRecorder, loopbackHost, trackedByGit } from "../pronunciation-record.mjs";
 
 /** A voiced syllable: a glide from one pitch to another with a few
- *  harmonics, 16 kHz. */
+ *  harmonics, 16 kHz, after 60 ms of silence (a clip loud from its first
+ *  frame is taken for one that started mid-word, and not judged). */
 function tone(fromHz, toHz, seconds = 0.5, rate = 16_000) {
   const n = Math.round(seconds * rate);
   const out = new Float32Array(n);
@@ -27,7 +28,8 @@ function tone(fromHz, toHz, seconds = 0.5, rate = 16_000) {
   for (let i = 0; i < n; i++) {
     const f = fromHz + ((toHz - fromHz) * i) / n;
     phase += (2 * Math.PI * f) / rate;
-    const env = Math.min(1, i / 400, (n - i) / 400);
+    const lead = Math.round(0.06 * rate);
+    const env = Math.max(0, Math.min(1, (i - lead) / 400, (n - i) / 400));
     out[i] = 0.3 * env * (Math.sin(phase) + 0.5 * Math.sin(2 * phase) + 0.25 * Math.sin(3 * phase));
   }
   return out;
@@ -767,5 +769,44 @@ describe("the recordings folder and git", () => {
     assert.equal(trackedByGit(os.tmpdir(), repo), false);
     assert.equal(trackedByGit(path.join(repo, "data", "pronunciation-proof", "recordings"), repo), false);
     assert.equal(trackedByGit(path.join(repo, "scripts"), repo), true);
+    // Asked of the file about to be written: the replies folder inside
+    // the recordings folder is ignored for a .json as for a clip.
+    assert.equal(trackedByGit(path.join(repo, "data", "pronunciation-proof", "recordings", ".azure"), repo, "rec-1.wav.json"), false);
+    assert.equal(trackedByGit(path.join(repo, "scripts"), repo, "rec-1.wav.json"), true);
+  });
+});
+
+describe("which clips may be sent to a recogniser (azureSendable)", () => {
+  const row = (file, speaker, group = "") => ({ file, text: "妈", said: "", speaker, group, unsure: false, processing: "raw" });
+  const files = (rows, who) => azureSendable(rows, who).send.map((r) => r.file);
+
+  it("sends the named adult's clips and nobody else's", () => {
+    const rows = [row("a1", "Sam", "adult"), row("b1", "Kim", "adult"), row("a2", "sam"), row("c1", "Lee", "child"), row("a3", "SAM", "adult")];
+    const got = azureSendable(rows, " sam ");
+    // The line with no group is Sam's, and Sam is an adult by the others.
+    assert.deepEqual(got.send.map((r) => r.file), ["a1", "a2", "a3"]);
+    assert.deepEqual([got.held, got.why], [2, ""]);
+  });
+
+  it("sends nothing of a child, the lines with no group included", () => {
+    // Labelled child once, then left blank: the row's own group says
+    // nothing, the person's says child.
+    const rows = [row("c1", "Lee", "child"), row("c2", "Lee"), row("c3", "lee"), row("a1", "Sam", "adult")];
+    const got = azureSendable(rows, "lee");
+    assert.deepEqual([got.send, got.held], [[], 4]);
+    assert.match(got.why, /child/);
+    // Blank first, child later: the same.
+    assert.deepEqual(files([row("c2", "lee"), row("c1", "Lee", "child")], "Lee"), []);
+  });
+
+  it("sends nothing when the name is both, has no group at all, is unknown or is missing", () => {
+    assert.deepEqual(files([row("x1", "Pat", "adult"), row("x2", "pat", "child"), row("x3", "Pat")], "pat"), []);
+    assert.match(azureSendable([row("x1", "Pat", "adult"), row("x2", "pat", "child")], "pat").why, /adult and child|child and adult/);
+    assert.deepEqual(files([row("n1", "Ann"), row("n2", "Ann")], "ann"), []);
+    assert.match(azureSendable([row("n1", "Ann")], "ann").why, /no group/);
+    assert.deepEqual(files([row("a1", "Sam", "adult")], "kim"), []);
+    for (const who of ["", "  ", null, undefined]) assert.deepEqual(files([row("a1", "Sam", "adult"), row("b1", "", "adult")], who), []);
+    // A group that is neither word is not "adult".
+    assert.deepEqual(files([row("a1", "Sam", "grown-up")], "sam"), []);
   });
 });
