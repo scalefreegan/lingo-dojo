@@ -88,7 +88,7 @@ export function modelSyllableReal(s, frames) {
 
 /** Bumped when what a cached model record means changes: an old one is
  *  then simply not read (scripts/model-analysis.mjs). */
-export const MODEL_RECORD_VERSION = 1;
+export const MODEL_RECORD_VERSION = 2;
 
 /** Silence put around a model clip before it is analysed (ms). A voice's
  *  clip starts with its first sound: the scorer would call that syllable
@@ -127,8 +127,9 @@ export function unpadRecord(record, ms = MODEL_PAD_MS) {
  * span and `real`. `azure` says what happened with Azure for this clip:
  * "used" (it answered), "spent" (a call was made and failed, or one was
  * made before: never again for this clip) or "skipped" (no call was made:
- * no keys, the per-minute cap, busy; a later request may still make the
- * one call).
+ * no keys, a malformed region, the per-minute cap, busy). A skipped record
+ * refused by the cap or a busy slot carries `retryAt` (model-analysis.mjs:
+ * not tried again before then).
  */
 export function modelRecord({ result, frames, syllables, durationMs, azure }) {
   return {
@@ -147,6 +148,10 @@ export function modelRecord({ result, frames, syllables, durationMs, azure }) {
         startMs: s && Number.isFinite(s.startMs) ? Math.round(s.startMs) : null,
         endMs: s && Number.isFinite(s.endMs) ? Math.round(s.endMs) : null,
         real,
+        // The tone heard, on an "ok": where several tones count, compare
+        // mode reads a learner's curve against the model's only when both
+        // said the same one.
+        ...(s?.verdict === "ok" && Number.isInteger(s.heardTone) ? { saidTone: s.heardTone } : {}),
       };
     }),
   };
@@ -156,6 +161,7 @@ export function modelRecord({ result, frames, syllables, durationMs, azure }) {
 export function isModelRecord(r) {
   return (
     !!r && r.v === MODEL_RECORD_VERSION && (r.engine === "azure" || r.engine === "local") && ["used", "spent", "skipped"].includes(r.azure) &&
-    Number.isFinite(r.durationMs) && !!r.frames && Array.isArray(r.frames.pitch) && Array.isArray(r.frames.level) && Array.isArray(r.syllables)
+    Number.isFinite(r.durationMs) && !!r.frames && Array.isArray(r.frames.pitch) && Array.isArray(r.frames.level) && Array.isArray(r.syllables) &&
+    (r.retryAt === undefined || Number.isFinite(r.retryAt))
   );
 }

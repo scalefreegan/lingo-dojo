@@ -43,9 +43,17 @@ function useComparePlayer(take: Blob, model: () => Promise<Blob>) {
   const buffers = useRef<{ mine?: Promise<AudioBuffer>; model?: Promise<AudioBuffer> }>({});
   const source = useRef<AudioBufferSourceNode | null>(null);
   const seq = useRef(0);
+  // Set when the view closes: a model clip arriving after that must not
+  // open an AudioContext no one will close.
+  const closed = useRef(false);
 
+  // (Re)opened: React's dev double mount runs the cleanup below once first.
+  useEffect(() => {
+    closed.current = false;
+  }, []);
   useEffect(
     () => () => {
+      closed.current = true;
       seq.current++;
       try {
         source.current?.stop();
@@ -58,7 +66,10 @@ function useComparePlayer(take: Blob, model: () => Promise<Blob>) {
     [],
   );
 
-  const audio = () => (ctx.current ??= new AudioContext());
+  const audio = () => {
+    if (closed.current) throw new Error("the comparison was closed");
+    return (ctx.current ??= new AudioContext());
+  };
   const bufferOf = (which: "mine" | "model") =>
     (buffers.current[which] ??= (which === "mine" ? Promise.resolve(take) : model())
       .then((b) => b.arrayBuffer())
@@ -86,6 +97,9 @@ function useComparePlayer(take: Blob, model: () => Promise<Blob>) {
     if (mine !== seq.current) return;
     const ac = audio();
     if (ac.state === "suspended") await ac.resume();
+    // Stop (or another button, or closing) pressed while the context woke:
+    // start nothing, or a loop would play on with no Stop showing.
+    if (mine !== seq.current || closed.current) return;
     const node = ac.createBufferSource();
     node.buffer = buf;
     node.connect(ac.destination);
@@ -344,7 +358,14 @@ export function CompareView({ reply, take, kids, source, onClose }: CompareViewP
 
   let tipsEmpty = "";
   if (model.step !== "loading" && !tips.length) {
-    if (kids) tipsEmpty = reply.syllables.some((s) => s.verdict === "off") ? "Listen to the model, then try again!" : "Lovely! Listen to the model and say it again.";
+    // "Lovely!" only when every syllable was heard right; a take nothing was
+    // sure about gets a neutral line, never praise it may not deserve.
+    if (kids)
+      tipsEmpty = reply.syllables.some((s) => s.verdict === "off")
+        ? "Listen to the model, then try again!"
+        : reply.syllables.every((s) => s.verdict === "ok")
+          ? "Lovely! Listen to the model and say it again."
+          : "Listen to the model and say it again.";
     else tipsEmpty = judged ? "No clear differences to point out." : "Nothing here was clear enough to compare. That's not a mistake: try again somewhere quiet.";
   }
 

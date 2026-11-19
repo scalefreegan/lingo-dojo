@@ -253,11 +253,56 @@ test("a Practice phrase's model: the phrase's own audio; an unknown phrase is a 
   assert.equal((await other.call("GET", `/api/pronunciation/model?phrase=${encodeURIComponent(id)}`)).status, 404);
 });
 
-test("a kids learner gets the same model analysis", async () => {
+test("a kids learner gets the same model analysis for the card; a Practice phrase is a 403, as Practice is", async () => {
   withAzure();
   const mei = await someone([KID_MANDARIN]);
   const r = await modelOf(mei, "大");
   assert.deepEqual([r.status, r.body.available, r.body.syllables.length], [200, true, 1]);
+  const s0 = synths.length;
+  const a0 = azureCalls.length;
+  const p = await mei.call("GET", `/api/pronunciation/model?phrase=${encodeURIComponent("00000000-0000-4000-8000-000000000000")}`);
+  assert.equal(p.status, 403, p.text);
+  assert.equal((await mei.call("GET", "/api/practice/audio/00000000-0000-4000-8000-000000000000")).status, 403, "the same answer as Practice's own route");
+  assert.deepEqual([synths.length, azureCalls.length], [s0, a0], "refused before any provider call");
+});
+
+test("a slow model analysis holds no one else's scoring slot: other users' scores go on", async () => {
+  withAzure();
+  const [a, b, c] = [await someone(), await someone(), await someone()];
+  ttsDelayMs = 800;
+  try {
+    // Two users open Compare on clips not made yet: both wait on speech.
+    const slow = [modelOf(a, "妈"), modelOf(b, "妈")];
+    await new Promise((r) => setTimeout(r, 100));
+    // A third checks a recording meanwhile: not a 429.
+    const take = clip([4], { lowHz: 110, spanSt: 10, ms: 260 });
+    timingsByLength.set(take.wav.length, take.timings);
+    const r = await c.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("大")}`, take.wav, { "Content-Type": "audio/wav" });
+    assert.equal(r.status, 200, r.text);
+    for (const m of await Promise.all(slow)) assert.equal(m.status, 200, m.text);
+  } finally {
+    ttsDelayMs = 0;
+  }
+});
+
+test("Azure set up with a malformed region: read locally once and served from the cache, never retried until the region is fixed", async () => {
+  fs.writeFileSync(process.env.LINGO_ENV_FILE, "ELEVENLABS_API_KEY=test-key\nAZURE_SPEECH_KEY=test-key\nAZURE_SPEECH_REGION=East US!\n");
+  try {
+    const lin = await someone();
+    const a0 = azureCalls.length;
+    const first = await logsOf(async () => assert.equal((await modelOf(lin, "好")).status, 200));
+    assert.match(first, /model clip made \(local\)/);
+    const again = await logsOf(async () => assert.equal((await modelOf(lin, "好")).status, 200));
+    assert.match(again, /model clip hit \(local\)/, "not analysed again");
+    assert.equal(azureCalls.length, a0, "no call");
+    // The region fixed: the next request makes the one call.
+    withAzure();
+    const fixed = await logsOf(async () => assert.equal((await modelOf(lin, "好")).body.engine, "azure"));
+    assert.match(fixed, /model clip made \(azure\)/);
+    assert.equal(azureCalls.length, a0 + 1);
+  } finally {
+    withAzure();
+  }
 });
 
 test("no decoder on this machine, or a clip it can't read: the textbook shapes, nothing cached, nothing sent", async () => {

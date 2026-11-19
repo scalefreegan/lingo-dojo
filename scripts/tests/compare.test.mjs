@@ -51,7 +51,7 @@ function mineOf(spans, list) {
 }
 /** The model's syllables as the model route sends them. */
 function modelOf(spans, list, frames) {
-  return { frames, durationMs: frames.pitch.length * STEP, syllables: list.map((s, i) => ({ char: s.char ?? "字", pinyin: s.pinyin ?? "zi", expectedTone: s.tone, startMs: spans[i].startMs, endMs: spans[i].endMs, real: s.real ?? true })) };
+  return { frames, durationMs: frames.pitch.length * STEP, syllables: list.map((s, i) => ({ char: s.char ?? "字", pinyin: s.pinyin ?? "zi", expectedTone: s.tone, startMs: spans[i].startMs, endMs: spans[i].endMs, real: s.real ?? true, ...(s.saidTone ? { saidTone: s.saidTone } : {}) })) };
 }
 
 const FALL = (x) => 4.5 - 9 * x;
@@ -139,11 +139,11 @@ test("where the model's clip wasn't read with confidence (or there is no model) 
 /* ----------------------------------- tips ---------------------------------- */
 
 /** Tips for one syllable: the learner's curve against the model's. */
-function tipsFor({ mine: mineCurve, model: modelCurve, tone, verdict = "off", extra = {}, kids = false, mineMs = 300, modelMs = 300, real = true }) {
+function tipsFor({ mine: mineCurve, model: modelCurve, tone, verdict = "off", extra = {}, kids = false, mineMs = 300, modelMs = 300, real = true, modelSaid = undefined }) {
   const me = build([{ ms: mineMs, curve: mineCurve }]);
   const mo = build([{ ms: modelMs, curve: modelCurve }]);
   const mine = mineOf(me.spans, [{ tone, verdict, extra, char: "是", pinyin: "shì" }]);
-  return compareTips({ mine, frames: me.frames, model: modelOf(mo.spans, [{ tone, real, char: "是" }], mo.frames), kids, name: () => "是 (shì)" });
+  return compareTips({ mine, frames: me.frames, model: modelOf(mo.spans, [{ tone, real, char: "是", saidTone: modelSaid }], mo.frames), kids, name: () => "是 (shì)" });
 }
 
 test("a fall too small: on an off by the normal bar, on an ok only when it is much larger, never on an unsure", () => {
@@ -171,7 +171,55 @@ test("the other curve rules: level that moves, rise too small or late, dip too s
   const [d] = tipsFor({ mine: shallow, model: DIP, tone: 3, extra: { heardTone: 2, why: "tone" } });
   assert.equal(d.kind, "dip_shallow");
   assert.match(d.text, /comes back up/);
-  assert.match(tipsFor({ mine: shallow, model: DIP, tone: 3, extra: { heardTone: 2, why: "tone", half: true } })[0].text, /stay there/);
+  assert.ok(!tipsFor({ mine: shallow, model: DIP, tone: 3, extra: { heardTone: 2, why: "tone", half: true } }).some((t) => t.kind === "dip_shallow"), "a half third is never read by its dip");
+});
+
+test("a half third is read by how low it sits against each voice's own centre, not by how far it moves", () => {
+  const lowLevel = () => -5;
+  const modelFallingLow = (x) => -1 - 5 * x; // −1 → −6: moves 5, sits low
+  const half = { half: true };
+  // Low and level against a model falling into the low: right, nothing to say.
+  assert.deepEqual(tipsFor({ mine: lowLevel, model: modelFallingLow, tone: 3, verdict: "ok", extra: half }), []);
+  // The same take marked off (the scorer heard another tone): still no curve tip, only the plain one.
+  const off = tipsFor({ mine: lowLevel, model: modelFallingLow, tone: 3, extra: { ...half, heardTone: 1, why: "tone" } });
+  assert.deepEqual(off.map((t) => t.kind), ["tone"]);
+  assert.match(off[0].text, /should be low/);
+  // Sitting high in the voice: off by the normal bar, ok only well past it.
+  const [t] = tipsFor({ mine: () => 1, model: modelFallingLow, tone: 3, extra: { ...half, heardTone: 1, why: "tone" } });
+  assert.equal(t.kind, "half_high");
+  assert.match(t.text, /sits too high in your voice.*just low/);
+  assert.deepEqual(tipsFor({ mine: () => 1, model: modelFallingLow, tone: 3, verdict: "ok", extra: half }), [], "ok: a gap of 4.5 is under 1.6 × 3");
+  assert.equal(tipsFor({ mine: () => 3, model: modelFallingLow, tone: 3, verdict: "ok", extra: half })[0]?.kind, "half_high");
+  // A model that doesn't sit low itself says nothing about lowness.
+  assert.deepEqual(tipsFor({ mine: () => 3, model: () => 0, tone: 3, verdict: "ok", extra: half }), []);
+});
+
+test("several accepted tones: a curve is compared only when the learner and the model said the same one", () => {
+  // 我 before 很 takes 2 or 3; the reply's expected tone is the sandhi 2.
+  const both = { accept: [2, 3] };
+  const flatDip = (x) => -3 - 1 * x + 1 * x * x;
+  // The learner said wǒ (ok, heard 3) and the model wó: two right answers, no tip.
+  assert.deepEqual(tipsFor({ mine: flatDip, model: RISE, tone: 2, verdict: "ok", extra: { ...both, saidTone: 3 }, modelSaid: 2 }), []);
+  // A take whose rise reads as too small against the expected tone…
+  assert.equal(tipsFor({ mine: () => 0, model: (x) => -3 + 9 * x, tone: 2, verdict: "ok" })[0]?.kind, "rise_small", "with one tone accepted, a tip");
+  // …says nothing where it was heard as the other accepted tone.
+  assert.deepEqual(tipsFor({ mine: () => 0, model: (x) => -3 + 9 * x, tone: 2, verdict: "ok", extra: { ...both, saidTone: 3 }, modelSaid: 2 }), []);
+  // No tone named on the reply, or none on the model: nothing either.
+  assert.deepEqual(tipsFor({ mine: () => 0, model: (x) => -3 + 9 * x, tone: 2, verdict: "ok", extra: both, modelSaid: 2 }), []);
+  assert.deepEqual(tipsFor({ mine: () => 0, model: (x) => -3 + 9 * x, tone: 2, verdict: "ok", extra: { ...both, saidTone: 2 } }), []);
+  // Both said the same tone: compared as usual (不 said bù, a near-flat fall).
+  const bu = { accept: [4, 2], saidTone: 4 };
+  assert.equal(tipsFor({ mine: (x) => 0.3 - 0.6 * x, model: FALL, tone: 4, verdict: "ok", extra: bu, modelSaid: 4 })[0]?.kind, "fall_small");
+  // A miss where several count: no curve tip, only the plain sentence.
+  assert.deepEqual(tipsFor({ mine: () => 0, model: (x) => -3 + 9 * x, tone: 2, extra: { ...both, heardTone: 1, why: "tone" }, modelSaid: 2 }).map((t) => t.kind), ["tone"]);
+});
+
+test("length: never on a lone syllable said right, and never on a model span that wasn't read with confidence", () => {
+  // Held to hear it, against a short voice clip: right, no "more briskly".
+  assert.deepEqual(tipsFor({ mine: FALL, model: FALL, tone: 4, verdict: "ok", mineMs: 950, modelMs: 250 }), []);
+  assert.equal(tipsFor({ mine: FALL, model: FALL, tone: 4, mineMs: 950, modelMs: 250, extra: { heardTone: 1, why: "tone" } })[0].kind, "long");
+  // The model's span a stand-in: no length tip, only the plain one.
+  assert.deepEqual(tipsFor({ mine: FALL, model: FALL, tone: 4, mineMs: 120, modelMs: 400, real: false, extra: { heardTone: 1, why: "tone" } }).map((t) => t.kind), ["tone"]);
 });
 
 test("no curve tips without the model's own curve, for the neutral tone, or for another reading of a card character", () => {
@@ -289,6 +337,9 @@ test("the model record: a syllable is real only when the engine heard the expect
   const rec = { ...modelRecord({ result: { provider: "local", syllables: [{ verdict: "ok", startMs: 200.4, endMs: 600.6 }] }, frames, syllables, durationMs: 1000.2 }), azure: "skipped" };
   assert.deepEqual(rec.syllables, [{ char: "大", pinyin: "dà", expectedTone: 4, startMs: 200, endMs: 601, real: true }]);
   assert.equal(isModelRecord(rec), true);
+  // The tone heard is kept on an ok (several tones may count there).
+  const heard = modelRecord({ result: { provider: "local", syllables: [{ verdict: "ok", heardTone: 4, startMs: 200, endMs: 600 }] }, frames, syllables, durationMs: 1000 });
+  assert.equal(heard.syllables[0].saidTone, 4);
   assert.equal(isModelRecord({ ...rec, v: 0 }), false);
   assert.equal(isModelRecord({ ...rec, azure: "maybe" }), false);
 });
@@ -311,4 +362,22 @@ test("end to end on generated voices: a wrong tone gets a tip, a right one none"
     const tips = compareTips({ mine: reply.syllables, frames: reply.frames, model: m });
     assert.equal(tips[0]?.kind ?? null, want, `${shapes}: ${JSON.stringify(reply.syllables.map((s) => s.verdict))} ${JSON.stringify(tips)}`);
   }
+});
+
+test("the score reply names the tone heard on an ok only where several count (saidTone)", () => {
+  const syllables = scoreSyllables("我很好", ["wǒ", "hěn", "hǎo"]).syllables;
+  const result = {
+    provider: "local",
+    syllables: syllables.map((s, i) => ({ ...s, verdict: i === 2 ? "off" : "ok", heardTone: i === 0 ? 3 : i === 1 ? 2 : 1, confidence: 1, startMs: i * 300, endMs: i * 300 + 250, pitch: [] })),
+  };
+  const reply = scoreReply(result, syllables, { engine: "local", text: "我很好", locale: "zh-CN" });
+  const [wo, , hao] = reply.syllables;
+  assert.ok(wo.accept.length > 1, JSON.stringify(wo.accept));
+  assert.equal(wo.saidTone, 3);
+  assert.equal(hao.saidTone, undefined, "an off names heardTone, not saidTone");
+  assert.equal(hao.heardTone, 1);
+  // One tone accepted: never named on an ok.
+  const one = scoreSyllables("大", ["dà"]).syllables;
+  const r1 = scoreReply({ provider: "local", syllables: [{ ...one[0], verdict: "ok", heardTone: 4, confidence: 1, startMs: 0, endMs: 300, pitch: [] }] }, one, { engine: "local", text: "大", locale: "zh-CN" });
+  assert.equal(r1.syllables[0].saidTone, undefined);
 });

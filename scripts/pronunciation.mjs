@@ -1926,6 +1926,11 @@ export function referenceCurves({ samples, sampleRate, count, timings = null, po
 // per-resource `endpoint`, and anything about a real learner's voice.
 
 const AZURE_REGION_RE = /^[a-z0-9]+$/;
+/** Whether `region` is one azurePronunciationRequest takes (a name like
+ *  "eastus"): the compare route asks before counting Azure as set up. */
+export function azureRegionValid(region) {
+  return AZURE_REGION_RE.test(String(region ?? ""));
+}
 
 /** A locale as Azure names it (`zh-CN`, `es-MX`), from whatever the app
  *  holds, through the same parser as `scoresTones` (`parseLocale`), so the

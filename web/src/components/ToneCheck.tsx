@@ -105,6 +105,14 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
   const [comparedReply, setComparedReply] = useState<PronunciationScoreReply | null>(null);
   const comparing = comparedReply === reply;
   const setComparing = (on: boolean) => setComparedReply(on ? reply : null);
+  // Closing the comparison puts focus back on the button that opened it.
+  const compareWrap = useRef<HTMLDivElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (comparing || !refocus.current) return;
+    refocus.current = false;
+    compareWrap.current?.querySelector("button")?.focus();
+  }, [comparing]);
   const canCompare = !!compare && !!take && !!reply.frames && reply.syllables.some((s) => s.startMs !== null);
   const takePlayer = useTakePlayer(take);
   const syl = reply.syllables;
@@ -177,13 +185,24 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       )}
       {shown && !comparing && <TonePicture s={shown} kids={kids} mode={mode} take={take ? takePlayer : null} onPlayModel={onPlayModel} modelBusy={modelBusy} />}
       {canCompare && !comparing && (
-        <div className={kids ? "flex justify-center" : ""}>
+        <div ref={compareWrap} className={kids ? "flex justify-center" : ""}>
           <Button className={kids ? "px-3 py-1.5 text-base" : "px-2.5 py-1 text-sm"} onClick={() => setComparing(true)} data-testid="tone-compare">
             {kids ? "👀 You and the model" : "⇄ Compare with the model"}
           </Button>
         </div>
       )}
-      {canCompare && comparing && <CompareView reply={reply} take={take!} kids={kids} source={compare!} onClose={() => setComparing(false)} />}
+      {canCompare && comparing && (
+        <CompareView
+          reply={reply}
+          take={take!}
+          kids={kids}
+          source={compare!}
+          onClose={() => {
+            refocus.current = true;
+            setComparing(false);
+          }}
+        />
+      )}
       {(modelError || takePlayer.error) && (
         <p className={`${fine} ${kids ? "text-fg-2" : "text-err"}`} role="status">
           Couldn't play it: {modelError ?? takePlayer.error}

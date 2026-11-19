@@ -18,13 +18,17 @@
 // tests' stand-in for a clip) is used as it is, with no process.
 //
 // The converter runs on a temp copy with an argument list (no shell), a
-// timeout, and its output read back and checked like any recording.
+// timeout of our own that kills it outright (SIGKILL: a converter that
+// ignored SIGTERM would otherwise hold a scoring slot for ever), an output
+// no larger than the longest clip the scorer reads, and its output read
+// back and checked like any recording. Temp dirs left by a crash are
+// removed the first time a clip is decoded after a start.
 
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { wavHeader } from "./pronunciation-app.mjs";
+import { SCORE_MAX_SECONDS, SCORE_SAMPLE_RATE, wavHeader } from "./pronunciation-app.mjs";
 
 const AFCONVERT = "/usr/bin/afconvert";
 const TIMEOUT_MS = 10_000;
@@ -32,6 +36,13 @@ const TIMEOUT_MS = 10_000;
  *  (~50 KB as MP3); the cache never holds anything near this. */
 const MAX_INPUT_BYTES = 8 << 20;
 const EXT_BY_TYPE = { "audio/mpeg": "mp3", "audio/wav": "wav" };
+/** The largest WAV a converter may write: the longest clip the scorer
+ *  reads, 16 kHz mono 16-bit, plus room for header chunks (afconvert
+ *  writes a 4 KB one). Anything larger is refused unread. */
+export const MAX_OUTPUT_BYTES = SCORE_MAX_SECONDS * SCORE_SAMPLE_RATE * 2 + (64 << 10);
+const TEMP_PREFIX = "lingo-dojo-decode-";
+/** A temp dir older than this is a crash's leftover (a decode lasts 10 s). */
+const STALE_MS = 10 * 60_000;
 
 /** Whether `u8` is a WAV the scorer reads as it is: 16 kHz, mono, 16-bit PCM. */
 export function isScoreWav(u8) {
@@ -76,25 +87,83 @@ function findOnPath(name, has) {
  * something that isn't such a WAV (the caller treats that as "the model
  * couldn't be read"). The temp copy is removed whatever happens.
  */
-export async function decodeTo16k(audio, type, { converter = pickConverter(), timeoutMs = TIMEOUT_MS } = {}) {
+export async function decodeTo16k(audio, type, { converter = pickConverter(), timeoutMs = TIMEOUT_MS, maxOutputBytes = MAX_OUTPUT_BYTES, tmp = os.tmpdir() } = {}) {
   const u8 = audio instanceof Uint8Array ? audio : new Uint8Array(audio);
   if (isScoreWav(u8)) return u8;
   if (!converter) return null;
   const ext = EXT_BY_TYPE[type];
   if (!ext) throw new Error("not an audio type the cache keeps");
   if (u8.length > MAX_INPUT_BYTES) throw new Error("the clip is too large to decode");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-decode-"));
+  if (!swept.has(tmp)) {
+    swept.add(tmp);
+    sweepStaleDirs({ tmp });
+  }
+  const dir = fs.mkdtempSync(path.join(tmp, TEMP_PREFIX));
   try {
     const input = path.join(dir, `in.${ext}`);
     const output = path.join(dir, "out.wav");
     fs.writeFileSync(input, u8, { mode: 0o600 });
-    await new Promise((resolve, reject) => {
-      execFile(converter.bin, converter.args(input, output), { timeout: timeoutMs, windowsHide: true }, (e) => (e ? reject(new Error(`${converter.name} failed`)) : resolve()));
-    });
+    await run(converter, input, output, timeoutMs);
+    const size = fs.statSync(output, { throwIfNoEntry: false })?.size ?? 0;
+    if (size > maxOutputBytes) throw new Error(`${converter.name} wrote more than the longest clip`);
     const wav = new Uint8Array(fs.readFileSync(output));
     if (!isScoreWav(wav)) throw new Error(`${converter.name} gave no 16 kHz mono WAV`);
     return wav;
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** Run the converter, settling at once on a timeout: the child is sent
+ *  SIGKILL (which it can't ignore) and the promise rejects without waiting
+ *  for it to exit, so the caller's slot and temp dir are freed now.
+ *  execFile's own `timeout` sends SIGTERM and then waits for the exit. */
+function run(converter, input, output, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const child = execFile(converter.bin, converter.args(input, output), { windowsHide: true, maxBuffer: 64 << 10 }, (e) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (e) reject(new Error(`${converter.name} failed`));
+      else resolve();
+    });
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      reject(new Error(`${converter.name} timed out`));
+    }, timeoutMs);
+  });
+}
+
+const swept = new Set();
+
+/** Remove decode temp dirs a crashed run left behind (older than
+ *  `STALE_MS`; a live decode's own dir is seconds old). */
+export function sweepStaleDirs({ tmp = os.tmpdir(), now = Date.now(), staleMs = STALE_MS } = {}) {
+  let removed = 0;
+  let names = [];
+  try {
+    names = fs.readdirSync(tmp);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    if (!name.startsWith(TEMP_PREFIX)) continue;
+    const full = path.join(tmp, name);
+    try {
+      const st = fs.lstatSync(full);
+      if (!st.isDirectory() || now - st.mtimeMs < staleMs) continue;
+      fs.rmSync(full, { recursive: true, force: true });
+      removed++;
+    } catch {
+      // gone already, or not ours to remove
+    }
+  }
+  return removed;
 }

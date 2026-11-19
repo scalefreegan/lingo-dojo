@@ -1148,19 +1148,25 @@ track: `takeFrames` in `scripts/pronunciation-compare.mjs`), pitch kept
 only inside the scored syllables' spans. Nothing is re-uploaded and nothing
 is stored: the page holds the take, the reply and the model's analysis in
 memory, as before. Each syllable also gains `soundScore` (adults, Azure
-only) and `half` (a half third).
+only), `half` (a half third) and, on an ok where several tones count,
+`saidTone` (the one heard).
 
 **The model's real curve: `GET /api/pronunciation/model`.**
 `?sound=好&locale=zh-CN` (the card: 1–4 Han characters, `isSoundText`) or
 `?phrase=<phrase id>` (Practice). `wrap(…, { learner: true })`, Mandarin
-only (422 otherwise), exactly one of the two (400), GET only (405). The
-limits come before any provider call: two analyses per user at a time and
-the score route's worker cap (429). The server fetches the clip as the
+only (422 otherwise), exactly one of the two (400), GET only (405); a
+`phrase` for a kids learner is a 403, as Practice's own routes are. Two
+analyses per user at a time (429), checked before any provider call. The
+scoring workers shared with the score route are taken only around the
+worker run itself, and the converter has its own limit of two: an analysis
+waits for either (up to 15 s, then a 503) rather than holding a slot while
+its speech is synthesized or Azure answers, so Compare never turns another
+learner's score away. The server fetches the clip as the
 play route would (`soundClip` in `voice.ts`, `phraseClip` in
 `practice.ts`: the audio cache, a TTS call on a miss), reads its expected
 syllables from the text, then `modelAnalysis` (`scripts/model-analysis.mjs`).
 Reply: `{ available: true, engine, text, locale, durationMs, frames,
-syllables: [{ char, pinyin, expectedTone, startMs, endMs, real }] }`, or
+syllables: [{ char, pinyin, expectedTone, startMs, endMs, real, saidTone? }] }`, or
 `{ available: false, why: "no_decoder" | "unreadable" }` (the page then uses
 the textbook shapes). The log says only the engine, hit or made, and the
 syllable count, never the text.
@@ -1170,8 +1176,13 @@ syllable count, never the text.
   `scripts/audio-decode.mjs` passes a 16 kHz mono 16-bit WAV through and
   converts anything else with macOS `afconvert` (`-f WAVE -d LEI16@16000
   -c 1`, its best sample-rate converter), else `ffmpeg` on the PATH, else
-  none: an argument list, never a shell, 10 s, 8 MiB in, the output checked
-  like a recording (`readScoreAudio`). Why this and not the alternatives:
+  none: an argument list, never a shell, 8 MiB in, and at most the longest
+  clip the scorer reads out (`MAX_OUTPUT_BYTES`), checked like a recording
+  (`readScoreAudio`). Its 10 s timeout is our own timer: the converter is
+  sent SIGKILL and the request fails at once (execFile's own timeout sends
+  SIGTERM and waits, so a converter ignoring it would hold a slot for
+  ever); the temp dir goes on every path, and dirs a crash left are swept
+  on the first decode after a start. Why this and not the alternatives:
   the browser could decode the MP3, but then the model WAV would come from
   the client and could not be trusted or cached for everyone; asking the
   TTS provider for PCM would be a second paid call per clip and a second
@@ -1198,10 +1209,13 @@ syllable count, never the text.
   exclusively (`O_EXCL`) inside the paid slot, just before the request, and
   never removed while its clip is kept: a failure, a crash mid-call, a
   second request at once (here or in another process) and a deleted record
-  all find it and analyse locally. A record made without a call (no keys,
-  the cap) says `azure: "skipped"`; one later request with Azure available
-  may make the one call and replace it. Concurrent requests for one clip
-  share one analysis.
+  all find it and analyse locally. A record made without a call says
+  `azure: "skipped"` and is served from the cache like any other. It is
+  made again (to try the one call) only when Azure can be asked: with no
+  keys or a malformed region, not until the setup is fixed; with the call
+  refused by the per-minute cap or a busy paid slot, not before its
+  `retryAt`, 15 minutes on (`RETRY_MS`), so a clip is re-analysed at most
+  once in that time. Concurrent requests for one clip share one analysis.
 - **No poisoning.** The route takes a phrase id or a few characters, never
   audio; the server reads the clip from its own cache, decodes and analyses
   it itself. A client can choose which of its own clips is analysed, and
@@ -1219,9 +1233,14 @@ sentence names the syllable, which highlights on hover or focus.
   low in a phrase (≥ 3.5 st under the model's), tone 2 rising too little
   (model ≥ 4, yours under half and ≥ 3 short) or late (your climb after 65 %
   of the syllable, the model's before 45 %), tone 3 dipping too little (model
-  ≥ 2.5, yours under half and ≥ 2.5 short), too short or long (as a share of
-  the take against the model's: under 0.55 or over 1.8; a lone syllable
-  under 0.45 or over 2.2 of the model's length), and carried over (heard as
+  ≥ 2.5, yours under half and ≥ 2.5 short), a half third sitting too high
+  (read by how low it sits, never by how far it moves: the model's mean
+  ≥ 2 st under its own centre, yours ≥ 3 st higher than the model's against
+  your own; a learner low and level against a model falling into the low is
+  right), too short or long (as a share of the take against the model's:
+  under 0.55 or over 1.8; a lone syllable under 0.45 or over 2.2 of the
+  model's length, and only on a miss: a lone character held long to hear
+  it, and said right, gets none), and carried over (heard as
   the previous syllable's tone, starting within 1.5 st of where it ended,
   while the model jumps ≥ 2.5). If none fits, one plain sentence of what
   the tone should do.
@@ -1230,6 +1249,13 @@ sentence names the syllable, which highlights on hover or focus.
 - A syllable's curve is read only with ≥ 6 voiced frames covering half its
   span, 8 % trimmed at each edge; and only against the model's real curve
   (never against a textbook stand-in, except the plain tone sentence).
+  Lengths likewise use only spans the model was read with confidence in.
+- **Several accepted tones** (我 before 很 takes 2 or 3; 一 and 不; a card
+  character's readings): the learner and the model may each have said a
+  right one, and not the same. The curve is compared only on an ok whose
+  score reply names the tone heard (`saidTone`) when the model was heard
+  saying that same tone (its record's `saidTone`); a miss there gets only
+  the plain sentence.
 - **Sound** (Azure's score under the scorer's own bar): Azure's zh-CN
   "phonemes" are whole syllables, so the tip never says consonant or vowel:
   it says Azure scores the whole syllable and offers the model's sound to

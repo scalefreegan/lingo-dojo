@@ -2,7 +2,7 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Worker } from "node:worker_threads";
 import { REPO_ROOT } from "../../scripts/content.mjs";
-import { azurePronunciationRequest, azurePronunciationResult, encodeWav, parseWav, scoresTones, type AzureAssessment, type ExpectedSyllable, type ScoreResult } from "../../scripts/pronunciation.mjs";
+import { azurePronunciationRequest, azurePronunciationResult, azureRegionValid, encodeWav, parseWav, scoresTones, type AzureAssessment, type ExpectedSyllable, type ScoreResult } from "../../scripts/pronunciation.mjs";
 import { azureLimiter, azureUsable, readScoreAudio, readScoreText, scoreReply, scoreSyllables, scoringEngine, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
 import { modelRecord, padSamples, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
 import { decodeTo16k } from "../../scripts/audio-decode.mjs";
@@ -85,6 +85,36 @@ export const MODEL = {
 };
 
 let workers = 0;
+/** How long a model analysis waits for a scoring worker (or a decoder)
+ *  before it gives up with a 503. It waits rather than 429s: by then its
+ *  clip may have been synthesized and its one Azure call made. */
+const MODEL_WAIT_MS = 15_000;
+/** Converters running at once for model clips (scripts/audio-decode.mjs). */
+const MAX_DECODERS = 2;
+let decoders = 0;
+
+/** Take one of `max` slots counted by `get`/`set`, waiting (in turns of
+ *  50 ms) up to `waitMs`; → a release function. The score route never
+ *  waits (it 429s at once); only model analyses do, so a slow one holds a
+ *  worker only for its worker run. */
+async function waitForSlot(count: { get: () => number; set: (v: number) => void }, max: number, waitMs: number, signal?: AbortSignal): Promise<() => void> {
+  const until = Date.now() + waitMs;
+  while (count.get() >= max) {
+    if (signal?.aborted) throw new HttpError(499, "cancelled");
+    if (Date.now() >= until) throw new HttpError(503, "pronunciation checks are busy; try again in a moment");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  count.set(count.get() + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    count.set(count.get() - 1);
+  };
+}
+const workerSlots = { get: () => workers, set: (v: number) => (workers = v) };
+const decoderSlots = { get: () => decoders, set: (v: number) => (decoders = v) };
+
 /** One score at a time per user: a second tap while one runs is a 429. */
 const scoring = new Set<string>();
 /** Model analyses running per user: two at once (a page's request and its
@@ -333,6 +363,9 @@ const LOCALE_RE = /^[a-z]{2,3}-[A-Z]{2}$/;
  */
 async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const here = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+  // A Practice phrase's model is Practice's, which kids mode doesn't have
+  // (the practice routes are a 403 for kids): the same 403 here, first.
+  if (ctx.learner.mode === "kids" && new URL(req.url ?? "/", "http://localhost").searchParams.has("phrase")) throw new HttpError(403, "practice isn't part of kids mode");
   if (!scoresTones(here)) throw new HttpError(422, "pronunciation checks aren't available for this language", "not_available");
   const params = new URL(req.url ?? "/", "http://localhost").searchParams;
   const sound = params.get("sound")?.trim() ?? null;
@@ -343,13 +376,13 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   if (sound !== null && (!LOCALE_RE.test(soundLocale) || !scoresTones(soundLocale))) throw new HttpError(400, "locale must be a Mandarin locale, like zh-CN");
   if (phrase !== null && !PHRASE_ID_RE.test(phrase)) throw new HttpError(400, "not a phrase id");
 
-  // The limits before any provider call: one analysis per user at a time,
-  // and the scoring workers shared with the score route.
+  // The per-user limit before any provider call. The scoring workers shared
+  // with the score route are taken only around the worker run itself (and
+  // the converter has its own small limit): a model analysis waiting on its
+  // speech or on Azure holds no one else's slot.
   const running = modelling.get(ctx.user.id) ?? 0;
   if (running >= MODEL_PER_USER) throw new HttpError(429, "the model is already being read; try again in a moment");
-  if (workers >= MAX_WORKERS) throw new HttpError(429, "pronunciation checks are busy; try again in a moment");
   modelling.set(ctx.user.id, running + 1);
-  workers++;
   const ctrl = new AbortController();
   const onClose = () => {
     if (!res.writableEnded) ctrl.abort();
@@ -370,7 +403,13 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       // MODEL_PAD_MS: a clip starts on its first sound) and checked like
       // any recording; the record is shifted back to the clip's own times.
       decode: async (audio: Uint8Array, type: string) => {
-        const decoded = await MODEL.decode(audio, type);
+        const release = await waitForSlot(decoderSlots, MAX_DECODERS, MODEL_WAIT_MS, ctrl.signal);
+        let decoded: Uint8Array | null;
+        try {
+          decoded = await MODEL.decode(audio, type);
+        } finally {
+          release();
+        }
         if (!decoded) return null;
         const { samples, sampleRate } = parseWav(decoded);
         if (sampleRate !== 16_000) throw new Error("the model clip is not 16 kHz");
@@ -378,14 +417,23 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
         if (readScoreAudio(wav).error !== undefined) throw new Error("the model clip is not one the scorer reads");
         return wav;
       },
-      azureReady: scoringEngine({ keys }).engine === "azure",
+      // Set up: keys, and a region a request can be built with (a malformed
+      // one would refuse every call, and never earns a retry).
+      azureReady: scoringEngine({ keys }).engine === "azure" && azureRegionValid(keys?.azureRegion),
       assess: async (wav: Uint8Array, claim: () => boolean) => {
         const a = await assessWithAzure(null, ctx, { wav, text: t.text, locale: clip.locale, keys }, claim);
         return "azure" in a ? { azure: a.azure } : {};
       },
+      // Not cancelled by the browser leaving: the analysis is kept for the
+      // next request (its Azure answer may already be paid for).
       analyse: async (wav: Uint8Array, azure: AzureAssessment | null) => {
-        const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure);
-        return unpadRecord(modelRecord({ result, frames, syllables: s.syllables, durationMs }));
+        const release = await waitForSlot(workerSlots, MAX_WORKERS, MODEL_WAIT_MS);
+        try {
+          const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure);
+          return unpadRecord(modelRecord({ result, frames, syllables: s.syllables, durationMs }));
+        } finally {
+          release();
+        }
       },
     });
     if ("unavailable" in out) {
@@ -405,7 +453,6 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
     } satisfies PronunciationModelReply);
   } finally {
     res.off("close", onClose);
-    workers--;
     const left = (modelling.get(ctx.user.id) ?? 1) - 1;
     if (left > 0) modelling.set(ctx.user.id, left);
     else modelling.delete(ctx.user.id);

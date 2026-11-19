@@ -61,6 +61,12 @@ export const COMPARE_RULES = Object.freeze({
   dipModelMin: 2.5,
   dipShare: 0.5,
   dipGap: 2.5,
+  // A half third (before another tone) is low, not a dip: its mean against
+  // the speaker's own centre, against the model's. The model must sit at
+  // least `halfModelLow` under its centre, and yours `halfGap` higher than
+  // the model's. How far either moves inside the syllable is not read.
+  halfModelLow: 2,
+  halfGap: 3,
   // Length, as a share of the whole take against the model's share (so
   // speaking slower overall is not "too long"); a lone syllable by its
   // length alone. Under `shortShare` or over `longShare` of the model's.
@@ -360,7 +366,7 @@ export function alignTakes({ mine, frames, model, warp = true }: { mine: Pronunc
 
 /* ----------------------------------- tips ---------------------------------- */
 
-export type TipKind = "fall_small" | "level_moves" | "level_low" | "rise_small" | "rise_late" | "dip_shallow" | "short" | "long" | "carried" | "sound" | "tone";
+export type TipKind = "fall_small" | "level_moves" | "level_low" | "rise_small" | "rise_late" | "dip_shallow" | "half_high" | "short" | "long" | "carried" | "sound" | "tone";
 
 export interface Tip {
   /** The syllable it is about (its index in the take). */
@@ -410,13 +416,25 @@ export interface TipInput {
  */
 export function compareTips({ mine, frames, model, kids = false, name = (i) => mine[i]?.char ?? "", rules = COMPARE_RULES }: TipInput): Tip[] {
   const shapes = mine.map((s) => syllableShape(framesIn(frames, s.startMs, s.endMs), rules));
-  const modelShapes = mine.map((s, i) => {
+  // The tone a syllable's curve is read against, or null for none. Where
+  // one tone is accepted, the expected one. Where several are (我 before
+  // 很 takes 2 or 3; 一 and 不; a card character's readings), only an "ok"
+  // whose reply names the tone heard (`saidTone`), and only when the model
+  // was heard saying that same tone: else the learner and the model may
+  // simply have said two right tones, and comparing them would call a
+  // right answer wrong.
+  const curveTone = mine.map((s, i) => {
     const m = model?.syllables[i];
-    return m && m.real && m.expectedTone === s.expectedTone && !s.usual ? syllableShape(framesIn(model!.frames, m.startMs, m.endMs), rules) : null;
+    if (!m || !m.real || s.usual) return null;
+    if (s.accept.length <= 1) return m.expectedTone === s.expectedTone ? s.expectedTone : null;
+    return s.verdict === "ok" && Number.isInteger(s.saidTone) && m.saidTone === s.saidTone ? s.saidTone! : null;
   });
+  const modelShapes = mine.map((_, i) => (curveTone[i] !== null ? syllableShape(framesIn(model!.frames, model!.syllables[i].startMs, model!.syllables[i].endMs), rules) : null));
   const spanOf = (x: { startMs: number | null; endMs: number | null } | undefined) => (x && x.startMs !== null && x.endMs !== null && x.endMs > x.startMs ? x.endMs - x.startMs : null);
   const total = (list: ({ startMs: number | null; endMs: number | null } | undefined)[]) => list.reduce((a, x) => a + (spanOf(x) ?? 0), 0);
-  const allTimed = model && mine.every((s, i) => spanOf(s) !== null && spanOf(model.syllables[i]) !== null);
+  // Lengths are compared only on spans the model was timed with confidence
+  // in (`real`): a stand-in span says nothing about how long the model is.
+  const allTimed = model && mine.every((s, i) => spanOf(s) !== null && spanOf(model.syllables[i]) !== null && model.syllables[i].real);
   const mineTotal = total(mine);
   const modelTotal = model ? total(model.syllables) : 0;
   const phrase = mine.length > 1;
@@ -460,8 +478,11 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
       }
     }
 
-    // The curve against the model's own curve.
-    if (L && M && tone >= 1 && tone <= 4 && !s.usual) {
+    // The curve against the model's own curve (`curveTone`: null when
+    // there is no one tone to read it against).
+    const ct = curveTone[i];
+    if (L && M && ct !== null && ct >= 1 && ct <= 4) {
+      const tone = ct;
       if (tone === 4 && M.fall >= rules.fallModelMin) {
         const share = Math.max(0, L.fall) / M.fall;
         const gap = M.fall - L.fall;
@@ -513,16 +534,27 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
           });
         }
       }
-      if (tone === 3 && M.dip >= rules.dipModelMin) {
+      // A half third is read by how low it sits, never by how far it moves:
+      // a learner low and level against a model falling into the low is right.
+      const half = tone === 3 && tone === s.expectedTone && !!s.half;
+      if (half && -M.mean >= rules.halfModelLow) {
+        const gap = L.mean - M.mean;
+        if (gap >= rules.halfGap * f) {
+          cands.push({
+            kind: "half_high",
+            weight: gap / (rules.halfGap * f),
+            text: `${n} sits too high in your voice. Before another tone a third tone is just low: let your voice drop to the bottom of its range and stay there, as the model does.`,
+            kid: `Say ${n} down low, like a sleepy bear!`,
+          });
+        }
+      } else if (tone === 3 && !half && M.dip >= rules.dipModelMin) {
         const share = Math.max(0, L.dip) / M.dip;
         const gap = M.dip - L.dip;
         if (share <= rules.dipShare / f && gap >= rules.dipGap * f) {
           cands.push({
             kind: "dip_shallow",
             weight: gap / (rules.dipGap * f),
-            text: s.half
-              ? `${n}: the dip doesn't go low enough. Before another tone a third tone is just low: let your voice drop to the bottom of its range and stay there.`
-              : `${n}: the dip doesn't go low enough. Let your voice drop to the bottom of its range before it comes back up.`,
+            text: `${n}: the dip doesn't go low enough. Let your voice drop to the bottom of its range before it comes back up.`,
             kid: `Let ${n} dip down really low!`,
           });
         }
@@ -532,7 +564,10 @@ export function compareTips({ mine, frames, model, kids = false, name = (i) => m
     // Length against the model's (a share of the whole take in a phrase).
     const mineMs = spanOf(s);
     const modelMs = spanOf(model?.syllables[i]);
-    if (allTimed && mineMs !== null && modelMs !== null && modelMs >= rules.minModelMs && tone !== 0) {
+    // A lone syllable that was right gets none: a learner holding a single
+    // character to hear it is not saying it wrong, and a voice's lone
+    // character is clipped short.
+    if (allTimed && mineMs !== null && modelMs !== null && modelMs >= rules.minModelMs && tone !== 0 && (phrase || !ok)) {
       const ratio = phrase ? mineMs / mineTotal / (modelMs / modelTotal) : mineMs / modelMs;
       const short = (phrase ? rules.shortShare : rules.shortAlone) / f;
       const long = (phrase ? rules.longShare : rules.longAlone) * f;

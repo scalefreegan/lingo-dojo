@@ -21,9 +21,13 @@
 // never removed while its audio is kept: a crash mid-call, a failure, a
 // second request at the same time (in this process or another) and a
 // deleted record all find it and analyse locally. A request that makes no
-// call (no keys, the per-minute cap, busy) writes no ledger and its record
-// says "skipped"; a later request with Azure available may then make the
-// one call and replace the record.
+// call writes no ledger and its record says "skipped", and is served from
+// the cache like any other. It is made again (to try the one call) only
+// when Azure can be asked: with no keys, or a malformed region, never
+// (until the setup is fixed: then on the next request); with Azure set up
+// but the call refused (the per-minute cap, the paid slot busy), not before
+// the record's `retryAt`, RETRY_MS after it was made, so a clip is
+// re-analysed at most once in that time.
 //
 // Size: a record is a few KB (a 3-second clip is 300 frames). Records and
 // ledgers whose audio file the audio cache has evicted are removed after
@@ -131,6 +135,10 @@ export function prune({ dir = analysisDir(), audio = path.dirname(dir), now = Da
   return removed;
 }
 
+/** How long a "skipped" record whose Azure call was refused (the cap, the
+ *  paid slot busy) is served as it is before one request tries again. */
+export const RETRY_MS = 15 * 60_000;
+
 /** Analyses running now, by id: a second request for the same clip waits
  *  for the first (and so never makes a second Azure call either). */
 const inflight = new Map();
@@ -154,19 +162,23 @@ const inflight = new Map();
  *
  * → `{ record, cached }` or `{ unavailable }`.
  */
-export async function modelAnalysis({ key, audio, type, decode, azureReady, assess, analyse, dir = analysisDir() }) {
+export async function modelAnalysis({ key, audio, type, decode, azureReady, assess, analyse, dir = analysisDir(), now = Date.now() }) {
   const id = analysisId(key, audio);
   const hit = readAnalysis(id, { dir });
-  // A record made without Azure, while Azure is available now and its one
-  // call was never claimed: worth making again, once.
-  if (hit && !(hit.azure === "skipped" && azureReady && !azureClaimed(id, { dir }))) return { record: hit, cached: true };
+  // A record made without Azure, while Azure can be asked now, its one call
+  // never claimed, and its retry time (if any) come: worth making again.
+  const retry = hit && hit.azure === "skipped" && azureReady && !azureClaimed(id, { dir }) && !(Number.isFinite(hit.retryAt) && hit.retryAt > now);
+  if (hit && !retry) return { record: hit, cached: true };
   const running = inflight.get(id);
   if (running) return running;
   const p = (async () => {
     let wav;
     try {
       wav = await decode(audio, type);
-    } catch {
+    } catch (e) {
+      // An error carrying an HTTP status (the route's: busy, cancelled) is
+      // not about the clip: it passes through, and nothing is cached.
+      if (e && typeof e === "object" && Number.isInteger(e.status)) throw e;
       return { unavailable: "unreadable" };
     }
     if (!wav) return { unavailable: "no_decoder" };
@@ -182,7 +194,10 @@ export async function modelAnalysis({ key, audio, type, decode, azureReady, asse
         } else if (out?.spent || azureClaimed(id, { dir })) state = "spent";
       }
     }
-    const record = { ...(await analyse(wav, azure)), azure: state };
+    // Azure was asked and refused without a call (the cap, busy): try it
+    // again only after RETRY_MS. Skipped for want of a setup: no retry time,
+    // the next request after the setup is fixed tries.
+    const record = { ...(await analyse(wav, azure)), azure: state, ...(state === "skipped" && azureReady ? { retryAt: now + RETRY_MS } : {}) };
     try {
       writeAnalysis(id, record, { dir });
       prune({ dir });

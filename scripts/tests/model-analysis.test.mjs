@@ -11,9 +11,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decodeTo16k, isScoreWav, pickConverter } from "../audio-decode.mjs";
-import { analysisId, azureClaimed, claimAzure, modelAnalysis, prune, readAnalysis, writeAnalysis } from "../model-analysis.mjs";
+import { MAX_OUTPUT_BYTES, decodeTo16k, isScoreWav, pickConverter, sweepStaleDirs } from "../audio-decode.mjs";
+import { RETRY_MS, analysisId, azureClaimed, claimAzure, modelAnalysis, prune, readAnalysis, writeAnalysis } from "../model-analysis.mjs";
 import { encodeWav } from "../pronunciation.mjs";
+import { MODEL_RECORD_VERSION } from "../pronunciation-compare.mjs";
 
 const KEY = "a".repeat(64);
 const KEY2 = "b".repeat(64);
@@ -43,7 +44,7 @@ function harness({ azureAnswers = true, azureReady = true, decodes = true } = {}
     },
     analyse: async (_wav, azure) => {
       counts.analyse++;
-      return { v: 1, engine: azure ? "azure" : "local", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables: [] };
+      return { v: MODEL_RECORD_VERSION, engine: azure ? "azure" : "local", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables: [] };
     },
   };
 }
@@ -97,11 +98,20 @@ test("no call made (no keys, the cap, busy): 'skipped', and a later request may 
   // A request that was refused before the call (assess returns without
   // claiming): still skipped, no ledger.
   const capped = { ...harness(), assess: async () => ({}) };
-  const b = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...capped });
+  const t0 = Date.now();
+  const b = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...capped, now: t0 });
   assert.equal(b.record.azure, "skipped");
-  // Keys now: one call, the record replaced; then never again.
+  assert.equal(b.record.retryAt, t0 + RETRY_MS);
+  // Within the retry time: the cached local record, nothing decoded or analysed again.
+  const soon = harness();
+  for (const dt of [1000, RETRY_MS - 1]) {
+    const r = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...soon, now: t0 + dt });
+    assert.deepEqual([r.cached, r.record.azure], [true, "skipped"]);
+  }
+  assert.deepEqual(soon.counts, { decode: 0, azure: 0, analyse: 0 });
+  // Past it: one request tries; the call goes, the record replaced; then never again.
   const on = harness();
-  const c = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...on });
+  const c = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...on, now: t0 + RETRY_MS });
   assert.deepEqual([c.cached, c.record.engine, c.record.azure], [false, "azure", "used"]);
   await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...on });
   assert.equal(on.counts.azure, 1);
@@ -132,7 +142,7 @@ test("records and ledgers go when the audio cache drops their clip; ids are neve
   const { audio, dir } = setup();
   const keep = analysisId(KEY, AUDIO);
   const gone = analysisId(KEY2, AUDIO);
-  const record = { v: 1, engine: "local", azure: "skipped", durationMs: 1, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [] };
+  const record = { v: MODEL_RECORD_VERSION, engine: "local", azure: "skipped", durationMs: 1, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [] };
   writeAnalysis(keep, record, { dir });
   writeAnalysis(gone, record, { dir });
   claimAzure(gone, { dir });
@@ -161,4 +171,53 @@ test("the decoder: a 16 kHz mono WAV passes as it is; the converter is picked by
   // One that does: its output is read back.
   const good = { name: "fake", bin: process.execPath, args: (_in, out) => ["-e", `require("fs").writeFileSync(${JSON.stringify(out)}, Buffer.from(${JSON.stringify(Buffer.from(wav).toString("base64"))}, "base64"))`] };
   assert.deepEqual(await decodeTo16k(Buffer.from("MP3"), "audio/mpeg", { converter: good }), wav);
+});
+
+test("the decoder: a converter that ignores SIGTERM and hangs is killed at the timeout, at once, its temp dir gone", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ld-decode-test-"));
+  try {
+    // A stand-in that ignores SIGTERM and never exits; it writes its pid.
+    const pidFile = path.join(tmp, "pid");
+    const stubborn = { name: "stubborn", bin: process.execPath, args: () => ["-e", `process.on("SIGTERM", () => {}); require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`] };
+    const started = Date.now();
+    await assert.rejects(decodeTo16k(Buffer.from("MP3"), "audio/mpeg", { converter: stubborn, timeoutMs: 400, tmp }), /timed out/);
+    assert.ok(Date.now() - started < 2000, `settled in ${Date.now() - started} ms`);
+    assert.deepEqual(fs.readdirSync(tmp).filter((n) => n.startsWith("lingo-dojo-decode-")), [], "the temp dir is removed on that path too");
+    // And the process is gone (SIGKILL can't be ignored).
+    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    let alive = true;
+    for (let i = 0; i < 20 && alive; i++) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        alive = false;
+      }
+    }
+    assert.equal(alive, false, "the converter was killed");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("the decoder: output past the longest clip the scorer reads is refused unread; stale temp dirs are swept", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ld-decode-test-"));
+  try {
+    assert.ok(MAX_OUTPUT_BYTES > 16_000 * 2 * 10 && MAX_OUTPUT_BYTES < 16_000 * 2 * 120, String(MAX_OUTPUT_BYTES));
+    const big = { name: "big", bin: process.execPath, args: (_in, out) => ["-e", `require("fs").writeFileSync(${JSON.stringify(out)}, Buffer.alloc(5000))`] };
+    await assert.rejects(decodeTo16k(Buffer.from("MP3"), "audio/mpeg", { converter: big, maxOutputBytes: 4000, tmp }), /more than the longest clip/);
+    assert.deepEqual(fs.readdirSync(tmp), []);
+    // A crash's leftover (old) goes; a live decode's (new) stays.
+    const old = path.join(tmp, "lingo-dojo-decode-old");
+    const fresh = path.join(tmp, "lingo-dojo-decode-new");
+    const other = path.join(tmp, "someone-else");
+    for (const d of [old, fresh, other]) fs.mkdirSync(d);
+    const past = new Date(Date.now() - 3_600_000);
+    fs.utimesSync(old, past, past);
+    fs.utimesSync(other, past, past);
+    assert.equal(sweepStaleDirs({ tmp }), 1);
+    assert.deepEqual(fs.readdirSync(tmp).sort(), ["lingo-dojo-decode-new", "someone-else"]);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });

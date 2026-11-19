@@ -260,6 +260,10 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
       ...(expected?.half && expectedTone === 3 ? { half: true } : {}),
       verdict: s.verdict === "ok" || off ? s.verdict : "unsure",
       ...(off && Number.isInteger(s.heardTone) ? { heardTone: s.heardTone } : {}),
+      // Where several tones count (我 before 很; a card character's
+      // readings), the one an "ok" heard: compare mode reads the curve
+      // against it, not against a tone the learner didn't aim for.
+      ...(s.verdict === "ok" && Array.isArray(s.accept) && s.accept.length > 1 && s.accept.includes(s.heardTone) ? { saidTone: s.heardTone } : {}),
       ...(off ? { why: s.reason === "sound" ? "sound" : "tone" } : s.verdict !== "ok" && s.reason ? { reason: s.reason } : {}),
       // Azure's 0–100 score for how the syllable sounded (its consonant and
       // vowel together: for Mandarin Azure scores whole syllables), for the

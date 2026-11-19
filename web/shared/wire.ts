@@ -1090,6 +1090,9 @@ export interface PronunciationSyllable {
   verdict: PronunciationVerdict;
   /** The tone heard, only on an `off`. */
   heardTone?: number;
+  /** On an `ok` where several tones are accepted (`accept`), the one that
+   *  was heard: compare mode reads the curve against that tone only. */
+  saidTone?: number;
   /** Why it is `off`: the pitch (`tone`), or Azure's sound score (`sound`). */
   why?: "tone" | "sound";
   /** Why it is `unsure` (the engine's reason: short, creaky, edges, …; or
@@ -1152,6 +1155,8 @@ export interface PronunciationModelSyllable {
    *  expected tone, or a voiced neutral syllable): its own curve is drawn.
    *  Else the textbook shape stands in, and the page says so. */
   real: boolean;
+  /** The tone the engine heard the model say, when it judged it "ok". */
+  saidTone?: number;
 }
 export type PronunciationModelReply =
   | {
