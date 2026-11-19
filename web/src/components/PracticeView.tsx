@@ -1040,8 +1040,14 @@ function useModelAudio(phraseId: string) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const el = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
+  // Bumped when the card goes: audio that arrives after that is for a card
+  // no longer shown, so it is neither kept nor played over the next one.
+  const gen = useRef(0);
+  const ctrl = useRef<AbortController | null>(null);
   useEffect(
     () => () => {
+      gen.current++;
+      ctrl.current?.abort();
       el.current?.audio.pause();
       if (el.current) URL.revokeObjectURL(el.current.url);
       el.current = null;
@@ -1050,10 +1056,20 @@ function useModelAudio(phraseId: string) {
   );
   async function play() {
     setError(null);
+    const mine = gen.current;
     try {
       if (!el.current) {
+        if (ctrl.current) return; // already fetching: the first tap plays it
         setBusy(true);
-        const { blob } = await phraseAudio(phraseId);
+        const c = new AbortController();
+        ctrl.current = c;
+        let blob: Blob;
+        try {
+          ({ blob } = await phraseAudio(phraseId, c.signal));
+        } finally {
+          if (ctrl.current === c) ctrl.current = null;
+        }
+        if (mine !== gen.current) return;
         const url = URL.createObjectURL(blob);
         el.current = { audio: new Audio(url), url };
       }
@@ -1061,9 +1077,9 @@ function useModelAudio(phraseId: string) {
       a.currentTime = 0;
       await a.play();
     } catch (e) {
-      setError(errText(e));
+      if (mine === gen.current) setError(errText(e));
     } finally {
-      setBusy(false);
+      if (mine === gen.current) setBusy(false);
     }
   }
   return { play: () => void play(), busy, error };

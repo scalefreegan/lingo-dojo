@@ -169,8 +169,8 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // Practice (practice.ts): flashcards over that same bank.
       server.middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
       // Pronunciation checks (pronunciation.ts): a recording scored against
-      // known text for the active learner's language, Mandarin only; a kids
-      // learner's audio never leaves this Mac. Nothing is stored.
+      // known text for the active learner's language, Mandarin only; Azure
+      // with keys for any learner, local otherwise. Nothing is stored.
       server.middlewares.use("/api/pronunciation", wrap(handlePronunciation, { learner: true }));
       // Anything else under /api is a typo, not the SPA shell: answer in the
       // envelope the client already parses instead of index.html.

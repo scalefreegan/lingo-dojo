@@ -1099,9 +1099,9 @@ export interface PronunciationSyllable {
 }
 export interface PronunciationScoreReply {
   engine: "azure" | "local";
-  /** Why the local scorer answered: a kids learner (never Azure), no Azure
-   *  keys, or Azure failed, was busy or at this user's limit. */
-  fallback: null | "kids" | "no_keys" | "failed" | "busy" | "limit";
+  /** Why the local scorer answered: no Azure keys, or Azure failed, was
+   *  busy or at this user's limit (the same for adult and kids learners). */
+  fallback: null | "no_keys" | "failed" | "busy" | "limit";
   text: string;
   locale: string;
   syllables: PronunciationSyllable[];

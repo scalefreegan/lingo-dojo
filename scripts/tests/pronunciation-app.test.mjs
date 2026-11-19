@@ -1,27 +1,27 @@
 // The app half of pronunciation scoring (scripts/pronunciation-app.mjs,
-// ld-ne0.2): what text and audio the route takes, which engine runs (a
-// kids learner never reaches Azure), the per-user Azure cap, and the reply
-// the page draws. Pure: no server, no network.
+// ld-ne0.2): what text and audio the route takes, which engine runs (Azure
+// with keys, for any learner), a lone character's readings, the per-user
+// Azure cap, and the reply the page draws. Pure: no server, no network.
 //   node --test scripts/tests/pronunciation-app.test.mjs
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { encodeWav } from "../pronunciation.mjs";
+import { encodeWav, scoreTones, trackPitch } from "../pronunciation.mjs";
 import {
   AZURE_PER_MINUTE, SCORE_MAX_CHARS, SCORE_MAX_SECONDS, azureLimiter, azureUsable, centredCurve, readScoreAudio, readScoreText, scoreReply, scoreSyllables, scoringEngine, toneShape, wavHeader,
 } from "../pronunciation-app.mjs";
-import { readCodePoints } from "../../web/src/script/zh.ts";
+import { speak } from "../pronunciation-synth.mjs";
+import { charReadings, readCodePoints } from "../../web/src/script/zh.ts";
 
 const KEYS = { azureKey: "k", azureRegion: "eastus" };
 
-test("scoringEngine: Azure only for an adult with both keys; a kids learner never, whatever the keys", () => {
-  assert.deepEqual(scoringEngine({ mode: "adult", keys: KEYS }), { engine: "azure", why: null });
-  assert.deepEqual(scoringEngine({ mode: "kids", keys: KEYS }), { engine: "local", why: "kids" });
-  assert.deepEqual(scoringEngine({ mode: "adult", keys: { azureKey: "k", azureRegion: " " } }), { engine: "local", why: "no_keys" });
-  assert.deepEqual(scoringEngine({ mode: "adult", keys: { azureKey: "", azureRegion: "eastus" } }), { engine: "local", why: "no_keys" });
-  assert.deepEqual(scoringEngine({ mode: "adult", keys: null }), { engine: "local", why: "no_keys" });
-  // Anything that isn't plainly an adult is treated as a child: the safe side.
-  for (const mode of ["kids", "", undefined, "Adult", "admin"]) assert.equal(scoringEngine({ mode, keys: KEYS }).engine, "local", String(mode));
+test("scoringEngine: Azure whenever both keys are set, for any learner; local without them", () => {
+  assert.deepEqual(scoringEngine({ keys: KEYS }), { engine: "azure", why: null });
+  assert.deepEqual(scoringEngine({ keys: { azureKey: "k", azureRegion: " " } }), { engine: "local", why: "no_keys" });
+  assert.deepEqual(scoringEngine({ keys: { azureKey: "", azureRegion: "eastus" } }), { engine: "local", why: "no_keys" });
+  assert.deepEqual(scoringEngine({ keys: null }), { engine: "local", why: "no_keys" });
+  // The learner's mode plays no part (the owner's decision, 2026-11-19).
+  for (const mode of ["adult", "kids"]) assert.deepEqual(scoringEngine({ mode, keys: KEYS }), { engine: "azure", why: null }, mode);
 });
 
 test("readScoreText: 1 to 24 Han characters, punctuation and spaces allowed, nothing else", () => {
@@ -39,6 +39,49 @@ test("scoreSyllables: every Han character needs a reading; sandhi applied", () =
 });
 
 const wav = (seconds, rate = 16_000) => encodeWav(new Float32Array(Math.round(seconds * rate)), rate);
+
+/** A lone character as the card scores it: every reading it shows. */
+const card = (ch, locale = "zh-CN") => scoreSyllables(ch, readCodePoints(ch, locale), { alternatives: charReadings(ch, locale) });
+
+test("scoreSyllables alternatives: a lone character accepts the tone of every reading the card shows", () => {
+  const expect = { 长: ["cháng", [2, 3]], 行: ["xíng", [2, 4]], 好: ["hǎo", [3, 4]], 为: ["wèi", [4, 2]] };
+  for (const [ch, [usual, accept]] of Object.entries(expect)) {
+    const [syl] = card(ch).syllables;
+    assert.equal(syl.pinyin, usual, ch);
+    assert.deepEqual(syl.accept, accept, ch);
+    assert.equal(syl.half, false, ch);
+  }
+  // 了 alone is le first, as the card puts it: a neutral usual reading stays
+  // neutral (not judged), never liǎo's third tone.
+  const [le] = card("了").syllables;
+  assert.equal(le.pinyin, "le");
+  assert.deepEqual([le.expectedTone, le.accept], [0, [0]]);
+  // A phrase keeps its reading in context; no alternatives, no change.
+  assert.deepEqual(scoreSyllables("长大", readCodePoints("长大", "zh-CN"), { alternatives: charReadings("长", "zh-CN") }).syllables.map((x) => x.pinyin), ["zhǎng", "dà"]);
+  assert.equal(scoreSyllables("好", ["hǎo"]).syllables[0].accept.length, 1);
+});
+
+test("scoreReply on a lone character: the reading heard is the one named, the usual one when none fits", () => {
+  const run = (ch, tone) => {
+    const syllables = card(ch).syllables;
+    const { samples } = speak([tone], { gaps: [300, 300] });
+    const sampleRate = 16000;
+    const result = scoreTones({ samples, sampleRate, syllables, track: trackPitch(samples, sampleRate) });
+    return scoreReply(result, syllables, { engine: "local", text: ch, locale: "zh-CN" }).syllables[0];
+  };
+  const pick = (y) => [y.verdict, y.pinyin, y.expectedTone];
+  assert.deepEqual(pick(run("长", 2)), ["ok", "cháng", 2]);
+  assert.deepEqual(pick(run("长", 3)), ["ok", "zhǎng", 3]);
+  assert.deepEqual(pick(run("行", 4)), ["ok", "hàng", 4]);
+  assert.deepEqual(pick(run("好", 4)), ["ok", "hào", 4]);
+  assert.deepEqual(pick(run("为", 2)), ["ok", "wéi", 2]);
+  // No reading fits: off against the usual one.
+  const miss = run("为", 1);
+  assert.deepEqual([...pick(miss), miss.heardTone], ["off", "wèi", 4, 1]);
+  assert.equal(miss.reference.length > 0, true);
+  // 了 said with any pitch: not judged.
+  assert.deepEqual(pick(run("了", 3)), ["unsure", "le", 0]);
+});
 
 test("readScoreAudio: 16 kHz mono 16-bit PCM WAV, 0.25 to 30 seconds", () => {
   assert.deepEqual(readScoreAudio(wav(1)), { seconds: 1 });

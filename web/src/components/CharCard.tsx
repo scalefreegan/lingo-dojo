@@ -44,8 +44,8 @@ type ZhReader = typeof import("../script/zh.ts");
  * fixed exemplar (sounds.ts). The sound chart lists them all.
  *
  * Say it (Mandarin): the learner records the character and sees its tone
- * mark and picture (ToneCheck.tsx SayItCheck, /api/pronunciation/score;
- * a kids learner's take is scored on this Mac only). */
+ * mark and picture (ToneCheck.tsx SayItCheck, /api/pronunciation/score,
+ * which judges the character against every reading listed here). */
 
 type Chars = Record<string, ZhCharRow>;
 let charsLoad: Promise<Chars> | null = null;

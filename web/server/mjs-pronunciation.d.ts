@@ -65,9 +65,9 @@ declare module "*/scripts/pronunciation-app.mjs" {
   export const SCORE_MAX_BYTES: number;
   export const AZURE_PER_MINUTE: number;
   export function readScoreText(raw: unknown): { text: string; error?: undefined } | { error: string; text?: undefined };
-  export function scoreSyllables(text: string, readings: (string | null)[]): { syllables: ExpectedSyllable[]; error?: undefined } | { error: string; syllables?: undefined };
+  export function scoreSyllables(text: string, readings: (string | null)[], opts?: { alternatives?: string[] | null }): { syllables: ExpectedSyllable[]; error?: undefined } | { error: string; syllables?: undefined };
   export function readScoreAudio(u8: Uint8Array): { seconds: number; error?: undefined; status?: undefined } | { error: string; status: number; seconds?: undefined };
-  export function scoringEngine(input: { mode: string; keys: { azureKey?: string; azureRegion?: string } | null }): { engine: "azure" | "local"; why: null | "kids" | "no_keys" };
+  export function scoringEngine(input: { keys: { azureKey?: string; azureRegion?: string } | null }): { engine: "azure" | "local"; why: null | "no_keys" };
   export function azureLimiter(perMinute?: number, windowMs?: number): { take(userId: string, now?: number): boolean };
   export function azureUsable(parsed: AzureAssessment | null | undefined): boolean;
   export function scoreReply(

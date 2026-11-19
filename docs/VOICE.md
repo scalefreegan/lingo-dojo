@@ -983,9 +983,9 @@ feed (speak-it failing a wrong tone).
 ```
 POST /api/pronunciation/score?text=<Han text>     body: the WAV (audio/wav)
 → { engine: "azure" | "local",
-    fallback: null | "kids" | "no_keys" | "failed" | "busy" | "limit",
+    fallback: null | "no_keys" | "failed" | "busy" | "limit",
     text, locale,
-    syllables: [{ char, pinyin, expectedTone, accept, verdict,
+    syllables: [{ char, pinyin, expectedTone, accept, verdict,     (a lone character: the reading heard, below)
                   heardTone?  (only on "off"),
                   why?        ("tone" | "sound", on "off"),
                   reason?     (the engine's, on "unsure"),
@@ -1008,23 +1008,42 @@ worker thread (`scripts/pronunciation-worker.mjs`).
   never scored), nothing else, and every character must have a reading
   (`readCodePoints`, the page's own reader, for the language's locale). The
   audio is a 16 kHz mono 16-bit PCM WAV of 0.25 to 30 seconds (415, 400,
-  413 otherwise; the body is capped while it is read).
-- **Engine** (`scoringEngine`): Azure for an adult learner when
-  `AZURE_SPEECH_KEY` and `AZURE_SPEECH_REGION` are set, merged with the
-  local tone check on Azure's syllable timings (`mergeAzure`); the local
-  scorer alone otherwise. **A kids learner's audio is never sent to Azure**,
-  whatever keys are set: the owner's rule, taken from the learner's mode as
-  the session holds it (`learnerMode`; a `?mode=` that disagrees is a 400),
-  and tested (`pronunciation.http.test.mjs`). Azure missing, failing (an
-  error status, no answer in 15 s, a reply with nothing recognised), busy
+  413 otherwise; the body is capped while it is read, and one that takes
+  over 20 s to arrive is a 408). The per-user and server limits are
+  checked before the body is read.
+- **A character alone** (the card) is judged against every reading the
+  card shows for it (`charReadings`, its usual one first): 长 accepts
+  cháng's second tone and zhǎng's third, 行 xíng's second and háng's or
+  hàng's, 好 hǎo and hào, 为 wèi and wéi. An ok names the reading heard
+  (`pinyin`, `expectedTone` and `reference` are that reading's); a miss is
+  shown against the usual one. A neutral usual reading stays neutral and
+  unjudged (了 alone is le, as the card lists it, not liǎo). Two or more
+  characters keep their reading in context (长大 zhǎng dà).
+- **Engine** (`scoringEngine`): Azure when `AZURE_SPEECH_KEY` and
+  `AZURE_SPEECH_REGION` are set, merged with the local tone check on
+  Azure's syllable timings (`mergeAzure`); the local scorer alone
+  otherwise. **The same for kids learners** (the owner's decision,
+  2026-11-19): a kids learner's recording goes to Azure for scoring, as it
+  already goes to the transcription provider in a voice session. Only the
+  reply differs (`overall` null), from the learner's mode as the session
+  holds it (`learnerMode`; a `?mode=` that disagrees is a 400). Azure
+  missing, failing (an error status, no answer in 15 s, a reply that isn't
+  JSON or has nothing recognised, a malformed `AZURE_SPEECH_REGION`, which
+  spends none of the per-minute calls), busy
   (the user's paid slots, `paidSlot`) or past the user's
   `AZURE_PER_MINUTE` (12 calls in a sliding minute) is never an error: the
   local scorer answers, which mostly means more "not sure" (`fallback` says
   why). One score at a time per user and two on the server (429 beyond).
 - **Nothing is stored.** The recording is read into memory, scored in a
   worker thread (started per recording, stopped after 15 s), and dropped
-  with the request. No migration; log lines name the engine and the
-  syllable count, never the text or the audio.
+  with the request; the text is read with the reader's cache off
+  (`readCodePoints(text, locale, { cache: false })`), so it doesn't stay in
+  the server's memory either. No migration; log lines name the engine, the
+  syllable count and the kind of failure, never the text, the audio or
+  anything Azure replied. Every failure leaves the route as an `HttpError`
+  with a fixed message (a worker that hangs or crashes is a 503, a dropped
+  upload just ends), because `wrap` logs the URL, which holds the text, of
+  any other error.
 - **The picture.** `heard` is the engine's `pitch` for the syllable,
   centred on its own mean, and `reference` the tone's Chao shape (the half
   third low without the rise) on the same scale (`stepSt`), so the page
@@ -1039,10 +1058,12 @@ worker thread (`scripts/pronunciation-worker.mjs`).
 The page (`web/src/components/ToneCheck.tsx`): one mark per character,
 read in the profile's aid (pinyin, zhuyin or none). Adults: the accent
 colour for ok, the error colour for a confident miss, a dotted underline in
-the text colour for not sure, never a warning; a line "2 of 3 tones right ·
-1 not sure". Kids: no score and no red; ok in the accent colour, a miss
-warm (`kiai`) with "Let's listen and try that one again!" and a Listen
-button, not sure shown as plain text and not tappable. A tap opens the
+the text colour for not sure, never a warning; a line "2 right · 1 not
+sure". Kids: no score and no red (an error line too); ok in the accent
+colour, a miss warm (`kiai`), whether the tone or (from Azure) the sound,
+with "Let's listen and try that one again!" and a Listen button, not sure
+shown as plain text and not tappable. "Checking the tones…" and the line
+are read out by one `role="status"` live region. A tap opens the
 syllable's picture: the textbook shape dashed against what was heard, the
 learner's own take (the blob in memory) and the model sound.
 
@@ -1067,8 +1088,8 @@ How each "Before wiring" point above was handled:
   rest on `phraseMarginSt`.
 - `speaker` is never passed: nothing is kept between recordings in stage
   1, so there is no range from the learner's other recordings.
-- `timings` are Azure's through `mergeAzure` on the adult path. The kids
-  path, and any fallback, finds the speech by energy and says "not sure"
+- `timings` are Azure's through `mergeAzure` when Azure answers. The
+  local path, and any fallback, finds the speech by energy and says "not sure"
   more often in a real room, by design.
 - Azure's spans in a real room are still unmeasured. One small check on a
   synthesized 谢谢 (2026-11-19, three requests): the spans with half a

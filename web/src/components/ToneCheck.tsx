@@ -72,21 +72,28 @@ export interface ToneCheckProps {
   modelError?: string | null;
 }
 
+/** The line under the marks. Kids: a nudge on a clear miss (whether the
+ *  pitch or, from Azure, the sound), praise when something was right,
+ *  nothing else. */
+function toneSummary(reply: PronunciationScoreReply, kids: boolean): string {
+  const syl = reply.syllables;
+  const ok = syl.filter((s) => s.verdict === "ok").length;
+  const off = syl.filter((s) => s.verdict === "off").length;
+  const unsure = syl.length - ok - off;
+  if (kids) return off ? "Let's listen and try that one again!" : ok ? "Lovely tones!" : "";
+  if (ok + off === 0) return "Couldn't tell the tones this time. That's not a mistake: try again a little closer to the microphone, somewhere quiet.";
+  // Counts side by side, never "1 of 1 right" beside a syllable left out of the count.
+  return [`${ok} right`, off ? `${off} off` : "", unsure ? `${unsure} not sure` : ""].filter(Boolean).join(" · ");
+}
+
 export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, modelError = null }: ToneCheckProps) {
   const mode = useRubyMode(reply.locale);
   const [open, setOpen] = useState<number | null>(null);
   const takePlayer = useTakePlayer(take);
   const syl = reply.syllables;
-  const ok = syl.filter((s) => s.verdict === "ok").length;
   const off = syl.filter((s) => s.verdict === "off").length;
-  const unsure = syl.length - ok - off;
   const shown = open !== null ? syl[open] : null;
-
-  let summary: string;
-  if (kids) summary = off ? "Let's listen and try that one again!" : ok ? "Lovely tones!" : "";
-  else if (ok + off === 0) summary = "Couldn't tell the tones this time. That's not a mistake: try again a little closer to the microphone, somewhere quiet.";
-  // Counts side by side, never "1 of 1 right" beside a syllable left out of the count.
-  else summary = [`${ok} right`, off ? `${off} off` : "", unsure ? `${unsure} not sure` : ""].filter(Boolean).join(" · ");
+  const summary = toneSummary(reply, kids);
 
   return (
     <div className="flex flex-col gap-2" data-testid="tone-check">
@@ -134,7 +141,8 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       </div>
       {summary && (
         <p className={`${kids ? "text-center text-base" : fine} text-fg-2`} data-testid="tone-summary">
-          {summary}
+          {/* Read out by ToneScoreView's live region. */}
+          <span aria-hidden="true">{summary}</span>
           {kids && off > 0 && onPlayModel && (
             <>
               {" "}
@@ -152,7 +160,7 @@ export function ToneCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       )}
       {shown && <TonePicture s={shown} kids={kids} mode={mode} take={take ? takePlayer : null} onPlayModel={onPlayModel} modelBusy={modelBusy} />}
       {(modelError || takePlayer.error) && (
-        <p className={`${fine} text-err`} role="status">
+        <p className={`${fine} ${kids ? "text-fg-2" : "text-err"}`} role="status">
           Couldn't play it: {modelError ?? takePlayer.error}
         </p>
       )}
@@ -225,6 +233,8 @@ function TonePicture({ s, kids, mode, take, onPlayModel, modelBusy }: { s: Pronu
   const heardPath = pathOf(s.heard);
   const refPath = s.reference ? pathOf(s.reference) : "";
   let line: string;
+  // Kids hear the shape to aim for and nothing about what went wrong: a
+  // miss on the sound itself (Azure's `why: "sound"`) reads the same.
   if (kids) line = s.expectedTone >= 1 && s.expectedTone <= 4 ? `This one ${KID_SHAPES[s.expectedTone]}.` : "";
   else if (s.verdict === "off") line = s.why === "sound" ? "The tone may be fine; the sound itself seemed off." : `Expected tone ${s.expectedTone} (${TONE_NAMES[s.expectedTone]}); it sounded like tone ${s.heardTone} (${TONE_NAMES[s.heardTone ?? 0] ?? "?"}).`;
   else if (s.verdict === "ok") line = `Tone ${s.expectedTone} (${TONE_NAMES[s.expectedTone]}): sounded right.`;
@@ -283,10 +293,26 @@ function TonePicture({ s, kids, mode, take, onPlayModel, modelBusy }: { s: Pronu
 
 /** The marks for a recording already made, or a quiet line while they come. */
 export function ToneScoreView({ state, kids, onPlayModel, modelBusy, modelError }: { state: ScoreState; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
-  if (state.step === "scoring") return <p className={`${fine} text-fg-3`}>{kids ? "Listening to your tones…" : "Checking the tones…"}</p>;
-  if (state.step === "failed") return kids ? null : <p className={`${fine} text-fg-3`}>The tones couldn't be checked: {state.message}</p>;
-  if (state.step !== "done" || !state.reply) return null;
-  return <ToneCheck reply={state.reply} take={state.take} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} />;
+  // One live region, mounted before anything changes in it, so a screen
+  // reader hears "Checking the tones…" and then the summary; what is drawn
+  // below is the same words, hidden from it so they aren't read twice.
+  const said =
+    state.step === "scoring" ? (kids ? "Listening to your tones…" : "Checking the tones…")
+    : state.step === "failed" ? (kids ? "" : `The tones couldn't be checked: ${state.message}`)
+    : state.step === "done" && state.reply ? toneSummary(state.reply, kids)
+    : "";
+  return (
+    <>
+      <p role="status" aria-live="polite" className="sr-only" data-testid="tone-status">
+        {said}
+      </p>
+      <div aria-hidden={state.step !== "done" ? true : undefined}>
+        {state.step === "scoring" && <p className={`${fine} text-fg-3`}>{said}</p>}
+        {state.step === "failed" && !kids && <p className={`${fine} text-fg-3`}>{said}</p>}
+      </div>
+      {state.step === "done" && state.reply && <ToneCheck reply={state.reply} take={state.take} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} />}
+    </>
+  );
 }
 
 /** Why the microphone couldn't start, briefly. */

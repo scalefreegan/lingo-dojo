@@ -91,9 +91,13 @@ migration, docs/VOICE.md §Pronunciation in the app): `POST
 `scripts/pronunciation-app.mjs`, the engine `scripts/pronunciation.mjs` in a
 worker thread, `scripts/pronunciation-worker.mjs`) scores a WAV against 1–24
 Han characters for a Mandarin language only (else 422 `not_available`);
-Azure for an adult with keys (paid slot, 12 a minute per user), the local
-scorer otherwise or when Azure fails, and **a kids learner's audio is never
-sent to Azure** (decided from the session's learner mode); nothing is stored.
+Azure whenever its keys are set (paid slot, 12 a minute per user), the local
+scorer otherwise or when Azure fails, **for kids learners too**: a kids
+learner's recording goes to Azure for scoring, as it already goes to the
+transcription provider (only the reply differs: no score, from the session's
+learner mode); a lone character (the card) is judged against every reading
+the card shows; nothing is stored, and every failure leaves as an
+`HttpError` so no log line carries the text in the URL.
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
 Practice's speak-it (grading unchanged) and the character card; First steps
 drills are not wired (no reliable target text per turn).

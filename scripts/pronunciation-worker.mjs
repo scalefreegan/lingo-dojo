@@ -24,9 +24,11 @@ try {
   // and the engine then draws no curve (`pitch: []`) even for a syllable
   // it judged. The page centres each curve on its own mean, so any
   // reference pitch draws the same shape: the whole track's f0 (the one
-  // trackPitch finishes for drawing) over the syllable's span.
+  // trackPitch finishes for drawing) over the syllable's span. Only for a
+  // syllable it judged: a "not sure" (too short, unvoiced, …) gets no line
+  // that would look like a measurement.
   for (const s of result.syllables) {
-    if (!s.pitch?.length && Number.isFinite(s.startMs) && Number.isFinite(s.endMs) && s.endMs > s.startMs) s.pitch = pitchCurve(track, s.startMs, s.endMs, 100);
+    if ((s.verdict === "ok" || s.verdict === "off") && !s.pitch?.length && Number.isFinite(s.startMs) && Number.isFinite(s.endMs) && s.endMs > s.startMs) s.pitch = pitchCurve(track, s.startMs, s.endMs, 100);
   }
   parentPort.postMessage({ result });
 } catch (e) {

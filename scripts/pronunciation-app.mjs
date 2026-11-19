@@ -6,16 +6,17 @@
 //  - what text may be scored (a few Han characters, read by the caller's
 //    pinyin reader) and what audio (the recorder's 16 kHz mono PCM WAV,
 //    at most 30 seconds);
-//  - which engine runs: Azure only for an adult learner with Azure keys
-//    set; a kids learner's audio never leaves this Mac (the owner's rule),
-//    whatever keys are set;
+//  - which engine runs: Azure whenever its keys are set, for any learner,
+//    the local scorer otherwise or as the fallback;
+//  - on the character card, a lone character judged against every reading
+//    the card shows for it (行 xíng or háng), not one reading picked;
 //  - the per-user cap on Azure calls (over it, the local scorer answers);
 //  - the reply: the engine's result cut down to what the page draws, with
 //    each syllable's contour and the canonical shape of its tone.
 //
 // Pure ESM with no server imports, like scripts/practice.mjs.
 
-import { AZURE_MAX_SECONDS, LOCAL_MAX_SECONDS, TONE_RULES, expectedSyllables } from "./pronunciation.mjs";
+import { AZURE_MAX_SECONDS, LOCAL_MAX_SECONDS, TONE_RULES, expectedSyllables, parsePinyin } from "./pronunciation.mjs";
 
 /* ---------------------------------- text ---------------------------------- */
 
@@ -52,12 +53,27 @@ export function readScoreText(raw) {
  * Every Han character must have a reading, or the syllables would no
  * longer line up with the characters on the page: `{ syllables }` or
  * `{ error }`.
+ *
+ * `alternatives`: for a text of one character alone (the character card),
+ * every reading the card shows for it, its usual one first (zh.ts
+ * charReadings). Out of a word there is no context to pick one: 长 alone is
+ * cháng or zhǎng, 行 xíng or háng, and a learner saying the other is right.
+ * So the syllable expects the usual reading and accepts the tone of every
+ * reading (`readings` travels with it, for scoreReply to name the one
+ * heard). A neutral usual reading (了 le, 的 de) stays the neutral tone,
+ * which is not judged. A phrase keeps its reading in context.
  */
-export function scoreSyllables(text, readings) {
+export function scoreSyllables(text, readings, { alternatives = null } = {}) {
   const cps = [...text];
   const missing = cps.find((c, i) => HAN.test(c) && !readings?.[i]);
   if (missing) return { error: `no reading is known for ${missing}, so it can't be scored` };
-  return { syllables: expectedSyllables(text, readings) };
+  const syllables = expectedSyllables(text, readings);
+  const list = Array.isArray(alternatives) ? alternatives.filter((r) => typeof r === "string" && r) : [];
+  if (syllables.length !== 1 || !list.length) return { syllables };
+  const usual = list[0];
+  const tone = parsePinyin(usual).tone;
+  const tones = [...new Set(list.map((r) => parsePinyin(r).tone).filter((t) => t >= 1 && t <= 4))];
+  return { syllables: [{ ...syllables[0], pinyin: usual, baseTone: tone, expectedTone: tone, accept: tone === 0 ? [0] : [tone, ...tones.filter((t) => t !== tone)], half: false, readings: list }] };
 }
 
 /* ---------------------------------- audio --------------------------------- */
@@ -114,15 +130,14 @@ export function readScoreAudio(u8) {
 /* --------------------------------- engine --------------------------------- */
 
 /**
- * Which engine scores this learner's recording, before anything is tried:
- * `{ engine, why }`. A kids learner is scored on this Mac and nowhere
- * else, whatever keys are set (`why: "kids"`): the owner's rule, decided
- * here from the learner's mode as the server holds it (never from the
- * request). An adult's goes to Azure when its key and region are set
- * (`pronunciationProvider`'s test), else local (`why: "no_keys"`).
+ * Which engine scores a recording, before anything is tried: `{ engine,
+ * why }`. Azure when its key and region are set (`pronunciationProvider`'s
+ * test), else local (`why: "no_keys"`). The same for every learner, adult
+ * or kids (the owner's decision, 2026-11-19): a kids learner's recording
+ * goes to Azure for scoring as it already goes to the transcription
+ * provider; only what the page shows differs (scoreReply's `kids`).
  */
-export function scoringEngine({ mode, keys }) {
-  if (mode !== "adult") return { engine: "local", why: "kids" };
+export function scoringEngine({ keys }) {
   const azure = keys && String(keys.azureKey ?? "").trim() && String(keys.azureRegion ?? "").trim();
   return azure ? { engine: "azure", why: null } : { engine: "local", why: "no_keys" };
 }
@@ -213,10 +228,16 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
   const out = result.syllables.map((s, i) => {
     const expected = syllables[i];
     const off = s.verdict === "off";
+    // A lone character with several readings (scoreSyllables'
+    // `alternatives`): an ok names the reading whose tone was heard (行
+    // said háng is háng, not "xíng, right"); anything else keeps the usual
+    // reading as the one expected.
+    const matched = s.verdict === "ok" && Array.isArray(expected?.readings) ? expected.readings.find((r) => parsePinyin(r).tone === s.heardTone) : null;
+    const expectedTone = matched ? s.heardTone : s.expectedTone;
     return {
       char: s.char,
-      pinyin: s.pinyin,
-      expectedTone: s.expectedTone,
+      pinyin: matched ?? s.pinyin,
+      expectedTone,
       accept: s.accept,
       verdict: s.verdict === "ok" || off ? s.verdict : "unsure",
       ...(off && Number.isInteger(s.heardTone) ? { heardTone: s.heardTone } : {}),
@@ -224,7 +245,7 @@ export function scoreReply(result, syllables, { engine, fallback = null, kids = 
       startMs: Number.isFinite(s.startMs) ? s.startMs : null,
       endMs: Number.isFinite(s.endMs) ? s.endMs : null,
       heard: centredCurve(s.pitch),
-      reference: toneShape(s.expectedTone, { half: !!expected?.half }),
+      reference: toneShape(expectedTone, { half: !!expected?.half }),
     };
   });
   return {
