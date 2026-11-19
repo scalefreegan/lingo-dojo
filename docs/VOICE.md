@@ -628,9 +628,14 @@ browser already sends, with no dependency:
    The track carries its pitch twice: `f0`, finished on the whole
    recording (silence floor, octave repairs, range gate), for drawing;
    and `rawF0`, from before those steps, which is what `scoreTones`
-   reads. It is a plain field, so a track survives a copy (a worker's
-   `postMessage`, a cache). A track without `rawF0` is tracked again
-   from the samples, and with no samples nothing is judged (`track`).
+   reads. It is a plain field, so a track survives a structured copy (a
+   worker's `postMessage`, a cache that keeps typed arrays). It does not
+   survive JSON, which turns a typed array into an object with no
+   length: such a track is not used at all. A track without a usable
+   `rawF0` is tracked again from the samples, and with no samples
+   nothing is judged (`track`). The recording's length (the 30-second
+   limit, "inside the recording") is taken from the samples when they
+   are passed, else from a usable track; never from a copy's arrays.
 2. Where the speech is. A push-to-talk recording has a second of room
    before and after the words, with key presses, knocks, coughs, another
    voice, a hum. There are two ways of knowing where the syllables are,
@@ -658,7 +663,11 @@ browser already sends, with no dependency:
      way (`jitteredTimings`, at most 2n more readings), and a verdict
      stands only where every reading gives it for the same tone. (A
      reading where the moved span merely takes in a separate sound,
-     `apart`, is not held against it.)
+     `apart`, is not held against it.) A span that a move would leave
+     under 40 ms (a short one at the end of the recording) stays put in
+     that reading while the others move; a syllable whose own span moved
+     in no reading at all is `edges` too, since no readings agreeing is
+     not agreement. The result's `readings` says how many were made.
    - `lopsided`: of two neighbouring spans, one with hardly any voice in
      it, or one under 100 ms beside one three times its length. One span
      has the other's sound; neither is judged.
@@ -666,10 +675,19 @@ browser already sends, with no dependency:
      span only, and those cuts are marked `rough`: they count for what a
      fallback cut does (`FALLBACK_TRUST`).
    What the guards cost and what wrong spans still get through is the
-   proof's "When the spans are wrong" (and in small in `npm test`):
-   spans 50 ms off or with one boundary 50 ms off, and a span that
-   swallowed its neighbour, are nearly all withheld; spans 100 ms off
-   and more still pass some wrong tones as ok.
+   proof's "When the spans are wrong" (and in small in `npm test`).
+   **The jitter, sliver and lopsided values were chosen on the same
+   clips and the same span errors that table measures: it is in-sample.**
+   What it supports: spans 50 ms off, or with one boundary 50 ms off,
+   are mostly withheld (2 to 6 wrong tones still pass as ok in some 750
+   to 1500 phrase syllables). A span that swallowed its neighbour is
+   withheld when the neighbour is left a sliver (60 ms: 0 and 1 wrong
+   ok), which is the case the sliver bar was set for; leave the
+   neighbour 110, 130 or 160 ms and 14, 9 and 8 wrong tones pass as ok,
+   with one false alarm. Spans 100 ms off and more pass some wrong tones
+   as ok as well. On generated syllables run together (20 ms apart,
+   `npm test`) the off-design rows and the 100 ms rows also produce
+   false alarms.
 
    Scribe's character times are where the
    recogniser emitted a character, not a syllable's extent: they are
@@ -718,8 +736,8 @@ browser already sends, with no dependency:
    to 85.9% for single syllables and from 70.8% to 66.1% in phrases).
 
    A recording that is loud in its first 20 ms started inside a
-   syllable: the syllable whose span begins there is not judged
-   (`clipped`), on either path. A route should ask for such a recording
+   syllable: the syllable whose span begins there (it starts under 20 ms
+   in, `clippedMs`) is not judged (`clipped`), on either path. A route should ask for such a recording
    again. (The proof scores its synthesized clips, which begin with
    their first sound, behind 200 ms of silence for this reason.)
 
@@ -811,7 +829,8 @@ classifier's raw accuracy before any gate.
   the recording being scored.
 - Pass `timings` (Azure's, through `mergeAzure`). Without them the
   scorer has to find the speech by energy, and in a room with any stray
-  sound it will mostly say `unsure`.
+  sound it will mostly say `unsure`. `timings` that are not a list are a
+  timings problem (`timings`), never a quiet fall back to energy.
 - Before trusting the timings path in a real room, check the
   recogniser's spans there: the same speech clean and with a knock, a
   cough, another voice, and compare the spans that come back. The proof

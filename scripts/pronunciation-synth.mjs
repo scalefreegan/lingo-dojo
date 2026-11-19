@@ -365,6 +365,25 @@ const boundaryBy = (d) => (spans) => {
   return out;
 };
 
+// One span redrawn to end where its neighbour has `leftMs` left (for a
+// neighbour shorter than that, the boundary moves the other way).
+const swallowNext = (leftMs) => (spans) => {
+  const out = [];
+  for (let b = 0; b + 1 < spans.length; b++) {
+    const next = spans[b + 1];
+    out.push(spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: next.endMs - leftMs } : k === b + 1 ? { startMs: x.endMs - leftMs, endMs: x.endMs } : { ...x })));
+  }
+  return out;
+};
+const swallowPrev = (leftMs) => (spans) => {
+  const out = [];
+  for (let b = 0; b + 1 < spans.length; b++) {
+    const prev = spans[b];
+    out.push(spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: x.startMs + leftMs } : k === b + 1 ? { startMs: prev.startMs + leftMs, endMs: x.endMs } : { ...x })));
+  }
+  return out;
+};
+
 /**
  * Ways a recogniser's syllable spans can be wrong while still looking
  * like spans (in order, plausible lengths: timingsProblem passes them),
@@ -375,16 +394,14 @@ const boundaryBy = (d) => (spans) => {
 export const SPAN_ERRORS = Object.freeze([
   ...[-150, -100, -50, 50, 100, 150].map((d) => ({ key: `shift${d}`, title: `All spans ${Math.abs(d)} ms ${d < 0 ? "early" : "late"}`, variants: movedBy(d) })),
   ...[-100, -50, 50, 100].map((d) => ({ key: `boundary${d}`, title: `One boundary ${Math.abs(d)} ms ${d < 0 ? "early" : "late"}`, variants: boundaryBy(d) })),
-  {
-    key: "swallowNext",
-    title: "One span takes all of the next syllable but its last 60 ms",
-    variants: (spans) => spans.slice(0, -1).map((_, b) => spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: spans[b + 1].endMs - 60 } : k === b + 1 ? { startMs: x.endMs - 60, endMs: x.endMs } : { ...x }))),
-  },
-  {
-    key: "swallowPrev",
-    title: "One span takes all of the syllable before but its first 60 ms",
-    variants: (spans) => spans.slice(0, -1).map((_, b) => spans.map((x, k) => (k === b ? { startMs: x.startMs, endMs: x.startMs + 60 } : k === b + 1 ? { startMs: spans[b].startMs + 60, endMs: x.endMs } : { ...x }))),
-  },
+  { key: "swallowNext", title: "One span takes all of the next syllable but its last 60 ms", variants: swallowNext(60) },
+  { key: "swallowPrev", title: "One span takes all of the syllable before but its first 60 ms", variants: swallowPrev(60) },
+  // Off the design: TIMING_RULES' sliver bar is 100 ms, so a neighbour
+  // left with more than that is not a "sliver" and has to be caught some
+  // other way, or isn't.
+  { key: "swallowNext110", title: "…the next syllable but its last 110 ms", variants: swallowNext(110) },
+  { key: "swallowNext130", title: "…the next syllable but its last 130 ms", variants: swallowNext(130) },
+  { key: "swallowPrev160", title: "…the syllable before but its first 160 ms", variants: swallowPrev(160) },
 ]);
 
 /* ---------------------------------- flips ---------------------------------- */

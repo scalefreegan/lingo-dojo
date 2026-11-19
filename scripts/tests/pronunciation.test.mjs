@@ -1563,7 +1563,22 @@ test("a copied track is read like the original; one without its raw pitch is tra
     // recording is tracked again from the samples…
     const bare = { ...track, rawF0: undefined };
     assert.deepEqual(read({ samples: d.samples, track: bare }), mine, `${tones}: no raw pitch, samples`);
-    assert.deepEqual(read({ samples: d.samples, track: JSON.parse(JSON.stringify(track)) }), mine, `${tones}: through JSON`);
+    const json = JSON.parse(JSON.stringify(track));
+    assert.deepEqual(read({ samples: d.samples, track: json }), mine, `${tones}: through JSON`);
+    // The recording's length comes from the samples, never from the
+    // copy's arrays (which have no length: NaN, and every limit passes):
+    // as many readings with the spans moved as for the original…
+    const count = (more) => scoreTones({ sampleRate: RATE, syllables, timings, ...more }).readings;
+    assert.ok(count({ samples: d.samples, track }) >= 3, `${tones}: ${count({ samples: d.samples, track })} readings`);
+    assert.equal(count({ samples: d.samples, track: json }), count({ samples: d.samples, track }), `${tones}: readings through JSON`);
+    assert.equal(count({ track: structuredClone(track) }), count({ samples: d.samples, track }), `${tones}: readings from a clone alone`);
+    // …spans past the end are still a timings problem…
+    const total = (d.samples.length / RATE) * 1000;
+    const past = timings.map((t, i) => (i + 1 === timings.length ? { startMs: total - 100, endMs: total + 300 } : t));
+    const refused = scoreTones({ samples: d.samples, sampleRate: RATE, syllables, timings: past, track: json });
+    assert.match(refused.timingsProblem ?? "", /outside the recording/, `${tones}`);
+    // …and the copy alone is no track: nothing is judged from it.
+    assert.ok(scoreTones({ sampleRate: RATE, syllables, timings, track: json }).syllables.every((x) => x.reason === "track"), `${tones}`);
     // …and without samples nothing is judged, by timings or by energy:
     // never read from the finished pitch as it stands.
     for (const more of [{ timings }, { timings: null }]) {
@@ -1575,6 +1590,17 @@ test("a copied track is read like the original; one without its raw pitch is tra
     const quiet = disturb(said.samples, RATE, { ...NOISE_CONDITIONS.find((c) => c.key === "room"), padMs: cond.padMs }, 5);
     assert.deepEqual(read({ samples: quiet.samples, track: structuredClone(trackPitch(quiet.samples, RATE)) }), mine, `${tones}: against the quiet recording`);
   }
+  // Forty seconds of samples are refused whatever track comes with them:
+  // none, a good one, one copied through JSON.
+  const long = new Float32Array(RATE * 40);
+  const short = trackPitch(speak([1]).samples, RATE);
+  for (const track of [null, short, JSON.parse(JSON.stringify(short)), { hopMs: 10 }]) {
+    assert.throws(() => scoreTones({ samples: long, sampleRate: RATE, syllables: expecting(1), track }), /at most 30 seconds/);
+  }
+  // A track alone over the limit is refused by its own length.
+  const frames = (LOCAL_MAX_SECONDS + 2) * 100;
+  const tooLong = { hopMs: 10, f0: new Float32Array(frames), rawF0: new Float32Array(frames), rms: new Float32Array(frames), periodicity: new Float32Array(frames), zcr: new Float32Array(frames) };
+  assert.throws(() => scoreTones({ syllables: expecting(1), track: tooLong }), /at most 30 seconds/);
   // A trimmed track carries the raw pitch of what it kept and no more.
   const said = speak([4, 1]);
   const rec = recording(said.samples, { blips: [{ atMs: 200, ms: 40, hz: 220, amp: 0.05 }] });
@@ -1595,6 +1621,57 @@ test("jitteredTimings: the whole set earlier and later, each boundary both ways,
   assert.deepEqual([got[2][0], got[2][1]], [{ startMs: 100, endMs: 300 - J }, { startMs: 300 - J, endMs: 370 }]);
   assert.ok(jitteredTimings([{ startMs: 0, endMs: 300 }], 320).every((t) => t[0].startMs >= 0 && t[0].endMs <= 320));
   assert.deepEqual(jitteredTimings(spans, 1000, { ...TIMING_RULES, jitterMs: 0 }), []);
+  // A short last span at the end of the recording can't move later. It
+  // stays put in that variant and the other two still move: five of the
+  // six variants (the sixth, its boundary moved later, would leave it 30
+  // ms and nothing else moves in it).
+  const tail = [{ startMs: 200, endMs: 450 }, { startMs: 450, endMs: 700 }, { startMs: 700, endMs: 770 }];
+  const moved = jitteredTimings(tail, 770);
+  assert.equal(moved.length, 5);
+  assert.deepEqual(moved[1], [{ startMs: 200 + J, endMs: 450 + J }, { startMs: 450 + J, endMs: 700 + J }, { startMs: 700, endMs: 770 }]);
+  // Every syllable has a variant in which its own span moved.
+  for (let i = 0; i < 3; i++) assert.ok(moved.some((t) => t[i].startMs !== tail[i].startMs || t[i].endMs !== tail[i].endMs), `syllable ${i + 1}`);
+  // A lone 70 ms span that is the whole recording can't move either way:
+  // no variant at all, and an unknown length gives none rather than NaN.
+  assert.deepEqual(jitteredTimings([{ startMs: 0, endMs: 70 }], 70), []);
+  assert.deepEqual(jitteredTimings(tail, NaN), []);
+});
+
+test("no moved reading is not agreement: a syllable whose span could not be moved is not judged", () => {
+  const said = speak([4, 1, 2]);
+  const samples = led(said.samples, 500);
+  const timings = spansOf(said.timings, 500);
+  const read = (timingRules) => scoreTones({ samples, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range, timings, timingRules });
+  assert.deepEqual(verdicts(read(TIMING_RULES)), ["off", "ok", "ok"]);
+  // A jitter no span can make inside this recording: no reading with the
+  // spans moved, so nothing vouches for the edges.
+  const none = read({ ...TIMING_RULES, jitterMs: 5000 });
+  assert.equal(none.readings, 1);
+  assert.deepEqual(none.syllables.map((x) => [x.verdict, x.reason]), [["unsure", "edges"], ["unsure", "edges"], ["unsure", "edges"]]);
+  assert.equal(none.overall, undefined);
+  // With the guard switched off on purpose (the proof's "no guards"), the
+  // one reading stands.
+  assert.deepEqual(verdicts(read({ ...TIMING_RULES, jitterMs: 0 })), ["off", "ok", "ok"]);
+  // The short last span at the very end of the recording: the others
+  // keep their readings (the sliver and its neighbour are lopsided; the
+  // first syllable's flag stands).
+  const end = said.timings[2].startMs + 500 + 70;
+  const cut = samples.slice(0, Math.round((end * RATE) / 1000));
+  const tail = [timings[0], { startMs: timings[1].startMs, endMs: end - 70 }, { startMs: end - 70, endMs: end }];
+  const r = scoreTones({ samples: cut, sampleRate: RATE, syllables: phrase(1, 1, 2), speaker: said.range, timings: tail });
+  assert.equal(r.readings, 6);
+  assert.equal(verdicts(r)[0], "off", JSON.stringify(r.syllables.map((x) => [x.verdict, x.reason])));
+});
+
+test("timings that are not a list are a timings problem, not a fall back to energy", () => {
+  const said = speak([4, 1]);
+  const samples = led(said.samples, 300);
+  for (const timings of [{ startMs: 300, endMs: 600 }, "0-300", 0, {}]) {
+    const r = scoreTones({ samples, sampleRate: RATE, syllables: phrase(4, 1), speaker: said.range, timings });
+    assert.deepEqual([r.timed, typeof r.timingsProblem], ["given", "string"], JSON.stringify(timings));
+    assert.ok(r.syllables.every((x) => x.verdict === "unsure" && x.reason === "timings"));
+  }
+  for (const timings of [null, undefined]) assert.equal(scoreTones({ samples, sampleRate: RATE, syllables: phrase(4, 1), speaker: said.range, timings }).timed, "fallback");
 });
 
 /* The proof's "When the spans are wrong", in small: generated phrases,
@@ -1603,11 +1680,12 @@ test("jitteredTimings: the whole set earlier and later, each boundary both ways,
  * with the right spans. */
 test("wrong spans: with the guards no new false alarm and no new wrong ok; without them, wrong oks", () => {
   const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0 };
-  const clips = [[4, 1, 2], [2, 4, 1], [1, 3, 4], [3, 2, 2], [1, 4], [4, 4, 1, 2]].map((tones, k) => {
-    const said = speak(tones, { seed: 11 + k, ms: 240, gapMs: 60 });
+  const clipsAt = (gapMs) => [[4, 1, 2], [2, 4, 1], [1, 3, 4], [3, 2, 2], [1, 4], [4, 4, 1, 2]].map((tones, k) => {
+    const said = speak(tones, { seed: 11 + k, ms: 240, gapMs });
     const samples = led(said.samples, 500);
     return { tones, samples, spans: spansOf(said.timings, 500), range: said.range, track: trackPitch(samples, RATE), total: (samples.length / RATE) * 1000 };
   });
+  let clips = clipsAt(60);
   const study = (timingRules) => {
     const score = (c, spans) => (syllables) => scoreTones({ samples: c.samples, sampleRate: RATE, syllables, speaker: c.range, track: c.track, timings: spans, timingRules });
     const base = new Map();
@@ -1638,6 +1716,28 @@ test("wrong spans: with the guards no new false alarm and no new wrong ok; witho
   }
   // Without them the same wrong spans pass wrong tones as ok.
   assert.ok(bare["shift-150"].wrongOk + bare.shift150.wrongOk > 0, JSON.stringify([bare["shift-150"].wrongOk, bare.shift150.wrongOk]));
+
+  // Syllables 20 ms apart, run together as in speech. With a real silence
+  // between them (above) a span that swallowed its neighbour is caught as
+  // two sounds ("apart") whatever else is switched off; here only the
+  // lopsided check stands between it and a verdict.
+  clips = clipsAt(20);
+  const close = study(TIMING_RULES);
+  const noLopsided = study({ ...TIMING_RULES, lopsided: 0 });
+  assert.equal(close.clean.falseAlarms, 0);
+  for (const key of ["shift-50", "shift50", "boundary-50", "boundary50", "swallowNext", "swallowPrev"]) {
+    assert.deepEqual([close[key].falseOff, close[key].wrongOk], [0, 0], `${key}, 20 ms apart: ${JSON.stringify(close[key].keys)}`);
+  }
+  for (const key of ["swallowNext", "swallowPrev"]) {
+    assert.ok(noLopsided[key].falseOff > 0 && noLopsided[key].wrongOk > 0, `${key} without the lopsided check: ${noLopsided[key].falseOff} / ${noLopsided[key].wrongOk}`);
+  }
+  // NOT safe, and asserted so that nobody reads the zeros above as more
+  // than they are: off the design the guards were fitted to (a neighbour
+  // left 110 ms: no sliver), and spans 100 ms out, run-together syllables
+  // still get false alarms and wrong oks. The proof's table has the same
+  // rows on the synthesized voices.
+  assert.ok(close.swallowNext110.falseOff + close.swallowNext110.wrongOk > 0);
+  assert.ok(close.shift100.falseOff + close.shift100.wrongOk > 0);
 });
 
 test("lopsided spans: a span that took its neighbour's sound, and the sliver left beside it, are not judged", () => {
@@ -1752,6 +1852,11 @@ test("a recording that starts inside the first syllable: that syllable is not ju
       assert.deepEqual([got[0].verdict, got[0].reason], ["unsure", "clipped"], `${labels} ${more.timings ? "timings" : "energy"}`);
     }
   }
+  // "Begins with the recording" is a first span that starts under
+  // clippedMs (20 ms) in: the two frames looked at are inside it.
+  const from = (startMs) => scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range, timings: timings.map((t, i) => (i ? t : { ...t, startMs })) }).syllables[0].reason;
+  assert.deepEqual([from(0), from(10), from(TONE_RULES.clippedMs - 1)], ["clipped", "clipped", "clipped"]);
+  assert.notEqual(from(TONE_RULES.clippedMs), "clipped");
   // The same speech with a lead-in is read.
   assert.equal(scoreTones({ samples: led(said.samples, 300), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range }).syllables[0].verdict, "ok");
 });

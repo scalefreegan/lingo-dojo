@@ -217,7 +217,7 @@ The timings path believes its spans. This section gives it wrong ones: Azure's s
 | All spans 100 ms early | 1 / 7 / 19 | 0 / 3 / 27 | 2 / 63 / 261 | 0 / 6 / 240 | 744 |
 | All spans 50 ms early | 1 / 3 / 7 | 0 / 1 / 16 | 0 / 11 / 69 | 0 / 2 / 185 | 744 |
 | All spans 50 ms late | 0 / 4 / 8 | 0 / 0 / 28 | 0 / 29 / 66 | 0 / 2 / 133 | 744 |
-| All spans 100 ms late | 0 / 12 / 44 | 0 / 2 / 79 | 3 / 48 / 208 | 0 / 9 / 208 | 744 |
+| All spans 100 ms late | 0 / 12 / 44 | 0 / 2 / 79 | 3 / 48 / 208 | 0 / 7 / 208 | 744 |
 | All spans 150 ms late | 1 / 10 / 87 | 0 / 2 / 96 | 7 / 85 / 244 | 0 / 7 / 233 | 744 |
 | One boundary 100 ms early | – | – | 1 / 65 / 315 | 0 / 2 / 348 | 1338 |
 | One boundary 50 ms early | – | – | 0 / 10 / 74 | 0 / 4 / 239 | 1524 |
@@ -225,13 +225,18 @@ The timings path believes its spans. This section gives it wrong ones: Azure's s
 | One boundary 100 ms late | – | – | 6 / 40 / 189 | 0 / 9 / 253 | 1428 |
 | One span takes all of the next syllable but its last 60 ms | – | – | 3 / 57 / 358 | 0 / 0 / 390 | 1524 |
 | One span takes all of the syllable before but its first 60 ms | – | – | 5 / 64 / 386 | 0 / 1 / 411 | 1524 |
+| …the next syllable but its last 110 ms | – | – | 3 / 52 / 275 | 0 / 14 / 305 | 1524 |
+| …the next syllable but its last 130 ms | – | – | 3 / 49 / 232 | 0 / 9 / 288 | 1524 |
+| …the syllable before but its first 160 ms | – | – | 1 / 21 / 129 | 1 / 8 / 221 | 1524 |
 
 The guards (`TIMING_RULES`):
 
 - **Edges.** Every recording is read again with all its spans 40 ms earlier and later, and with each boundary between two neighbours 40 ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart") is not held against the verdict.
 - **Lopsided.** Of two neighbouring spans, one with hardly any voice in it, or one under 100 ms beside one 3 times its length: neither is judged where the other took its sound.
+- **These values are in-sample.** The 40 ms jitter, the 100 ms sliver and the factor of 3 were chosen while looking at these clips and at the first twelve rows of this table; the two rows where a neighbour is left 60 ms are the case the sliver bar was set to catch, and their zeros show that it does, not that swallowed neighbours are handled. The last three rows are the same error off the design (the neighbour left 110, 130 or 160 ms, which is no sliver) and were added by a reviewer afterwards: they are the ones to read.
 - **What they cost on the spans as Azure gave them**: 14 single and 65 phrase verdicts, and no new false alarm or wrong ok. Singles: 107 of 192 caught / 1 of 64 false alarms / 11 passed as ok without the guards; 101 of 192 caught / 1 of 64 false alarms / 8 passed as ok with. Phrases: 196 of 576 caught / 0 of 168 false alarms / 59 passed as ok without; 153 of 576 caught / 0 of 168 false alarms / 40 passed as ok with. The timings tables in the section above are the guarded scorer.
-- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok. A wrong span costs most of its clip's verdicts either way, which is the right price.
+- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok, and so do the off-design swallow rows, one of them with a false alarm. On generated syllables run together (20 ms apart, in `npm test`) those rows produce false alarms as well. A wrong span costs most of its clip's verdicts either way, which is the right price.
+- **A syllable whose own span could not be moved** in any reading (too short and against an end of the recording) is not judged either: no readings agreeing is not agreement. A span that one move would leave under 40 ms stays put in that reading while the others move.
 - **A word Azure times as a whole** (no per-syllable times) is cut by energy inside that word's span only, on pitch finished on that span alone, and those cuts count for what any fallback cut does (`rough`).
 
 ## Real recordings
@@ -413,11 +418,11 @@ The times are not syllable boundaries. The median character span is 140 ms and 1
 
 ## Speed
 
-Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 24 ms (median of 12; slowest 24 ms). The most it takes, 27 seconds and 60 syllables (the clip looped; median of 5): 215 ms cut by energy, 304 ms on timings; the pitch track is the same work in both, and with the track already in hand the rest is 0 ms and 90 ms. Nearly all of it is the pitch track.
+Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 24 ms (median of 12; slowest 24 ms). The most it takes, 27 seconds and 60 syllables (the clip looped; median of 5): 213 ms cut by energy, 301 ms on timings; the pitch track is the same work in both, and with the track already in hand the rest is 0 ms and 89 ms. Nearly all of it is the pitch track.
 
 ## Settings this ran with
 
-`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseStart":2.5,"lateFrom":2,"scaleRange":true,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85,"apartMs":50,"softShare":0.1,"clippedMs":30,"clippedShare":0.15}`; cuts made by energy are trusted at 0.85. With timings they are checked first (`TIMING_RULES` = `{"minMs":40,"maxMs":1500,"slackMs":20,"jitterMs":40,"neighbourMs":100,"sliverMs":100,"lopsided":3}`); without, the speech is found by energy (`TRIM_RULES` = `{"runMs":80,"sureDb":-12,"joinMs":20,"floorDb":-26,"nearMs":200,"beforeMs":250,"afterMs":120,"loudShare":0.15,"bridgeMs":100,"stillMs":300,"stillSt":0.5,"judgeMs":60,"windowMs":30,"maxDoubts":3}`). On these 124 clips the bars alone (`trimToSpeech`, one opinion of where the speech is) remove a voiced frame from 0, and in 4 of Adam's it silences unvoiced frames within 22 dB of the loudest voiced frame (the breathy end of a last syllable, past the 120 ms kept after the voicing). It is for real recordings, which have seconds of room and key noise around the speech.
+`TONE_RULES` = `{"stepSt":2.5,"minRangeSt":7,"maxRangeSt":12,"sigmaSt":1,"levelWeight":0.3,"minFrames":6,"okBelief":0.34,"moveSt":3,"stillSt":1,"flatSt":1.5,"highLevel":3.8,"highStart":3.7,"lowLevel":2.2,"lowTop":2.2,"dipShare":0.25,"riseStart":2.5,"lateFrom":2,"scaleRange":true,"riseShare":0.5,"offMarginSt":0,"offQuality":0.75,"offMinMs":80,"phraseMarginSt":0.5,"creakFlags":false,"creakTrust":0.85,"apartMs":50,"softShare":0.1,"clippedMs":20,"clippedShare":0.15}`; cuts made by energy are trusted at 0.85. With timings they are checked first (`TIMING_RULES` = `{"minMs":40,"maxMs":1500,"slackMs":20,"jitterMs":40,"neighbourMs":100,"sliverMs":100,"lopsided":3}`); without, the speech is found by energy (`TRIM_RULES` = `{"runMs":80,"sureDb":-12,"joinMs":20,"floorDb":-26,"nearMs":200,"beforeMs":250,"afterMs":120,"loudShare":0.15,"bridgeMs":100,"stillMs":300,"stillSt":0.5,"judgeMs":60,"windowMs":30,"maxDoubts":3}`). On these 124 clips the bars alone (`trimToSpeech`, one opinion of where the speech is) remove a voiced frame from 0, and in 4 of Adam's it silences unvoiced frames within 22 dB of the loudest voiced frame (the breathy end of a last syllable, past the 120 ms kept after the voicing). It is for real recordings, which have seconds of room and key noise around the speech.
 
 
 
@@ -431,7 +436,7 @@ Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 24 m
 
 - **Start with single syllables and drills.** Their flags have room to spare; phrase flags rest on a half-semitone margin chosen on these clips, and the held-out phrase false alarms are the highest number in this report.
 - **Build the speaker's range only from the learner's other recordings**, never from the one being scored, and not at all until there are a few: without a range the height rules are silent, which is the safe side.
-- **Run it off the request thread.** The scorer is synchronous and refuses more than 30 seconds or 60 syllables. A pitch track made on one thread and scored on another is fine: the raw pitch is a field of the track (`rawF0`) and survives the copy; a track without it is tracked again from the samples, or nothing is judged.
+- **Run it off the request thread.** The scorer is synchronous and refuses more than 30 seconds or 60 syllables. A pitch track made on one thread and scored on another is fine: the raw pitch is a field of the track (`rawF0`) and survives a structured copy (`postMessage`); JSON does not keep typed arrays, and a track without a usable raw pitch is tracked again from the samples, or nothing is judged.
 - **Check the recogniser's spans on real noisy recordings before trusting the timings path there**: send the same speech clean and with a knock, a cough, another voice, and compare the spans that come back. Nothing in this report measures that.
 - **Refuse or re-ask a recording that starts loud.** The scorer leaves its first syllable unjudged; the learner pressed the button late.
 - **Show unsure as nothing**, not as a soft warning: a third to a half of right syllables are unsure.
