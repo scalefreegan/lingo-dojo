@@ -4,7 +4,9 @@
 // long recording (docs/VOICE.md §Pronunciation, "Speed"), all synchronous.
 //
 // workerData: { wav (Uint8Array), syllables (expectedSyllables), azure (an
-// azurePronunciationResult, or null for the local scorer alone) }.
+// azurePronunciationResult, or null for the local scorer alone), timings
+// (with no azure: syllable spans to score on, as the timings path does, or
+// null to cut by energy; the model route's older record's Azure spans) }.
 // Posts { result, frames } (the engine's result, and the recording's frames
 // for the compare picture: scripts/pronunciation-compare.mjs takeFrames) or
 // { error }. The model route (compare mode) runs the same worker on the
@@ -16,13 +18,13 @@ import { mergeAzure, parseWav, pitchCurve, scoreTones, trackPitch } from "./pron
 import { takeFrames } from "./pronunciation-compare.mjs";
 
 try {
-  const { wav, syllables, azure } = workerData;
+  const { wav, syllables, azure, timings } = workerData;
   const { samples, sampleRate } = parseWav(wav);
   // Tracked once: mergeAzure cuts a word Azure timed whole on the same
   // track, and scoreTones reads its raw pitch span by span.
   const track = trackPitch(samples, sampleRate);
-  const local = (timings) => scoreTones({ samples, sampleRate, syllables, timings, track });
-  const result = azure ? mergeAzure({ azure, syllables, local, track }) : scoreTones({ samples, sampleRate, syllables, track });
+  const local = (cuts) => scoreTones({ samples, sampleRate, syllables, timings: cuts, track });
+  const result = azure ? mergeAzure({ azure, syllables, local, track }) : local(timings ?? null);
   // For drawing only, never for a verdict: on the timings path a short
   // recording (one syllable) has too few frames for a range of its own,
   // and the engine then draws no curve (`pitch: []`) even for a syllable

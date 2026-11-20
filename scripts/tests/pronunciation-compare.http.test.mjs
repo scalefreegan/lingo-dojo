@@ -191,7 +191,7 @@ test("the card's model: made once from the server's own audio, one Azure call, t
   assert.deepEqual([synths.length - s0, azureCalls.length - a0], [1, 1]);
   // On disk: one record and one ledger, named by the server's own key.
   const files = fs.readdirSync(analysisDir).sort();
-  assert.ok(files.every((f) => /^[0-9a-f]{64}-[0-9a-f]{24}\.(json|azure)$/.test(f)), files.join());
+  assert.ok(files.every((f) => /^[0-9a-f]{64}-[0-9a-f]{24}\.(json|azure-v\d+)$/.test(f)), files.join());
 });
 
 test("per account: another user's same text is their own clip and their own call", async () => {
@@ -412,6 +412,40 @@ test("two model analyses at a time per user, a third is a 429", async () => {
   } finally {
     ttsDelayMs = 0;
   }
+});
+
+test("a record an older version made on Azure's spans: the clip is read again on those spans, with no new Azure call", async () => {
+  withAzure();
+  const lin = await someone();
+  const had = new Set(fs.existsSync(analysisDir) ? fs.readdirSync(analysisDir) : []);
+  const first = await modelOf(lin, "喝茶");
+  assert.equal(first.body.engine, "azure");
+  const made = fs.readdirSync(analysisDir).filter((f) => !had.has(f));
+  const json = made.find((f) => f.endsWith(".json"));
+  const ledger = made.find((f) => /\.azure-v\d+$/.test(f));
+  assert.ok(json && ledger, made.join());
+  // The same clip as the version before would have left it: its record (the
+  // spans moved 20 ms, so it shows whose spans are read) and its ledger.
+  const rec = JSON.parse(fs.readFileSync(path.join(analysisDir, json), "utf8"));
+  const old = { ...rec, v: rec.v - 1, syllables: rec.syllables.map((s) => ({ ...s, startMs: s.startMs + 20, endMs: s.endMs + 20 })) };
+  fs.writeFileSync(path.join(analysisDir, json), JSON.stringify(old));
+  fs.rmSync(path.join(analysisDir, ledger));
+  fs.writeFileSync(path.join(analysisDir, json.replace(/\.json$/, ".azure")), "the older version's ledger\n");
+  const a0 = azureCalls.length;
+  let again;
+  const log = await logsOf(async () => {
+    again = await modelOf(lin, "喝茶");
+  });
+  assert.equal(again.status, 200, again.text);
+  assert.equal(azureCalls.length, a0, "no Azure call");
+  assert.deepEqual([again.body.engine, again.body.syllables.map((s) => [s.startMs, s.endMs])], ["azure", old.syllables.map((s) => [s.startMs, s.endMs])]);
+  assert.match(log, new RegExp(`model clip made \\(azure, on version ${rec.v - 1}'s spans\\)`));
+  const now = JSON.parse(fs.readFileSync(path.join(analysisDir, json), "utf8"));
+  assert.deepEqual([now.v, now.azure, now.spansFrom], [rec.v, "used", rec.v - 1]);
+  assert.equal(fs.existsSync(path.join(analysisDir, ledger)), false, "the new version's one call is not used up");
+  // Served from the cache from then on.
+  assert.deepEqual((await modelOf(lin, "喝茶")).body, again.body);
+  assert.equal(azureCalls.length, a0);
 });
 
 test("a clip that starts on its first sound, and a lone short one, are padded before they are read; times stay the clip's own", async () => {

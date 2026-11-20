@@ -96,7 +96,11 @@ declare module "*/scripts/pronunciation-compare.mjs" {
     syllables: ModelSyllable[];
     /** A skipped record refused by the cap or a busy slot: not retried before. */
     retryAt?: number;
+    /** Read again on an older record's Azure spans (that record's version): no call made for it. */
+    spansFrom?: number;
   }
+  /** Syllable spans on a clip's own times. */
+  type Span = { startMs: number; endMs: number };
   export type ModelDraft = Omit<ModelRecord, "azure">;
   export const LEVEL_FLOOR_DB: number;
   export const MODEL_RECORD_VERSION: number;
@@ -106,6 +110,9 @@ declare module "*/scripts/pronunciation-compare.mjs" {
   export const MODEL_PAD_MS: number;
   export function padSamples(samples: Float32Array, sampleRate: number, ms?: number): Float32Array;
   export function unpadRecord<T extends ModelDraft>(record: T, ms?: number): T;
+  export function priorAzureSpans(r: unknown, chars: string[]): { v: number; spans: Span[]; real: boolean[] } | null;
+  export function padSpans(spans: Span[], ms?: number): Span[];
+  export function reusedRecord<T extends ModelDraft>(record: T, prior: { v: number; real: boolean[] }): T & { azure: "used"; spansFrom: number };
 }
 
 declare module "*/scripts/audio-decode.mjs" {
@@ -125,10 +132,12 @@ declare module "*/scripts/model-analysis.mjs" {
     key: string;
     audio: Uint8Array;
     type: string;
+    /** The clip's characters, one per syllable. */
+    chars?: string[];
     decode: (audio: Uint8Array, type: string) => Promise<Uint8Array | null>;
     azureReady: boolean;
     assess: (wav: Uint8Array, claim: () => boolean) => Promise<{ azure?: AzureAssessment; spent?: boolean }>;
-    analyse: (wav: Uint8Array, azure: AzureAssessment | null) => Promise<ModelDraft>;
+    analyse: (wav: Uint8Array, azure: AzureAssessment | null, spans: { startMs: number; endMs: number }[] | null) => Promise<ModelDraft>;
     dir?: string;
     now?: number;
   }): Promise<{ record: ModelRecord; cached: boolean } | { unavailable: "no_decoder" | "unreadable" }>;

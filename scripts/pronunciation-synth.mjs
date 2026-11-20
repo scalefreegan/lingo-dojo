@@ -120,16 +120,22 @@ export const NOISE_CONDITIONS = Object.freeze([
   { key: "knockBefore", title: "…and a pitched knock at −10 dB, 450 ms before the speech", noiseDb: -50, add: [{ where: "before", gapMs: 450, ms: 40, db: -10 }] },
   { key: "knockAfter", title: "…and a pitched knock at −10 dB, 300 ms after the speech", noiseDb: -50, add: [{ where: "after", gapMs: 300, ms: 40, db: -10 }] },
   { key: "murmur", title: "…and a voiced 120 ms murmur at −27 dB, 300 ms before the speech", noiseDb: -50, add: [{ where: "before", gapMs: 300, ms: 120, db: -27 }] },
+  { key: "nearKnockBefore50", title: "…and a knock at −10 dB ending 50 ms before the first sound", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 50, ms: 40, db: -10 }] },
   { key: "nearKnockBefore", title: "…and a knock at −10 dB ending 100 ms before the first sound", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 100, ms: 40, db: -10 }] },
+  { key: "nearKnockBefore150", title: "…and a knock at −10 dB ending 150 ms before the first sound", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 150, ms: 40, db: -10 }] },
+  { key: "nearKnockAfter50", title: "…and a knock at −10 dB 50 ms after the last sound", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 50, ms: 40, db: -10 }] },
   { key: "nearKnockAfter", title: "…and a knock at −10 dB 100 ms after the last sound", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 100, ms: 40, db: -10 }] },
+  { key: "nearKnockAfter150", title: "…and a knock at −10 dB 150 ms after the last sound", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 150, ms: 40, db: -10 }] },
   { key: "knockOnset", title: "…and a knock at −10 dB over the first 20 ms of the speech", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: -20, ms: 40, db: -10 }] },
   { key: "coughBefore", title: "…and a cough 6 dB louder than the speech, 300 ms before it", noiseDb: -50, add: [{ where: "before", from: "speech", gapMs: 300, ms: 150, db: 6, kind: "cough" }] },
   { key: "coughAfter", title: "…and a cough 6 dB louder than the speech, 300 ms after it", noiseDb: -50, add: [{ where: "after", from: "speech", gapMs: 300, ms: 150, db: 6, kind: "cough" }] },
   { key: "secondVoice", title: "…and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech", noiseDb: -50, padMs: 1300, add: [{ where: "before", from: "speech", gapMs: 300, db: -10, kind: "child" }] },
   { key: "hum100", title: "…and a 100 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 100, db: -20 } },
   { key: "hum60", title: "…and a 60 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 60, db: -20 } },
+  { key: "hum120", title: "…and a 120 Hz hum at −20 dB throughout", noiseDb: -50, hum: { hz: 120, db: -20 } },
   { key: "midword", title: "Room noise, and the recording starts 60 ms into the first sound (no lead-in)", noiseDb: -50, cutMs: 60 },
   { key: "echo", title: "…in a room with echo (reflections for 600 ms, decaying over 150 ms)", noiseDb: -50, echo: { tauMs: 150, gain: 0.5 } },
+  { key: "echoSmall", title: "…in a small room (weaker reflections, decaying over 50 ms)", noiseDb: -50, echo: { tauMs: 50, gain: 0.3 } },
 ]);
 
 const makeRand = (seed) => {

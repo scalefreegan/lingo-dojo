@@ -716,6 +716,14 @@ browser already sends, with no dependency:
      a sound): a 40 ms knock is a 70 ms run and is not one. It is
      doubted instead, like any other stray run.
    - More than three doubted runs: not read at all (`trimmed`).
+   - A loud run is joined to the one before it across a hole of up to
+     `joinMs` only where the pitch carries on (within 7 semitones of
+     where the run before stopped, `stepAcross`: the closest of each
+     side's two pitches nearest the hole, so a frame the tracker slipped
+     beside the hole doesn't split a syllable, and the end of a steep
+     fall isn't averaged back up it): a knock 50 ms after the last
+     syllable is its own run, doubted like any other, not more of that
+     syllable (ld-ne0.7).
    Every number in `TRIM_RULES` was chosen on 43 real clips from ONE
    speaker (as was the half weight of a creaky `ok`); none is held out.
    `trimToSpeech` is the bars' opinion alone, for drawing and the proof.
@@ -743,8 +751,25 @@ browser already sends, with no dependency:
    their first sound, behind 200 ms of silence for this reason.)
 
    **Not made safe on either path**, because the disturbance is inside
-   the syllable: a pitched knock on top of the first sound, and a room
-   that echoes.
+   the syllable: a pitched knock on top of the first sound (at the
+   speaker's own pitch it is the onset, as far as the pitch track can
+   tell), and a room that echoes, even a small one (reflections decaying
+   over 50 ms already pass wrong tones as ok: reverberation keeps the
+   pitch of a moment ago under the next, and the moving part of a
+   contour reads flatter). These are stated bounds, with their counts in
+   the proof's "With lead-in noise"; telling reverberation apart needs a
+   whole-recording check calibrated on real rooms.
+
+   Azure's spans on noisy audio were measured once (36 synthesized
+   clips, the proof's "Azure on the noisy audio"): its first span starts
+   50 to 200 ms early when there is noise or a sound before the speech,
+   its last ends up to 220 ms late (300 to 500 ms in a room with echo),
+   and the boundaries between syllables barely move. Scored on those
+   spans, the guards turned almost all of it into lost verdicts: no false
+   alarm, and one wrong tone passed as ok, in the echo condition. The
+   scorer does not handle echo: it cannot tell reverberation from speech,
+   so a recording made in an echoing room may get a wrong tone passed as
+   ok. That is a known open gap (bead ld-ne0.10), not claimed safe.
 3. Cuts: the `timings`, or else `segmentSyllables`, which cuts the speech
    at its quietest, least voiced frames given the syllable count, kept on
    Scribe's character times when those are passed as `anchors` (below);
@@ -753,9 +778,18 @@ browser already sends, with no dependency:
    on any syllable of a phrase needs a little more margin
    (`phraseMarginSt`), whoever made the cuts; neither is mixed into
    `quality`, which is only how clean the pitch measurement was. A span
-   that holds two voiced sounds with 50 ms or more of silence between
-   them is not one syllable (`apart`: the span is wrong, or a knock is in
-   it), and a syllable whose loudest frame is 20 dB under the loudest
+   that holds two sounds with 50 ms or more of silence between them is
+   not one syllable (`apart`: the span is wrong, or a knock is in it;
+   the silence is counted from the edges of any loud sound in the span,
+   not only between voiced frames, so a cough close behind the voice
+   counts), nor is one whose voice resumes 6 semitones or more from
+   where it stopped (`leaps`, the step `stepAcross`'s) across a single
+   lost frame or a hole with some quiet in it: a knock 50 ms after a
+   falling fourth tone would otherwise be its rise. A hole that stays
+   loud is not counted: that is creak, the voice going on without a clear
+   period, and a fourth tone can fall 7 semitones or more through a few
+   such frames. And a
+   syllable whose loudest frame is 20 dB under the loudest
    syllable's is too soft to judge (`soft`).
 4. `classifyContour`: five points of each syllable's voiced part against
    tone templates on Chao's five-level scale, scaled to the speaker's own
@@ -1210,7 +1244,18 @@ syllable count, never the text.
   is per user like the clip; the hash means a clip synthesized again is
   analysed again. Records whose clip the audio cache has evicted are
   removed after each write.
-- **One Azure call per clip, ever.** A ledger file `<id>.azure` is created
+- **A new record version without new calls where it can.** A version
+  bump (`MODEL_RECORD_VERSION`) means old records are not served, not that
+  Azure's answer in them was wrong: a clip whose older record holds
+  Azure's syllable spans for the same characters (`priorAzureSpans`) is
+  read again by the scorer on those spans, with no call and no ledger,
+  and the new record says so (`spansFrom`, the version the spans came
+  from). A syllable the old record didn't draw from the clip isn't drawn
+  now either: Azure may have objected to it, and the old record doesn't
+  say why. Only a clip with no such record makes a call under the new
+  version.
+- **One Azure call per clip and record version.** A ledger file
+  `<id>.azure-v<N>` (N is `MODEL_RECORD_VERSION`) is created
   exclusively (`O_EXCL`) inside the paid slot, just before the request, and
   never removed while its clip is kept: a failure, a crash mid-call, a
   second request at once (here or in another process) and a deleted record

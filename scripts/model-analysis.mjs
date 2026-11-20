@@ -2,7 +2,7 @@
 // from (compare mode, ld-ne0.9; docs/VOICE.md §Compare mode):
 //
 //   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.json   the record
-//   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.azure  the Azure ledger
+//   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.azure-v<N>  the Azure ledger
 //
 // The audio key is scripts/audio-cache.mjs's (the user, provider, voice,
 // model, format, locale, speed and text), so a record is per user like the
@@ -16,18 +16,26 @@
 // characters, never audio), decodes it itself (scripts/audio-decode.mjs)
 // and analyses it in a worker. So a client can't poison a record.
 //
-// One Azure call per clip, ever. The ledger file is created exclusively
+// A version bump (MODEL_RECORD_VERSION) means the old records are wrong, but
+// not what Azure said in them: where a clip's older record holds Azure's
+// syllable spans (pronunciation-compare.mjs priorAzureSpans), the clip is
+// read again by the scorer on those spans, with no call, and the new record
+// says so (`spansFrom`). Only a clip with no such record (none, another
+// engine's, or one Azure didn't time) may make a call under the new version:
+// one per clip and version, the N in the ledger's name, so an older
+// version's ledger (`.azure` was version 2's) no longer counts and is pruned
+// with its clip like any other file. The ledger file is created exclusively
 // (O_EXCL) at the moment the call is about to go, before the request, and
 // never removed while its audio is kept: a crash mid-call, a failure, a
-// second request at the same time (in this process or another) and a
-// deleted record all find it and analyse locally. A request that makes no
-// call writes no ledger and its record says "skipped", and is served from
-// the cache like any other. It is made again (to try the one call) only
-// when Azure can be asked: with no keys, or a malformed region, never
-// (until the setup is fixed: then on the next request); with Azure set up
-// but the call refused (the per-minute cap, the paid slot busy), not before
-// the record's `retryAt`, RETRY_MS after it was made, so a clip is
-// re-analysed at most once in that time.
+// second request at the same time (in this process or another) and a deleted
+// record all find it and analyse locally. A request that makes no call
+// writes no ledger and its record says "skipped", and is served from the
+// cache like any other. It is made again (to try the one call) only when
+// Azure can be asked: with no keys, or a malformed region, never (until the
+// setup is fixed: then on the next request); with Azure set up but the call
+// refused (the per-minute cap, the paid slot busy), not before the record's
+// `retryAt`, RETRY_MS after it was made, so a clip is re-analysed at most
+// once in that time.
 //
 // Size: a record is a few KB (a 3-second clip is 300 frames). Records and
 // ledgers whose audio file the audio cache has evicted are removed after
@@ -37,11 +45,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { audioDir } from "./audio-cache.mjs";
-import { isModelRecord } from "./pronunciation-compare.mjs";
+import { MODEL_RECORD_VERSION, isModelRecord, priorAzureSpans, reusedRecord } from "./pronunciation-compare.mjs";
 
 const KEY_RE = /^[0-9a-f]{64}$/;
 const ID_RE = /^([0-9a-f]{64})-[0-9a-f]{24}$/;
-const FILE_RE = /^([0-9a-f]{64})-[0-9a-f]{24}\.(json|azure)$/;
+const FILE_RE = /^([0-9a-f]{64})-[0-9a-f]{24}\.(json|azure(?:-v\d+)?)$/;
+
+/** This version's ledger extension. */
+const LEDGER = `azure-v${MODEL_RECORD_VERSION}`;
 
 /** Where records live: `analysis/` inside the audio cache's directory. */
 export function analysisDir(env = process.env) {
@@ -61,9 +72,14 @@ function fileOf(dir, id, ext) {
 
 /** The record for `id`, or null (none, unreadable, or another version's). */
 export function readAnalysis(id, { dir = analysisDir() } = {}) {
+  const r = readRaw(id, dir);
+  return isModelRecord(r) ? r : null;
+}
+
+/** Whatever JSON is stored for `id`, or null. */
+function readRaw(id, dir) {
   try {
-    const r = JSON.parse(fs.readFileSync(fileOf(dir, id, "json"), "utf8"));
-    return isModelRecord(r) ? r : null;
+    return JSON.parse(fs.readFileSync(fileOf(dir, id, "json"), "utf8"));
   } catch {
     return null;
   }
@@ -85,7 +101,7 @@ export function writeAnalysis(id, record, { dir = analysisDir() } = {}) {
 
 /** Whether the one Azure call for this clip was ever claimed. */
 export function azureClaimed(id, { dir = analysisDir() } = {}) {
-  return fs.existsSync(fileOf(dir, id, "azure"));
+  return fs.existsSync(fileOf(dir, id, LEDGER));
 }
 
 /** Claim the clip's one Azure call: true when this caller created the
@@ -94,7 +110,7 @@ export function azureClaimed(id, { dir = analysisDir() } = {}) {
 export function claimAzure(id, { dir = analysisDir(), now = new Date() } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
-    fs.writeFileSync(fileOf(dir, id, "azure"), `${now.toISOString()}\n`, { flag: "wx", mode: 0o600 });
+    fs.writeFileSync(fileOf(dir, id, LEDGER), `${now.toISOString()}\n`, { flag: "wx", mode: 0o600 });
     return true;
   } catch (e) {
     if (e?.code === "EEXIST") return false;
@@ -157,20 +173,33 @@ const inflight = new Map();
  *   (a call was made and failed, or `claim()` said no) or `{ skipped:
  *   true }` (no call was made). It must call `claim()` immediately before
  *   the request goes, and not make it when `claim()` is false.
- * - `analyse(wav, azure)` → `record` (pronunciation-compare.mjs
- *   modelRecord, with `azure` set by this function).
+ * - `analyse(wav, azure, spans)` → `record` (pronunciation-compare.mjs
+ *   modelRecord, with `azure` set by this function). `spans`, when given
+ *   (and `azure` is then null), are an older record's Azure spans on the
+ *   clip's own times: the scorer reads the clip on them.
+ * - `chars`: the clip's characters, one per syllable; an older record is
+ *   read again on its spans only if they are the same.
  *
  * → `{ record, cached }` or `{ unavailable }`.
  */
-export async function modelAnalysis({ key, audio, type, decode, azureReady, assess, analyse, dir = analysisDir(), now = Date.now() }) {
+export async function modelAnalysis({ key, audio, type, chars = [], decode, azureReady, assess, analyse, dir = analysisDir(), now = Date.now() }) {
   const id = analysisId(key, audio);
   const hit = readAnalysis(id, { dir });
   // A record made without Azure, while Azure can be asked now, its one call
   // never claimed, and its retry time (if any) come: worth making again.
-  const retry = hit && hit.azure === "skipped" && azureReady && !azureClaimed(id, { dir }) && !(Number.isFinite(hit.retryAt) && hit.retryAt > now);
-  if (hit && !retry) return { record: hit, cached: true };
+  const retryable = (rec) => rec.azure === "skipped" && azureReady && !azureClaimed(id, { dir }) && !(Number.isFinite(rec.retryAt) && rec.retryAt > now);
+  if (hit && !retryable(hit)) return { record: hit, cached: true };
   const running = inflight.get(id);
   if (running) return running;
+  const store = (record) => {
+    try {
+      writeAnalysis(id, record, { dir });
+      prune({ dir });
+    } catch (e) {
+      console.error(`[lingo-dojo] model analysis: couldn't store a clip's analysis (${String(e?.code || "error")})`);
+    }
+    return { record, cached: false };
+  };
   const p = (async () => {
     let wav;
     try {
@@ -182,6 +211,15 @@ export async function modelAnalysis({ key, audio, type, decode, azureReady, asse
       return { unavailable: "unreadable" };
     }
     if (!wav) return { unavailable: "no_decoder" };
+    // Decoding takes a while, and a request that missed `inflight` (another
+    // process, or one that finished between) may have stored a record meanwhile:
+    // read again before claiming anything.
+    const fresh = readAnalysis(id, { dir });
+    if (fresh && !retryable(fresh)) return { record: fresh, cached: true };
+    // Azure's spans from an older version's record: read on them again,
+    // with no call and no ledger.
+    const prior = priorAzureSpans(readRaw(id, dir), chars);
+    if (prior) return store(reusedRecord(await analyse(wav, null, prior.spans), prior));
     let azure = null;
     let state = "skipped";
     if (azureReady) {
@@ -197,14 +235,7 @@ export async function modelAnalysis({ key, audio, type, decode, azureReady, asse
     // Azure was asked and refused without a call (the cap, busy): try it
     // again only after RETRY_MS. Skipped for want of a setup: no retry time,
     // the next request after the setup is fixed tries.
-    const record = { ...(await analyse(wav, azure)), azure: state, ...(state === "skipped" && azureReady ? { retryAt: now + RETRY_MS } : {}) };
-    try {
-      writeAnalysis(id, record, { dir });
-      prune({ dir });
-    } catch (e) {
-      console.error(`[lingo-dojo] model analysis: couldn't store a clip's analysis (${String(e?.code || "error")})`);
-    }
-    return { record, cached: false };
+    return store({ ...(await analyse(wav, azure, null)), azure: state, ...(state === "skipped" && azureReady ? { retryAt: now + RETRY_MS } : {}) });
   })();
   inflight.set(id, p);
   try {

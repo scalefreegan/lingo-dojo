@@ -642,6 +642,27 @@ export const TRIM_RULES = Object.freeze({
   maxDoubts: 3,
 });
 
+/** How far a voice moved across a hole in it (semitones): the smallest
+ *  step from either of the last EDGE_FRAMES pitches before the hole
+ *  (`before`, nearest first) to either of the first EDGE_FRAMES after it
+ *  (`after`, nearest first). One frame the tracker slipped beside the hole
+ *  is not where the voice was, and a step that is real is a step from
+ *  both. Not a median: at the end of a steep fall a median lags behind
+ *  where the voice got to. */
+function stepAcross(before, after) {
+  let step = Infinity;
+  for (const a of before.slice(0, EDGE_FRAMES)) for (const b of after.slice(0, EDGE_FRAMES)) step = Math.min(step, Math.abs(a - b));
+  return step;
+}
+
+/** Up to EDGE_FRAMES voiced pitches (semitones) of `f0` from frame `from`,
+ *  stepping by `step` (1 or −1), stopping at `stop`. */
+function edgeOf(f0, from, stop, step) {
+  const st = [];
+  for (let i = from; i !== stop && st.length < EDGE_FRAMES; i += step) if (f0[i] > 0) st.push(hzToSt(f0[i]));
+  return st;
+}
+
 /** The voiced runs of a track (frames `from`…`to`), each with what the
  *  bars say of it: `strong`, within sureDb of the loudest; `core`, strong
  *  and long (when no run is, the loudest one); `keep`, core or over the
@@ -668,9 +689,13 @@ function speechRuns(track, rules) {
     for (; j < n && f0[j] > 0; j++) if (rms[j] > top) top = rms[j];
     // The tracker loses a frame or two inside a vowel (where the period
     // changes, at the bottom of a fall): voice either side of so short a
-    // hole is one run.
+    // hole is one run, if it carries on near the pitch it stopped at. A
+    // step of JUMP_ST or more across the hole is another sound (a knock
+    // just after the last word), and it is left a run of its own, to be
+    // doubted like any other. The step is stepAcross's, so that one frame
+    // the tracker slipped beside the hole doesn't split a syllable in two.
     const prev = runs[runs.length - 1];
-    if (prev && i - prev.to <= join) {
+    if (prev && i - prev.to <= join && stepAcross(edgeOf(f0, prev.to - 1, prev.from - 1, -1), edgeOf(f0, i, j, 1)) < JUMP_ST) {
       prev.to = j;
       prev.top = Math.max(prev.top, top);
     } else runs.push({ from: i, to: j, top });
@@ -1122,6 +1147,16 @@ const CREAK_MAX_ZCR = 0.12;
 // frame. Seven is also where trackPitch cuts a run when it looks for octave
 // slips.
 const JUMP_ST = 7;
+// Across a hole in the voicing (one lost frame, or a hole with a silence
+// in it), a voice carries on near where it stopped; this far from it is
+// another sound (contourOf's `leaps`). Lower than JUMP_ST because a knock
+// at a voice's own pitch plus a few semitones is still a knock. Set on the
+// proof's synthesized clips with a knock on the first or after the last
+// sound (IN-SAMPLE).
+const LEAP_ST = 6;
+// Where a voice stopped and where it starts again across a hole: this
+// many voiced frames either side (stepAcross).
+const EDGE_FRAMES = 2;
 // A stretch this short between such jumps (frames) is a glitch, not part
 // of the contour.
 const GLITCH_FRAMES = 3;
@@ -1143,7 +1178,7 @@ function contourOf(track, startMs, endMs) {
       last = i;
     }
   }
-  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, mended: 0, quietMs: 0, peak: 0, periodicity: 0 };
+  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, leaps: 0, mended: 0, quietMs: 0, peak: 0, periodicity: 0 };
   let peak = 0;
   for (let i = a; i < b; i++) if (rms[i] > peak) peak = rms[i];
   const points = [];
@@ -1187,6 +1222,25 @@ function contourOf(track, startMs, endMs) {
       } else if (++quietNow > quiet) quiet = quietNow;
     }
   }
+  // …and a silence between the voice and a loud sound with no pitch on
+  // either side of it in the span: the voiced part read here may be a
+  // cough in a span a recogniser drew long past the end of a word said
+  // without voice, and the word the stretch of sound before the silence.
+  const loudAt = (i) => rms[i] > peak * 0.15;
+  const quietRun = (from, to) => {
+    let best = 0;
+    for (let i = from, now = 0; i < to; i++) {
+      now = loudAt(i) ? 0 : now + 1;
+      if (now > best) best = now;
+    }
+    return best;
+  };
+  // The first loud frame in the span before the voice, and the last after.
+  let soundFrom = a;
+  while (soundFrom < first && !loudAt(soundFrom)) soundFrom++;
+  let soundTo = b - 1;
+  while (soundTo > last && !loudAt(soundTo)) soundTo--;
+  quiet = Math.max(quiet, quietRun(soundFrom, first), quietRun(last + 1, soundTo));
   // Most such jumps are a frame or three at the edge of a voiced run: the
   // tracker's glitch where the voice starts or stops, or the neighbouring
   // syllable's pitch where two meet without a gap (a child's fourth tone
@@ -1224,7 +1278,34 @@ function contourOf(track, startMs, endMs) {
       for (let k = firstKept + 1; k < lastKept; k++) if (pieces[k].length <= GLITCH_FRAMES) mended++;
     }
   }
-  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, mended, quietMs: quiet * hopMs, peak, periodicity: per / points.length };
+  // A step of LEAP_ST or more across a hole in the voicing: the pitch on
+  // one side is not the same voice carrying on but another sound at its
+  // own pitch, a knock just after the last word or over the first. The
+  // quiet between the two may be shorter than `apartMs` (a frame's window
+  // smears them together), but the pitch says they are two sounds.
+  // Counted across a single lost frame, where no voice moves that far (the
+  // steepest fourth tone in the proof clips moves under 3 semitones a
+  // frame), and across a longer hole only where some of it is quiet: a
+  // hole that is loud all through is the voice going on without a clear
+  // period (creak at the bottom of a third or a fourth tone: Adam's 爸 in
+  // the proof falls 7 semitones over five such frames), not two sounds. The
+  // step is stepAcross's, each side within its own unbroken voiced
+  // stretch.
+  let leaps = 0;
+  const side = (k, step) => {
+    const st = [points[k].st];
+    for (let m = k + step; m >= 0 && m < points.length && st.length < EDGE_FRAMES && Math.abs(points[m].i - points[m - step].i) === 1; m += step) st.push(points[m].st);
+    return st;
+  };
+  for (let k = 1; k < points.length; k++) {
+    const from = points[k - 1].i;
+    const to = points[k].i;
+    if (to - from < 2) continue;
+    let hole = to - from === 2;
+    for (let i = from + 1; i < to && !hole; i++) hole = !loudAt(i);
+    if (hole && stepAcross(side(k - 1, -1), side(k, 1)) >= LEAP_ST) leaps++;
+  }
+  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, leaps, mended, quietMs: quiet * hopMs, peak, periodicity: per / points.length };
 }
 
 /** Five evenly spaced medians over the voiced points, the onset trimmed:
@@ -1721,6 +1802,12 @@ function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
     // is creaky as well: two signs at once that the tracker lost the
     // voice there, and too little left to say "ok" on.
     if (c.jumps || (c.mended && creaky)) return { ...result, reason: "octave" };
+    // Two sounds as well: a voiced part that starts LEAP_ST or more from
+    // where the one before it stopped, across one lost frame or a silence
+    // (contourOf's `leaps`; after the octave check, so that a slip the
+    // tracker made, with a glitch taken out beside it, is still called
+    // one).
+    if (c.leaps) return { ...result, reason: "apart" };
     // Creak in the middle of a vowel is what the bottom of a third tone
     // sounds like, so it supports an expected third tone (unless the voiced
     // part rules a third tone out).

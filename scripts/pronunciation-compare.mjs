@@ -108,8 +108,61 @@ export function modelSyllableReal(s, frames) {
 }
 
 /** Bumped when what a cached model record means changes: an old one is
- *  then simply not read (scripts/model-analysis.mjs). */
-export const MODEL_RECORD_VERSION = 2;
+ *  then not served. Where it holds Azure's spans it is read again on them,
+ *  with no new call (priorAzureSpans, reusedRecord); otherwise the clip gets
+ *  one fresh Azure call under the new version's own ledger
+ *  (scripts/model-analysis.mjs). 3: the scorer's noise guards (ld-ne0.7)
+ *  can change a model syllable's verdict, and so its `saidTone`. */
+export const MODEL_RECORD_VERSION = 3;
+
+/**
+ * The spans an older version's record holds from Azure, if they can be
+ * read again: `{ v, spans, real }` (the version, each syllable's span on
+ * the clip's own times, and whether that syllable was drawn from the clip
+ * then), or null. Only a record Azure timed ("azure", "used"), for the
+ * same characters (`chars`, the clip's now), each span inside the clip and
+ * in order. Not a whole record: what the scorer says on those spans is
+ * what changed.
+ */
+export function priorAzureSpans(r, chars) {
+  if (!r || !Number.isInteger(r.v) || r.v < 1 || r.v >= MODEL_RECORD_VERSION || r.engine !== "azure" || r.azure !== "used") return null;
+  if (!Number.isFinite(r.durationMs) || !Array.isArray(r.syllables) || !r.syllables.length || r.syllables.length !== chars.length) return null;
+  const spans = [];
+  for (const [i, s] of r.syllables.entries()) {
+    if (!s || s.char !== chars[i] || !Number.isFinite(s.startMs) || !Number.isFinite(s.endMs)) return null;
+    if (s.startMs < 0 || s.endMs <= s.startMs || s.startMs >= r.durationMs || (i && s.startMs < spans[i - 1].startMs)) return null;
+    spans.push({ startMs: s.startMs, endMs: s.endMs });
+  }
+  return { v: r.v, spans, real: r.syllables.map((s) => s.real === true) };
+}
+
+/** Spans on a clip's own times moved onto the padded clip's (padSamples):
+ *  what the scorer is given when it reads an older record's spans again. */
+export function padSpans(spans, ms = MODEL_PAD_MS) {
+  return spans.map((s) => ({ startMs: s.startMs + ms, endMs: s.endMs + ms }));
+}
+
+/**
+ * A record made on an older record's Azure spans (priorAzureSpans): timed
+ * by Azure still ("azure", "used"; no call was made for it) and marked
+ * `spansFrom`, the version the spans came from. A syllable is drawn from
+ * the clip only where this reading says so AND the old record did: the old
+ * one doesn't say why it didn't, and Azure's own objections (a word it
+ * heard left out, or said badly) are not in it otherwise.
+ */
+export function reusedRecord(record, prior) {
+  return {
+    ...record,
+    engine: "azure",
+    azure: "used",
+    spansFrom: prior.v,
+    syllables: record.syllables.map((s, i) => {
+      if (s.real && prior.real[i]) return s;
+      const { saidTone: _drawnOnly, ...rest } = s;
+      return { ...rest, real: false };
+    }),
+  };
+}
 
 /** Silence put around a model clip before it is analysed (ms). A voice's
  *  clip starts with its first sound: the scorer would call that syllable
@@ -150,7 +203,8 @@ export function unpadRecord(record, ms = MODEL_PAD_MS) {
  * made before: never again for this clip) or "skipped" (no call was made:
  * no keys, a malformed region, the per-minute cap, busy). A skipped record
  * refused by the cap or a busy slot carries `retryAt` (model-analysis.mjs:
- * not tried again before then).
+ * not tried again before then). One read again on an older record's Azure
+ * spans carries `spansFrom` (reusedRecord).
  */
 export function modelRecord({ result, frames, syllables, durationMs, azure }) {
   return {
@@ -183,6 +237,7 @@ export function isModelRecord(r) {
   return (
     !!r && r.v === MODEL_RECORD_VERSION && (r.engine === "azure" || r.engine === "local") && ["used", "spent", "skipped"].includes(r.azure) &&
     Number.isFinite(r.durationMs) && !!r.frames && Array.isArray(r.frames.pitch) && Array.isArray(r.frames.level) && Array.isArray(r.syllables) &&
-    (r.retryAt === undefined || Number.isFinite(r.retryAt))
+    (r.retryAt === undefined || Number.isFinite(r.retryAt)) &&
+    (r.spansFrom === undefined || (Number.isInteger(r.spansFrom) && r.spansFrom >= 1 && r.spansFrom < r.v && r.engine === "azure"))
   );
 }

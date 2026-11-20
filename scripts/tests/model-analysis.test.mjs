@@ -26,11 +26,14 @@ function setup() {
   return { audio, dir: path.join(audio, "analysis") };
 }
 
-/** A stand-in for the route's pieces: counts Azure calls and analyses. */
-function harness({ azureAnswers = true, azureReady = true, decodes = true } = {}) {
+/** A stand-in for the route's pieces: counts Azure calls and analyses
+ *  (and keeps the spans each analysis was given). */
+function harness({ azureAnswers = true, azureReady = true, decodes = true, syllables = [] } = {}) {
   const counts = { decode: 0, azure: 0, analyse: 0 };
+  const spansSeen = [];
   return {
     counts,
+    spansSeen,
     decode: async () => {
       counts.decode++;
       return decodes ? new Uint8Array([1, 2, 3]) : null;
@@ -42,9 +45,10 @@ function harness({ azureAnswers = true, azureReady = true, decodes = true } = {}
       await new Promise((r) => setTimeout(r, 5));
       return azureAnswers ? { azure: { status: "Success", words: [{}] } } : {};
     },
-    analyse: async (_wav, azure) => {
+    analyse: async (_wav, azure, spans) => {
       counts.analyse++;
-      return { v: MODEL_RECORD_VERSION, engine: azure ? "azure" : "local", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables: [] };
+      spansSeen.push(spans);
+      return { v: MODEL_RECORD_VERSION, engine: azure ? "azure" : "local", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables };
     },
   };
 }
@@ -118,6 +122,24 @@ test("no call made (no keys, the cap, busy): 'skipped', and a later request may 
   fs.rmSync(audio, { recursive: true, force: true });
 });
 
+test("a record written while this request decodes is served: no Azure call, no ledger, no analysis", async () => {
+  const { audio, dir } = setup();
+  const id = analysisId(KEY, AUDIO);
+  const h = harness();
+  // Another request stores a finished record during our decode.
+  const written = { v: MODEL_RECORD_VERSION, engine: "azure", azure: "used", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables: [] };
+  const decode = async () => {
+    h.counts.decode++;
+    writeAnalysis(id, written, { dir });
+    return new Uint8Array([1, 2, 3]);
+  };
+  const r = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...h, decode });
+  assert.deepEqual([r.cached, r.record.azure], [true, "used"]);
+  assert.deepEqual(h.counts, { decode: 1, azure: 0, analyse: 0 });
+  assert.equal(azureClaimed(id, { dir }), false);
+  fs.rmSync(audio, { recursive: true, force: true });
+});
+
 test("other audio under the same key is another clip; no decoder or an unreadable clip is not cached", async () => {
   const { audio, dir } = setup();
   const h = harness();
@@ -146,14 +168,86 @@ test("records and ledgers go when the audio cache drops their clip; ids are neve
   writeAnalysis(keep, record, { dir });
   writeAnalysis(gone, record, { dir });
   claimAzure(gone, { dir });
+  fs.writeFileSync(path.join(dir, `${gone}.azure`), "version 2's ledger\n");
   fs.writeFileSync(path.join(dir, "notes.txt"), "not ours");
   const removed = prune({ dir });
-  assert.deepEqual(removed.sort(), [`${gone}.azure`, `${gone}.json`]);
+  assert.deepEqual(removed.sort(), [`${gone}.azure`, `${gone}.azure-v${MODEL_RECORD_VERSION}`, `${gone}.json`]);
   assert.ok(readAnalysis(keep, { dir }));
   assert.ok(fs.existsSync(path.join(dir, "notes.txt")), "only this module's own files are touched");
   assert.throws(() => analysisId("../../etc", AUDIO), /not an audio cache key/);
   assert.throws(() => readAnalysis("../x", { dir }) ?? claimAzure("../x", { dir }), /not an analysis id/);
   fs.rmSync(audio, { recursive: true, force: true });
+});
+
+test("a version bump: an older version's record is not served, and its ledger does not use up the new version's one Azure call", () => {
+  const { audio, dir } = setup();
+  const id = analysisId(KEY, AUDIO);
+  const old = { v: MODEL_RECORD_VERSION - 1, engine: "azure", azure: "used", durationMs: 1, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [] };
+  writeAnalysis(id, old, { dir });
+  fs.writeFileSync(path.join(dir, `${id}.azure`), "version 2's ledger\n");
+  assert.equal(readAnalysis(id, { dir }), null);
+  assert.equal(azureClaimed(id, { dir }), false);
+  assert.equal(claimAzure(id, { dir }), true, "the new version may make its one call");
+  assert.equal(claimAzure(id, { dir }), false, "and only one");
+  assert.equal(azureClaimed(id, { dir }), true);
+  assert.deepEqual(prune({ dir }), [], "a kept clip keeps its files, old ledger included");
+  fs.rmSync(audio, { recursive: true, force: true });
+});
+
+/** A model syllable as a record keeps it. */
+const kept = (char, startMs, endMs, real = true) => ({ char, pinyin: "x", expectedTone: 3, startMs, endMs, real, ...(real ? { saidTone: 3 } : {}) });
+const OLD = { v: MODEL_RECORD_VERSION - 1, engine: "azure", azure: "used", durationMs: 900, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [kept("你", 100, 400), kept("好", 420, 880, false)] };
+
+test("a version bump with Azure's spans in the old record: the clip is read again on them, with no Azure call and no new ledger", async () => {
+  const { audio, dir } = setup();
+  const id = analysisId(KEY, AUDIO);
+  writeAnalysis(id, OLD, { dir });
+  fs.writeFileSync(path.join(dir, `${id}.azure`), "version 2's ledger\n");
+  const h = harness({ syllables: [kept("你", 100, 400), kept("好", 420, 880)] });
+  const a = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", chars: ["你", "好"], dir, ...h });
+  assert.deepEqual([a.cached, a.record.v, a.record.engine, a.record.azure, a.record.spansFrom], [false, MODEL_RECORD_VERSION, "azure", "used", MODEL_RECORD_VERSION - 1]);
+  assert.deepEqual(h.spansSeen, [[{ startMs: 100, endMs: 400 }, { startMs: 420, endMs: 880 }]], "the scorer was given the old spans");
+  assert.deepEqual(a.record.syllables.map((s) => s.real), [true, false], "not drawn where the old record wasn't");
+  assert.deepEqual(h.counts, { decode: 1, azure: 0, analyse: 1 });
+  assert.equal(azureClaimed(id, { dir }), false, "the new version's call is not used up");
+  // Stored, and served from then on.
+  const b = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", chars: ["你", "好"], dir, ...h });
+  assert.deepEqual([b.cached, b.record.spansFrom], [true, MODEL_RECORD_VERSION - 1]);
+  assert.deepEqual(h.counts, { decode: 1, azure: 0, analyse: 1 });
+  // Requests at the same time share the one reading.
+  const other = Buffer.from("another clip");
+  fs.writeFileSync(path.join(audio, `${KEY2}.mp3`), other);
+  writeAnalysis(analysisId(KEY2, other), OLD, { dir });
+  const h2 = harness({ syllables: OLD.syllables });
+  const all = await Promise.all([1, 2, 3].map(() => modelAnalysis({ key: KEY2, audio: other, type: "audio/mpeg", chars: ["你", "好"], dir, ...h2 })));
+  assert.ok(all.every((x) => x.record.spansFrom === MODEL_RECORD_VERSION - 1));
+  assert.deepEqual(h2.counts, { decode: 1, azure: 0, analyse: 1 });
+  fs.rmSync(audio, { recursive: true, force: true });
+});
+
+test("a version bump with no Azure spans to read (an old local record, other characters): the new version's one call, as for a new clip", async () => {
+  for (const [why, old, chars] of [
+    ["timed locally", { ...OLD, engine: "local", azure: "skipped" }, ["你", "好"]],
+    ["Azure's call failed", { ...OLD, engine: "local", azure: "spent" }, ["你", "好"]],
+    ["other characters", OLD, ["你", "们"]],
+    ["no characters given", OLD, undefined],
+  ]) {
+    const { audio, dir } = setup();
+    const id = analysisId(KEY, AUDIO);
+    writeAnalysis(id, old, { dir });
+    const h = harness();
+    const a = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", chars, dir, ...h });
+    assert.deepEqual([a.cached, a.record.engine, a.record.azure, a.record.spansFrom], [false, "azure", "used", undefined], why);
+    assert.deepEqual(h.spansSeen, [null], why);
+    assert.deepEqual(h.counts, { decode: 1, azure: 1, analyse: 1 }, why);
+    assert.equal(azureClaimed(id, { dir }), true, why);
+    // And only once: the record gone again, the clip is read locally.
+    fs.rmSync(path.join(dir, `${id}.json`));
+    const b = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", chars, dir, ...h });
+    assert.deepEqual([b.record.engine, b.record.azure], ["local", "spent"], why);
+    assert.equal(h.counts.azure, 1, why);
+    fs.rmSync(audio, { recursive: true, force: true });
+  }
 });
 
 test("the decoder: a 16 kHz mono WAV passes as it is; the converter is picked by what the machine has", async () => {
