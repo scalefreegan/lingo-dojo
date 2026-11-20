@@ -91,6 +91,21 @@ on sayFailure(msg)
 	end try
 end sayFailure
 
+-- A test or automation Chrome (the Playwright MCP's, with its profile under
+-- ~/Library/Caches/ms-playwright*, or anything started with a remote-debugging
+-- flag) is also "Google Chrome" to AppleScript, and a tell can land in it: a
+-- tab there has no real microphone or speakers ("Could not open the
+-- microphone: Unable to decode audio data", 2026-11-19, ld-9s2). While one
+-- is running, Chrome isn't scripted at all.
+on testChromeRunning()
+	try
+		do shell script "pgrep -f " & quoted form of "Google Chrome.*(ms-playwright|--remote-debugging-p(ipe|ort))"
+		return true
+	on error
+		return false
+	end try
+end testChromeRunning
+
 on openDashboard()
 	-- Prefer focusing a tab already on this app over opening a new one: plain
 	-- `open` hands off to the default browser (Chrome), which always makes a
@@ -102,6 +117,14 @@ on openDashboard()
 	-- the same one-time dance as the server helper's Documents prompt.
 	-- handled: true once Chrome has focused or opened a tab, so an error
 	-- after that point never falls back into a second, duplicate tab
+	if testChromeRunning() then
+		-- Hand the URL to the user's own Chrome: a new instance on the default
+		-- profile passes it to the running one (Chrome's per-profile
+		-- singleton) and exits, or becomes the user's Chrome if none is up.
+		-- Always a new tab, but never one in the test browser.
+		do shell script "open -n -a 'Google Chrome' --args " & quoted form of dashUrl
+		return
+	end if
 	set handled to false
 	try
 		tell application "Google Chrome"

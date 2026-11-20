@@ -124,3 +124,12 @@ for a `[launcher] Chrome tab focus failed` line; `-1743` means the access
 was refused — enable it under System Settings → Privacy & Security →
 Automation, or `tccutil reset AppleEvents <bundle id>` and click again.
 An ad-hoc rebuild changes the app's code identity, so macOS may ask again.
+
+While a test or automation Chrome is running (the Playwright MCP's, whose
+profile is under `~/Library/Caches/ms-playwright*`, or any Chrome started
+with `--remote-debugging-pipe` or `--remote-debugging-port`), the launcher
+doesn't script Chrome at all: AppleScript can't tell that instance from
+yours, and a tab there has no real microphone or speakers ("Could not open
+the microphone: Unable to decode audio data"). It hands the URL to your own
+Chrome with `open -n -a 'Google Chrome' --args <url>` instead, which always
+makes a new tab. Close the test browser and clicks reuse the tab again.
