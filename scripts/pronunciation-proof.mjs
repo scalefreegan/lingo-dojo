@@ -8,6 +8,8 @@
 //   node scripts/pronunciation-proof.mjs --fetch      first buy the missing ElevenLabs clips (PAID)
 //   node scripts/pronunciation-proof.mjs --scribe     first buy Scribe timings for the phrases (PAID)
 //   node scripts/pronunciation-proof.mjs --azure      first send the clips to Azure pronunciation assessment (PAID / free-tier quota)
+//   node scripts/pronunciation-proof.mjs --azure-noise first send 36 disturbed clips to Azure, to see its spans on noisy audio (PAID, each once)
+//   node scripts/pronunciation-proof.mjs --azure-noise-table   print that comparison from the cache and stop (writes nothing)
 //   node scripts/pronunciation-proof.mjs --quick      skip the held-out threshold search (the slow part)
 //   node scripts/pronunciation-proof.mjs --spans      print the "When the spans are wrong" table and stop (writes nothing)
 //   node scripts/pronunciation-proof.mjs --noise      print the "With lead-in noise" tables and stop (writes nothing; with --dump, the syllables that flipped and why syllables were unsure)
@@ -496,6 +498,39 @@ if (!voices.length && !args.has("--recordings")) {
   process.exit(1);
 }
 
+/** Azure's reply for a few clips WITH a disturbance around them
+ *  (AZURE_NOISE: 2 voices × 3 phrases × 6 conditions, 36 requests at most,
+ *  each once), the audio exactly as the noise study scores it. */
+async function fetchAzureNoise() {
+  const keys = voiceKeys();
+  if (pronunciationProvider(keys) !== "azure") throw new Error("no AZURE_SPEECH_KEY / AZURE_SPEECH_REGION");
+  let bought = 0;
+  for (const v of voices.filter((x) => AZURE_NOISE.voices.includes(x.id))) {
+    for (const [k, [text, clip]] of [...v.clips].entries()) {
+      if (!AZURE_NOISE.texts.includes(text)) continue;
+      for (const key of AZURE_NOISE.conditions) {
+        const out = azureNoisyPath(v.id, text, key);
+        if (fs.existsSync(out)) continue;
+        const d = disturb(clip.samples, clip.sampleRate, NOISE_CONDITIONS.find((c) => c.key === key), 12345 + k);
+        const request = azurePronunciationRequest({ key: keys.azureKey, region: keys.azureRegion, audio: encodeWav(d.samples, clip.sampleRate), locale: LOCALE, referenceText: text });
+        const r = await fetch(request.url, { ...request.init, signal: AbortSignal.timeout(30_000) });
+        if (!r.ok) throw new Error(`azure ${text}/${key}: HTTP ${r.status}`);
+        fs.writeFileSync(out, JSON.stringify(await r.json()));
+        bought++;
+        await new Promise((res) => setTimeout(res, 1200));
+      }
+    }
+  }
+  console.log(`Azure on noisy audio: ${bought} assessments made`);
+}
+if (args.has("--azure-noise")) {
+  try {
+    await fetchAzureNoise();
+  } catch (e) {
+    console.error(`--azure-noise stopped early: ${e.message}. Rerun to fetch the rest; scoring what is cached.`);
+  }
+}
+
 const conditions = [
   { key: "single", title: "Single syllables, nothing known about the speaker", texts: SINGLES, baseline: false, timings: "fallback" },
   { key: "singleBase", title: "Single syllables, speaker's range known", texts: SINGLES, baseline: true, timings: "fallback" },
@@ -521,6 +556,19 @@ const NOISE_PATHS = ["energy", "timings"];
 // Totals and changes per condition, singles then phrases; generated cases.
 const NOISE_BEFORE = {"clean": ["111 of 192 / 1 of 64 / 9", "0 / 0 / 0", "201 of 576 / 0 of 168 / 58", "0 / 0 / 0"], "silence": ["111 of 192 / 1 of 64 / 9", "0 / 1 / 0", "201 of 576 / 0 of 168 / 58", "0 / 1 / 1"], "room": ["111 of 192 / 1 of 64 / 9", "0 / 1 / 0", "201 of 576 / 0 of 168 / 58", "0 / 1 / 1"], "blip": ["111 of 192 / 1 of 64 / 9", "0 / 1 / 0", "176 of 576 / 0 of 168 / 50", "0 / 1 / 41"], "knockBefore": ["111 of 192 / 1 of 64 / 9", "0 / 1 / 0", "177 of 576 / 0 of 168 / 53", "0 / 1 / 42"], "knockAfter": ["111 of 192 / 1 of 64 / 9", "0 / 1 / 0", "184 of 576 / 0 of 168 / 50", "0 / 1 / 27"], "murmur": ["111 of 192 / 1 of 64 / 10", "0 / 2 / 0", "205 of 576 / 0 of 168 / 58", "0 / 1 / 1"], "nearKnockBefore": ["29 of 192 / 0 of 64 / 16", "0 / 8 / 86", "117 of 576 / 10 of 168 / 92", "10 / 55 / 144"], "nearKnockAfter": ["4 of 192 / 0 of 64 / 29", "0 / 21 / 124", "112 of 576 / 2 of 168 / 90", "2 / 60 / 141"], "knockOnset": ["80 of 192 / 1 of 64 / 14", "0 / 5 / 36", "183 of 576 / 3 of 168 / 63", "3 / 9 / 30"], "coughBefore": ["0 of 192 / 0 of 64 / 49", "0 / 43 / 141", "76 of 576 / 20 of 168 / 146", "20 / 121 / 248"], "coughAfter": ["0 of 192 / 0 of 64 / 54", "0 / 47 / 138", "71 of 576 / 11 of 168 / 149", "11 / 124 / 222"], "secondVoice": ["0 of 192 / 0 of 64 / 50", "0 / 46 / 156", "149 of 576 / 44 of 168 / 155", "44 / 141 / 243"], "hum100": ["11 of 192 / 5 of 64 / 37", "5 / 33 / 142", "104 of 576 / 21 of 168 / 139", "21 / 114 / 248"], "hum60": ["2 of 192 / 0 of 64 / 38", "0 / 33 / 157", "135 of 576 / 35 of 168 / 100", "35 / 74 / 252"], "midword": ["110 of 192 / 1 of 64 / 13", "0 / 5 / 6", "147 of 576 / 2 of 168 / 65", "2 / 15 / 79"], "echo": ["44 of 192 / 4 of 64 / 23", "4 / 17 / 94", "47 of 576 / 6 of 168 / 74", "6 / 42 / 258"]};
 const MADE_BEFORE = {"plain": ["297 of 324 / 0 of 108 / 0", "0 / 0 / 0"], "pause": ["144 of 324 / 0 of 108 / 0", "0 / 0 / 201"], "soft": ["179 of 324 / 0 of 108 / 0", "0 / 0 / 166"], "gap150": ["297 of 324 / 0 of 108 / 0", "0 / 0 / 0"], "click": ["108 of 324 / 0 of 108 / 20", "0 / 20 / 209"], "uh": ["157 of 324 / 12 of 108 / 32", "12 / 32 / 175"], "breath": ["297 of 324 / 0 of 108 / 0", "0 / 0 / 0"], "split": ["285 of 324 / 0 of 108 / 0", "0 / 0 / 0"], "pauseSplit": ["162 of 324 / 57 of 108 / 80", "57 / 80 / 207"]};
+// Both paths before bead ld-ne0.7's fixes (commit 162c09f), from this same
+// measurement with every condition now in NOISE_CONDITIONS: the changes
+// against the clean clip (new false alarms / new wrong oks / lost), energy
+// singles, energy phrases, timings singles, timings phrases.
+const NOISE_BEFORE_NE07 = {"clean":["0 / 0 / 0","0 / 0 / 0","0 / 0 / 0","0 / 0 / 0"],"silence":["0 / 0 / 0","0 / 0 / 0","0 / 0 / 0","0 / 0 / 0"],"room":["0 / 0 / 0","0 / 0 / 0","0 / 0 / 0","0 / 0 / 2"],"blip":["0 / 0 / 0","0 / 0 / 303","0 / 0 / 0","0 / 0 / 2"],"knockBefore":["0 / 0 / 0","0 / 0 / 303","0 / 0 / 0","0 / 0 / 2"],"knockAfter":["0 / 0 / 0","0 / 0 / 257","0 / 0 / 0","0 / 0 / 2"],"murmur":["0 / 0 / 34","0 / 0 / 64","0 / 0 / 0","0 / 0 / 2"],"nearKnockBefore50":["0 / 0 / 73","0 / 0 / 132","0 / 0 / 3","0 / 0 / 5"],"nearKnockBefore":["0 / 0 / 122","0 / 0 / 167","0 / 0 / 0","0 / 0 / 2"],"nearKnockBefore150":["0 / 0 / 111","0 / 0 / 222","0 / 0 / 0","0 / 0 / 2"],"nearKnockAfter50":["0 / 0 / 100","0 / 1 / 76","2 / 11 / 72","3 / 7 / 22"],"nearKnockAfter":["0 / 0 / 157","0 / 0 / 151","0 / 0 / 111","0 / 0 / 37"],"nearKnockAfter150":["0 / 0 / 148","0 / 0 / 207","0 / 0 / 66","0 / 0 / 27"],"knockOnset":["0 / 1 / 36","3 / 7 / 30","0 / 0 / 38","0 / 3 / 45"],"coughBefore":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 0","0 / 0 / 2"],"coughAfter":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 14","0 / 1 / 1"],"secondVoice":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 0","0 / 0 / 0"],"hum100":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 151","0 / 0 / 249"],"hum60":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 151","0 / 0 / 249"],"hum120":["0 / 0 / 167","0 / 0 / 310","0 / 0 / 151","0 / 0 / 249"],"midword":["0 / 0 / 155","0 / 0 / 152","0 / 0 / 139","0 / 0 / 103"],"echo":["4 / 17 / 112","3 / 12 / 281","4 / 13 / 96","2 / 7 / 220"],"echoSmall":["0 / 8 / 55","1 / 6 / 104","0 / 8 / 43","1 / 10 / 108"]};
+// …and the guarded columns of "When the spans are wrong" then, singles and
+// phrases, in SPAN_ERRORS' order.
+const SPANS_BEFORE_NE07 = [["0 / 1 / 42", "0 / 14 / 245"], ["0 / 3 / 27", "0 / 6 / 240"], ["0 / 1 / 16", "0 / 2 / 185"], ["0 / 0 / 28", "0 / 2 / 133"], ["0 / 2 / 79", "0 / 7 / 208"], ["0 / 2 / 96", "0 / 7 / 233"], ["–", "0 / 2 / 348"], ["–", "0 / 4 / 239"], ["–", "0 / 6 / 117"], ["–", "0 / 9 / 253"], ["–", "0 / 0 / 390"], ["–", "0 / 1 / 411"], ["–", "0 / 14 / 305"], ["–", "0 / 9 / 288"], ["–", "1 / 8 / 221"]];
+// Azure on the noisy audio itself (--azure-noise, PAID): a few clips sent
+// with a disturbance around them, to see whether its spans move. The
+// cached replies sit beside each clip as <text>.azure-noisy.<condition>.json.
+const AZURE_NOISE = { voices: ["say-tingting", "eleven-pNInz6obpgDQGcFmaJgB"], texts: ["我想喝水", "今天很热", "不客气"], conditions: ["room", "nearKnockBefore50", "nearKnockAfter50", "coughAfter", "secondVoice", "echo"] };
+const azureNoisyPath = (voice, text, cond) => path.join(DIR, voice, `${text}.azure-noisy.${cond}.json`);
 const azureTimes = new Map();
 function azureTimingsOf(v, text, truth, clip) {
   const key = `${v.id}|${text}`;
@@ -593,6 +641,68 @@ function noiseStudy() {
   const madeRows = GENERATED_CASES.map((kase) => ({ kase, flips: Object.fromEntries(NOISE_PATHS.map((way) => [way, flips(made.get(kase.base ?? kase.key)[way], made.get(kase.key)[way])])) }));
   return (noiseDone = { clipRows, madeRows, untimed });
 }
+// Azure's spans on the noisy audio (AZURE_NOISE, cached by --azure-noise)
+// against its spans for the clean clip moved by the lead-in: how far the
+// first start, the inner boundaries and the last end moved, and what the
+// scorer says on each set of spans, the same noisy audio under both.
+let azureNoiseDone = null;
+function azureNoiseStudy() {
+  if (azureNoiseDone) return azureNoiseDone;
+  const rows = [];
+  for (const v of voices.filter((x) => AZURE_NOISE.voices.includes(x.id))) {
+    for (const [k, [text, clip]] of [...v.clips].entries()) {
+      if (!AZURE_NOISE.texts.includes(text)) continue;
+      const { truth, list } = labellings(text);
+      const clean = azureTimingsOf(v, text, truth, clip);
+      if (!clean) continue;
+      for (const key of AZURE_NOISE.conditions) {
+        const file = azureNoisyPath(v.id, text, key);
+        if (!fs.existsSync(file)) continue;
+        const d = disturb(clip.samples, clip.sampleRate, NOISE_CONDITIONS.find((c) => c.key === key), 12345 + k);
+        const track = trackPitch(d.samples, clip.sampleRate);
+        const azure = azurePronunciationResult(JSON.parse(fs.readFileSync(file, "utf8")));
+        let noisy = null;
+        if (azure.status === "Success" && azure.words.length) mergeAzure({ azure, syllables: truth, track, local: (t) => { noisy = t; return null; } });
+        if (!noisy || !noisy.every(Boolean)) {
+          rows.push({ key, text, voice: v.id, unusable: true });
+          continue;
+        }
+        const moved = clean.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs }));
+        const verdicts = (spans) => {
+          const into = new Map();
+          list.forEach((label, li) => {
+            scoreTones({ samples: d.samples, sampleRate: clip.sampleRate, syllables: label.syllables, timings: spans, speaker: clip.range, track, rules: RULES }).syllables.forEach((x, j) => {
+              if (truth[j].expectedTone === 0 || label.syllables[j].expectedTone === 0) return;
+              const side = label.wrongAt.has(j) ? "wrong" : "right";
+              if (side === "right" && label.kind !== "right") return;
+              into.set(`${li}|${j}`, { side, verdict: x.verdict });
+            });
+          });
+          return into;
+        };
+        const inner = [];
+        for (let b = 0; b + 1 < moved.length; b++) inner.push(Math.abs(noisy[b].endMs - moved[b].endMs), Math.abs(noisy[b + 1].startMs - moved[b + 1].startMs));
+        rows.push({ key, text, voice: v.id, first: noisy[0].startMs - moved[0].startMs, last: noisy[noisy.length - 1].endMs - moved[moved.length - 1].endMs, inner: Math.max(0, ...inner), flips: flips(verdicts(moved), verdicts(noisy)) });
+      }
+    }
+  }
+  return (azureNoiseDone = rows);
+}
+const azureNoiseTable = () => {
+  const rows = azureNoiseStudy();
+  if (!rows.length) return null;
+  const range = (xs) => (xs.length ? `${Math.round(Math.min(...xs))} to ${Math.round(Math.max(...xs))}` : "–");
+  return [
+    "| Around the speech | Clips | First span's start moved (ms) | Inner boundaries moved, most (ms) | Last span's end moved (ms) | On Azure's noisy spans: new false alarms / new wrong oks / lost |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...AZURE_NOISE.conditions.map((key) => {
+      const rs = rows.filter((r) => r.key === key && !r.unusable);
+      const sum = (f) => rs.reduce((s, r) => s + r.flips[f], 0);
+      const title = NOISE_CONDITIONS.find((c) => c.key === key).title.replace(/^…and /, "").replace(/^…/, "");
+      return `| ${title} | ${rs.length}${rows.some((r) => r.key === key && r.unusable) ? " (and some without usable spans)" : ""} | ${range(rs.map((r) => r.first))} | ${range(rs.map((r) => r.inner))} | ${range(rs.map((r) => r.last))} | ${sum("falseOff")} / ${sum("wrongOk")} / ${sum("lost")} |`;
+    }),
+  ];
+};
 // What the timings path says when the spans themselves are wrong
 // (SPAN_ERRORS), with its guards (TIMING_RULES: the jittered readings and
 // the lopsided check) and without, each against the unperturbed spans
@@ -646,9 +756,9 @@ const spanTable = () => {
   const { rows } = spanStudy();
   const moved = (f) => (f.right + f.wrong ? `${f.falseOff} / ${f.wrongOk} / ${f.lost}` : "–");
   return [
-    "| The spans given | Singles: no guards | Singles: guarded | Phrases: no guards | Phrases: guarded | Phrase syllables read |",
-    "| --- | --- | --- | --- | --- | --- |",
-    ...rows.map((r) => `| ${r.error.title} | ${moved(r.flips.bare.single)} | ${moved(r.flips.guarded.single)} | ${moved(r.flips.bare.phrase)} | ${moved(r.flips.guarded.phrase)} | ${r.flips.guarded.phrase.right + r.flips.guarded.phrase.wrong} |`),
+    "| The spans given | Singles: no guards | Singles: guarded | Singles: guarded, before ld-ne0.7 | Phrases: no guards | Phrases: guarded | Phrases: guarded, before ld-ne0.7 | Phrase syllables read |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...rows.map((r, k) => `| ${r.error.title} | ${moved(r.flips.bare.single)} | ${moved(r.flips.guarded.single)} | ${SPANS_BEFORE_NE07[k]?.[0] ?? ""} | ${moved(r.flips.bare.phrase)} | ${moved(r.flips.guarded.phrase)} | ${SPANS_BEFORE_NE07[k]?.[1] ?? ""} | ${r.flips.guarded.phrase.right + r.flips.guarded.phrase.wrong} |`),
   ];
 };
 if (args.has("--spans")) {
@@ -674,6 +784,14 @@ const noiseTable = () => {
     );
   }
   out.push(
+    "**Both paths before bead ld-ne0.7's fixes** (commit 162c09f, measured the same way): changes against the clean clip, new false alarms / new wrong tones passed as ok / right verdicts lost.",
+    "",
+    "| | Energy: singles | Energy: phrases | Timings: singles | Timings: phrases |",
+    "| --- | --- | --- | --- | --- |",
+    ...clipRows.filter((r) => NOISE_BEFORE_NE07[r.cond.key]).map((r) => `| ${r.cond.title} | ${NOISE_BEFORE_NE07[r.cond.key].join(" | ")} |`),
+    "",
+  );
+  out.push(
     "**Cut by energy, before the rework** (commit e75a163; not rerun. Measured without the lead-in the clips now get, and its mid-word row had half a second of room noise before the cut, which is not a recording that starts mid-word).",
     "",
     "| | Singles: totals | Singles: changes | Phrases: totals | Phrases: changes |",
@@ -686,6 +804,10 @@ const noiseTable = () => {
   );
   return out;
 };
+if (args.has("--azure-noise-table")) {
+  console.log((azureNoiseTable() ?? ["No cached replies: run with --azure-noise (paid)."]).join("\n"));
+  process.exit(0);
+}
 if (args.has("--noise")) {
   console.log(noiseTable().join("\n"));
   if (args.has("--dump")) {
@@ -1359,7 +1481,7 @@ p("The same clips (all four voices, range known) at several values of `offMargin
   p("`creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.");
 }
 p("## With lead-in noise");
-p("The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a cough, another voice, a hum, and the scorer has to know where the speech is before it can read a tone. This section puts those surroundings around every cached clip and scores it again, the speaker's range known, two ways: **cut by energy** (no timings: the fallback, which has to find the speech itself) and **on syllable timings** (Azure's cached reply for the CLEAN clip, each syllable's start and end moved by the lead-in; no new call was made, so Azure never heard the noisy audio). Every syllable's verdict is compared with the same syllable's verdict on the clean clip, scored the same way, because totals hide a verdict lost here and another gained there. The rule: a disturbance may cost verdicts (the third number of \"changes\"); it must not add a false alarm or a wrong tone passed as ok (the first two). The same disturbances, in small and on generated audio, are in `npm test`.");
+p("The clips above start and end with the speech. A push-to-talk recording doesn't: there is room noise, a key press, a knock, a cough, another voice, a hum, and the scorer has to know where the speech is before it can read a tone. This section puts those surroundings around every cached clip and scores it again, the speaker's range known, two ways: **cut by energy** (no timings: the fallback, which has to find the speech itself) and **on syllable timings** (Azure's cached reply for the CLEAN clip, each syllable's start and end moved by the lead-in; so in these tables Azure never heard the noisy audio; what it does when it does is \"Azure on the noisy audio\" below). Every syllable's verdict is compared with the same syllable's verdict on the clean clip, scored the same way, because totals hide a verdict lost here and another gained there. The rule: a disturbance may cost verdicts (the third number of \"changes\"); it must not add a false alarm or a wrong tone passed as ok (the first two). The same disturbances, in small and on generated audio, are in `npm test`.");
 p(noiseTable().join("\n"));
 p(`Levels are dB against the clip's loudest 10 ms; knocks, blips and the murmur are a buzz at 220 Hz, the cough a noise burst over a falling 180 Hz buzz, the child three syllables at 300 to 380 Hz. The generated phrases (three voices, twelve tone patterns each, every syllable also relabelled with each other tone) are the cases the cached clips can't express; their timings are where the generator put each syllable. ${noiseStudy().untimed ? `${noiseStudy().untimed} clips have no usable cached Azure reply and are left out of the timings tables. ` : ""}The new wrong tone passed as ok that plain silence adds on the energy path is not noise: padding moves the 20 ms analysis frames, and a syllable on the edge of a bar falls the other way.`);
 p([
@@ -1370,8 +1492,22 @@ p([
   `- **The caution costs right answers on clean clips too.** Before the rework (commit e75a163) the energy path marked 89.1% of correctly said single syllables and 70.8% of correctly said phrase syllables \"ok\"; the rework took that to 85.9% and 66.1% (an independent review's count); in this run, with the lead-in, it is ${sums[results.findIndex((r) => r.key === "singleBase")].rightOk} and ${sums[results.findIndex((r) => r.key === "phraseBase")].rightOk}. Wrong tones caught did not fall.`,
   "- **A hum** leaves everything unjudged on both paths (\"background\"): it is under the syllables too.",
   "- **A recording that starts mid-word** is loud from its first frame: the syllable it starts in is not judged (\"clipped\"), on either path. The other syllables of a phrase are still cut by energy from a first syllable that is partly missing, and that row's phrase numbers show what is left.",
-  "- **Not made safe, on either path**: a pitched knock on top of the first sound, and a room that echoes. Each puts the disturbance inside the syllable, where no way of locating the speech can take it out; the rows show the false alarms and wrong oks that remain. A sound inside a timed span (a knock or cough within the last syllable's span, which Azure draws past the end of the sound) is mostly caught as two sounds in one span (\"apart\"), not always.",
+  "- **A sound inside a timed span** (a knock 50 ms after the last sound, or a cough within the last syllable's span, which Azure draws past the end of the sound) is caught as two sounds in one span (\"apart\"): by a silence between them, counted from the sound's own edges as well as from the voice's (before ld-ne0.7 only the quiet frames between voiced ones counted, and a cough kept close behind the voice was not seen), or by the pitch leaping 6 semitones or more across a hole in the voicing (`leaps`, also new). Before, the knock 50 ms after gave 2 false alarms and 11 wrong oks in the singles and 3 and 7 in the phrases on timings; now none.",
+  "- **Cut by energy, a loud run is joined to the speech across a short hole only where the pitch carries on** (within 7 semitones of where the speech stopped): a knock 50 ms after the last sound is a separate run, so the doubt about it (\"trimmed\", \"scattered\") applies, where before it was taken as more of the last syllable (1 wrong ok in the phrases).",
+  "- **Not made safe, on either path: a pitched knock on top of the first sound** (the knock row over the first 20 ms). At the speaker's own pitch it is the onset as far as the pitch track can tell; the rows show what remains (energy: 1 wrong ok in the singles, 1 false alarm and 3 wrong oks in the phrases; timings: 3 wrong oks in the phrases; before: 1, 3 and 7, and 3). **This is a stated bound, not a fix.**",
+  "- **Not made safe, on either path: a room that echoes**, and not only a big one: the small room (reflections decaying over 50 ms at −10 dB) already passes wrong tones as ok on both paths, and the 150 ms room adds false alarms too. Reverberation keeps the pitch of a moment ago sounding under the next, so the moving part of a contour reads flatter (a level first tone, or a low creaky third); the measures tried per syllable (unvoiced loud frames, periodicity, the sound after the last syllable) overlap with clean clips. It needs a whole-recording reverberation check, calibrated on real rooms (a follow-up). **A stated bound, not a fix.**",
 ].join("\n"));
+p("### Azure on the noisy audio");
+{
+  const t = azureNoiseTable();
+  if (t) {
+    p(`The timings rows above assume Azure draws the same spans on a noisy recording as on a clean one. Here a few clips (${AZURE_NOISE.voices.length} voices × ${AZURE_NOISE.texts.join(", ")}) were sent to Azure WITH a disturbance around them, once each (${AZURE_NOISE.voices.length * AZURE_NOISE.texts.length * AZURE_NOISE.conditions.length} assessments, cached; \`--azure-noise\`), and its spans are compared with its spans for the clean clip moved by the lead-in; the last column scores the same noisy audio on both sets of spans.`);
+    p(t.join("\n"));
+    p("Azure's first span starts 50 to 120 ms early with room noise alone and up to 200 ms early with a knock or a voice before the speech; its last span ends up to 220 ms late, and in the echoing room 300 to 500 ms late; the boundaries between syllables barely move, except in the echoing room. The guards turn all of it into lost verdicts and no new false alarm; the one new wrong ok is in the echoing room, which is not made safe anyway. Six clips per row: this says the spans move in these ways, not how often.");
+  } else {
+    p("Azure on the noisy audio itself: run with `--azure-noise` (paid, 36 assessments) to measure whether its spans move; not measured in this run.");
+  }
+}
 p("## When the spans are wrong");
 p(`The timings path believes its spans. This section gives it wrong ones: Azure's spans for each clean clip, moved or redrawn in ways that still pass the checks on their shape (in order, plausible lengths), and each syllable's verdict compared with its verdict on the spans as Azure gave them. Columns are new false alarms / new wrong tones passed as ok / right verdicts lost; "no guards" is the scorer reading each span as given, "guarded" is the scorer as it ships. Whether and how often Azure's spans are wrong like this on a real microphone is not known: these are the errors a reviewer thought of, not errors observed.`);
 p(spanTable().join("\n"));
@@ -1381,11 +1517,11 @@ p(spanTable().join("\n"));
   p([
     "The guards (`TIMING_RULES`):",
     "",
-    `- **Edges.** Every recording is read again with all its spans ${TIMING_RULES.jitterMs} ms earlier and later, and with each boundary between two neighbours ${TIMING_RULES.jitterMs} ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart") is not held against the verdict.`,
+    `- **Edges.** Every recording is read again with all its spans ${TIMING_RULES.jitterMs} ms earlier and later, and with each boundary between two neighbours ${TIMING_RULES.jitterMs} ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart") is not held against the verdict. (Holding a pitch leap against it was tried in ld-ne0.7: 14 fewer wrong oks in the table below, but on syllables run together it cost right verdicts on the correct spans, so it was left out.)`,
     `- **Lopsided.** Of two neighbouring spans, one with hardly any voice in it, or one under ${TIMING_RULES.sliverMs} ms beside one ${TIMING_RULES.lopsided} times its length: neither is judged where the other took its sound.`,
     `- **These values are in-sample.** The ${TIMING_RULES.jitterMs} ms jitter, the ${TIMING_RULES.sliverMs} ms sliver and the factor of ${TIMING_RULES.lopsided} were chosen while looking at these clips and at the first twelve rows of this table; the two rows where a neighbour is left 60 ms are the case the sliver bar was set to catch, and their zeros show that it does, not that swallowed neighbours are handled. The last three rows are the same error off the design (the neighbour left 110, 130 or 160 ms, which is no sliver) and were added by a reviewer afterwards: they are the ones to read.`,
     `- **What they cost on the spans as Azure gave them**: ${cost.single.lost} single and ${cost.phrase.lost} phrase verdicts, and no new false alarm or wrong ok. Singles: ${totals(clean.bare.single)} without the guards; ${totals(clean.guarded.single)} with. Phrases: ${totals(clean.bare.phrase)} without; ${totals(clean.guarded.phrase)} with. The timings tables in the section above are the guarded scorer.`,
-    "- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok, and so do the off-design swallow rows, one of them with a false alarm. On generated syllables run together (20 ms apart, in `npm test`) those rows produce false alarms as well. A wrong span costs most of its clip's verdicts either way, which is the right price.",
+    "- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok, and so do the off-design swallow rows, one of them with a false alarm. ld-ne0.7's two \"apart\" checks lowered most of these (the before column), not to zero; a wider jitter (60 or 80 ms) was tried and cost far more verdicts than it saved, and checking Azure's boundaries against energy cuts was not possible because on clean clips the two differ by up to 135 ms. **A stated bound.** On generated syllables run together (20 ms apart, in `npm test`) those rows produce false alarms as well. A wrong span costs most of its clip's verdicts either way, which is the right price.",
     "- **A syllable whose own span could not be moved** in any reading (too short and against an end of the recording) is not judged either: no readings agreeing is not agreement. A span that one move would leave under 40 ms stays put in that reading while the others move.",
     "- **A word Azure times as a whole** (no per-syllable times) is cut by energy inside that word's span only, on pitch finished on that span alone, and those cuts count for what any fallback cut does (`rough`).",
   ].join("\n"));

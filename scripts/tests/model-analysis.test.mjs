@@ -146,13 +146,29 @@ test("records and ledgers go when the audio cache drops their clip; ids are neve
   writeAnalysis(keep, record, { dir });
   writeAnalysis(gone, record, { dir });
   claimAzure(gone, { dir });
+  fs.writeFileSync(path.join(dir, `${gone}.azure`), "version 2's ledger\n");
   fs.writeFileSync(path.join(dir, "notes.txt"), "not ours");
   const removed = prune({ dir });
-  assert.deepEqual(removed.sort(), [`${gone}.azure`, `${gone}.json`]);
+  assert.deepEqual(removed.sort(), [`${gone}.azure`, `${gone}.azure-v${MODEL_RECORD_VERSION}`, `${gone}.json`]);
   assert.ok(readAnalysis(keep, { dir }));
   assert.ok(fs.existsSync(path.join(dir, "notes.txt")), "only this module's own files are touched");
   assert.throws(() => analysisId("../../etc", AUDIO), /not an audio cache key/);
   assert.throws(() => readAnalysis("../x", { dir }) ?? claimAzure("../x", { dir }), /not an analysis id/);
+  fs.rmSync(audio, { recursive: true, force: true });
+});
+
+test("a version bump starts fresh: an older version's record is not read and its ledger does not use up the new version's one Azure call", () => {
+  const { audio, dir } = setup();
+  const id = analysisId(KEY, AUDIO);
+  const old = { v: MODEL_RECORD_VERSION - 1, engine: "azure", azure: "used", durationMs: 1, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [] };
+  writeAnalysis(id, old, { dir });
+  fs.writeFileSync(path.join(dir, `${id}.azure`), "version 2's ledger\n");
+  assert.equal(readAnalysis(id, { dir }), null);
+  assert.equal(azureClaimed(id, { dir }), false);
+  assert.equal(claimAzure(id, { dir }), true, "the new version may make its one call");
+  assert.equal(claimAzure(id, { dir }), false, "and only one");
+  assert.equal(azureClaimed(id, { dir }), true);
+  assert.deepEqual(prune({ dir }), [], "a kept clip keeps its files, old ledger included");
   fs.rmSync(audio, { recursive: true, force: true });
 });
 

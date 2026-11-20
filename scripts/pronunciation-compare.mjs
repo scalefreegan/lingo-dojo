@@ -108,8 +108,11 @@ export function modelSyllableReal(s, frames) {
 }
 
 /** Bumped when what a cached model record means changes: an old one is
- *  then simply not read (scripts/model-analysis.mjs). */
-export const MODEL_RECORD_VERSION = 2;
+ *  then simply not read, and the clip gets one fresh Azure call under the
+ *  new version's own ledger (scripts/model-analysis.mjs). 3: the scorer's
+ *  noise guards (ld-ne0.7) can change a model syllable's verdict, and so
+ *  its `saidTone`. */
+export const MODEL_RECORD_VERSION = 3;
 
 /** Silence put around a model clip before it is analysed (ms). A voice's
  *  clip starts with its first sound: the scorer would call that syllable

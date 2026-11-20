@@ -1244,7 +1244,9 @@ test("a syllable with no long voiced run is still the speech", () => {
  * (flips). What must hold: no new false "off" and no new wrong "ok". What
  * may happen: verdicts lost. */
 // Not made safe on either path, and said so (docs/VOICE.md, the proof):
-// the disturbance is inside the syllable.
+// the disturbance is inside the syllable. Their bounds are the next test.
+// (The small room passes here, on generated speech; on the proof's clips
+// it does not, and it is not claimed safe.)
 const NOT_SAFE = new Set(["knockOnset", "echo"]);
 
 test("lead-in noise, per syllable: no new false alarm and no new wrong ok, by energy or on timings", () => {
@@ -1272,8 +1274,10 @@ test("lead-in noise, per syllable: no new false alarm and no new wrong ok, by en
     // On timings a verdict must also survive the spans moved (edges).
     assert.ok(t.caught >= (way === "energy" ? 29 : 26), `${way}: clean catches ${t.caught} of ${t.wrong}`);
   }
-  // Outside every span, so on timings not one verdict moves.
-  const OUTSIDE = new Set(["silence", "room", "blip", "knockBefore", "knockAfter", "murmur", "nearKnockBefore", "nearKnockAfter", "coughBefore", "coughAfter", "secondVoice"]);
+  // Outside every span, so on timings not one verdict moves. (A knock 50
+  // ms from the speech is within the 40 ms the spans are moved by
+  // (edges), so it may cost verdicts there: it is held to the rule above.)
+  const OUTSIDE = new Set(["silence", "room", "blip", "knockBefore", "knockAfter", "murmur", "nearKnockBefore", "nearKnockBefore150", "nearKnockAfter", "nearKnockAfter150", "coughBefore", "coughAfter", "secondVoice"]);
   const lost = {};
   for (const cond of NOISE_CONDITIONS.slice(1)) {
     if (NOT_SAFE.has(cond.key)) continue;
@@ -1292,8 +1296,39 @@ test("lead-in noise, per syllable: no new false alarm and no new wrong ok, by en
   const all = flips(clean.energy, clean.energy);
   const judged = [...clean.energy.values()].filter((x) => (x.side === "right" ? x.verdict === "ok" : x.verdict === "off")).length;
   assert.ok(all.caught > 0 && judged > 0);
-  for (const key of ["coughBefore", "secondVoice", "hum100"]) assert.equal(lost[`${key} energy`], judged, key);
-  assert.ok(lost["hum100 timings"] > 0);
+  for (const key of ["coughBefore", "secondVoice", "hum100", "hum60", "hum120"]) assert.equal(lost[`${key} energy`], judged, key);
+  for (const key of ["hum100", "hum60", "hum120"]) assert.ok(lost[`${key} timings`] > 0, key);
+});
+
+test("lead-in noise not made safe (a knock on the first sound, an echoing room): bounded, and the bound is stated", () => {
+  // KNOWN UNFIXED (ld-ne0.7): on the proof's clips a knock at the voice's
+  // own pitch over the onset, and reverberation, still add wrong oks (and a
+  // few false alarms); the proof report's "With lead-in noise" has the
+  // counts. On this generated speech they are smaller; these are the
+  // bounds measured here, so that a change making them worse is seen.
+  const voice = { lowHz: 110, spanSt: 10 };
+  const said = [];
+  for (const tones of [[1], [2], [3], [4], [4, 1, 2], [2, 4, 1]]) said.push({ tones, clip: speak(tones, voice) });
+  said.push({ tones: [1, 4], clip: speak([1, 4], { ...voice, gapMs: 0 }) });
+  const run = (cond) => {
+    const maps = { energy: new Map(), timings: new Map() };
+    for (const [k, { tones, clip }] of said.entries()) {
+      const d = disturb(clip.samples, RATE, cond, 77 + k);
+      const track = trackPitch(d.samples, RATE);
+      const timings = spansOf(clip.timings, d.shiftMs);
+      for (const way of ["energy", "timings"]) verdictsOf(maps[way], `${k}`, tones, (syllables) => scoreTones({ samples: d.samples, sampleRate: RATE, syllables, speaker: clip.range, track, timings: way === "timings" ? timings : null }));
+    }
+    return maps;
+  };
+  const clean = run(NOISE_CONDITIONS[0]);
+  const bound = { knockOnset: { energy: [0, 0], timings: [0, 0] }, echo: { energy: [0, 2], timings: [0, 1] } };
+  for (const [key, ways] of Object.entries(bound)) {
+    const now = run(NOISE_CONDITIONS.find((c) => c.key === key));
+    for (const [way, [falseOff, wrongOk]] of Object.entries(ways)) {
+      const t = flips(clean[way], now[way]);
+      assert.ok(t.falseOff <= falseOff && t.wrongOk <= wrongOk, `${key}, ${way}: ${t.falseOff} new false alarms, ${t.wrongOk} new wrong oks (bound ${falseOff}, ${wrongOk})`);
+    }
+  }
 });
 
 test("generated phrases, per syllable: a sound between the syllables, a pause, a creak gap make no new false alarm or wrong ok", () => {
@@ -1386,6 +1421,45 @@ test("two sounds in one span are not one syllable: a knock inside the last sylla
   for (const labels of [[4, 1], [4, 4], [4, 2]]) {
     const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables;
     assert.deepEqual([r[0].verdict, r[1].verdict, r[1].reason], ["ok", "unsure", "apart"], `${labels}`);
+  }
+});
+
+test("two sounds in one span, close together: a knock 50 ms after a fourth tone is \"apart\" by the pitch leap, not the rise of a second tone", () => {
+  // A fourth tone ends low; a knock at 220 Hz 50 ms later, inside a span a
+  // recogniser drew 150 ms past the voice, is a rise to the voice track.
+  // Before ld-ne0.7 a second tone was passed as ok here (the silence
+  // between is too short for "apart" by quiet); now the 6-semitone leap
+  // across the hole is two sounds (contourOf's `leaps`).
+  for (const seed of [5, 11, 23]) {
+    const said = speak([4], { seed });
+    const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "nearKnockAfter50"), seed);
+    const timings = said.timings.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs + 150 }));
+    for (const label of [1, 2, 3, 4]) {
+      const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range, timings }).syllables[0];
+      assert.deepEqual([r.verdict, r.reason], ["unsure", "apart"], `seed ${seed}, labelled ${label}`);
+    }
+  }
+  // A cough 300 ms behind the voice, in a span drawn 450 ms past it, is
+  // apart by the silence between (counted from the cough's own edge). On
+  // this generated voice it was already; on one of the proof's phrases it
+  // was not (the proof report's coughAfter row, timings).
+  const said = speak([4, 1]);
+  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "coughAfter"), 5);
+  const timings = said.timings.map((t, i) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs + (i === 1 ? 450 : 0) }));
+  for (const labels of [[4, 1], [4, 4], [4, 2], [4, 3]]) {
+    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables;
+    assert.deepEqual([r[1].verdict, r[1].reason], ["unsure", "apart"], `${labels}`);
+  }
+});
+
+test("cut by energy, a loud run 50 ms after the speech is not joined to it when its pitch leaps: it is doubted, not read as the last syllable", () => {
+  // (A guard against regressions: this generated case was safe before
+  // ld-ne0.7 too; the proof's clips are where the join passed a wrong tone.)
+  const said = speak([4, 1]);
+  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "nearKnockAfter50"), 5);
+  for (const labels of [[4, 2], [4, 3], [4, 4]]) {
+    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables;
+    assert.notEqual(r[1].verdict, "ok", `${labels}: ${r[1].verdict} ${r[1].reason ?? ""}`);
   }
 });
 
@@ -1755,7 +1829,10 @@ test("lopsided spans: a span that took its neighbour's sound, and the sliver lef
   for (const labels of [[4, 1, 2], [1, 1, 2], [3, 4, 2]]) {
     const got = read(swallowed, ...labels);
     assert.ok(got.slice(0, 2).every((x) => !["ok", "off"].includes(x)), `${labels}: ${got}`);
-    assert.equal(got[0], "lopsided", `${labels}: ${got}`);
+    // The long span is two sounds when the pitch leaps across the 20 ms
+    // between them (the fourth tone ends low, the first starts high), and
+    // lopsided beside the sliver when it doesn't.
+    assert.ok(["lopsided", "apart"].includes(got[0]), `${labels}: ${got}`);
   }
   // Across a pause each span stands alone: a short syllable after one is
   // not held against the long one before it.

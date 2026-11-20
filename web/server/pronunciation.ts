@@ -34,7 +34,7 @@ import { isSoundText, soundClip } from "./voice.ts";
 // the server itself cached for that sound or phrase (the same file
 // /api/voice/sound and /api/practice/audio serve), decoded on the server
 // and analysed once per clip (scripts/model-analysis.mjs: at most one
-// Azure call per clip, ever). The learner's take is never sent again: its
+// Azure call per clip and record version). The learner's take is never sent again: its
 // frames came back with its marks.
 //
 // Mounted with wrap's `learner: true`: the page must name the session's

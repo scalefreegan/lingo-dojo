@@ -191,7 +191,7 @@ test("the card's model: made once from the server's own audio, one Azure call, t
   assert.deepEqual([synths.length - s0, azureCalls.length - a0], [1, 1]);
   // On disk: one record and one ledger, named by the server's own key.
   const files = fs.readdirSync(analysisDir).sort();
-  assert.ok(files.every((f) => /^[0-9a-f]{64}-[0-9a-f]{24}\.(json|azure)$/.test(f)), files.join());
+  assert.ok(files.every((f) => /^[0-9a-f]{64}-[0-9a-f]{24}\.(json|azure-v\d+)$/.test(f)), files.join());
 });
 
 test("per account: another user's same text is their own clip and their own call", async () => {

@@ -2,7 +2,7 @@
 // from (compare mode, ld-ne0.9; docs/VOICE.md §Compare mode):
 //
 //   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.json   the record
-//   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.azure  the Azure ledger
+//   <audio dir>/analysis/<audio key>-<sha256 of the audio, 24 hex>.azure-v<N>  the Azure ledger
 //
 // The audio key is scripts/audio-cache.mjs's (the user, provider, voice,
 // model, format, locale, speed and text), so a record is per user like the
@@ -16,7 +16,11 @@
 // characters, never audio), decodes it itself (scripts/audio-decode.mjs)
 // and analyses it in a worker. So a client can't poison a record.
 //
-// One Azure call per clip, ever. The ledger file is created exclusively
+// One Azure call per clip and record version (MODEL_RECORD_VERSION, the N
+// in the ledger's name): a version bump means the old records are wrong, so
+// starting fresh must be able to ask Azure again, once; an older version's
+// ledger (`.azure` was version 2's) no longer counts and is pruned with its
+// clip like any other file. The ledger file is created exclusively
 // (O_EXCL) at the moment the call is about to go, before the request, and
 // never removed while its audio is kept: a crash mid-call, a failure, a
 // second request at the same time (in this process or another) and a
@@ -37,11 +41,14 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { audioDir } from "./audio-cache.mjs";
-import { isModelRecord } from "./pronunciation-compare.mjs";
+import { MODEL_RECORD_VERSION, isModelRecord } from "./pronunciation-compare.mjs";
 
 const KEY_RE = /^[0-9a-f]{64}$/;
 const ID_RE = /^([0-9a-f]{64})-[0-9a-f]{24}$/;
-const FILE_RE = /^([0-9a-f]{64})-[0-9a-f]{24}\.(json|azure)$/;
+const FILE_RE = /^([0-9a-f]{64})-[0-9a-f]{24}\.(json|azure(?:-v\d+)?)$/;
+
+/** This version's ledger extension. */
+const LEDGER = `azure-v${MODEL_RECORD_VERSION}`;
 
 /** Where records live: `analysis/` inside the audio cache's directory. */
 export function analysisDir(env = process.env) {
@@ -85,7 +92,7 @@ export function writeAnalysis(id, record, { dir = analysisDir() } = {}) {
 
 /** Whether the one Azure call for this clip was ever claimed. */
 export function azureClaimed(id, { dir = analysisDir() } = {}) {
-  return fs.existsSync(fileOf(dir, id, "azure"));
+  return fs.existsSync(fileOf(dir, id, LEDGER));
 }
 
 /** Claim the clip's one Azure call: true when this caller created the
@@ -94,7 +101,7 @@ export function azureClaimed(id, { dir = analysisDir() } = {}) {
 export function claimAzure(id, { dir = analysisDir(), now = new Date() } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
-    fs.writeFileSync(fileOf(dir, id, "azure"), `${now.toISOString()}\n`, { flag: "wx", mode: 0o600 });
+    fs.writeFileSync(fileOf(dir, id, LEDGER), `${now.toISOString()}\n`, { flag: "wx", mode: 0o600 });
     return true;
   } catch (e) {
     if (e?.code === "EEXIST") return false;

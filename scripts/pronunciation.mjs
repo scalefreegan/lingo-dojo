@@ -668,9 +668,12 @@ function speechRuns(track, rules) {
     for (; j < n && f0[j] > 0; j++) if (rms[j] > top) top = rms[j];
     // The tracker loses a frame or two inside a vowel (where the period
     // changes, at the bottom of a fall): voice either side of so short a
-    // hole is one run.
+    // hole is one run, if it carries on near the pitch it stopped at. A
+    // step of JUMP_ST or more across the hole is another sound (a knock
+    // just after the last word), and it is left a run of its own, to be
+    // doubted like any other.
     const prev = runs[runs.length - 1];
-    if (prev && i - prev.to <= join) {
+    if (prev && i - prev.to <= join && Math.abs(hzToSt(f0[i]) - hzToSt(f0[prev.to - 1])) < JUMP_ST) {
       prev.to = j;
       prev.top = Math.max(prev.top, top);
     } else runs.push({ from: i, to: j, top });
@@ -1122,6 +1125,12 @@ const CREAK_MAX_ZCR = 0.12;
 // frame. Seven is also where trackPitch cuts a run when it looks for octave
 // slips.
 const JUMP_ST = 7;
+// Across a hole of a frame or more in the voicing, a voice carries on
+// near where it stopped; this far from it is another sound (contourOf's
+// `leaps`). Lower than JUMP_ST because a knock at a voice's own pitch
+// plus a few semitones is still a knock. Set on the proof's synthesized
+// clips with a knock on the first or after the last sound (IN-SAMPLE).
+const LEAP_ST = 6;
 // A stretch this short between such jumps (frames) is a glitch, not part
 // of the contour.
 const GLITCH_FRAMES = 3;
@@ -1143,7 +1152,7 @@ function contourOf(track, startMs, endMs) {
       last = i;
     }
   }
-  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, mended: 0, quietMs: 0, peak: 0, periodicity: 0 };
+  if (first < 0) return { points: [], voicedMs: 0, gaps: 0, creak: 0, jumps: 0, leaps: 0, mended: 0, quietMs: 0, peak: 0, periodicity: 0 };
   let peak = 0;
   for (let i = a; i < b; i++) if (rms[i] > peak) peak = rms[i];
   const points = [];
@@ -1187,6 +1196,28 @@ function contourOf(track, startMs, endMs) {
       } else if (++quietNow > quiet) quiet = quietNow;
     }
   }
+  // …and a silence between the voice and a loud sound with no pitch on
+  // either side of it in the span: the voiced part read here may be a
+  // cough in a span a recogniser drew long past the end of a word said
+  // without voice, and the word the stretch of sound before the silence.
+  const loudAt = (i) => rms[i] > peak * 0.15;
+  const quietRun = (from, to) => {
+    let best = 0;
+    let now = 0;
+    for (let i = from; i < to; i++) now = loudAt(i) ? 0 : now + 1, best = Math.max(best, now);
+    return best;
+  };
+  let soundFrom = first;
+  for (let i = a; i < first; i++) if (loudAt(i)) {
+    soundFrom = i;
+    break;
+  }
+  let soundTo = last;
+  for (let i = b - 1; i > last; i--) if (loudAt(i)) {
+    soundTo = i;
+    break;
+  }
+  quiet = Math.max(quiet, quietRun(soundFrom, first), quietRun(last + 1, soundTo));
   // Most such jumps are a frame or three at the edge of a voiced run: the
   // tracker's glitch where the voice starts or stops, or the neighbouring
   // syllable's pitch where two meet without a gap (a child's fourth tone
@@ -1224,7 +1255,14 @@ function contourOf(track, startMs, endMs) {
       for (let k = firstKept + 1; k < lastKept; k++) if (pieces[k].length <= GLITCH_FRAMES) mended++;
     }
   }
-  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, mended, quietMs: quiet * hopMs, peak, periodicity: per / points.length };
+  // A step of LEAP_ST or more across a hole in the voicing: the pitch on
+  // one side is not the same voice carrying on but another sound at its
+  // own pitch, a knock just after the last word or just before the first.
+  // The quiet between the two may be shorter than `apartMs` (a frame's
+  // window smears them together), but the pitch says they are two sounds.
+  let leaps = 0;
+  for (let k = 1; k < points.length; k++) if (points[k].i - points[k - 1].i >= 2 && Math.abs(points[k].st - points[k - 1].st) >= LEAP_ST) leaps++;
+  return { points, voicedMs: points.length * hopMs, spanFrames: points[points.length - 1].i - points[0].i + 1, gaps, creak, lead, jumps, leaps, mended, quietMs: quiet * hopMs, peak, periodicity: per / points.length };
 }
 
 /** Five evenly spaced medians over the voiced points, the onset trimmed:
@@ -1598,6 +1636,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     // that doesn't survive that was resting on the edge (TIMING_RULES).
     const nudged = jitteredTimings(timings, seconds * 1000, timingRules);
     const others = nudged.map(reading);
+    const agrees = (o, s, i) => o.syllables[i].reason === "apart" || (o.syllables[i].verdict === s.verdict && o.syllables[i].heardTone === s.heardTone);
     const out = read.syllables.map((s, i) => {
       if (s.verdict === "unsure") return s;
       if (lopsided.has(i)) return { ...s, verdict: "unsure", confidence: 0, reason: "lopsided" };
@@ -1605,7 +1644,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
       // short to move, or fills the recording): nothing has tested its
       // edges, and agreement of no readings is not agreement.
       if (timingRules.jitterMs > 0 && !nudged.some((t) => t[i].startMs !== timings[i].startMs || t[i].endMs !== timings[i].endMs)) return { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
-      return others.every((o) => o.syllables[i].reason === "apart" || (o.syllables[i].verdict === s.verdict && o.syllables[i].heardTone === s.heardTone)) ? s : { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
+      return others.every((o) => agrees(o, s, i)) ? s : { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
     });
     return result(out, { speaker: read.own, timed: "given", readings: 1 + others.length });
   }
@@ -1696,8 +1735,7 @@ function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
     const margin = judgedTones.length ? Math.min(...judgedTones.map((t) => margins[t])) : -Infinity;
     const result = {
       ...base, heardTone: tone, belief: Object.fromEntries(Object.entries(belief).map(([k, v]) => [k, round3(v)])), quality: round3(quality),
-      margin: Number.isFinite(margin) ? round3(margin) : null, voicedMs: c.voicedMs, ...(creaky ? { creaky: true } : {}),
-    };
+      margin: Number.isFinite(margin) ? round3(margin) : null, voicedMs: c.voicedMs, ...(creaky ? { creaky: true } : {}),    };
 
     // The neutral tone has no contour of its own: its pitch is set by the
     // tone before it. Not judged in v1.
@@ -1721,6 +1759,11 @@ function readTones({ tr, syllables, cuts, trust, speaker, rules }) {
     // is creaky as well: two signs at once that the tracker lost the
     // voice there, and too little left to say "ok" on.
     if (c.jumps || (c.mended && creaky)) return { ...result, reason: "octave" };
+    // Two sounds as well: a voiced part that starts LEAP_ST or more from
+    // where the one before it stopped, across a hole (contourOf's `leaps`;
+    // after the octave check, so that a slip the tracker made, with a
+    // glitch taken out beside it, is still called one).
+    if (c.leaps) return { ...result, reason: "apart" };
     // Creak in the middle of a vowel is what the bottom of a third tone
     // sounds like, so it supports an expected third tone (unless the voiced
     // part rules a third tone out).
