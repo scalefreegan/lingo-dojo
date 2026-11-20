@@ -12,6 +12,17 @@
 export const FLOOR_MULTIPLE = 3;
 export const MIN_THRESHOLD = { conversation: 0.015, pitch: 0.004 } as const;
 
+/** The room's level from the calibration window's per-tick RMS values: the
+ *  quietest tick, not the mean. A learner who starts talking inside the
+ *  window (push-to-talk, a click then a word) would otherwise lift the
+ *  floor, and with a low minimum the floor sets the threshold: a quiet
+ *  voice heard during calibration would then never cross its own 3x
+ *  (PR #40 review). A tick is ~21 ms of steady noise, whose RMS barely
+ *  varies, so the quietest is still the room. No ticks: 0. */
+export function noiseFloor(levels: readonly number[]): number {
+  return levels.length ? Math.min(...levels) : 0;
+}
+
 export function pauseThreshold(floorRms: number, processing: keyof typeof MIN_THRESHOLD): number {
   return Math.max(MIN_THRESHOLD[processing], floorRms * FLOOR_MULTIPLE);
 }
