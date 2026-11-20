@@ -95,9 +95,14 @@ a missing or outdated database (the reason is in the log).
 `web/vite.config.ts` pins the dev server to **38400** (`strictPort`), so the
 app's health check and URL are deterministic (Atlas is 38300, Wine Guide 38200, Basecamp
 38100; all four can run at once). `npm run dev` by hand uses the same port:
-if the app is running, the manual server fails loudly (by design); if the
-manual server is running first, the app **adopts** it — and Quit then leaves
-it running, since the app doesn't kill what it didn't start. The same applies
+if the app is running, the manual server fails loudly (by design). **A fresh
+launch of the app restarts the server:** if this checkout's vite is already
+on the port (a manual `npm run dev`, or a server an earlier launch left
+running), it is stopped (TERM, then KILL after 10 s) and the app starts its
+own, so quitting and reopening the app always runs the current code. A
+worktree's server or any other process on the port is never stopped. A
+click while the app is already running only focuses the tab, and Quit still
+stops only a server this app started. The same applies
 to a server that outlives the 30s startup window: the launcher relinquishes
 ownership (so it can't kill a still-warming server), later clicks adopt it,
 and Quit leaves it — `pkill -f 'lingo-dojo/web.*vite'` by hand if you ever

@@ -22,6 +22,8 @@
 -- So the server runs as the BLOCKING child of "Lingo Dojo Server.app", a faceless
 -- helper bundle that stays alive exactly as long as the server does. This
 -- applet is the Dock face: Quit pkills vite, which unwinds npm → helper.
+-- A fresh launch restarts the server (stopExistingServer), so opening the
+-- app always runs the checkout's current code.
 --
 -- The server runs on the FIXED port below (strictPort in web/vite.config.ts),
 -- so health checks and the app URL are deterministic.
@@ -181,7 +183,50 @@ on ensureUp()
 	return false
 end ensureUp
 
+-- A fresh launch (the icon clicked while the Dock app isn't running) means
+-- "give me the app as it is now", so a server already on the port from
+-- this checkout is stopped first and a new one started: otherwise a
+-- server left running for days (a manual `npm run dev`, or one an earlier
+-- launch relinquished) keeps serving whatever it loaded, and quitting and
+-- reopening the app changes nothing. Only a server matching killPattern
+-- (this checkout's vite) is stopped: a worktree's server, or a stranger on
+-- the port, is never touched. A click while the app is running (reopen)
+-- still just focuses the tab.
+on stopExistingServer()
+	try
+		do shell script "pgrep -f " & quoted form of killPattern
+	on error
+		return -- none of ours running
+	end try
+	try
+		do shell script "echo " & quoted form of ("[launcher] fresh launch: stopping the running server " & (current date)) & " >> ~/Library/Logs/LingoDojo.log"
+	end try
+	try
+		do shell script "pkill -f " & quoted form of killPattern
+	end try
+	-- wait for it to let go of the port (TERM first, KILL after 10 s)
+	repeat with i from 1 to 30
+		if not portBound() then return
+		if i = 20 then
+			try
+				do shell script "pkill -9 -f " & quoted form of killPattern
+			end try
+		end if
+		delay 0.5
+	end repeat
+end stopExistingServer
+
+on portBound()
+	try
+		do shell script "lsof -nP -iTCP:38400 -sTCP:LISTEN -t"
+		return true
+	on error
+		return false
+	end try
+end portBound
+
 on run
+	stopExistingServer()
 	if ensureUp() then
 		openDashboard()
 	else
