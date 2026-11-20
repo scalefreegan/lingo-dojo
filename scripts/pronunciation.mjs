@@ -1433,7 +1433,51 @@ export const TIMING_RULES = Object.freeze({
   neighbourMs: 100,
   sliverMs: 100,
   lopsided: 3,
+  // Voice left outside the spans (ld-ne0.12): spans all drawn early or late
+  // by more than the jitter still look like syllables, but leave loud
+  // voiced sound hanging off the end of the last span or the start of the
+  // first, or in the gap between two neighbours. A voiced run at least
+  // `uncoveredMs` long that touches a span's edge (within `touchMs`) and
+  // is at least `uncoveredLoud` of the loudest voiced frame inside the
+  // spans (uncoveredVoice) says the spans are not where the speech is:
+  // nothing is judged ("edges"). This is the one look outside
+  // the spans besides pitchedBackground and, like it, can only withhold
+  // verdicts; a cough or hum touching a span's edge costs the recording.
+  uncoveredMs: 60,
+  touchMs: 30,
+  uncoveredLoud: 0.2,
 });
+
+/** The longest run, in ms, of loud voiced frames of the raw track that lies
+ *  outside every span and touches one: starts within `touchMs` of a span's
+ *  end, or ends within it of a span's start. "Loud" is `uncoveredLoud` of the
+ *  loudest voiced frame inside the spans. 0 when no rule or no span. */
+export function uncoveredVoice(track, spans, rules = TIMING_RULES) {
+  const raw = rawPitch(track);
+  const live = spans.filter(Boolean);
+  if (!(rules.uncoveredMs > 0) || !raw || !live.length) return 0;
+  const n = raw.length;
+  const hop = track.hopMs;
+  const inside = new Uint8Array(n);
+  for (const t of live) inside.fill(1, Math.max(0, Math.floor(t.startMs / hop)), Math.min(n, Math.ceil(t.endMs / hop)));
+  let peak = 0;
+  for (let i = 0; i < n; i++) if (inside[i] && raw[i] > 0 && track.rms[i] > peak) peak = track.rms[i];
+  if (!(peak > 0)) return 0;
+  const bar = peak * rules.uncoveredLoud;
+  const touch = Math.ceil(rules.touchMs / hop);
+  let longest = 0;
+  for (let i = 0; i < n;) {
+    if (inside[i] || !(raw[i] > 0 && track.rms[i] >= bar)) { i++; continue; }
+    let j = i;
+    while (j < n && !inside[j] && raw[j] > 0 && track.rms[j] >= bar) j++;
+    let near = false;
+    for (let k = Math.max(0, i - touch); k <= Math.min(n - 1, i + touch) && !near; k++) near = k !== i && inside[k] && k < i;
+    for (let k = Math.max(0, j - touch); k <= Math.min(n - 1, j + touch) && !near; k++) near = near || (inside[k] && k >= j);
+    if (near) longest = Math.max(longest, (j - i) * hop);
+    i = j;
+  }
+  return longest;
+}
 
 /** `timings` moved about by `rules.jitterMs`: all of them earlier, all
  *  later, and each boundary between two timed neighbours earlier and
@@ -1679,8 +1723,11 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     // that doesn't survive that was resting on the edge (TIMING_RULES).
     const nudged = jitteredTimings(timings, seconds * 1000, timingRules);
     const others = nudged.map(reading);
+    // Loud voice hanging off the spans: they are in the wrong place.
+    const hanging = timingRules.uncoveredMs > 0 && uncoveredVoice(raw, timings, timingRules) >= timingRules.uncoveredMs;
     const out = read.syllables.map((s, i) => {
       if (s.verdict === "unsure") return s;
+      if (hanging) return { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
       if (lopsided.has(i)) return { ...s, verdict: "unsure", confidence: 0, reason: "lopsided" };
       // No reading in which this syllable's own span was moved (it is too
       // short to move, or fills the recording): nothing has tested its

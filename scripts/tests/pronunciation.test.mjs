@@ -1844,7 +1844,7 @@ test("timings that are not a list are a timings problem, not a fall back to ener
  * that still look like spans (SPAN_ERRORS). Compared syllable by syllable
  * with the right spans. */
 test("wrong spans: with the guards no new false alarm and no new wrong ok; without them, wrong oks", () => {
-  const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0 };
+  const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0, uncoveredMs: 0 };
   const clipsAt = (gapMs) => [[4, 1, 2], [2, 4, 1], [1, 3, 4], [3, 2, 2], [1, 4], [4, 4, 1, 2]].map((tones, k) => {
     const said = speak(tones, { seed: 11 + k, ms: 240, gapMs });
     const samples = led(said.samples, 500);
@@ -1901,8 +1901,17 @@ test("wrong spans: with the guards no new false alarm and no new wrong ok; witho
   // left 110 ms: no sliver), and spans 100 ms out, run-together syllables
   // still get false alarms and wrong oks. The proof's table has the same
   // rows on the synthesized voices.
+  // Spans all 100 or 150 ms out leave voice hanging off the first or last
+  // span (ld-ne0.12): with that check off they pass wrong tones; with it,
+  // nothing, and no catch on right spans is lost.
+  const noHang = study({ ...TIMING_RULES, uncoveredMs: 0 });
+  for (const key of ["shift-150", "shift-100", "shift100", "shift150"]) {
+    assert.deepEqual([close[key].falseOff, close[key].wrongOk], [0, 0], `${key}, 20 ms apart: ${JSON.stringify(close[key].keys)}`);
+    assert.ok(noHang[key].falseOff + noHang[key].wrongOk > 0, `${key} without the hanging-voice check`);
+  }
+  assert.equal(close.clean.caught, noHang.clean.caught);
   assert.ok(close.swallowNext110.falseOff + close.swallowNext110.wrongOk > 0);
-  assert.ok(close.shift100.falseOff + close.shift100.wrongOk > 0);
+  assert.ok(close.boundary100.falseOff + close.boundary100.wrongOk > 0);
 });
 
 test("lopsided spans: a span that took its neighbour's sound, and the sliver left beside it, are not judged", () => {
