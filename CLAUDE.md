@@ -177,7 +177,9 @@ drills are not wired (no reliable target text per turn).
   through `forLearner()` / `forUser()` / `forLanguageProfile()`
   (`scripts/db/owned.ts`), never a bare query; account queries live in
   `scripts/db/accounts.ts`. The dev server
-  refuses to start until `npm run db:setup` has run.
+  refuses to start until `npm run db:setup` has run; a Vite restart onto a
+  database that is behind comes up anyway with `/api` answering 503 until
+  `npm run db:migrate` (`web/server/dbGate.ts`, never a throw there).
 - **Branches and worktrees never point at the real database.** Set
   `DATABASE_URL` to a scratch database and `LINGO_READER_ROLE` to a scratch
   role (a linked worktree refuses to start or migrate without the first,

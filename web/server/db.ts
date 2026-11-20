@@ -67,15 +67,39 @@ export async function closeDb(): Promise<void> {
 }
 
 const FIX = "Run `npm run db:setup` (creates the database if needed and applies migrations), then start the server again.";
+/** The end of every fix for a server already running (dbGate.ts): it
+ *  re-checks by itself, so nothing needs restarting. */
+const BY_ITSELF = "the API comes back by itself once the database is current, with no restart.";
+
+/**
+ * The boot check's refusal. `message` is for the terminal at a first start:
+ * where the database is and what to run before starting again. `problem` and
+ * `liveFix` are the same news for a server that is already running (a Vite
+ * restart, dbGate.ts), without the URL, so they may reach the page too.
+ */
+export class DatabaseNotReady extends Error {
+  /** "is behind: 1 migration(s) of 10 not applied", "cannot be reached: …" */
+  readonly problem: string;
+  /** What to run while the server keeps running. */
+  readonly liveFix: string;
+  constructor(message: string, problem: string, liveFix: string) {
+    super(message);
+    this.name = "DatabaseNotReady";
+    this.problem = problem;
+    this.liveFix = liveFix;
+  }
+}
 
 /**
  * The boot check: the database answers and its recorded migrations match the
  * committed ones exactly (scripts/db/migrations.mjs: behind, skipped, ahead
- * and diverged all refuse). Throws an Error whose message says what is wrong
+ * and diverged all refuse). Throws a DatabaseNotReady saying what is wrong
  * and what to run; a half-migrated schema would otherwise fail later, far
  * from the cause. It only reads; migrating is always an explicit
- * `npm run db:setup`. In a linked worktree with no DATABASE_URL,
- * databaseUrl() throws before anything connects (config.mjs).
+ * `npm run db:migrate` / `db:setup`. In a linked worktree with no
+ * DATABASE_URL, databaseUrl() throws before anything connects (config.mjs).
+ * api.ts runs it whenever the plugin starts, and dbGate.ts again while a
+ * restarted server waits for its database.
  */
 export async function checkDatabase(url?: string): Promise<{ applied: number; total: number }> {
   url ??= databaseUrl();
@@ -85,21 +109,34 @@ export async function checkDatabase(url?: string): Promise<{ applied: number; to
     await client.connect();
   } catch (e) {
     const err = e as { code?: string; message?: string };
+    const missing = err.code === "3D000";
     const why =
-      err.code === "3D000" ? "the database does not exist"
+      missing ? "the database does not exist"
       : err.code === "ECONNREFUSED" ? "nothing is listening (is Postgres running? brew services start postgresql@17)"
       : err.message || String(e);
-    throw new Error(`Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`);
+    await client.end().catch(() => {});
+    throw new DatabaseNotReady(
+      `Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`,
+      `cannot be reached: ${why}`,
+      missing ? `Run \`npm run db:setup\`; ${BY_ITSELF}` : `Once it answers, ${BY_ITSELF}`,
+    );
   }
   try {
     const query = async (text: string, params?: unknown[]) => (await client.query(text, params)).rows;
     const state = await migrationState(query);
     if (state.status !== "current") {
-      const fix =
-        state.status === "ahead" || state.status === "diverged"
-          ? "This checkout can't migrate it; point DATABASE_URL at a database for this branch (or update the checkout)."
-          : FIX;
-      throw new Error(`Lingo Dojo's database at ${where} is ${describeMigrations(state)}.\n${fix}`);
+      const foreign = state.status === "ahead" || state.status === "diverged";
+      const fix = foreign
+        ? "This checkout can't migrate it; point DATABASE_URL at a database for this branch (or update the checkout)."
+        : FIX;
+      const problem = `is ${describeMigrations(state)}`;
+      throw new DatabaseNotReady(
+        `Lingo Dojo's database at ${where} ${problem}.\n${fix}`,
+        problem,
+        foreign
+          ? "This checkout can't migrate it; update the checkout, or point DATABASE_URL at a database for this branch and restart."
+          : `Run \`npm run db:migrate\`; ${BY_ITSELF}`,
+      );
     }
     // Not fatal: without its policies or grants the agent's bank tools fail
     // closed (no rows, or an error) and everything else works. Said at boot
