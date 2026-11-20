@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Plugin } from "vite";
+import type { Plugin, ViteDevServer } from "vite";
 import type { ErrorCode, ErrorReply } from "../shared/wire.ts";
 import {
   handleAuth, handleFirstRun, handleLearners, handleLogin, handleMe, pageLearner, sessionFor, type Ctx, type LearnerCtx, type PublicCtx,
@@ -11,7 +11,8 @@ import { handlePhrases } from "./phrases.ts";
 import { handlePractice } from "./practice.ts";
 import { handlePronunciation } from "./pronunciation.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
-import { checkDatabase, setDb, type Db } from "./db.ts";
+import { checkDatabase, DatabaseNotReady, setDb, type Db } from "./db.ts";
+import { openDatabaseGate, type DatabaseGate, type GateLog } from "./dbGate.ts";
 import { HttpError, sendJson } from "./sse.ts";
 import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceSound, handleVoiceTurn } from "./voice.ts";
 
@@ -113,80 +114,124 @@ export function wrap(fn: PublicHandler | UserHandler | LearnerHandler, opts: { a
   };
 }
 
-export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plugin {
+/** Set once the plugin has started in this process. On globalThis because
+ *  a Vite restart re-imports the config, and with it a fresh copy of this
+ *  module; the process (and this flag) stays. */
+const STARTED = Symbol.for("lingo-dojo.api.started");
+export type StartedFlag = { [STARTED]?: boolean };
+
+/**
+ * The boot check (docs/DATA.md). Vite awaits configureServer, so on the
+ * first start a database that is missing, down or behind on migrations stops
+ * `npm run dev` with checkDatabase's message (what to run) instead of
+ * starting a server whose first database route fails far from the cause.
+ * On a restart (a server file changed, as a `git pull` does) it never
+ * throws: the new code comes up behind a gate that answers 503 until the
+ * database is current (dbGate.ts says why a throw here is worse).
+ */
+export async function bootGate(
+  logger: GateLog,
+  { check: runCheck = checkDatabase, flag = globalThis as StartedFlag }: { check?: () => Promise<{ applied: number }>; flag?: StartedFlag } = {},
+): Promise<DatabaseGate> {
+  let applied = 0;
+  const check = async () => {
+    ({ applied } = await runCheck());
+  };
+  const gate = await openDatabaseGate(check, { log: logger });
+  if (gate.error && !flag[STARTED]) throw gate.error;
+  flag[STARTED] = true;
+  if (gate.error) {
+    const fix = gate.error instanceof DatabaseNotReady ? gate.error.liveFix : "";
+    logger.error(
+      `${gate.error.message.split("\n")[0]}\n` +
+        `Restarted with the new code anyway; until then every /api request answers 503. ${fix}`,
+    );
+  } else {
+    logger.info(`  database ready (${applied} migration(s) applied)`);
+  }
+  return gate;
+}
+
+export function apiPlugins(
+  opts: { checkDatabase?: boolean; db?: Db; boot?: { check: () => Promise<{ applied: number }>; flag: StartedFlag } } = {},
+): Plugin {
   // The HTTP tests hand in an in-process PGlite: the real routes, no server.
   if (opts.db) setDb(opts.db);
   return {
     name: "lingo-dojo-api",
     apply: "serve",
     configureServer(server) {
-      // Logins (auth.ts). The three public routes are mounted on their own
-      // paths, ahead of /api/auth, so nothing else under it is public by
-      // accident.
-      server.middlewares.use("/api/auth/login", wrap(handleLogin, { auth: "public" }));
-      server.middlewares.use("/api/auth/me", wrap(handleMe, { auth: "public" }));
-      server.middlewares.use("/api/auth/first-run", wrap(handleFirstRun, { auth: "public" }));
-      server.middlewares.use("/api/auth", wrap(handleAuth));
-      server.middlewares.use("/api/learners", wrap(handleLearners));
-      // No cache: every library route re-reads content/ from disk, so an
-      // edit by the agent or an editor is live on the next request. The
-      // library itself (GET /api/content) is readable in either mode. The
-      // rest act for the active learner (`learner: true`: the page must
-      // name that learner): the profile is its row, its packs, folders and
-      // pack revisions are its rows in the database (no other learner's,
-      // not even the same account's), and the mode its assembles and
-      // exports work in is its mode.
-      server.middlewares.use("/api/content", wrap(handleContent));
-      server.middlewares.use("/api/profile", wrap(handleProfile, { learner: true }));
-      server.middlewares.use("/api/packs", wrap(handlePacks, { learner: true }));
-      server.middlewares.use("/api/folders", wrap(handleFolders, { learner: true }));
-      server.middlewares.use("/api/pack-revisions", wrap(handlePackRevisions, { learner: true }));
-      // Library scenes and collections the active language has hidden
-      // (hidden.ts): a per-language preference, the library itself untouched.
-      server.middlewares.use("/api/hidden-scenes", wrap(handleHiddenScenes, { learner: true }));
-      server.middlewares.use("/api/assemble", wrap(handleAssemble, { learner: true }));
-      server.middlewares.use("/api/export", wrap(handleExport, { learner: true }));
-      // The embedded agent (SSE, auto-commit of content/ after each turn) and
-      // its model setting: it writes the shared library, so admins only.
-      server.middlewares.use("/api/chat", wrap(handleChat, { auth: "admin" }));
-      server.middlewares.use("/api/settings", wrap(handleSettings, { auth: "admin" }));
-      // Voice practice (voice.ts). A turn, a cast and the character card's
-      // cached sounds are for the learner;
-      // adding a Voice Library voice changes the owner's ElevenLabs account,
-      // so it is an admin's. Mounted ahead of /api/voice, whose handler has
-      // the rest (settings, voices, transcribe, speak, library search).
-      server.middlewares.use("/api/voice/turn", wrap(handleVoiceTurn, { learner: true }));
-      server.middlewares.use("/api/voice/cast", wrap(handleVoiceCast, { learner: true }));
-      server.middlewares.use("/api/voice/sound", wrap(handleVoiceSound, { learner: true }));
-      server.middlewares.use("/api/voice/library/add", wrap(handleVoiceLibraryAdd, { auth: "admin" }));
-      server.middlewares.use("/api/voice", wrap(handleVoice));
-      // Saved conversations (conversations.ts): the learner's own, so the
-      // page must name that learner, like the turn that writes them. End
-      // comes from a page-unload keepalive fetch too, which carries the
-      // same header and cookie, so it passes the same checks.
-      server.middlewares.use("/api/conversations", wrap(handleConversations, { learner: true }));
-      // The phrase bank (phrases.ts): the active language's own, like its
-      // packs and History.
-      server.middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
-      // Practice (practice.ts): flashcards over that same bank.
-      server.middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
-      // Pronunciation checks (pronunciation.ts): a recording scored against
-      // known text for the active learner's language, Mandarin only; Azure
-      // with keys for any learner, local otherwise. Nothing is stored.
-      server.middlewares.use("/api/pronunciation", wrap(handlePronunciation, { learner: true }));
-      // Anything else under /api is a typo, not the SPA shell: answer in the
-      // envelope the client already parses instead of index.html.
-      server.middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));
-      // The boot check (docs/DATA.md): Vite awaits this hook, so a database
-      // that is missing, down or behind on migrations stops `npm run dev`
-      // with checkDatabase's message (what to run) instead of starting a
-      // server whose first database route fails far from the cause. The
-      // HTTP tests mount the plugin with checkDatabase: false and their own
-      // PGlite (db); they never need a Postgres server.
-      if (opts.checkDatabase === false) return;
-      return checkDatabase().then(({ applied }) => {
-        server.config.logger.info(`  database ready (${applied} migration(s) applied)`);
+      // The HTTP tests mount the plugin with checkDatabase: false and their
+      // own PGlite (db); they never need a Postgres server, and they call
+      // this hook without awaiting it, so the routes go on synchronously.
+      if (opts.checkDatabase === false) return mountRoutes(server.middlewares);
+      const logger = { info: (m: string) => server.config.logger.info(m), error: (m: string) => server.config.logger.error(m, { timestamp: true }) };
+      return bootGate(logger, opts.boot).then((gate) => {
+        // Ahead of every route, so no handler runs on a stale schema.
+        server.middlewares.use("/api", gate.middleware);
+        mountRoutes(server.middlewares);
       });
     },
   };
+}
+
+/** Every /api mount, in order (the first matching prefix wins). */
+function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
+  // Logins (auth.ts). The three public routes are mounted on their own
+  // paths, ahead of /api/auth, so nothing else under it is public by
+  // accident.
+  middlewares.use("/api/auth/login", wrap(handleLogin, { auth: "public" }));
+  middlewares.use("/api/auth/me", wrap(handleMe, { auth: "public" }));
+  middlewares.use("/api/auth/first-run", wrap(handleFirstRun, { auth: "public" }));
+  middlewares.use("/api/auth", wrap(handleAuth));
+  middlewares.use("/api/learners", wrap(handleLearners));
+  // No cache: every library route re-reads content/ from disk, so an
+  // edit by the agent or an editor is live on the next request. The
+  // library itself (GET /api/content) is readable in either mode. The
+  // rest act for the active learner (`learner: true`: the page must
+  // name that learner): the profile is its row, its packs, folders and
+  // pack revisions are its rows in the database (no other learner's,
+  // not even the same account's), and the mode its assembles and
+  // exports work in is its mode.
+  middlewares.use("/api/content", wrap(handleContent));
+  middlewares.use("/api/profile", wrap(handleProfile, { learner: true }));
+  middlewares.use("/api/packs", wrap(handlePacks, { learner: true }));
+  middlewares.use("/api/folders", wrap(handleFolders, { learner: true }));
+  middlewares.use("/api/pack-revisions", wrap(handlePackRevisions, { learner: true }));
+  // Library scenes and collections the active language has hidden
+  // (hidden.ts): a per-language preference, the library itself untouched.
+  middlewares.use("/api/hidden-scenes", wrap(handleHiddenScenes, { learner: true }));
+  middlewares.use("/api/assemble", wrap(handleAssemble, { learner: true }));
+  middlewares.use("/api/export", wrap(handleExport, { learner: true }));
+  // The embedded agent (SSE, auto-commit of content/ after each turn) and
+  // its model setting: it writes the shared library, so admins only.
+  middlewares.use("/api/chat", wrap(handleChat, { auth: "admin" }));
+  middlewares.use("/api/settings", wrap(handleSettings, { auth: "admin" }));
+  // Voice practice (voice.ts). A turn, a cast and the character card's
+  // cached sounds are for the learner;
+  // adding a Voice Library voice changes the owner's ElevenLabs account,
+  // so it is an admin's. Mounted ahead of /api/voice, whose handler has
+  // the rest (settings, voices, transcribe, speak, library search).
+  middlewares.use("/api/voice/turn", wrap(handleVoiceTurn, { learner: true }));
+  middlewares.use("/api/voice/cast", wrap(handleVoiceCast, { learner: true }));
+  middlewares.use("/api/voice/sound", wrap(handleVoiceSound, { learner: true }));
+  middlewares.use("/api/voice/library/add", wrap(handleVoiceLibraryAdd, { auth: "admin" }));
+  middlewares.use("/api/voice", wrap(handleVoice));
+  // Saved conversations (conversations.ts): the learner's own, so the
+  // page must name that learner, like the turn that writes them. End
+  // comes from a page-unload keepalive fetch too, which carries the
+  // same header and cookie, so it passes the same checks.
+  middlewares.use("/api/conversations", wrap(handleConversations, { learner: true }));
+  // The phrase bank (phrases.ts): the active language's own, like its
+  // packs and History.
+  middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
+  // Practice (practice.ts): flashcards over that same bank.
+  middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
+  // Pronunciation checks (pronunciation.ts): a recording scored against
+  // known text for the active learner's language, Mandarin only; Azure
+  // with keys for any learner, local otherwise. Nothing is stored.
+  middlewares.use("/api/pronunciation", wrap(handlePronunciation, { learner: true }));
+  // Anything else under /api is a typo, not the SPA shell: answer in the
+  // envelope the client already parses instead of index.html.
+  middlewares.use("/api", wrap((_req, res) => sendJson(res, 404, { error: "no such route" }), { auth: "public" }));
 }

@@ -107,7 +107,16 @@ sessions, §4); the import came with phase 2. The dev
 server checks on boot that the database answers and migrations are current,
 and refuses to start with a message naming `npm run db:setup` if not (a
 half-migrated schema fails in confusing ways later). The check only reads; it
-never migrates on its own. The HTTP tests mount the plugin with
+never migrates on its own. A Vite *restart* (a server file changed, as a
+`git pull` does) never refuses: a throw there would leave the old code
+serving and a half-built server whose watcher later fights the live one for
+the port. It comes up with the new code, and while the database is not
+current every `/api` request gets a 503 naming what to run, re-checking at
+most every 2 s; the first request after `npm run db:migrate` (and at least 2 s after the
+last check) finds it current and the API is back, no restart (`web/server/dbGate.ts`, bead
+ld-tdd). Migrating stays an explicit step even then: a pulled migration may
+be irreversible, and a branch's must never reach the real database by
+accident. The HTTP tests mount the plugin with
 `apiPlugins({ checkDatabase: false, db })`, `db` being a `freshDb()` PGlite
 that every route then uses (`setDb` in `web/server/db.ts`), so they run the
 real routes and need no Postgres.
