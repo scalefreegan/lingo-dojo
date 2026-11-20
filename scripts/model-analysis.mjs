@@ -187,8 +187,8 @@ export async function modelAnalysis({ key, audio, type, chars = [], decode, azur
   const hit = readAnalysis(id, { dir });
   // A record made without Azure, while Azure can be asked now, its one call
   // never claimed, and its retry time (if any) come: worth making again.
-  const retry = hit && hit.azure === "skipped" && azureReady && !azureClaimed(id, { dir }) && !(Number.isFinite(hit.retryAt) && hit.retryAt > now);
-  if (hit && !retry) return { record: hit, cached: true };
+  const retryable = (rec) => rec.azure === "skipped" && azureReady && !azureClaimed(id, { dir }) && !(Number.isFinite(rec.retryAt) && rec.retryAt > now);
+  if (hit && !retryable(hit)) return { record: hit, cached: true };
   const running = inflight.get(id);
   if (running) return running;
   const store = (record) => {
@@ -211,6 +211,11 @@ export async function modelAnalysis({ key, audio, type, chars = [], decode, azur
       return { unavailable: "unreadable" };
     }
     if (!wav) return { unavailable: "no_decoder" };
+    // Decoding takes a while, and a request that missed `inflight` (another
+    // process, or one that finished between) may have stored a record meanwhile:
+    // read again before claiming anything.
+    const fresh = readAnalysis(id, { dir });
+    if (fresh && !retryable(fresh)) return { record: fresh, cached: true };
     // Azure's spans from an older version's record: read on them again,
     // with no call and no ledger.
     const prior = priorAzureSpans(readRaw(id, dir), chars);

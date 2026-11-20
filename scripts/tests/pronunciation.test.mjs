@@ -1495,6 +1495,24 @@ test("two sounds in one span, a silence between: a cough after a syllable said i
   }
 });
 
+test("two sounds in one span, a silence between: a cough BEFORE a syllable said in creak is \"apart\" too (the silence counted to the creak's last loud frame)", () => {
+  // The mirror of the test above: the only pitch is the cough's, now at the
+  // start of the span, so the silence is counted from the last loud frame
+  // after the voiced one (contourOf's soundTo). Without that half the
+  // silence is not seen and the cough's pitch is read as the syllable's.
+  for (const tone of [2, 3, 4]) {
+    for (const seed of [5, 11, 23]) {
+      const said = speak([tone], { seed, creakOnset: 1 });
+      const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "coughBefore"), seed);
+      const timings = said.timings.map((t) => ({ startMs: t.startMs + d.shiftMs - 450, endMs: t.endMs + d.shiftMs }));
+      for (const label of [1, 2, 3, 4]) {
+        const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range, timings }).syllables[0];
+        assert.deepEqual([r.verdict, r.reason], ["unsure", "apart"], `said ${tone}, seed ${seed}, labelled ${label}`);
+      }
+    }
+  }
+});
+
 test("on Azure's spans of real clips, a fall across loud frames with no period in them is one voice, not two sounds", () => {
   // Adam's 爸 falls 7 semitones across five loud frames with no pitch kept
   // in them (creak at the turn of a fourth tone); Rachel's 去 in 一起去

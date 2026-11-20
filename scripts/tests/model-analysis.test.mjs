@@ -122,6 +122,24 @@ test("no call made (no keys, the cap, busy): 'skipped', and a later request may 
   fs.rmSync(audio, { recursive: true, force: true });
 });
 
+test("a record written while this request decodes is served: no Azure call, no ledger, no analysis", async () => {
+  const { audio, dir } = setup();
+  const id = analysisId(KEY, AUDIO);
+  const h = harness();
+  // Another request stores a finished record during our decode.
+  const written = { v: MODEL_RECORD_VERSION, engine: "azure", azure: "used", durationMs: 900, frames: { frameMs: 10, pitch: [null, 1], level: [-48, 0] }, syllables: [] };
+  const decode = async () => {
+    h.counts.decode++;
+    writeAnalysis(id, written, { dir });
+    return new Uint8Array([1, 2, 3]);
+  };
+  const r = await modelAnalysis({ key: KEY, audio: AUDIO, type: "audio/mpeg", dir, ...h, decode });
+  assert.deepEqual([r.cached, r.record.azure], [true, "used"]);
+  assert.deepEqual(h.counts, { decode: 1, azure: 0, analyse: 0 });
+  assert.equal(azureClaimed(id, { dir }), false);
+  fs.rmSync(audio, { recursive: true, force: true });
+});
+
 test("other audio under the same key is another clip; no decoder or an unreadable clip is not cached", async () => {
   const { audio, dir } = setup();
   const h = harness();

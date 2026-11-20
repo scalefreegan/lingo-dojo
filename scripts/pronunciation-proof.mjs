@@ -498,6 +498,12 @@ if (!voices.length && !args.has("--recordings")) {
   process.exit(1);
 }
 
+// Azure on the noisy audio itself (--azure-noise, PAID): a few clips sent
+// with a disturbance around them, to see whether its spans move. The
+// cached replies sit beside each clip as <text>.azure-noisy.<condition>.json.
+const AZURE_NOISE = { voices: ["say-tingting", "eleven-pNInz6obpgDQGcFmaJgB"], texts: ["我想喝水", "今天很热", "不客气"], conditions: ["room", "nearKnockBefore50", "nearKnockAfter50", "coughAfter", "secondVoice", "echo"] };
+const azureNoisyPath = (voice, text, cond) => path.join(DIR, voice, `${text}.azure-noisy.${cond}.json`);
+
 /** Azure's reply for a few clips WITH a disturbance around them
  *  (AZURE_NOISE: 2 voices × 3 phrases × 6 conditions, 36 requests at most,
  *  each once), the audio exactly as the noise study scores it. */
@@ -568,11 +574,6 @@ const SPANS_BEFORE_NE07 = [["0 / 1 / 42", "0 / 14 / 245"], ["0 / 3 / 27", "0 / 6
 // alarms, wrong tones passed as ok, right syllables marked ok (each right
 // syllable counted once, under its own labelling).
 const CLEAN_BEFORE_NE07 = { energy: { single: [111, 1, 9, 56], phrase: [201, 0, 57, 109] }, timings: { single: [101, 1, 8, 50], phrase: [153, 0, 40, 96] } };
-// Azure on the noisy audio itself (--azure-noise, PAID): a few clips sent
-// with a disturbance around them, to see whether its spans move. The
-// cached replies sit beside each clip as <text>.azure-noisy.<condition>.json.
-const AZURE_NOISE = { voices: ["say-tingting", "eleven-pNInz6obpgDQGcFmaJgB"], texts: ["我想喝水", "今天很热", "不客气"], conditions: ["room", "nearKnockBefore50", "nearKnockAfter50", "coughAfter", "secondVoice", "echo"] };
-const azureNoisyPath = (voice, text, cond) => path.join(DIR, voice, `${text}.azure-noisy.${cond}.json`);
 const azureTimes = new Map();
 function azureTimingsOf(v, text, truth, clip) {
   const key = `${v.id}|${text}`;

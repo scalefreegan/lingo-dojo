@@ -763,11 +763,13 @@ browser already sends, with no dependency:
    Azure's spans on noisy audio were measured once (36 synthesized
    clips, the proof's "Azure on the noisy audio"): its first span starts
    50 to 200 ms early when there is noise or a sound before the speech,
-   its last ends up to 220 ms late (300 to 500 ms in an echoing room),
+   its last ends up to 220 ms late (300 to 500 ms in a room with echo),
    and the boundaries between syllables barely move. Scored on those
    spans, the guards turned almost all of it into lost verdicts: no false
-   alarm, and one wrong tone passed as ok, in the echoing room (which is
-   not claimed safe).
+   alarm, and one wrong tone passed as ok, in the echo condition. The
+   scorer does not handle echo: it cannot tell reverberation from speech,
+   so a recording made in an echoing room may get a wrong tone passed as
+   ok. That is a known open gap (bead ld-ne0.10), not claimed safe.
 3. Cuts: the `timings`, or else `segmentSyllables`, which cuts the speech
    at its quietest, least voiced frames given the syllable count, kept on
    Scribe's character times when those are passed as `anchors` (below);
