@@ -93,8 +93,10 @@ the score reply carries the take's `frames`, `GET /api/pronunciation/model`
 (`scripts/audio-decode.mjs`: afconvert, else ffmpeg, else textbook shapes)
 and caches its analysis by the audio key in `<audio dir>/analysis/`, at
 most one Azure call per clip and record version (an O_EXCL ledger,
-`scripts/model-analysis.mjs`); the tips are pure rules in
-`web/shared/compare.ts`, never touching the scorer.
+`scripts/model-analysis.mjs`; none after a version bump where the old
+record holds Azure's spans: the clip is read again on them, `spansFrom`);
+the tips are pure rules in `web/shared/compare.ts`, never touching the
+scorer.
 Tone checks where the text is known (pronunciation stage 1, ld-ne0.2; no
 migration, docs/VOICE.md §Pronunciation in the app): `POST
 /api/pronunciation/score?text=` (`web/server/pronunciation.ts`, pure rules

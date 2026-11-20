@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { COMPARE_RULES, alignTakes, compareTips, describeTakes, framesIn, mapBack, mapThrough, syllableShape, textbookCurve, warpAnchors } from "../../web/shared/compare.ts";
-import { isModelRecord, modelRecord, modelSyllableReal, speakerCentre, takeFrames } from "../pronunciation-compare.mjs";
+import { MODEL_PAD_MS, MODEL_RECORD_VERSION, isModelRecord, modelRecord, modelSyllableReal, padSpans, priorAzureSpans, reusedRecord, speakerCentre, takeFrames } from "../pronunciation-compare.mjs";
 import { scoreReply, scoreSyllables } from "../pronunciation-app.mjs";
 import { scoreTones, trackPitch } from "../pronunciation.mjs";
 import { speak } from "../pronunciation-synth.mjs";
@@ -467,6 +467,39 @@ test("the model record: a syllable is real only when the engine heard the expect
   assert.equal(heard.syllables[0].saidTone, 4);
   assert.equal(isModelRecord({ ...rec, v: 0 }), false);
   assert.equal(isModelRecord({ ...rec, azure: "maybe" }), false);
+});
+
+test("an older record's Azure spans: read again only when Azure timed every syllable of the same characters, in order, inside the clip", () => {
+  const syllable = (char, startMs, endMs, real = true) => ({ char, pinyin: "x", expectedTone: 3, startMs, endMs, real, ...(real ? { saidTone: 3 } : {}) });
+  const old = { v: MODEL_RECORD_VERSION - 1, engine: "azure", azure: "used", durationMs: 1000, frames: { frameMs: 10, pitch: [], level: [] }, syllables: [syllable("你", 100, 400), syllable("好", 420, 900, false)] };
+  assert.deepEqual(priorAzureSpans(old, ["你", "好"]), { v: MODEL_RECORD_VERSION - 1, spans: [{ startMs: 100, endMs: 400 }, { startMs: 420, endMs: 900 }], real: [true, false] });
+  for (const [why, r, chars] of [
+    ["this version's", { ...old, v: MODEL_RECORD_VERSION }, ["你", "好"]],
+    ["no version", { ...old, v: undefined }, ["你", "好"]],
+    ["timed locally", { ...old, engine: "local", azure: "skipped" }, ["你", "好"]],
+    ["Azure's call failed", { ...old, engine: "local", azure: "spent" }, ["你", "好"]],
+    ["other characters", old, ["你", "们"]],
+    ["fewer characters", old, ["你"]],
+    ["no syllables", { ...old, syllables: [] }, []],
+    ["a syllable untimed", { ...old, syllables: [syllable("你", null, null), syllable("好", 420, 900)] }, ["你", "好"]],
+    ["an empty span", { ...old, syllables: [syllable("你", 400, 400), syllable("好", 420, 900)] }, ["你", "好"]],
+    ["out of order", { ...old, syllables: [syllable("你", 500, 600), syllable("好", 420, 900)] }, ["你", "好"]],
+    ["past the clip", { ...old, syllables: [syllable("你", 100, 400), syllable("好", 1000, 1100)] }, ["你", "好"]],
+    ["no length", { ...old, durationMs: undefined }, ["你", "好"]],
+    ["not a record", null, ["你", "好"]],
+  ]) assert.equal(priorAzureSpans(r, chars), null, why);
+  assert.deepEqual(padSpans([{ startMs: 100, endMs: 400 }]), [{ startMs: 100 + MODEL_PAD_MS, endMs: 400 + MODEL_PAD_MS }]);
+  // Read again: Azure's record still, marked with where its spans came
+  // from; a syllable is drawn from the clip only where the new reading
+  // and the old record both said so (the old one's "not real" may be
+  // Azure's own objection, which the scorer alone can't see).
+  const now = { v: MODEL_RECORD_VERSION, engine: "local", durationMs: 1000, frames: old.frames, syllables: [syllable("你", 100, 400), syllable("好", 420, 900)] };
+  const re = { ...reusedRecord(now, priorAzureSpans(old, ["你", "好"])) };
+  assert.deepEqual([re.engine, re.azure, re.spansFrom], ["azure", "used", MODEL_RECORD_VERSION - 1]);
+  assert.deepEqual(re.syllables.map((s) => [s.real, s.saidTone]), [[true, 3], [false, undefined]]);
+  assert.equal(isModelRecord(re), true);
+  assert.equal(isModelRecord({ ...re, spansFrom: MODEL_RECORD_VERSION }), false, "spans from this version are no older record's");
+  assert.equal(isModelRecord({ ...re, engine: "local" }), false, "only Azure's spans are read again");
 });
 
 test("end to end on generated voices: a wrong tone gets a tip, a right one none", () => {

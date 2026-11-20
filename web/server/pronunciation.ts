@@ -4,7 +4,7 @@ import { Worker } from "node:worker_threads";
 import { REPO_ROOT } from "../../scripts/content.mjs";
 import { azurePronunciationRequest, azurePronunciationResult, azureRegionValid, encodeWav, parseWav, scoresTones, type AzureAssessment, type ExpectedSyllable, type ScoreResult } from "../../scripts/pronunciation.mjs";
 import { azureLimiter, azureUsable, readScoreAudio, readScoreText, scoreReply, scoreSyllables, scoringEngine, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
-import { modelRecord, padSamples, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
+import { modelRecord, padSamples, padSpans, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
 import { decodeTo16k } from "../../scripts/audio-decode.mjs";
 import { modelAnalysis } from "../../scripts/model-analysis.mjs";
 import { localeFor, voiceKeys } from "../../scripts/voice.mjs";
@@ -208,9 +208,14 @@ function readRecording(req: IncomingMessage, res: ServerResponse): Promise<Uint8
 
 /** The engine in a worker thread: its result, or a ScoreFailure (what the
  *  worker said is dropped: it is not for the log or the page). */
-function runScorer(wav: Uint8Array, syllables: ExpectedSyllable[], azure: AzureAssessment | null): Promise<{ result: ScoreResult; frames: TakeFrames; durationMs: number }> {
+function runScorer(
+  wav: Uint8Array,
+  syllables: ExpectedSyllable[],
+  azure: AzureAssessment | null,
+  timings: { startMs: number; endMs: number }[] | null = null,
+): Promise<{ result: ScoreResult; frames: TakeFrames; durationMs: number }> {
   return new Promise((resolve, reject) => {
-    const w = new Worker(SCORER.worker, { workerData: { wav, syllables, azure } });
+    const w = new Worker(SCORER.worker, { workerData: { wav, syllables, azure, timings } });
     let settled = false;
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -417,6 +422,7 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       key: clip.key,
       audio: clip.audio,
       type: clip.type,
+      chars: s.syllables.map((x) => x.char),
       // Decoded, then padded with silence (pronunciation-compare.mjs
       // MODEL_PAD_MS: a clip starts on its first sound) and checked like
       // any recording; the record is shifted back to the clip's own times.
@@ -447,11 +453,14 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       // answer in hand (paid for, and this clip's only call) it waits for a
       // worker as long as it takes, so the answer is always written into the
       // record; without one, up to MODEL.waitMs, then a 503 (nothing lost:
-      // no call was made, and the next request reads the clip again).
-      analyse: async (wav: Uint8Array, azure: AzureAssessment | null) => {
+      // no call was made, and the next request reads the clip again; an
+      // older record's spans stay where they are until it is replaced).
+      // `spans`: an older record's Azure spans, on the clip's own times, so
+      // moved onto the padded clip's.
+      analyse: async (wav: Uint8Array, azure: AzureAssessment | null, spans: { startMs: number; endMs: number }[] | null) => {
         const release = await waitForSlot(modelWorkerFree, takeModelWorker, azure ? Infinity : MODEL.waitMs);
         try {
-          const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure);
+          const { result, frames, durationMs } = await runScorer(wav, s.syllables, azure, spans ? padSpans(spans) : null);
           return unpadRecord(modelRecord({ result, frames, syllables: s.syllables, durationMs }));
         } finally {
           release();
@@ -463,7 +472,7 @@ async function model(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
       return sendJson(res, 200, { available: false, why: out.unavailable } satisfies PronunciationModelReply);
     }
     const r = out.record;
-    console.log(`[lingo-dojo] pronunciation: model clip ${out.cached ? "hit" : "made"} (${r.engine}), ${r.syllables.length} syllables`);
+    console.log(`[lingo-dojo] pronunciation: model clip ${out.cached ? "hit" : "made"} (${r.engine}${r.spansFrom ? `, on version ${r.spansFrom}'s spans` : ""}), ${r.syllables.length} syllables`);
     sendJson(res, 200, {
       available: true,
       engine: r.engine,

@@ -18,8 +18,8 @@ The numbers to quote. Thresholds chosen on two voices, measured on the other two
 
 | | Stage 0, same clips | Wrong tones caught | Right syllables flagged (false alarms) | 95% upper bound on the false-alarm rate | Precision of a flag at that bound, one tone in five wrong |
 | --- | --- | --- | --- | --- | --- |
-| Single syllables | 81 of 192 (42.2%), 1 of 64 false alarms | **114 of 192 (59.4%)** | **1 of 64 (1.6%)** | under 7.2% | at least 67% |
-| Phrases | 145 of 576 (25.2%), 0 of 168 false alarms | **251 of 576 (43.6%)** | **2 of 168 (1.2%)** | under 3.7% | at least 75% |
+| Single syllables | 81 of 192 (42.2%), 1 of 64 false alarms | **111 of 192 (57.8%)** | **1 of 64 (1.6%)** | under 7.2% | at least 67% |
+| Phrases | 145 of 576 (25.2%), 0 of 168 false alarms | **268 of 576 (46.5%)** | **2 of 168 (1.2%)** | under 3.7% | at least 76% |
 
 The phrase false alarms by half: Reed + Rachel: 1 of 84; Tingting + Adam: 1 of 84. Every other table in this report except "Held out by voice" is **in-sample**: it runs the engine's defaults, which were chosen with all four voices in view, on those same four voices, and reads better than the table above for that reason alone.
 
@@ -36,15 +36,15 @@ The engine's defaults on the four voices they were tuned on.
 | **False alarms** (right, flagged off) | 1 of 64 (1.6%) | 1 of 64 (1.6%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) | 0 of 168 (0.0%) |
 | **Precision of an off flag**, as measured | 98.9% | 99.1% | 100.0% | 100.0% | 100.0% | 100.0% |
 | Precision at one wrong tone in five | 88.1% | 90.2% | 100.0% | 100.0% | 100.0% | 100.0% |
-| Wrong tones caught (flagged off) | 89 of 192 (46.4%) | 111 of 192 (57.8%) | 142 of 576 (24.7%) | 191 of 576 (33.2%) | 201 of 576 (34.9%) | 20 of 576 (3.5%) |
-| Wrong tones passed as ok | 12.0% | 4.7% | 8.7% | 9.4% | 9.4% | 2.6% |
-| Right tones marked ok | 81.3% | 87.5% | 72.0% | 63.7% | 64.3% | 16.1% |
-| Right tones marked unsure | 17.2% | 10.9% | 28.0% | 36.3% | 35.7% | 83.9% |
-| Marked unsure, all | 35.5% | 30.9% | 57.9% | 52.7% | 51.2% | 91.7% |
+| Wrong tones caught (flagged off) | 89 of 192 (46.4%) | 111 of 192 (57.8%) | 152 of 576 (26.4%) | 201 of 576 (34.9%) | 201 of 576 (34.9%) | 20 of 576 (3.5%) |
+| Wrong tones passed as ok | 12.0% | 4.7% | 9.4% | 9.9% | 9.7% | 2.8% |
+| Right tones marked ok | 81.3% | 87.5% | 73.8% | 64.9% | 64.9% | 16.7% |
+| Right tones marked unsure | 17.2% | 10.9% | 26.2% | 35.1% | 35.1% | 83.3% |
+| Marked unsure, all | 35.5% | 30.9% | 55.6% | 50.7% | 50.8% | 91.4% |
 
 These are small counts. A false-alarm rate measured on a few dozen or a couple of hundred syllables is only bounded, not known: with 95% confidence, single syllables, nothing known about the speaker: 1 of 64, so under 7.2%; single syllables, speaker's range known: 1 of 64, so under 7.2%; phrases, cut by energy, nothing known about the speaker: 0 of 168, so under 1.8%; phrases, cut by energy, speaker's range known: 0 of 168, so under 1.8%; phrases, cut by energy around scribe's character times, speaker's range known: 0 of 168, so under 1.8%; phrases, scribe's character times taken as the cuts, speaker's range known: 0 of 168, so under 1.8%. And that bound is for voices like these, on the set the thresholds were tuned on.
 
-So "a flag can be trusted" is not established by these counts, only not contradicted. With the false-alarm rate at that upper bound and the catch rate as measured, the precision of a flag for a learner who gets one tone in five wrong is only known to be (in-sample; the held-out figures in the headline are lower): single syllables, nothing known about the speaker: at least 62%; single syllables, speaker's range known: at least 67%; phrases, cut by energy, nothing known about the speaker: at least 78%; phrases, cut by energy, speaker's range known: at least 82%; phrases, cut by energy around scribe's character times, speaker's range known: at least 83%; phrases, scribe's character times taken as the cuts, speaker's range known: at least 33%. Narrowing that takes more right syllables, from real people.
+So "a flag can be trusted" is not established by these counts, only not contradicted. With the false-alarm rate at that upper bound and the catch rate as measured, the precision of a flag for a learner who gets one tone in five wrong is only known to be (in-sample; the held-out figures in the headline are lower): single syllables, nothing known about the speaker: at least 62%; single syllables, speaker's range known: at least 67%; phrases, cut by energy, nothing known about the speaker: at least 79%; phrases, cut by energy, speaker's range known: at least 83%; phrases, cut by energy around scribe's character times, speaker's range known: at least 83%; phrases, scribe's character times taken as the cuts, speaker's range known: at least 33%. Narrowing that takes more right syllables, from real people.
 
 "Range known" gives the scorer the voice's pitch range measured over that voice's other clips (never the one being scored), which is what a session would know after a few turns. "Speaker unknown" is a first recording: only the shape of the contour counts, plus the recording's own range once it holds four syllables.
 
@@ -69,15 +69,15 @@ Where the catches are and aren't, by which tone was said for which (range known;
 | 1→2 | 12 / 0 / 16 | 21 / 0 / 32 |
 | 1→3 | 12 / 0 / 16 | 7 / 1 / 16 |
 | 1→4 | 11 / 2 / 16 | 14 / 0 / 24 |
-| 2→1 | 11 / 0 / 16 | 13 / 11 / 44 |
+| 2→1 | 11 / 0 / 16 | 14 / 11 / 44 |
 | 2→3 | 1 / 3 / 16 | 22 / 14 / 76 |
-| 2→4 | 11 / 0 / 16 | 14 / 2 / 76 |
-| 3→1 | 10 / 0 / 16 | 12 / 3 / 36 |
-| 3→2 | 7 / 3 / 16 | 8 / 2 / 52 |
+| 2→4 | 11 / 0 / 16 | 17 / 2 / 76 |
+| 3→1 | 10 / 0 / 16 | 13 / 3 / 36 |
+| 3→2 | 7 / 3 / 16 | 10 / 2 / 52 |
 | 3→4 | 2 / 0 / 16 | 0 / 4 / 36 |
-| 4→1 | 12 / 0 / 16 | 26 / 2 / 56 |
-| 4→2 | 12 / 0 / 16 | 38 / 0 / 72 |
-| 4→3 | 10 / 1 / 16 | 16 / 15 / 56 |
+| 4→1 | 12 / 0 / 16 | 26 / 3 / 56 |
+| 4→2 | 12 / 0 / 16 | 41 / 0 / 72 |
+| 4→3 | 10 / 1 / 16 | 16 / 17 / 56 |
 
 Three pairs stay close to uncatchable by design: a third tone said for a fourth (3→4: a low fall is both), a fourth that starts low said for a third, and second against third when the second dips or the third comes back up. These voices disagree with each other about exactly those shapes, so a flag there would be a guess.
 
@@ -88,11 +88,11 @@ The thresholds a flag rests on were chosen on two voices and measured on the oth
 | Tuned on | Measured on | | Stage 0 (before) | Tuned on the other two (held out) | The engine's defaults (in-sample) |
 | --- | --- | --- | --- | --- | --- |
 | Tingting + Adam | Reed + Rachel | Singles | 39 of 96 (40.6%) caught, 1 false alarms | 63 of 96 (65.6%) caught, 1 of 32 false alarms | 60 of 96 (62.5%) caught, 1 of 32 false alarms |
-| Tingting + Adam | Reed + Rachel | Phrases | 63 of 288 (21.9%) caught, 0 false alarms | 131 of 288 (45.5%) caught, 1 of 84 false alarms | 80 of 288 (27.8%) caught, 0 of 84 false alarms |
-| Reed + Rachel | Tingting + Adam | Singles | 42 of 96 (43.8%) caught, 0 false alarms | 51 of 96 (53.1%) caught, 0 of 32 false alarms | 51 of 96 (53.1%) caught, 0 of 32 false alarms |
-| Reed + Rachel | Tingting + Adam | Phrases | 82 of 288 (28.5%) caught, 0 false alarms | 120 of 288 (41.7%) caught, 1 of 84 false alarms | 111 of 288 (38.5%) caught, 0 of 84 false alarms |
+| Tingting + Adam | Reed + Rachel | Phrases | 63 of 288 (21.9%) caught, 0 false alarms | 137 of 288 (47.6%) caught, 1 of 84 false alarms | 86 of 288 (29.9%) caught, 0 of 84 false alarms |
+| Reed + Rachel | Tingting + Adam | Singles | 42 of 96 (43.8%) caught, 0 false alarms | 48 of 96 (50.0%) caught, 0 of 32 false alarms | 51 of 96 (53.1%) caught, 0 of 32 false alarms |
+| Reed + Rachel | Tingting + Adam | Phrases | 82 of 288 (28.5%) caught, 0 false alarms | 131 of 288 (45.5%) caught, 1 of 84 false alarms | 115 of 288 (39.9%) caught, 0 of 84 false alarms |
 
-Settings chosen: on Tingting + Adam `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`; on Reed + Rachel `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":110,"highStart":3.7,"lowLevel":2.2}`. The engine's defaults are the setting chosen on all four voices where the two halves agree, and the more cautious value where they don't; the defaults column is therefore not held out, and the held-out column is the honest one. The stage 0 numbers are from that commit's report (same clips; its range included the clip being scored).
+Settings chosen: on Tingting + Adam `{"moveSt":3,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`; on Reed + Rachel `{"moveSt":3.5,"offMarginSt":0,"phraseMarginSt":0,"flatSt":1.5,"offQuality":0.6,"offMinMs":80,"highStart":3.7,"lowLevel":2.2}`. The engine's defaults are the setting chosen on all four voices where the two halves agree, and the more cautious value where they don't; the defaults column is therefore not held out, and the held-out column is the honest one. The stage 0 numbers are from that commit's report (same clips; its range included the clip being scored).
 
 Held-out false alarms: Rachel (ElevenLabs premade: an English voice speaking Mandarin) 妈[1] 妈 expected 1 heard 4; Reed (macOS) 我是学生[4] 生 expected 1 heard 3; Adam (ElevenLabs premade: an English voice speaking Mandarin) 很好[1] 很 expected 2 heard 4.
 
@@ -102,15 +102,15 @@ The same clips (all four voices, range known) at several values of `offMarginSt`
 
 | `offMarginSt` | Singles: false alarms | Singles: caught | Phrases: false alarms | Phrases: caught |
 | --- | --- | --- | --- | --- |
-| -1 | 1 of 64 | 137 of 192 (71.4%) | 5 of 168 | 300 of 576 (52.1%) |
-| -0.5 | 1 of 64 | 129 of 192 (67.2%) | 2 of 168 | 244 of 576 (42.4%) |
-| 0 (default) | 1 of 64 | 111 of 192 (57.8%) | 0 of 168 | 191 of 576 (33.2%) |
-| 0.5 | 1 of 64 | 105 of 192 (54.7%) | 0 of 168 | 141 of 576 (24.5%) |
-| 1 | 1 of 64 | 71 of 192 (37.0%) | 0 of 168 | 107 of 576 (18.6%) |
+| -1 | 1 of 64 | 137 of 192 (71.4%) | 5 of 168 | 310 of 576 (53.8%) |
+| -0.5 | 1 of 64 | 129 of 192 (67.2%) | 2 of 168 | 254 of 576 (44.1%) |
+| 0 (default) | 1 of 64 | 111 of 192 (57.8%) | 0 of 168 | 201 of 576 (34.9%) |
+| 0.5 | 1 of 64 | 105 of 192 (54.7%) | 0 of 168 | 148 of 576 (25.7%) |
+| 1 | 1 of 64 | 71 of 192 (37.0%) | 0 of 168 | 110 of 576 (19.1%) |
 | 1.5 | 1 of 64 | 54 of 192 (28.1%) | 0 of 168 | 85 of 576 (14.8%) |
 | 2 | 1 of 64 | 48 of 192 (25.0%) | 0 of 168 | 71 of 576 (12.3%) |
 | 3 | 1 of 64 | 33 of 192 (17.2%) | 0 of 168 | 48 of 576 (8.3%) |
-| default, and creaky syllables flagged too (`creakFlags`) | 2 of 64 | 119 of 192 (62.0%) | 0 of 168 | 198 of 576 (34.4%) |
+| default, and creaky syllables flagged too (`creakFlags`) | 2 of 64 | 119 of 192 (62.0%) | 0 of 168 | 202 of 576 (35.1%) |
 
 `creakFlags` is off by default. Turning it on catches more in a creaky voice, and its one extra false alarm here is Rachel's 八, the clip that falls 14 semitones; but a pitch track with a hole in it is where octave errors hide, and nothing here can tell those from a real fall, so it stays off until real recordings say otherwise.
 
@@ -122,57 +122,57 @@ The clips above start and end with the speech. A push-to-talk recording doesn't:
 
 | | Singles: totals | Singles: changes | Phrases: totals | Phrases: changes |
 | --- | --- | --- | --- | --- |
-| The clips as they are | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 191 of 576 / 0 of 168 / 54 | 0 / 0 / 0 |
-| Half a second of plain silence before and after | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 191 of 576 / 0 of 168 / 54 | 0 / 0 / 0 |
-| Room noise at −50 dB before, under and after | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 191 of 576 / 0 of 168 / 54 | 0 / 0 / 0 |
-| …and a 40 ms pitched blip at −20 dB, 300 ms before the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 0 of 576 / 0 of 168 / 10 | 0 / 0 / 293 |
-| …and a pitched knock at −10 dB, 450 ms before the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 0 of 576 / 0 of 168 / 10 | 0 / 0 / 294 |
-| …and a pitched knock at −10 dB, 300 ms after the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 23 of 576 / 0 of 168 / 7 | 0 / 0 / 254 |
-| …and a voiced 120 ms murmur at −27 dB, 300 ms before the speech | 89 of 192 / 1 of 64 / 7 | 0 / 0 / 34 | 159 of 576 / 0 of 168 / 45 | 0 / 0 / 59 |
-| …and a knock at −10 dB ending 50 ms before the first sound | 45 of 192 / 1 of 64 / 5 | 0 / 0 / 93 | 100 of 576 / 0 of 168 / 32 | 0 / 0 / 130 |
-| …and a knock at −10 dB ending 100 ms before the first sound | 25 of 192 / 0 of 64 / 2 | 0 / 0 / 132 | 77 of 576 / 0 of 168 / 24 | 0 / 0 / 173 |
-| …and a knock at −10 dB ending 150 ms before the first sound | 35 of 192 / 0 of 64 / 3 | 0 / 0 / 117 | 43 of 576 / 0 of 168 / 19 | 0 / 0 / 219 |
-| …and a knock at −10 dB 50 ms after the last sound | 18 of 192 / 0 of 64 / 3 | 0 / 0 / 129 | 127 of 576 / 0 of 168 / 36 | 0 / 0 / 93 |
-| …and a knock at −10 dB 100 ms after the last sound | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 88 of 576 / 0 of 168 / 20 | 0 / 0 / 152 |
-| …and a knock at −10 dB 150 ms after the last sound | 7 of 192 / 0 of 64 / 1 | 0 / 0 / 155 | 55 of 576 / 0 of 168 / 17 | 0 / 0 / 202 |
-| …and a knock at −10 dB over the first 20 ms of the speech | 80 of 192 / 1 of 64 / 10 | 0 / 1 / 40 | 172 of 576 / 1 of 168 / 51 | 1 / 3 / 41 |
-| …and a cough 6 dB louder than the speech, 300 ms before it | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| …and a cough 6 dB louder than the speech, 300 ms after it | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| …and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| …and a 100 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| …and a 60 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| …and a 120 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 298 |
-| Room noise, and the recording starts 60 ms into the first sound (no lead-in) | 8 of 192 / 0 of 64 / 1 | 0 / 0 / 155 | 101 of 576 / 0 of 168 / 25 | 0 / 0 / 144 |
-| …in a room with echo (reflections for 600 ms, decaying over 150 ms) | 35 of 192 / 4 of 64 / 14 | 4 / 11 / 113 | 16 of 576 / 3 of 168 / 28 | 3 / 8 / 272 |
-| …in a small room (weaker reflections, decaying over 50 ms) | 71 of 192 / 1 of 64 / 13 | 0 / 6 / 57 | 134 of 576 / 1 of 168 / 49 | 1 / 6 / 109 |
+| The clips as they are | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 201 of 576 / 0 of 168 / 57 | 0 / 0 / 0 |
+| Half a second of plain silence before and after | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 201 of 576 / 0 of 168 / 57 | 0 / 0 / 0 |
+| Room noise at −50 dB before, under and after | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 201 of 576 / 0 of 168 / 57 | 0 / 0 / 0 |
+| …and a 40 ms pitched blip at −20 dB, 300 ms before the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 0 of 576 / 0 of 168 / 13 | 0 / 0 / 303 |
+| …and a pitched knock at −10 dB, 450 ms before the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 0 of 576 / 0 of 168 / 12 | 0 / 0 / 304 |
+| …and a pitched knock at −10 dB, 300 ms after the speech | 111 of 192 / 1 of 64 / 9 | 0 / 0 / 0 | 26 of 576 / 0 of 168 / 9 | 0 / 0 / 261 |
+| …and a voiced 120 ms murmur at −27 dB, 300 ms before the speech | 89 of 192 / 1 of 64 / 7 | 0 / 0 / 34 | 165 of 576 / 0 of 168 / 46 | 0 / 0 / 64 |
+| …and a knock at −10 dB ending 50 ms before the first sound | 45 of 192 / 1 of 64 / 5 | 0 / 0 / 93 | 103 of 576 / 0 of 168 / 35 | 0 / 0 / 137 |
+| …and a knock at −10 dB ending 100 ms before the first sound | 25 of 192 / 0 of 64 / 2 | 0 / 0 / 132 | 80 of 576 / 0 of 168 / 27 | 0 / 0 / 180 |
+| …and a knock at −10 dB ending 150 ms before the first sound | 35 of 192 / 0 of 64 / 3 | 0 / 0 / 117 | 43 of 576 / 0 of 168 / 21 | 0 / 0 / 230 |
+| …and a knock at −10 dB 50 ms after the last sound | 18 of 192 / 0 of 64 / 3 | 0 / 0 / 129 | 137 of 576 / 0 of 168 / 36 | 0 / 0 / 93 |
+| …and a knock at −10 dB 100 ms after the last sound | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 91 of 576 / 0 of 168 / 22 | 0 / 0 / 159 |
+| …and a knock at −10 dB 150 ms after the last sound | 7 of 192 / 0 of 64 / 1 | 0 / 0 / 155 | 58 of 576 / 0 of 168 / 19 | 0 / 0 / 209 |
+| …and a knock at −10 dB over the first 20 ms of the speech | 80 of 192 / 1 of 64 / 10 | 0 / 1 / 37 | 176 of 576 / 1 of 168 / 54 | 1 / 3 / 37 |
+| …and a cough 6 dB louder than the speech, 300 ms before it | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| …and a cough 6 dB louder than the speech, 300 ms after it | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| …and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| …and a 100 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| …and a 60 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| …and a 120 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 167 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 310 |
+| Room noise, and the recording starts 60 ms into the first sound (no lead-in) | 8 of 192 / 0 of 64 / 1 | 0 / 0 / 155 | 101 of 576 / 0 of 168 / 28 | 0 / 0 / 155 |
+| …in a room with echo (reflections for 600 ms, decaying over 150 ms) | 35 of 192 / 4 of 64 / 16 | 4 / 13 / 113 | 16 of 576 / 3 of 168 / 32 | 3 / 12 / 284 |
+| …in a small room (weaker reflections, decaying over 50 ms) | 71 of 192 / 1 of 64 / 14 | 0 / 6 / 57 | 141 of 576 / 1 of 168 / 50 | 1 / 6 / 106 |
 
 **On Azure's syllable times.** Totals are wrong tones caught / false alarms / wrong tones passed as ok; changes are, against the clean clip syllable by syllable, new false alarms / new wrong tones passed as ok / right verdicts lost.
 
 | | Singles: totals | Singles: changes | Phrases: totals | Phrases: changes |
 | --- | --- | --- | --- | --- |
-| The clips as they are | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 0 |
-| Half a second of plain silence before and after | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 0 |
-| Room noise at −50 dB before, under and after | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a 40 ms pitched blip at −20 dB, 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a pitched knock at −10 dB, 450 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a pitched knock at −10 dB, 300 ms after the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a voiced 120 ms murmur at −27 dB, 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a knock at −10 dB ending 50 ms before the first sound | 95 of 192 / 1 of 64 / 8 | 0 / 0 / 7 | 150 of 576 / 0 of 168 / 39 | 0 / 0 / 4 |
-| …and a knock at −10 dB ending 100 ms before the first sound | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a knock at −10 dB ending 150 ms before the first sound | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a knock at −10 dB 50 ms after the last sound | 35 of 192 / 0 of 64 / 4 | 0 / 0 / 98 | 137 of 576 / 0 of 168 / 31 | 0 / 0 / 31 |
-| …and a knock at −10 dB 100 ms after the last sound | 23 of 192 / 0 of 64 / 2 | 0 / 0 / 117 | 132 of 576 / 0 of 168 / 27 | 0 / 0 / 39 |
-| …and a knock at −10 dB 150 ms after the last sound | 27 of 192 / 0 of 64 / 3 | 0 / 0 / 112 | 132 of 576 / 0 of 168 / 28 | 0 / 0 / 38 |
-| …and a knock at −10 dB over the first 20 ms of the speech | 73 of 192 / 1 of 64 / 8 | 0 / 0 / 32 | 123 of 576 / 0 of 168 / 38 | 0 / 3 / 38 |
-| …and a cough 6 dB louder than the speech, 300 ms before it | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 1 |
-| …and a cough 6 dB louder than the speech, 300 ms after it | 81 of 192 / 0 of 64 / 7 | 0 / 0 / 32 | 156 of 576 / 0 of 168 / 37 | 0 / 0 / 0 |
-| …and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 39 | 0 / 0 / 0 |
-| …and a 100 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 150 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 247 |
-| …and a 60 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 150 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 247 |
-| …and a 120 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 150 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 247 |
-| Room noise, and the recording starts 60 ms into the first sound (no lead-in) | 8 of 192 / 0 of 64 / 1 | 0 / 0 / 138 | 87 of 576 / 0 of 168 / 25 | 0 / 0 / 104 |
-| …in a room with echo (reflections for 600 ms, decaying over 150 ms) | 38 of 192 / 4 of 64 / 13 | 4 / 10 / 95 | 28 of 576 / 2 of 168 / 24 | 2 / 7 / 217 |
-| …in a small room (weaker reflections, decaying over 50 ms) | 69 of 192 / 1 of 64 / 13 | 0 / 6 / 42 | 98 of 576 / 1 of 168 / 43 | 1 / 11 / 97 |
+| The clips as they are | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 0 |
+| Half a second of plain silence before and after | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 0 |
+| Room noise at −50 dB before, under and after | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a 40 ms pitched blip at −20 dB, 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a pitched knock at −10 dB, 450 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a pitched knock at −10 dB, 300 ms after the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a voiced 120 ms murmur at −27 dB, 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a knock at −10 dB ending 50 ms before the first sound | 95 of 192 / 1 of 64 / 8 | 0 / 0 / 7 | 150 of 576 / 0 of 168 / 40 | 0 / 0 / 5 |
+| …and a knock at −10 dB ending 100 ms before the first sound | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a knock at −10 dB ending 150 ms before the first sound | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a knock at −10 dB 50 ms after the last sound | 35 of 192 / 0 of 64 / 4 | 0 / 0 / 99 | 137 of 576 / 0 of 168 / 31 | 0 / 0 / 34 |
+| …and a knock at −10 dB 100 ms after the last sound | 23 of 192 / 0 of 64 / 2 | 0 / 0 / 118 | 132 of 576 / 0 of 168 / 27 | 0 / 0 / 42 |
+| …and a knock at −10 dB 150 ms after the last sound | 27 of 192 / 0 of 64 / 3 | 0 / 0 / 113 | 132 of 576 / 0 of 168 / 28 | 0 / 0 / 40 |
+| …and a knock at −10 dB over the first 20 ms of the speech | 73 of 192 / 1 of 64 / 8 | 0 / 0 / 28 | 120 of 576 / 0 of 168 / 39 | 0 / 3 / 42 |
+| …and a cough 6 dB louder than the speech, 300 ms before it | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 2 |
+| …and a cough 6 dB louder than the speech, 300 ms after it | 81 of 192 / 0 of 64 / 7 | 0 / 0 / 33 | 156 of 576 / 0 of 168 / 38 | 0 / 0 / 1 |
+| …and a child's voice at −10 dB in the lead-in, ending 300 ms before the speech | 101 of 192 / 1 of 64 / 8 | 0 / 0 / 0 | 153 of 576 / 0 of 168 / 40 | 0 / 0 / 0 |
+| …and a 100 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 151 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 250 |
+| …and a 60 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 151 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 250 |
+| …and a 120 Hz hum at −20 dB throughout | 0 of 192 / 0 of 64 / 0 | 0 / 0 / 151 | 0 of 576 / 0 of 168 / 0 | 0 / 0 / 250 |
+| Room noise, and the recording starts 60 ms into the first sound (no lead-in) | 8 of 192 / 0 of 64 / 1 | 0 / 0 / 139 | 87 of 576 / 0 of 168 / 26 | 0 / 0 / 104 |
+| …in a room with echo (reflections for 600 ms, decaying over 150 ms) | 38 of 192 / 4 of 64 / 15 | 4 / 12 / 96 | 28 of 576 / 2 of 168 / 24 | 2 / 7 / 220 |
+| …in a small room (weaker reflections, decaying over 50 ms) | 69 of 192 / 1 of 64 / 15 | 0 / 7 / 43 | 98 of 576 / 1 of 168 / 43 | 1 / 10 / 100 |
 
 **Both paths before bead ld-ne0.7's fixes** (commit 162c09f, measured the same way): changes against the clean clip, new false alarms / new wrong tones passed as ok / right verdicts lost.
 
@@ -230,7 +230,7 @@ The clips above start and end with the speech. A push-to-talk recording doesn't:
 | A 300 ms pause, then a 70 ms last syllable | 144 of 324 / 0 of 108 / 0 | 0 / 0 / 201 | 144 of 324 / 0 of 108 / 0 | 0 / 0 / 201 | 144 of 324 / 0 of 108 / 0 | 0 / 0 / 99 | three syllables 70 ms apart, all alike |
 | The last syllable 27 dB under the others | 179 of 324 / 0 of 108 / 0 | 0 / 0 / 166 | 144 of 324 / 0 of 108 / 0 | 0 / 0 / 201 | 144 of 324 / 0 of 108 / 0 | 0 / 0 / 99 | three syllables 70 ms apart, all alike |
 | Three syllables 150 ms apart | 297 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | 297 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | 207 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | itself |
-| …and a 40 ms pitched click at −10 dB in each gap | 108 of 324 / 0 of 108 / 20 | 0 / 20 / 209 | 108 of 324 / 0 of 108 / 0 | 0 / 0 / 247 | 207 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | three syllables 150 ms apart |
+| …and a 40 ms pitched click at −10 dB in each gap | 108 of 324 / 0 of 108 / 20 | 0 / 20 / 209 | 108 of 324 / 0 of 108 / 0 | 0 / 0 / 244 | 207 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | three syllables 150 ms apart |
 | …and a voiced 60 ms "uh" at −20 dB in each gap | 157 of 324 / 12 of 108 / 32 | 12 / 32 / 175 | 134 of 324 / 0 of 108 / 0 | 0 / 0 / 213 | 207 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | three syllables 150 ms apart |
 | …and a 100 ms breath at −20 dB in each gap | 297 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | 288 of 324 / 0 of 108 / 0 | 0 / 0 / 12 | 207 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | three syllables 150 ms apart |
 | The first syllable broken in two by a 40 ms creak gap | 285 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | 285 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | 135 of 324 / 0 of 108 / 0 | 0 / 0 / 0 | itself |
@@ -242,13 +242,22 @@ What the tables say:
 
 - **On timings, nothing outside the spans it is given changes a verdict**: blips, knocks, a cough or a child's voice in the lead-in leave every row as the clean one. The scorer measures pitch inside the spans only and takes the silence floor, the octave repairs, the range gate and the recording's own range from inside them. **This is true by construction, and the rows assume what was not measured: that a recogniser draws the same spans on the noisy recording as on the clean one.** Azure was sent the clean clips only. A recogniser that stretches a span over a knock, or moves every span when there is a cough, gives the scorer wrong spans, and what happens then is the next section.
 - **Cut by energy, every doubt is "unsure".** A sound the bars can't place is read both as speech and as noise, in every combination, and a verdict stands only where all readings agree on the verdict and the tone ("trimmed"); sounds long enough to be a syllable (60 ms of sound, which is a 90 ms voiced run in the track: a 40 ms knock is not one) that lie apart leave the whole recording unjudged ("scattered"), since one may be a cough or another voice. That is why a single stray blip costs most of a phrase's verdicts. **Under noise the fallback is safe, not useful**: with a cough, another voice or a hum it says nothing at all.
-- **The caution costs right answers on clean clips too.** Before the rework (commit e75a163) the energy path marked 89.1% of correctly said single syllables and 70.8% of correctly said phrase syllables "ok"; the rework took that to 85.9% and 66.1% (an independent review's count); in this run, with the lead-in, it is 87.5% and 63.7%. Wrong tones caught did not fall.
+- **The caution costs right answers on clean clips too.** Before the rework (commit e75a163) the energy path marked 89.1% of correctly said single syllables and 70.8% of correctly said phrase syllables "ok"; the rework took that to 85.9% and 66.1% (an independent review's count); in this run, with the lead-in, it is 87.5% and 64.9%. Wrong tones caught: 111 of 192 singles and 201 of 576 phrase syllables (before the rework, without the lead-in: 111 of 192 and 201 of 576).
 - **A hum** leaves everything unjudged on both paths ("background"): it is under the syllables too.
 - **A recording that starts mid-word** is loud from its first frame: the syllable it starts in is not judged ("clipped"), on either path. The other syllables of a phrase are still cut by energy from a first syllable that is partly missing, and that row's phrase numbers show what is left.
-- **A sound inside a timed span** (a knock 50 ms after the last sound, or a cough within the last syllable's span, which Azure draws past the end of the sound) is caught as two sounds in one span ("apart"): by a silence between them, counted from the sound's own edges as well as from the voice's (before ld-ne0.7 only the quiet frames between voiced ones counted, and a cough kept close behind the voice was not seen), or by the pitch leaping 6 semitones or more across a hole in the voicing (`leaps`, also new). Before, the knock 50 ms after gave 2 false alarms and 11 wrong oks in the singles and 3 and 7 in the phrases on timings; now none.
-- **Cut by energy, a loud run is joined to the speech across a short hole only where the pitch carries on** (within 7 semitones of where the speech stopped): a knock 50 ms after the last sound is a separate run, so the doubt about it ("trimmed", "scattered") applies, where before it was taken as more of the last syllable (1 wrong ok in the phrases).
-- **Not made safe, on either path: a pitched knock on top of the first sound** (the knock row over the first 20 ms). At the speaker's own pitch it is the onset as far as the pitch track can tell; the rows show what remains (energy: 1 wrong ok in the singles, 1 false alarm and 3 wrong oks in the phrases; timings: 3 wrong oks in the phrases; before: 1, 3 and 7, and 3). **This is a stated bound, not a fix.**
+- **A sound inside a timed span** (a knock 50 ms after the last sound, or a cough within the last syllable's span, which Azure draws past the end of the sound) is caught as two sounds in one span ("apart"): by a silence between them, counted from the sound's own edges as well as from the voice's (before ld-ne0.7 only the quiet frames between voiced ones counted, and a cough kept close behind the voice was not seen), or by the pitch leaping 6 semitones or more across a hole in the voicing (`leaps`, also new): across a single lost frame, or a hole with some quiet in it. A hole that stays loud is not counted: that is creak, the voice going on without a clear period, and a fourth tone can fall 7 semitones through a few such frames (counted, it cost right verdicts on Azure's clean spans). The step is the smallest between the two pitches nearest each side of the hole, so one frame the tracker slipped beside it is not taken for a leap. New false alarms / new wrong oks with the knock 50 ms after: energy, singles 0 / 0 and phrases 0 / 0; timings, singles 0 / 0 and phrases 0 / 0 (before ld-ne0.7: 0 / 0, 0 / 1, 2 / 11 and 3 / 7); with the cough after: energy, singles 0 / 0 and phrases 0 / 0; timings, singles 0 / 0 and phrases 0 / 0 (before ld-ne0.7: 0 / 0, 0 / 0, 0 / 0 and 0 / 1).
+- **Cut by energy, a loud run is joined to the speech across a short hole only where the pitch carries on** (within 7 semitones of where the speech stopped, the closest of the two pitches nearest each side: one frame the tracker slipped beside the hole doesn't split a syllable, which comparing single frames did on clean clips): a knock 50 ms after the last sound is a separate run, so the doubt about it ("trimmed", "scattered") applies, where before it was taken as more of the last syllable (1 wrong ok in the phrases).
+- **Not made safe, on either path: a pitched knock on top of the first sound** (the knock row over the first 20 ms). At the speaker's own pitch it is the onset as far as the pitch track can tell; at another pitch, a single lost frame from the voice, it is a leap (above). New false alarms / new wrong oks: energy, singles 0 / 1 and phrases 1 / 3; timings, singles 0 / 0 and phrases 0 / 3 (before ld-ne0.7: 0 / 1, 3 / 7, 0 / 0 and 0 / 3). **This is a stated bound, not a fix.**
 - **Not made safe, on either path: a room that echoes**, and not only a big one: the small room (reflections decaying over 50 ms at −10 dB) already passes wrong tones as ok on both paths, and the 150 ms room adds false alarms too. Reverberation keeps the pitch of a moment ago sounding under the next, so the moving part of a contour reads flatter (a level first tone, or a low creaky third); the measures tried per syllable (unvoiced loud frames, periodicity, the sound after the last syllable) overlap with clean clips. It needs a whole-recording reverberation check, calibrated on real rooms (a follow-up). **A stated bound, not a fix.**
+
+**The clean clips, against the scorer before ld-ne0.7** (commit 162c09f, the same clips, lead-in, speaker's range and spans): wrong tones caught / false alarms / wrong tones passed as ok / right syllables marked ok.
+
+| The clean clips | Singles: now | Singles: before ld-ne0.7 | Phrases: now | Phrases: before ld-ne0.7 |
+| --- | --- | --- | --- | --- |
+| Cut by energy | 111 of 192 / 1 of 64 / 9 / 56 of 64 | 111 of 192 / 1 of 64 / 9 / 56 of 64 | 201 of 576 / 0 of 168 / 57 / 109 of 168 | 201 of 576 / 0 of 168 / 57 / 109 of 168 |
+| On Azure's syllable times | 101 of 192 / 1 of 64 / 8 / 50 of 64 | 101 of 192 / 1 of 64 / 8 / 50 of 64 | 153 of 576 / 0 of 168 / 40 / 97 of 168 | 153 of 576 / 0 of 168 / 40 / 96 of 168 |
+
+What moved: phrases on Azure's times, right syllables marked ok 97 (before 96).
 
 ### Azure on the noisy audio
 
@@ -263,7 +272,7 @@ The timings rows above assume Azure draws the same spans on a noisy recording as
 | a child's voice at −10 dB in the lead-in, ending 300 ms before the speech | 6 | -190 to -90 | 0 to 20 | -50 to 150 | 0 / 0 / 0 |
 | in a room with echo (reflections for 600 ms, decaying over 150 ms) | 6 | -280 to -60 | 10 to 160 | 310 to 500 | 0 / 1 / 7 |
 
-Azure's first span starts 50 to 120 ms early with room noise alone and up to 200 ms early with a knock or a voice before the speech; its last span ends up to 220 ms late, and in the echoing room 300 to 500 ms late; the boundaries between syllables barely move, except in the echoing room. The guards turn all of it into lost verdicts and no new false alarm; the one new wrong ok is in the echoing room, which is not made safe anyway. Six clips per row: this says the spans move in these ways, not how often.
+Azure's first span starts 50 to 120 ms early with room noise alone and up to 200 ms early with a knock or a voice before the speech; its last span ends up to 220 ms late, and in the echoing room 300 to 500 ms late; the boundaries between syllables barely move, except in the echoing room. Scored on those spans, the guards turn almost all of it into lost verdicts: 0 new false alarms and 1 new wrong ok (in a room with echo, which is not made safe anyway). Six clips per row: this says the spans move in these ways, not how often.
 
 ## When the spans are wrong
 
@@ -271,29 +280,29 @@ The timings path believes its spans. This section gives it wrong ones: Azure's s
 
 | The spans given | Singles: no guards | Singles: guarded | Singles: guarded, before ld-ne0.7 | Phrases: no guards | Phrases: guarded | Phrases: guarded, before ld-ne0.7 | Phrase syllables read |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| All spans 150 ms early | 1 / 7 / 34 | 0 / 1 / 42 | 0 / 1 / 42 | 13 / 57 / 277 | 0 / 9 / 245 | 0 / 14 / 245 | 744 |
-| All spans 100 ms early | 1 / 7 / 19 | 0 / 3 / 27 | 0 / 3 / 27 | 1 / 45 / 263 | 0 / 4 / 240 | 0 / 6 / 240 | 744 |
-| All spans 50 ms early | 1 / 3 / 7 | 0 / 1 / 16 | 0 / 1 / 16 | 0 / 11 / 79 | 0 / 1 / 175 | 0 / 2 / 185 | 744 |
-| All spans 50 ms late | 0 / 4 / 7 | 0 / 1 / 27 | 0 / 0 / 28 | 0 / 19 / 86 | 0 / 4 / 140 | 0 / 2 / 133 | 744 |
-| All spans 100 ms late | 0 / 12 / 43 | 0 / 2 / 78 | 0 / 2 / 79 | 3 / 30 / 208 | 0 / 7 / 201 | 0 / 7 / 208 | 744 |
-| All spans 150 ms late | 1 / 9 / 86 | 0 / 2 / 95 | 0 / 2 / 96 | 5 / 75 / 242 | 0 / 8 / 231 | 0 / 7 / 233 | 744 |
-| One boundary 100 ms early | – | – | – | 1 / 44 / 318 | 0 / 1 / 347 | 0 / 2 / 348 | 1338 |
-| One boundary 50 ms early | – | – | – | 0 / 10 / 84 | 0 / 3 / 224 | 0 / 4 / 239 | 1524 |
-| One boundary 50 ms late | – | – | – | 0 / 9 / 52 | 0 / 9 / 132 | 0 / 6 / 117 | 1514 |
-| One boundary 100 ms late | – | – | – | 5 / 26 / 201 | 0 / 6 / 251 | 0 / 9 / 253 | 1428 |
-| One span takes all of the next syllable but its last 60 ms | – | – | – | 3 / 29 / 358 | 0 / 0 / 385 | 0 / 0 / 390 | 1524 |
-| One span takes all of the syllable before but its first 60 ms | – | – | – | 5 / 39 / 391 | 0 / 1 / 409 | 0 / 1 / 411 | 1524 |
-| …the next syllable but its last 110 ms | – | – | – | 3 / 26 / 277 | 0 / 9 / 304 | 0 / 14 / 305 | 1524 |
-| …the next syllable but its last 130 ms | – | – | – | 3 / 26 / 235 | 0 / 8 / 282 | 0 / 9 / 288 | 1524 |
-| …the syllable before but its first 160 ms | – | – | – | 1 / 18 / 130 | 1 / 8 / 209 | 1 / 8 / 221 | 1524 |
+| All spans 150 ms early | 1 / 7 / 34 | 0 / 1 / 42 | 0 / 1 / 42 | 13 / 62 / 278 | 0 / 11 / 246 | 0 / 14 / 245 | 744 |
+| All spans 100 ms early | 1 / 7 / 19 | 0 / 3 / 27 | 0 / 3 / 27 | 1 / 56 / 263 | 0 / 5 / 240 | 0 / 6 / 240 | 744 |
+| All spans 50 ms early | 1 / 3 / 7 | 0 / 1 / 16 | 0 / 1 / 16 | 0 / 11 / 80 | 0 / 2 / 186 | 0 / 2 / 185 | 744 |
+| All spans 50 ms late | 0 / 4 / 8 | 0 / 0 / 28 | 0 / 0 / 28 | 0 / 23 / 88 | 0 / 2 / 146 | 0 / 2 / 133 | 744 |
+| All spans 100 ms late | 0 / 12 / 44 | 0 / 2 / 79 | 0 / 2 / 79 | 3 / 40 / 210 | 0 / 7 / 210 | 0 / 7 / 208 | 744 |
+| All spans 150 ms late | 1 / 10 / 87 | 0 / 2 / 96 | 0 / 2 / 96 | 5 / 76 / 246 | 0 / 6 / 234 | 0 / 7 / 233 | 744 |
+| One boundary 100 ms early | – | – | – | 1 / 59 / 318 | 0 / 2 / 349 | 0 / 2 / 348 | 1338 |
+| One boundary 50 ms early | – | – | – | 0 / 10 / 85 | 0 / 4 / 244 | 0 / 4 / 239 | 1524 |
+| One boundary 50 ms late | – | – | – | 0 / 13 / 54 | 0 / 6 / 138 | 0 / 6 / 117 | 1514 |
+| One boundary 100 ms late | – | – | – | 5 / 35 / 205 | 0 / 6 / 262 | 0 / 9 / 253 | 1428 |
+| One span takes all of the next syllable but its last 60 ms | – | – | – | 3 / 49 / 361 | 0 / 0 / 391 | 0 / 0 / 390 | 1524 |
+| One span takes all of the syllable before but its first 60 ms | – | – | – | 5 / 56 / 392 | 0 / 1 / 412 | 0 / 1 / 411 | 1524 |
+| …the next syllable but its last 110 ms | – | – | – | 3 / 41 / 278 | 0 / 11 / 307 | 0 / 14 / 305 | 1524 |
+| …the next syllable but its last 130 ms | – | – | – | 3 / 38 / 237 | 0 / 7 / 291 | 0 / 9 / 288 | 1524 |
+| …the syllable before but its first 160 ms | – | – | – | 1 / 19 / 129 | 1 / 8 / 221 | 1 / 8 / 221 | 1524 |
 
 The guards (`TIMING_RULES`):
 
-- **Edges.** Every recording is read again with all its spans 40 ms earlier and later, and with each boundary between two neighbours 40 ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart") is not held against the verdict. (Holding a pitch leap against it was tried in ld-ne0.7: 14 fewer wrong oks in the table below, but on syllables run together it cost right verdicts on the correct spans, so it was left out.)
+- **Edges.** Every recording is read again with all its spans 40 ms earlier and later, and with each boundary between two neighbours 40 ms either way; a verdict stands only where every reading gives it, for the same tone ("edges" otherwise). A reading in which the moved span merely takes in a separate sound ("apart", by a silence or a pitch leap) is not held against the verdict. (Holding the leap readings against it was tried in ld-ne0.7: with leaps counted only across one lost frame or a hole with quiet in it, the table below has the same wrong oks in every row either way, so the rule stayed as it was.)
 - **Lopsided.** Of two neighbouring spans, one with hardly any voice in it, or one under 100 ms beside one 3 times its length: neither is judged where the other took its sound.
 - **These values are in-sample.** The 40 ms jitter, the 100 ms sliver and the factor of 3 were chosen while looking at these clips and at the first twelve rows of this table; the two rows where a neighbour is left 60 ms are the case the sliver bar was set to catch, and their zeros show that it does, not that swallowed neighbours are handled. The last three rows are the same error off the design (the neighbour left 110, 130 or 160 ms, which is no sliver) and were added by a reviewer afterwards: they are the ones to read.
-- **What they cost on the spans as Azure gave them**: 14 single and 62 phrase verdicts, and no new false alarm or wrong ok. Singles: 107 of 192 caught / 1 of 64 false alarms / 11 passed as ok without the guards; 101 of 192 caught / 1 of 64 false alarms / 8 passed as ok with. Phrases: 196 of 576 caught / 0 of 168 false alarms / 57 passed as ok without; 153 of 576 caught / 0 of 168 false alarms / 39 passed as ok with. The timings tables in the section above are the guarded scorer.
-- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok, and so do the off-design swallow rows, one of them with a false alarm. ld-ne0.7's two "apart" checks lowered most of these (the before column), not to zero; a wider jitter (60 or 80 ms) was tried and cost far more verdicts than it saved, and checking Azure's boundaries against energy cuts was not possible because on clean clips the two differ by up to 135 ms. **A stated bound.** On generated syllables run together (20 ms apart, in `npm test`) those rows produce false alarms as well. A wrong span costs most of its clip's verdicts either way, which is the right price.
+- **What they cost on the spans as Azure gave them**: 14 single and 63 phrase verdicts, and no new false alarm or wrong ok. Singles: 107 of 192 caught / 1 of 64 false alarms / 11 passed as ok without the guards; 101 of 192 caught / 1 of 64 false alarms / 8 passed as ok with. Phrases: 196 of 576 caught / 0 of 168 false alarms / 59 passed as ok without; 153 of 576 caught / 0 of 168 false alarms / 40 passed as ok with. The timings tables in the section above are the guarded scorer.
+- **What they don't stop**: spans wrong by much more than the jitter in a way that still looks like syllables. The rows for 100 and 150 ms keep wrong tones passed as ok, and so do the off-design swallow rows, one of them with a false alarm. Against the guarded columns before ld-ne0.7, the new false alarms and wrong oks are fewer in 6 (all spans 150 ms early (phrases); all spans 100 ms early (phrases); all spans 150 ms late (phrases); one boundary 100 ms late (phrases); the next syllable but its last 110 ms (phrases); the next syllable but its last 130 ms (phrases)), more in none, and the same in the rest; more right verdicts are lost in 13 (all spans 150 ms early (phrases), 246 for 245; all spans 50 ms early (phrases), 186 for 185; all spans 50 ms late (phrases), 146 for 133; all spans 100 ms late (phrases), 210 for 208; all spans 150 ms late (phrases), 234 for 233; one boundary 100 ms early (phrases), 349 for 348; one boundary 50 ms early (phrases), 244 for 239; one boundary 50 ms late (phrases), 138 for 117; one boundary 100 ms late (phrases), 262 for 253; one span takes all of the next syllable but its last 60 ms (phrases), 391 for 390; one span takes all of the syllable before but its first 60 ms (phrases), 412 for 411; the next syllable but its last 110 ms (phrases), 307 for 305; the next syllable but its last 130 ms (phrases), 291 for 288). A wider jitter (60 or 80 ms) was tried and cost far more verdicts than it saved, and checking Azure's boundaries against energy cuts was not possible because on clean clips the two differ by up to 135 ms. **A stated bound.** On generated syllables run together (20 ms apart, in `npm test`) those rows produce false alarms as well. A wrong span costs most of its clip's verdicts either way, which is the right price.
 - **A syllable whose own span could not be moved** in any reading (too short and against an end of the recording) is not judged either: no readings agreeing is not agreement. A span that one move would leave under 40 ms stays put in that reading while the others move.
 - **A word Azure times as a whole** (no per-syllable times) is cut by energy inside that word's span only, on pitch finished on that span alone, and those cuts count for what any fallback cut does (`rough`).
 
@@ -379,10 +388,10 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | --- | --- | --- | --- | --- | --- | --- |
 | tone 1 | 20 | 0 | 0 | 3 | 1 | 83.3% |
 | tone 2 | 2 | 34 | 7 | 2 | 3 | 70.8% |
-| tone 3 | 2 | 1 | 24 | 5 | 4 | 66.7% |
-| tone 4 | 0 | 0 | 13 | 35 | 12 | 58.3% |
+| tone 3 | 2 | 1 | 25 | 5 | 3 | 69.4% |
+| tone 4 | 0 | 0 | 13 | 36 | 11 | 60.0% |
 
-Why syllables were unsure (all labels): unclear 325, unvoiced 81, creaky 11, trimmed 9, apart 5.
+Why syllables were unsure (all labels): unclear 327, unvoiced 72, creaky 9, trimmed 6.
 
 ### Phrases, cut by energy, speaker's range known
 
@@ -392,10 +401,10 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | --- | --- | --- | --- | --- | --- | --- |
 | tone 1 | 22 | 0 | 1 | 0 | 1 | 91.7% |
 | tone 2 | 6 | 26 | 11 | 2 | 3 | 54.2% |
-| tone 3 | 2 | 1 | 25 | 4 | 4 | 69.4% |
-| tone 4 | 2 | 0 | 17 | 29 | 12 | 48.3% |
+| tone 3 | 2 | 1 | 26 | 4 | 3 | 72.2% |
+| tone 4 | 3 | 0 | 17 | 29 | 11 | 48.3% |
 
-Why syllables were unsure (all labels): unclear 290, unvoiced 81, creaky 12, apart 5, trimmed 4.
+Why syllables were unsure (all labels): unclear 293, unvoiced 72, creaky 10, trimmed 2.
 
 ### Phrases, cut by energy around Scribe's character times, speaker's range known
 
@@ -408,7 +417,7 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | tone 3 | 2 | 1 | 25 | 5 | 3 | 69.4% |
 | tone 4 | 3 | 0 | 17 | 29 | 11 | 48.3% |
 
-Why syllables were unsure (all labels): unclear 289, unvoiced 73, apart 13, creaky 5, trimmed 1.
+Why syllables were unsure (all labels): unclear 290, unvoiced 73, creaky 10, apart 4, trimmed 1.
 
 ### Phrases, Scribe's character times taken as the cuts, speaker's range known
 
@@ -421,7 +430,7 @@ Tone the clip was said in (after the connected-speech rules) against the tone th
 | tone 3 | 1 | 0 | 16 | 2 | 17 | 44.4% |
 | tone 4 | 3 | 0 | 11 | 25 | 21 | 41.7% |
 
-Why syllables were unsure (all labels): unclear 198, timings 191, edges 85, short 84, apart 41, lopsided 33, unvoiced 20, creaky 18, untimed 12.
+Why syllables were unsure (all labels): unclear 198, timings 191, edges 88, short 84, lopsided 33, creaky 33, apart 21, unvoiced 20, untimed 12.
 
 ### By voice (range known, cut by energy)
 
@@ -429,8 +438,8 @@ Why syllables were unsure (all labels): unclear 198, timings 191, edges 85, shor
 | --- | --- | --- | --- | --- |
 | Tingting (macOS) | 0 of 16 (0.0%) | 32 of 48 (66.7%) | 0 of 42 (0.0%) | 69 of 144 (47.9%) |
 | Reed (macOS) | 0 of 16 (0.0%) | 29 of 48 (60.4%) | 0 of 42 (0.0%) | 23 of 144 (16.0%) |
-| Rachel (ElevenLabs premade: an English voice speaking Mandarin) | 1 of 16 (6.3%) | 31 of 48 (64.6%) | 0 of 42 (0.0%) | 57 of 144 (39.6%) |
-| Adam (ElevenLabs premade: an English voice speaking Mandarin) | 0 of 16 (0.0%) | 19 of 48 (39.6%) | 0 of 42 (0.0%) | 42 of 144 (29.2%) |
+| Rachel (ElevenLabs premade: an English voice speaking Mandarin) | 1 of 16 (6.3%) | 31 of 48 (64.6%) | 0 of 42 (0.0%) | 63 of 144 (43.8%) |
+| Adam (ElevenLabs premade: an English voice speaking Mandarin) | 0 of 16 (0.0%) | 19 of 48 (39.6%) | 0 of 42 (0.0%) | 46 of 144 (31.9%) |
 
 ## Azure, live
 
@@ -438,9 +447,9 @@ Why syllables were unsure (all labels): unclear 198, timings 191, edges 85, shor
 
 | | Syllables | Azure's median score | Azure marks the word `Mispronunciation` | Azure score under 40 | Local scorer alone flags | Merged result flags | which are | Merged result says ok |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Singles, right reference | 64 | 82 | 1 (1.6%) | 0 (0.0%) | 1 (1.6%) | 1 (1.6%): 1 tone, 0 sound | false alarms | 49 (76.6%) |
+| Singles, right reference | 64 | 82 | 1 (1.6%) | 0 (0.0%) | 1 (1.6%) | 1 (1.6%): 1 tone, 0 sound | false alarms | 50 (78.1%) |
 | Singles, wrong-tone reference | 192 | 61 | 55 (28.6%) | 21 (10.9%) | 111 (57.8%) | 107 (55.7%): 99 tone, 8 sound | caught | 8 (4.2%) |
-| Phrases, right reference | 168 | 100 | 4 (2.4%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%): 0 tone, 0 sound | false alarms | 94 (56.0%) |
+| Phrases, right reference | 168 | 100 | 4 (2.4%) | 0 (0.0%) | 0 (0.0%) | 0 (0.0%): 0 tone, 0 sound | false alarms | 97 (57.7%) |
 
 Where Azure's syllable score separates right from wrong, and where it doesn't. Syllables scoring under each bar (in brackets: those on a word Azure also marks `Mispronunciation`):
 
@@ -472,11 +481,11 @@ A wrong-tone sample, verbatim (Tingting's 妈, mā, assessed against 马, mǎ):
 
 60 phrase clips were transcribed by Scribe v2 with `timestamps_granularity=character` (the app sends no such field today, and `transcriptText` keeps only `text`). For Chinese the reply has one `words` entry per character: 175 entries, 0 longer than one character, 175 carrying a `characters` array. 168 of 172 expected syllables found their character in the transcript.
 
-The times are not syllable boundaries. The median character span is 140 ms and 17 of 168 are 40 ms or shorter, in clips whose syllables last 150 to 300 ms: Scribe reports roughly when it recognized each character. Taken as cuts they leave most syllables too short to score (the last column of the table above). But 132 of 168 character start times fall inside the stretch the energy cuts give that syllable, so they work as anchors: `scoreTones({ anchors })` cuts by energy and keeps each piece on its character's time. On these short, pause-free clips that changes little; its use is longer speech with pauses, which this set does not contain.
+The times are not syllable boundaries. The median character span is 140 ms and 17 of 168 are 40 ms or shorter, in clips whose syllables last 150 to 300 ms: Scribe reports roughly when it recognized each character. Taken as cuts they leave most syllables too short to score (the last column of the table above). But 135 of 168 character start times fall inside the stretch the energy cuts give that syllable, so they work as anchors: `scoreTones({ anchors })` cuts by energy and keeps each piece on its character's time. On these short, pause-free clips that changes little; its use is longer speech with pauses, which this set does not contain.
 
 ## Speed
 
-Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 28 ms (median of 12; slowest 42 ms). The most it takes, 27 seconds and 60 syllables (the clip looped; median of 5): 255 ms cut by energy, 400 ms on timings; the pitch track is the same work in both, and with the track already in hand the rest is 0 ms and 131 ms. Nearly all of it is the pitch track.
+Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 28 ms (median of 12; slowest 39 ms). The most it takes, 27 seconds and 60 syllables (the clip looped; median of 5): 234 ms cut by energy, 337 ms on timings; the pitch track is the same work in both, and with the track already in hand the rest is 0 ms and 107 ms. Nearly all of it is the pitch track.
 
 ## Settings this ran with
 
@@ -488,7 +497,7 @@ Scoring a 3-second, 16 kHz recording on this machine (arm64, Node v26.4.0): 28 m
 
 
 
-**Creaky syllables.** A creaky syllable may be "ok" when its voiced part fits (it is never "off"), is marked `creaky`, and is left out of `overall`. That rule let more wrong tones pass as ok when it was introduced: phrases on Scribe's cuts went from 52 to 58 of 576, single syllables with nothing known about the speaker from 24 to 25 of 192 (the commit before against the commit with it, same clips). In this run: 15 of 576 (phrases, scribe's character times taken as the cuts, speaker's range known) and 23 of 192 (single syllables, nothing known about the speaker).
+**Creaky syllables.** A creaky syllable may be "ok" when its voiced part fits (it is never "off"), is marked `creaky`, and is left out of `overall`. That rule let more wrong tones pass as ok when it was introduced: phrases on Scribe's cuts went from 52 to 58 of 576, single syllables with nothing known about the speaker from 24 to 25 of 192 (the commit before against the commit with it, same clips). In this run: 16 of 576 (phrases, scribe's character times taken as the cuts, speaker's range known) and 23 of 192 (single syllables, nothing known about the speaker).
 
 ## Before wiring this to a route
 

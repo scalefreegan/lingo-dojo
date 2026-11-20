@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
   LOCAL_MAX_SECONDS, LOCAL_MAX_SYLLABLES, AZURE_MAX_SECONDS, AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, azureLocale, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
-  classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
+  applySandhi, classifyContour, encodeWav, expectedSyllables, mergeAzure, parsePinyin, parseWav, pitchCurve, pronunciationProvider, referenceCurves, ruleMargins, rulesOut, scoreTones,
   scoresTones, scribeCharTimings, segmentSyllables, speakerRange, timingsProblem, trackPitch, trimToSpeech, withTone, FALLBACK_TRUST, TIMING_RULES, TRIM_RULES, jitteredTimings,
 } from "../pronunciation.mjs";
 import { CURVES, GENERATED_CASES, GENERATED_PHRASES, NOISE_CONDITIONS, RATE, SPAN_ERRORS, disturb, flips, sayCase, speak, verdictsOf } from "../pronunciation-synth.mjs";
@@ -505,20 +505,51 @@ const edited = (track) => {
 
 // Pitch tracks of real proof clips (synthesized voices; written by
 // `node scripts/pronunciation-proof.mjs --fixtures`): what the scorer sees
-// on audio it did not generate itself.
+// on audio it did not generate itself. A fixture with a `condition` is
+// the clip with that disturbance around it (the noise study's); `spans`
+// are Azure's syllable times for the clip, on the track's clock.
 const TRACKS = JSON.parse(fs.readFileSync(new URL("./fixtures/pronunciation/tracks.json", import.meta.url), "utf8"));
-const replay = (voice, text, readings = null) => {
-  const f = TRACKS.find((x) => x.voice === voice && x.text === text);
-  assert.ok(f, `${voice} ${text}`);
-  // The fixture holds the finished pitch only: it stands in for the raw.
-  const track = { hopMs: f.hopMs, f0: Float32Array.from(f.f0), rawF0: Float32Array.from(f.f0), rms: Float32Array.from(f.rms), periodicity: Float32Array.from(f.periodicity), zcr: Float32Array.from(f.zcr) };
-  return scoreTones({ track, syllables: expectedSyllables(text, readings ?? f.readings), speaker: f.range });
+const replay = (voice, text, readings = null, { condition, timings = false, syllables = null } = {}) => {
+  const f = TRACKS.find((x) => x.voice === voice && x.text === text && x.condition === condition);
+  assert.ok(f && (!timings || f.spans), `${voice} ${text} ${condition ?? ""}`);
+  const track = { hopMs: f.hopMs, f0: Float32Array.from(f.f0), rawF0: Float32Array.from(f.rawF0), rms: Float32Array.from(f.rms), periodicity: Float32Array.from(f.periodicity), zcr: Float32Array.from(f.zcr) };
+  return scoreTones({ track, syllables: syllables ?? expectedSyllables(text, readings ?? f.readings), speaker: f.range, timings: timings ? f.spans : null });
 };
+/** A fixture's text as said and under every relabelling of one syllable,
+ *  as the proof makes them (a relabelled 一 or 不 loses its own sandhi
+ *  with its tone). */
+const relabellings = (f) => {
+  const truth = expectedSyllables(f.text, f.readings);
+  const out = [{ name: "as said", syllables: truth }];
+  truth.forEach((s, i) => {
+    if (!s.baseTone) return;
+    for (const tone of [1, 2, 3, 4]) {
+      if (tone === s.baseTone) continue;
+      const mutated = truth.map((x, k) => (k === i ? { char: x.char === "一" || x.char === "不" ? "〓" : x.char, pinyin: withTone(x.pinyin, tone), baseTone: tone, breakBefore: x.breakBefore } : { char: x.char, pinyin: x.pinyin, baseTone: x.baseTone, breakBefore: x.breakBefore }));
+      out.push({ name: `${s.char} labelled tone ${tone}`, syllables: applySandhi(mutated) });
+    }
+  });
+  return out;
+};
+/** A disturbed fixture against its clean clip, cut by energy, under every
+ *  labelling: no ok and no off the clean clip didn't have. */
+function noNewVerdicts(voice, text, condition) {
+  const clean = TRACKS.find((x) => x.voice === voice && x.text === text && !x.condition);
+  for (const { name, syllables } of relabellings(clean)) {
+    const was = replay(voice, text, null, { syllables }).syllables;
+    const now = replay(voice, text, null, { condition, syllables }).syllables;
+    now.forEach((s, j) => {
+      if (s.verdict === "ok" || s.verdict === "off") assert.equal(was[j].verdict, s.verdict, `${voice} ${text}, ${condition}, ${name}: syllable ${j + 1}`);
+    });
+  }
+}
 
 test("recorded pitch tracks: no flag on any correctly said syllable, the near misses included; plain wrong tones flagged", () => {
   for (const f of TRACKS) {
-    const r = replay(f.voice, f.text);
-    assert.ok(!verdicts(r).includes("off"), `${f.voice} ${f.text}: ${JSON.stringify(r.syllables.map((s) => [s.char, s.verdict, s.margin]))}`);
+    for (const timings of f.spans ? [false, true] : [false]) {
+      const r = replay(f.voice, f.text, null, { condition: f.condition, timings });
+      assert.ok(!verdicts(r).includes("off"), `${f.voice} ${f.text} ${f.condition ?? ""} ${timings ? "on spans" : ""}: ${JSON.stringify(r.syllables.map((s) => [s.char, s.verdict, s.margin]))}`);
+    }
   }
   // The two correct syllables that came closest to a flag in the proof:
   // Reed's 客 (ruled out by the contour, held back because the measurement
@@ -1439,28 +1470,70 @@ test("two sounds in one span, close together: a knock 50 ms after a fourth tone 
       assert.deepEqual([r.verdict, r.reason], ["unsure", "apart"], `seed ${seed}, labelled ${label}`);
     }
   }
-  // A cough 300 ms behind the voice, in a span drawn 450 ms past it, is
-  // apart by the silence between (counted from the cough's own edge). On
-  // this generated voice it was already; on one of the proof's phrases it
-  // was not (the proof report's coughAfter row, timings).
-  const said = speak([4, 1]);
-  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "coughAfter"), 5);
-  const timings = said.timings.map((t, i) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs + (i === 1 ? 450 : 0) }));
-  for (const labels of [[4, 1], [4, 4], [4, 2], [4, 3]]) {
-    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range, timings }).syllables;
-    assert.deepEqual([r[1].verdict, r[1].reason], ["unsure", "apart"], `${labels}`);
+});
+
+test("two sounds in one span, a silence between: a cough after a syllable said in creak is \"apart\", not the syllable's pitch", () => {
+  // The syllable is said all in creak (no period: the tracker finds no
+  // pitch in it, like the end of a phrase said low), and a cough follows
+  // 300 ms later inside a span a recogniser drew 450 ms past the voice
+  // (the proof's coughAfter row, timings: Adam's 水 in 我想喝水). The only
+  // pitch in the span is the cough's, so the silence that says "two
+  // sounds" is between the cough and the loud creak before it, counted
+  // from the creak's edge (contourOf's quiet, from the first and last loud
+  // frames). Counted only between voiced frames, there is no silence, and
+  // the cough's pitch is read as a first tone, "ok" whatever was said.
+  for (const tone of [2, 3, 4]) {
+    for (const seed of [5, 11, 23]) {
+      const said = speak([tone], { seed, creakOnset: 1 });
+      const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "coughAfter"), seed);
+      const timings = said.timings.map((t) => ({ startMs: t.startMs + d.shiftMs, endMs: t.endMs + d.shiftMs + 450 }));
+      for (const label of [1, 2, 3, 4]) {
+        const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: expecting(label), speaker: said.range, timings }).syllables[0];
+        assert.deepEqual([r.verdict, r.reason], ["unsure", "apart"], `said ${tone}, seed ${seed}, labelled ${label}`);
+      }
+    }
   }
 });
 
-test("cut by energy, a loud run 50 ms after the speech is not joined to it when its pitch leaps: it is doubted, not read as the last syllable", () => {
-  // (A guard against regressions: this generated case was safe before
-  // ld-ne0.7 too; the proof's clips are where the join passed a wrong tone.)
-  const said = speak([4, 1]);
-  const d = disturb(said.samples, RATE, NOISE_CONDITIONS.find((c) => c.key === "nearKnockAfter50"), 5);
-  for (const labels of [[4, 2], [4, 3], [4, 4]]) {
-    const r = scoreTones({ samples: d.samples, sampleRate: RATE, syllables: phrase(...labels), speaker: said.range }).syllables;
-    assert.notEqual(r[1].verdict, "ok", `${labels}: ${r[1].verdict} ${r[1].reason ?? ""}`);
-  }
+test("on Azure's spans of real clips, a fall across loud frames with no period in them is one voice, not two sounds", () => {
+  // Adam's 爸 falls 7 semitones across five loud frames with no pitch kept
+  // in them (creak at the turn of a fourth tone); Rachel's 去 in 一起去
+  // has a lone frame slipped 20 semitones down beside four such frames.
+  // A step across a hole counts as a leap (contourOf's `leaps`) only where
+  // some of the hole is quiet, or it is a single lost frame: counted across
+  // any hole, both were "apart", and 爸 lost its ok.
+  assert.equal(replay("Adam", "爸", null, { timings: true }).syllables[0].verdict, "ok");
+  const r = replay("Rachel", "一起去", null, { timings: true });
+  assert.deepEqual(r.syllables.map((s) => s.reason ?? s.verdict), ["ok", "ok", "creaky"]);
+});
+
+test("cut by energy, voice either side of a short hole is one run when it carries on near its pitch, two when it leaps (real clips)", () => {
+  // Rachel's 去 in 一起去: the tracker slipped 20 semitones on the last
+  // frame before a two-frame hole (59, 59, 38.5, hole, 53, 53). One frame
+  // further back the voice is 5.6 semitones from where it resumes, so the
+  // two sides are one run (stepAcross) and the phrase reads as it did
+  // before ld-ne0.7. Compared frame to frame at the hole's edges, 去 was
+  // split in two and 起 lost its ok.
+  assert.deepEqual(verdicts(replay("Rachel", "一起去")).slice(0, 2), ["ok", "ok"]);
+  // Adam's 你叫什么 with a knock 50 ms after the last sound (the noise
+  // study's nearKnockAfter50, seeded as it seeds it): the knock, at 57
+  // semitones, starts two frames after 么 ends at 36. Joined to the last
+  // run (as before ld-ne0.7), 什 labelled a third tone was passed as ok;
+  // left a run of its own, the knock is doubted. No labelling gets an ok
+  // or an off the clean clip didn't.
+  noNewVerdicts("Adam", "你叫什么", "nearKnockAfter50");
+});
+
+test("a knock on the first sound at another pitch, one lost frame before the voice: two sounds, not the syllable's start (a real clip)", () => {
+  // Rachel's 不是 with a pitched knock over its first sound (the noise
+  // study's knockOnset, seeded as it seeds it; not made safe in general):
+  // the knock at 57 semitones, one loud frame with no pitch, then 不 at
+  // 50.6. No voice moves 6 semitones in a frame, so across a single lost
+  // frame the step is a leap however loud the frame is (contourOf's
+  // `leaps`). Counted only across holes with quiet in them, the knock was
+  // read as 不's start, a fall: 不 said right was flagged and wrong tones
+  // on it passed as ok.
+  noNewVerdicts("Rachel", "不是", "knockOnset");
 });
 
 test("a pitched background leaves everything unjudged, with timings or without", () => {
