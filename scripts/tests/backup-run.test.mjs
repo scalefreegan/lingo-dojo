@@ -13,10 +13,12 @@ function sandbox() {
   const dir = path.join(root, "backups");
   const fake = (name, body) => {
     const p = path.join(root, name);
-    // $out is the argument after -f.
+    // $out is the argument after -f. $args records it as OUT, not the path:
+    // the path sits under mkdtemp's random suffix, which now and then spells
+    // the very secret a test checks argv for ("q9" in ~0.1% of names, ld-6ys).
     fs.writeFileSync(
       p,
-      `#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -f) out="$2"; shift;; esac; args="$args $1"; shift; done\n${body}\n`,
+      `#!/bin/sh\nwhile [ $# -gt 0 ]; do case "$1" in -f) out="$2"; args="$args -f OUT"; shift 2; continue;; esac; args="$args $1"; shift; done\n${body}\n`,
       { mode: 0o755 },
     );
     return p;
@@ -75,6 +77,7 @@ test("the password reaches pg_dump through PGPASSWORD, never argv", () => {
   assert.match(seen, /ENV=s@cret/);
   assert.ok(!seen.split("ARGS=")[1].includes("cret"));
   assert.match(seen, /-w/);
+  assert.match(seen, /-f OUT/);
   runBackup({ url: "postgres://me@localhost/db?password=q9", database: "db", dir, tool, now: new Date(NOW.getTime() + 5000), env: { PATH: process.env.PATH } });
   assert.match(fs.readFileSync(log, "utf8"), /ENV=q9/);
   assert.ok(!fs.readFileSync(log, "utf8").split("ARGS=")[1].includes("q9"));
