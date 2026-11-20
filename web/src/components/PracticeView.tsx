@@ -658,8 +658,25 @@ function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: Practi
  * replay and the next session cost nothing). Fetched once per card; the
  * first play starts by itself when the browser lets it.
  */
+/** Playback speeds for the listening drill. The browser slows the clip and
+ *  keeps its pitch (`preservesPitch`), so tones stay recognisable. */
+const PLAY_SPEEDS = [1, 0.75, 0.5] as const;
+const SPEED_KEY = "lingo.practice.speed";
+
+function savedSpeed(): number {
+  try {
+    const n = Number(localStorage.getItem(SPEED_KEY));
+    return (PLAY_SPEEDS as readonly number[]).includes(n) ? n : 1;
+  } catch {
+    return 1;
+  }
+}
+
 function usePhraseAudio(phraseId: string) {
   const [ready, setReady] = useState(false);
+  // Kept across cards (a learner who needs it slow needs it every time).
+  const [speed, setSpeedState] = useState(savedSpeed);
+  const speedRef = useRef(speed);
   const [error, setError] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -673,6 +690,8 @@ function usePhraseAudio(phraseId: string) {
         if (ctrl.signal.aborted) return;
         made = URL.createObjectURL(blob);
         el = new Audio(made);
+        el.preservesPitch = true;
+        el.playbackRate = speedRef.current;
         el.onplay = () => setPlaying(true);
         el.onended = el.onpause = () => setPlaying(false);
         audioRef.current = el;
@@ -697,7 +716,29 @@ function usePhraseAudio(phraseId: string) {
     a.currentTime = 0;
     a.play().catch(() => setPlaying(false));
   }
-  return { ready, error, playing, play };
+  function setSpeed(n: number) {
+    speedRef.current = n;
+    setSpeedState(n);
+    if (audioRef.current) audioRef.current.playbackRate = n;
+    try {
+      localStorage.setItem(SPEED_KEY, String(n));
+    } catch {
+      // Private window or blocked storage: the choice just lasts the page.
+    }
+  }
+  return { ready, error, playing, play, speed, setSpeed };
+}
+
+function SpeedPicker({ audio }: { audio: ReturnType<typeof usePhraseAudio> }) {
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label="Playback speed" data-testid="practice-speed">
+      {PLAY_SPEEDS.map((n) => (
+        <Button key={n} onClick={() => audio.setSpeed(n)} aria-pressed={audio.speed === n} className={audio.speed === n ? "ring-2 ring-accent" : undefined} data-testid={`practice-speed-${n}`}>
+          {n}x
+        </Button>
+      ))}
+    </div>
+  );
 }
 
 function PlayButton({ audio, label }: { audio: ReturnType<typeof usePhraseAudio>; label: string }) {
@@ -724,6 +765,7 @@ function ListeningCard({ item, nativeName, locale, answer, last, onNext }: CardP
           Listen
         </p>
         <PlayButton audio={audio} label={result ? "Play again" : "Replay"} />
+        <SpeedPicker audio={audio} />
       </div>
       {audio.error && !result && (
         // Nothing heard is nothing to answer: no choices, no typing, no
