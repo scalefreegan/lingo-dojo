@@ -593,7 +593,7 @@ function FlashCard({ item, languageName, nativeName, locale, answer, last, onNex
           <RatingRow current={null} busy={busy} focusFirst onPick={(r) => void answer.submit({ reveal: true, rating: r })} />
         </div>
       )}
-      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} extra={sentence} />}
+      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} extra={sentence} playable />}
     </>
   );
 }
@@ -1015,6 +1015,7 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           last={last}
           onNext={onNext}
           how={typing ? "wrote" : "said"}
+          playable
           extra={!typing && take ? <SpokenTones take={take} result={result} phraseId={item.phraseId} locale={locale} /> : undefined}
         />
       )}
@@ -1226,6 +1227,24 @@ function ClozeCard({ item, languageName, locale, speechProblem, answer, last, on
   );
 }
 
+/** Hear the phrase after the grade. Fetched only on the click (a miss
+ *  spends TTS credits; the server caches it, ld-6a0). */
+function PhrasePlay({ phraseId }: { phraseId: string }) {
+  const model = useModelAudio(phraseId);
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
+      <Button className="px-2 py-1 text-sm" onClick={model.play} disabled={model.busy} data-testid="practice-result-play">
+        <span aria-hidden="true">▶</span> {model.busy ? "Loading audio…" : "Play phrase"}
+      </Button>
+      {model.error && (
+        <span className="text-sm text-err" role="alert" data-testid="practice-result-play-error">
+          The phrase couldn't be played: {model.error}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** The grade: the verdict, what was answered, the card's two sides (with
  *  readings), and the override. */
 function Result({
@@ -1237,6 +1256,7 @@ function Result({
   onNext,
   how = "wrote",
   extra,
+  playable = false,
 }: {
   result: PracticeAnswerReply;
   item: PracticeItem;
@@ -1248,6 +1268,9 @@ function Result({
   how?: "wrote" | "picked" | "said";
   /** Shown under the card's two sides (a flashcard's sentence). */
   extra?: ReactNode;
+  /** A Play button under the phrase (flashcard and speak-it; the listening
+   *  drill has its own, and a cloze's phrase is not the card's audio). */
+  playable?: boolean;
 }) {
   const verdict = VERDICT[result.review.verdict];
   const lead = how === "said" ? "Heard" : how === "picked" ? "You picked" : "You wrote";
@@ -1264,6 +1287,7 @@ function Result({
           <RubyText text={result.expected.text} locale={locale} />
         </p>
         <p className="text-sm text-fg-2">{result.expected.meaning}</p>
+        {playable && <PhrasePlay phraseId={item.phraseId} />}
       </div>
       {extra}
       {result.replayed && (
