@@ -2037,3 +2037,24 @@ test("a recording that starts inside the first syllable: that syllable is not ju
   // The same speech with a lead-in is read.
   assert.equal(scoreTones({ samples: led(said.samples, 300), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range }).syllables[0].verdict, "ok");
 });
+
+test("voice hanging off the spans: an extra sound Azure timed as an Insertion is covered, an untimed one is not (ld-ne0.12)", () => {
+  // Three syllables said; the first is the learner's "um" before the two
+  // they meant. Azure marks it an Insertion and times the other two.
+  const said = speak([1, 4, 2], { ms: 240, gapMs: 20 });
+  const samples = led(said.samples, 500);
+  const track = trackPitch(samples, RATE);
+  const spans = spansOf(said.timings, 500);
+  const word = (span, error) => ({ text: "字", error, score: 90, startMs: span.startMs, endMs: span.endMs, phonemes: [{ name: "ma 1", score: 90, startMs: span.startMs, endMs: span.endMs, tone: 1 }] });
+  const syllables = expecting(4, 2);
+  const run = (first) => {
+    const azure = { status: "Success", overall: 90, words: [first, word(spans[1], "None"), word(spans[2], "None")] };
+    return mergeAzure({ azure, syllables, track, local: (timings) => scoreTones({ samples, sampleRate: RATE, syllables, timings, track, speaker: said.range }) }).syllables;
+  };
+  const inserted = run(word(spans[0], "Insertion"));
+  assert.ok(!inserted.some((s) => s.reason === "edges"), JSON.stringify(inserted.map((s) => [s.verdict, s.reason])));
+  assert.ok(inserted.some((s) => s.verdict === "ok"), JSON.stringify(inserted.map((s) => [s.verdict, s.reason])));
+  // The same sound that Azure did not time: the spans leave voice hanging.
+  const untimed = run({ ...word(spans[0], "Insertion"), startMs: null, endMs: null, phonemes: [] });
+  assert.ok(untimed.every((s) => s.reason === "edges"), JSON.stringify(untimed.map((s) => [s.verdict, s.reason])));
+});

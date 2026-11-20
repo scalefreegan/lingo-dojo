@@ -1452,18 +1452,24 @@ export const TIMING_RULES = Object.freeze({
  *  outside every span and touches one: starts within `touchMs` of a span's
  *  end, or ends within it of a span's start. "Loud" is `uncoveredLoud` of the
  *  loudest voiced frame inside the spans. 0 when no rule or no span. */
-export function uncoveredVoice(track, spans, rules = TIMING_RULES) {
+export function uncoveredVoice(track, spans, rules = TIMING_RULES, covered = []) {
   const raw = rawPitch(track);
+  // `covered`: voice the recogniser timed and called something else (an
+  // inserted word, a self-correction, a leading "um"): not a span to judge,
+  // and no sign the syllable spans are misplaced either.
   const live = spans.filter(Boolean);
   if (!(rules.uncoveredMs > 0) || !raw || !live.length) return 0;
   const n = raw.length;
   const hop = track.hopMs;
   const inside = new Uint8Array(n);
   for (const t of live) inside.fill(1, Math.max(0, Math.floor(t.startMs / hop)), Math.min(n, Math.ceil(t.endMs / hop)));
+  // The loudness bar is the syllable spans' alone; covered voice is only
+  // left out of what counts as hanging.
   let peak = 0;
   for (let i = 0; i < n; i++) if (inside[i] && raw[i] > 0 && track.rms[i] > peak) peak = track.rms[i];
   if (!(peak > 0)) return 0;
   const bar = peak * rules.uncoveredLoud;
+  for (const t of covered) if (t && Number.isFinite(t.startMs) && Number.isFinite(t.endMs)) inside.fill(1, Math.max(0, Math.floor(t.startMs / hop)), Math.min(n, Math.ceil(t.endMs / hop)));
   const touch = Math.ceil(rules.touchMs / hop);
   let longest = 0;
   for (let i = 0; i < n;) {
@@ -1724,7 +1730,7 @@ export function scoreTones({ samples, sampleRate, syllables, timings = null, anc
     const nudged = jitteredTimings(timings, seconds * 1000, timingRules);
     const others = nudged.map(reading);
     // Loud voice hanging off the spans: they are in the wrong place.
-    const hanging = timingRules.uncoveredMs > 0 && uncoveredVoice(raw, timings, timingRules) >= timingRules.uncoveredMs;
+    const hanging = timingRules.uncoveredMs > 0 && uncoveredVoice(raw, timings, timingRules, timings.covered ?? []) >= timingRules.uncoveredMs;
     const out = read.syllables.map((s, i) => {
       if (s.verdict === "unsure") return s;
       if (hanging) return { ...s, verdict: "unsure", confidence: 0, reason: "edges" };
@@ -2244,8 +2250,12 @@ export const AZURE_RULES = Object.freeze({ offBelow: 40 });
 export function mergeAzure({ azure, syllables, local, track = null }) {
   // Azure's words → one timed entry per Chinese character.
   const timed = [];
+  const inserted = [];
   for (const w of azure.words) {
-    if (w.error === "Insertion") continue;
+    if (w.error === "Insertion") {
+      if (w.startMs !== null && w.endMs !== null) inserted.push({ startMs: w.startMs, endMs: w.endMs });
+      continue;
+    }
     const chars = [...w.text].filter((c) => HAN.test(c));
     if (!chars.length) continue;
     let cuts;
@@ -2281,6 +2291,10 @@ export function mergeAzure({ azure, syllables, local, track = null }) {
     }
   }
   const timings = match.map((m) => m?.cut ?? null);
+  // Voice Azure timed as an inserted word travels with the timings
+  // (scoreTones: uncoveredVoice); an array property, so every `local`
+  // callback that passes `timings` on carries it without change.
+  Object.defineProperty(timings, "covered", { value: inserted });
   const scored = timings.some(Boolean) ? local(timings) : null;
 
   const out = syllables.map((s, i) => {

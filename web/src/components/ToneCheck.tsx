@@ -90,6 +90,10 @@ function toneSummary(reply: PronunciationScoreReply, kids: boolean): string {
   // The card's character said in another of its readings: say so, so a
   // learner aiming at the usual one isn't just told "right".
   const other = syl.length === 1 && syl[0].verdict === "ok" ? syl[0].usual : undefined;
+  // Every syllable withheld because the sound didn't line up with the words
+  // (extra voice before or after them): a closer microphone won't help.
+  const misplaced = syl.length > 0 && syl.every((s) => s.reason === "edges");
+  if (misplaced) return kids ? "Let's try again. Just say the words, nothing before or after!" : "The sound didn't line up with the words this time. Try again, saying just the phrase with nothing before or after it.";
   if (kids) return off ? "Let's listen and try that one again!" : other ? `That's another way to say ${syl[0].char}. Listen for the usual one!` : ok ? "Lovely tones!" : "";
   if (other) return `That's ${syl[0].pinyin}, another reading of ${syl[0].char} (usually ${other}).`;
   if (syl.length === 1 && syl[0].reason === "every_tone") return `${syl[0].char} has readings in every tone, so its tone can't be checked on its own.`;

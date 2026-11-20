@@ -112,8 +112,9 @@ export function modelSyllableReal(s, frames) {
  *  with no new call (priorAzureSpans, reusedRecord); otherwise the clip gets
  *  one fresh Azure call under the new version's own ledger
  *  (scripts/model-analysis.mjs). 3: the scorer's noise guards (ld-ne0.7)
- *  can change a model syllable's verdict, and so its `saidTone`. */
-export const MODEL_RECORD_VERSION = 3;
+ *  can change a model syllable's verdict, and so its `saidTone`. 4: the
+ *  same for the voice-outside-the-spans check (ld-ne0.12). */
+export const MODEL_RECORD_VERSION = 4;
 
 /**
  * The spans an older version's record holds from Azure, if they can be
