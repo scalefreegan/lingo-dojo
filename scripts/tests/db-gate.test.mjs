@@ -101,8 +101,9 @@ test("requests arriving during a re-check share it", async () => {
   assert.equal(calls, 2, "one re-check for the three");
 });
 
-test("a failure that is not the boot check's still reads as a sentence", () => {
-  assert.equal(notReadyMessage(new Error("No DATABASE_URL is set")), "The server's database is not ready: No DATABASE_URL is set");
+test("a failure that is not the boot check's reads as a fixed sentence: its own text never reaches the page", () => {
+  const raw = new Error('role "someone" does not exist (/Users/x/checkout)');
+  assert.equal(notReadyMessage(raw), "The server's database is not ready; the server's terminal has the details.");
   assert.equal(
     notReadyMessage(behind()),
     "The server's database is behind: 1 migration(s) of 10 not applied. Run `npm run db:migrate`; the API comes back by itself once the database is current, with no restart.",

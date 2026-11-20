@@ -110,16 +110,25 @@ export async function checkDatabase(url?: string): Promise<{ applied: number; to
   } catch (e) {
     const err = e as { code?: string; message?: string };
     const missing = err.code === "3D000";
+    const login = err.code === "28P01" || err.code === "28000";
     const why =
       missing ? "the database does not exist"
       : err.code === "ECONNREFUSED" ? "nothing is listening (is Postgres running? brew services start postgresql@17)"
       : err.message || String(e);
     await client.end().catch(() => {});
-    throw new DatabaseNotReady(
-      `Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`,
-      `cannot be reached: ${why}`,
-      missing ? `Run \`npm run db:setup\`; ${BY_ITSELF}` : `Once it answers, ${BY_ITSELF}`,
-    );
+    // `problem` and `liveFix` may reach a page (dbGate.ts), so they are fixed
+    // sentences: a driver's own text can name a role, a host or a path, and
+    // only the terminal gets that (the message).
+    const problem =
+      missing ? "does not exist"
+      : err.code === "ECONNREFUSED" ? "cannot be reached: nothing is listening"
+      : login ? "refused the server's login"
+      : "cannot be reached";
+    const liveFix =
+      missing ? `Run \`npm run db:setup\`; ${BY_ITSELF}`
+      : login ? `Fix the login in DATABASE_URL (the server's terminal has the details); ${BY_ITSELF}`
+      : `The server's terminal has the details; ${BY_ITSELF}`;
+    throw new DatabaseNotReady(`Lingo Dojo cannot reach its database at ${where}: ${why}.\n${FIX}`, problem, liveFix);
   }
   try {
     const query = async (text: string, params?: unknown[]) => (await client.query(text, params)).rows;

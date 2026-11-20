@@ -179,7 +179,8 @@ drills are not wired (no reliable target text per turn).
   `scripts/db/accounts.ts`. The dev server
   refuses to start until `npm run db:setup` has run; a Vite restart onto a
   database that is behind comes up anyway with `/api` answering 503 until
-  `npm run db:migrate` (`web/server/dbGate.ts`, never a throw there).
+  `npm run db:migrate` (`web/server/dbGate.ts`, never a throw there; the
+  one middleware ahead of `wrap()`: it only refuses, with fixed sentences).
 - **Branches and worktrees never point at the real database.** Set
   `DATABASE_URL` to a scratch database and `LINGO_READER_ROLE` to a scratch
   role (a linked worktree refuses to start or migrate without the first,

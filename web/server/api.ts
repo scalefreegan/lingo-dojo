@@ -118,7 +118,7 @@ export function wrap(fn: PublicHandler | UserHandler | LearnerHandler, opts: { a
  *  a Vite restart re-imports the config, and with it a fresh copy of this
  *  module; the process (and this flag) stays. */
 const STARTED = Symbol.for("lingo-dojo.api.started");
-type StartedFlag = { [STARTED]?: boolean };
+export type StartedFlag = { [STARTED]?: boolean };
 
 /**
  * The boot check (docs/DATA.md). Vite awaits configureServer, so on the
@@ -129,11 +129,13 @@ type StartedFlag = { [STARTED]?: boolean };
  * throws: the new code comes up behind a gate that answers 503 until the
  * database is current (dbGate.ts says why a throw here is worse).
  */
-async function bootGate(logger: GateLog): Promise<DatabaseGate> {
-  const flag = globalThis as StartedFlag;
+export async function bootGate(
+  logger: GateLog,
+  { check: runCheck = checkDatabase, flag = globalThis as StartedFlag }: { check?: () => Promise<{ applied: number }>; flag?: StartedFlag } = {},
+): Promise<DatabaseGate> {
   let applied = 0;
   const check = async () => {
-    ({ applied } = await checkDatabase());
+    ({ applied } = await runCheck());
   };
   const gate = await openDatabaseGate(check, { log: logger });
   if (gate.error && !flag[STARTED]) throw gate.error;
@@ -150,7 +152,9 @@ async function bootGate(logger: GateLog): Promise<DatabaseGate> {
   return gate;
 }
 
-export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plugin {
+export function apiPlugins(
+  opts: { checkDatabase?: boolean; db?: Db; boot?: { check: () => Promise<{ applied: number }>; flag: StartedFlag } } = {},
+): Plugin {
   // The HTTP tests hand in an in-process PGlite: the real routes, no server.
   if (opts.db) setDb(opts.db);
   return {
@@ -162,7 +166,7 @@ export function apiPlugins(opts: { checkDatabase?: boolean; db?: Db } = {}): Plu
       // this hook without awaiting it, so the routes go on synchronously.
       if (opts.checkDatabase === false) return mountRoutes(server.middlewares);
       const logger = { info: (m: string) => server.config.logger.info(m), error: (m: string) => server.config.logger.error(m, { timestamp: true }) };
-      return bootGate(logger).then((gate) => {
+      return bootGate(logger, opts.boot).then((gate) => {
         // Ahead of every route, so no handler runs on a stale schema.
         server.middlewares.use("/api", gate.middleware);
         mountRoutes(server.middlewares);

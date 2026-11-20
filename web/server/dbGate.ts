@@ -41,12 +41,14 @@ export interface DatabaseGate {
   middleware(req: IncomingMessage, res: ServerResponse, next: () => void): void;
 }
 
-/** The sentence for the page and the log line: the error's own split when
- *  it is checkDatabase's DatabaseNotReady, else its message. No URL. */
+/** The sentence for the page: checkDatabase's DatabaseNotReady split (fixed
+ *  sentences, db.ts), else a fixed one. Never an error's own text, which can
+ *  name a role, a host or a path, and this reply goes out before wrap()'s
+ *  session check; the terminal gets the full message (`log.error`). */
 export function notReadyMessage(e: Error): string {
   const { problem, liveFix } = e as Error & { problem?: string; liveFix?: string };
   if (problem && liveFix) return `The server's database ${problem}. ${liveFix}`;
-  return `The server's database is not ready: ${e.message}`;
+  return "The server's database is not ready; the server's terminal has the details.";
 }
 
 /**
@@ -75,9 +77,11 @@ export async function openDatabaseGate(
 
   const recheck = (): Promise<void> => {
     if (!checking) {
+      const before = error?.message;
       checking = run().finally(() => {
         checking = null;
         if (!error) log.info("  database ready: the API is serving again");
+        else if (error.message !== before) log.error(error.message);
       });
     }
     return checking;

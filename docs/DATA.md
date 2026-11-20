@@ -112,8 +112,8 @@ never migrates on its own. A Vite *restart* (a server file changed, as a
 serving and a half-built server whose watcher later fights the live one for
 the port. It comes up with the new code, and while the database is not
 current every `/api` request gets a 503 naming what to run, re-checking at
-most every 2 s; the first request after `npm run db:migrate` finds it
-current and the API is back, no restart (`web/server/dbGate.ts`, bead
+most every 2 s; the first request after `npm run db:migrate` (and at least 2 s after the
+last check) finds it current and the API is back, no restart (`web/server/dbGate.ts`, bead
 ld-tdd). Migrating stays an explicit step even then: a pulled migration may
 be irreversible, and a branch's must never reach the real database by
 accident. The HTTP tests mount the plugin with
