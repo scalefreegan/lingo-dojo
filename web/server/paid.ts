@@ -1,17 +1,25 @@
 import { HttpError } from "./sse.ts";
 
-// The per-user bounds on the Practice tab's paid calls (docs/DATA.md §As
-// built (phase 7b), "Paid calls"; §As built (phase 7c)). Two budgets, kept
+// The per-user bounds on paid provider calls (docs/DATA.md §As built (phase
+// 7b), "Paid calls"; §As built (phase 7c); docs/VOICE.md). Two budgets, kept
 // apart so background work never takes what a learner is waiting on:
-//  - interactive (paidSlot): a phrase audio miss and a speak-it
-//    transcription, the calls a card waits for;
+//  - interactive (paidSlot): one budget shared by every route a learner
+//    waits on, so no mix of tabs and windows runs more at once: the Go
+//    tab's speech, transcription and voice draws (/api/voice/speak,
+//    /transcribe, /cast), the character card's sounds (/sound), the
+//    Practice tab's phrase audio and speak-it transcription, and Azure
+//    pronunciation scoring (which scores locally when it's busy);
 //  - background (backgroundSlot): writing cloze sentences, which nothing
 //    waits for.
+// The Go tab's turn is not here: it runs `claude -p` on the owner's login,
+// one at a time per conversation already (conversations.ts takeTurnLock).
 
-/** Interactive paid calls the practice routes may run at once per user:
- *  enough for a replay racing the next card, not a loop spending the
- *  owner's credits in parallel. The Go tab's voice routes don't share it
- *  yet (bead ld-e6q: a common limit). */
+/** Interactive paid calls at once per user, across every route above:
+ *  enough for the Go tab's next line fetched while one plays (or a replay
+ *  racing the next card), not a loop spending the owner's credits in
+ *  parallel. The Go tab retries a 429 after a moment (web/src/api.ts
+ *  whenFree), so a race at the edge (an aborted fetch not yet released)
+ *  costs a short wait, not a lost line. */
 export const PAID_PER_USER = 2;
 /** Background paid calls at once per user, whatever the language. */
 export const BACKGROUND_PER_USER = 1;
@@ -31,9 +39,10 @@ async function slot<T>(running: Map<string, number>, max: number, userId: string
   }
 }
 
-/** Run `fn` in one of the user's interactive paid slots, or 429 (saying
- *  `what` is busy: "audio requests", "transcriptions") when they are all
- *  taken. */
+/** Run `fn` in one of the user's interactive paid slots, or 429 at once
+ *  (saying `what` is busy: "audio requests", "transcriptions", "voice
+ *  draws", "pronunciation checks") when they are all taken. Never queues:
+ *  a caller that can do without (pronunciation) falls back instead. */
 export function paidSlot<T>(userId: string, fn: () => Promise<T>, what = "audio requests"): Promise<T> {
   return slot(paidRunning, PAID_PER_USER, userId, () => new HttpError(429, `too many ${what} at once; try again in a moment`), fn);
 }

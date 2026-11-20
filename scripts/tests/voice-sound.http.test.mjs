@@ -30,9 +30,22 @@ fs.writeFileSync(process.env.LINGO_ENV_FILE, "ELEVENLABS_API_KEY=test-key\n");
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]) delete process.env[k];
 
 /* ElevenLabs, stubbed: speech is "MP3:<voice>:<text>"; the account has a
- * cloned Mandarin voice and two premade ones. */
+ * cloned Mandarin voice and two premade ones. A line starting "HOLD" waits
+ * for `hold.open()` (the paid-slot test holds calls in flight with it), one
+ * starting "FAIL" is a 500; speech-to-text hears "你好", the Voice Library
+ * finds nothing. */
 const synths = [];
 let lists = 0;
+let stts = 0;
+let searches = 0;
+const hold = {
+  entered: 0,
+  gate: Promise.resolve(),
+  open() {},
+  close() {
+    this.gate = new Promise((resolve) => (this.open = resolve));
+  },
+};
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input.url);
@@ -50,7 +63,20 @@ globalThis.fetch = async (input, init) => {
     const voice = decodeURIComponent(url.pathname.split("/").pop() ?? "");
     const { text } = JSON.parse(init.body);
     synths.push({ voice, text });
+    if (text.startsWith("FAIL")) return new Response(JSON.stringify({ detail: { message: "server error" } }), { status: 500 });
+    if (text.startsWith("HOLD")) {
+      hold.entered++;
+      await hold.gate;
+    }
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+  }
+  if (url.pathname === "/v1/speech-to-text") {
+    stts++;
+    return new Response(JSON.stringify({ text: "你好" }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+  if (url.pathname === "/v1/shared-voices") {
+    searches++;
+    return new Response(JSON.stringify({ voices: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
   return new Response("{}", { status: 404 });
 };
@@ -171,4 +197,53 @@ test("no provider key is still a clear 400: the default voice replaces 'no voice
   const speak = await sam.call("POST", "/api/voice/speak", { speaker: "narrator", text: "你好", locale: "zh-TW" });
   assert.equal(speak.status, 400);
   assert.match(speak.body.error, /AZURE_SPEECH_KEY/);
+});
+
+const speakAs = (who, text) => who.call("POST", "/api/voice/speak", { speaker: "narrator", gender: "female", text, locale: "zh-TW" });
+
+test("one paid-call limit per user across the routes (ld-e6q): two lines in flight, and a third line, a transcription, a voice draw or a sound is a 429 before any provider call; another login isn't held; all free after", async () => {
+  const sam = await someone([ADULT], { "zh-TW": { "narrator:female": "saved-voice" } });
+  const robin = await someone([ADULT], { "zh-TW": { "narrator:female": "saved-voice" } });
+  const listen = (who) => who.call("POST", "/api/voice/transcribe?locales=zh-TW", new Uint8Array([82, 73, 70, 70, 1, 2, 3]), { "Content-Type": "audio/wav" });
+  const draw = (who) => who.call("POST", "/api/voice/cast", { mode: "adult", locale: "zh-TW", units: [] });
+  hold.close();
+  hold.entered = 0;
+  const held = [speakAs(sam, "HOLD 一"), speakAs(sam, "HOLD 二")];
+  try {
+    for (let i = 0; hold.entered < 2 && i < 200; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(hold.entered, 2, "both lines reached the provider");
+    const counts = () => [synths.length, stts, searches, lists];
+    const before = counts();
+    const third = await speakAs(sam, "三");
+    assert.deepEqual([third.status, third.body.error], [429, "too many audio requests at once; try again in a moment"]);
+    const heard = await listen(sam);
+    assert.deepEqual([heard.status, heard.body.error], [429, "too many transcriptions at once; try again in a moment"]);
+    const cast = await draw(sam);
+    assert.deepEqual([cast.status, cast.body.error], [429, "too many voice draws at once; try again in a moment"]);
+    const card = await sound(sam, "鬱");
+    assert.equal(card.status, 429, "the character card's sound shares the slots");
+    assert.deepEqual(counts(), before, "nothing reached a provider");
+    // Per user: another login speaks meanwhile.
+    const theirs = await speakAs(robin, "四");
+    assert.deepEqual([theirs.status, theirs.text], [200, "MP3:saved-voice:四"]);
+  } finally {
+    hold.open();
+  }
+  assert.deepEqual((await Promise.all(held)).map((r) => r.status), [200, 200]);
+  // The slots free up once the held lines are said.
+  assert.equal((await speakAs(sam, "三")).status, 200);
+  const heard = await listen(sam);
+  assert.deepEqual([heard.status, heard.body.text], [200, "你好"]);
+  const cast = await draw(sam);
+  assert.equal(cast.status, 200, cast.text);
+  assert.equal((await sound(sam, "鬱")).status, 200);
+});
+
+test("a failed paid call frees its slot: provider errors over and over never lock the user out", async () => {
+  const sam = await someone([ADULT], { "zh-TW": { "narrator:female": "saved-voice" } });
+  for (let i = 0; i < 3; i++) {
+    const r = await speakAs(sam, "FAIL 一");
+    assert.deepEqual([r.status, r.body.error], [502, "ElevenLabs answered 500: server error"]);
+  }
+  assert.equal((await speakAs(sam, "一")).status, 200);
 });
