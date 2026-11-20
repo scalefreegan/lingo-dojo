@@ -13,6 +13,7 @@
  * actually spoken, and then waits the full silence they chose. A long think
  * before the first word never ends the turn. */
 
+import { pauseThreshold } from "../shared/pause-threshold.ts";
 import { downmix, encodeWav16k, resampleTo16k } from "./wav16k";
 
 export interface Recording {
@@ -123,8 +124,9 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
       return;
     }
     if (floorN) {
-      // Three times the room's own level, but never so low that hiss counts.
-      threshold = Math.max(0.015, (floorSum / floorN) * 3);
+      // Three times the room's own level, but never so low that hiss counts
+      // (the minimum is lower for "pitch": no auto gain, see pause-threshold.ts).
+      threshold = pauseThreshold(floorSum / floorN, processing);
       floorN = 0;
     }
     if (rms > threshold) {

@@ -1456,9 +1456,22 @@ actually playing is reasoned, not measured); Safari's processing, where
 echo cancellation is Apple's voice-processing unit, which brings its own
 gain and noise reduction and may not let them be turned off separately
 (the recording page labels such clips `processed`); Firefox. With auto
-gain off a very quiet microphone may stay under the pause detector's
-floor (RMS 0.015), so a take ends on Stop or the idle cap rather than on
-the pause (ld-5cj).
+gain off a very quiet microphone may still be too quiet for the pause detector; see below.
+
+**The pause detector's threshold** (`web/shared/pause-threshold.ts`, tested
+in `scripts/tests/pause-threshold.test.mjs`): RMS must exceed
+max(minimum, 3 × the floor measured in the first 350 ms) for 200 ms to arm
+it. The minimum was 0.015 (about −36 dBFS) everywhere. With auto gain off
+(`pitch`) that was too high: with Chromium's fake capture device a quiet
+speaker whose speech reached −28 dBFS with auto gain came in at −45 dBFS
+(RMS 0.0056) without, so the take never ended on the pause, only on Stop or
+the idle cap (ld-5cj). Now the minimum is 0.015 for `conversation`
+(unchanged, gain keeps speech loud) and 0.004 (about −48 dBFS) for `pitch`,
+so the calibrated floor decides: a room at −50 dBFS (0.003) gives 0.009, and
+−45 dBFS speech still arms it, while hiss at or above about −48 dBFS raises
+the floor and with it the threshold. Not measured on a real microphone or
+room; a very quiet mic in a noisy room (speech under 3 × floor) still ends
+on Stop or the idle cap.
 
 ## Cost (rough, Nov 2026)
 
