@@ -33,13 +33,15 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
  * cloned Mandarin voice and two premade ones. A line starting "HOLD" waits
  * for `hold.open()` (the paid-slot test holds calls in flight with it), one
  * starting "FAIL" is a 500; speech-to-text hears "你好", the Voice Library
- * finds nothing. */
+ * finds nothing (and, with `hold.searches`, waits for `hold.open()` or the
+ * request's abort, as a real fetch does). */
 const synths = [];
 let lists = 0;
 let stts = 0;
 let searches = 0;
 const hold = {
   entered: 0,
+  searches: false,
   gate: Promise.resolve(),
   open() {},
   close() {
@@ -76,6 +78,13 @@ globalThis.fetch = async (input, init) => {
   }
   if (url.pathname === "/v1/shared-voices") {
     searches++;
+    if (hold.searches) {
+      hold.entered++;
+      await new Promise((resolve, reject) => {
+        hold.gate.then(resolve);
+        init?.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      });
+    }
     return new Response(JSON.stringify({ voices: [] }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
   return new Response("{}", { status: 404 });
@@ -246,4 +255,39 @@ test("a failed paid call frees its slot: provider errors over and over never loc
     assert.deepEqual([r.status, r.body.error], [502, "ElevenLabs answered 500: server error"]);
   }
   assert.equal((await speakAs(sam, "一")).status, 200);
+});
+
+test("a voice draw the browser gives up on frees its slot at once: its provider calls are aborted, not left to their 30 s timeout (PR #45 review)", async () => {
+  const sam = await someone([ADULT], { "zh-TW": { "narrator:female": "saved-voice" } });
+  hold.close();
+  hold.entered = 0;
+  hold.searches = true;
+  const gaveUp = new AbortController();
+  try {
+    const drawn = sam.call("POST", "/api/voice/cast", { mode: "adult", locale: "zh-TW", units: [] }, {}, { signal: gaveUp.signal });
+    for (let i = 0; hold.entered < 1 && i < 200; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.ok(hold.entered >= 1, "the draw is searching the library");
+    gaveUp.abort();
+    await assert.rejects(drawn);
+    // One line held in flight takes a slot; a second line needs the other,
+    // which the abandoned draw holds until its search ends (the stub's never
+    // does on its own: only the abort ends it). The server sees the close
+    // within moments, so a few short tries are allowed, never the 30 s.
+    const entered = hold.entered;
+    const held = speakAs(sam, "HOLD 一");
+    for (let i = 0; hold.entered === entered && i < 200; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(hold.entered, entered + 1, "the first line is at the provider");
+    let second;
+    for (let i = 0; i < 25; i++) {
+      second = await speakAs(sam, "二");
+      if (second.status !== 429) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(second.status, 200, "the second line is said while the abandoned search would still be waiting");
+    hold.open();
+    assert.equal((await held).status, 200);
+  } finally {
+    hold.searches = false;
+    hold.open();
+  }
 });

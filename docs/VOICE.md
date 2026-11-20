@@ -1500,11 +1500,14 @@ pronunciation scoring. A third call while two run is a **429** at once,
 before any provider call, never a queue on the server. The upload of a
 recording is read before the slot is taken.
 
-Two is the Go tab's own pace: the next line is fetched while one plays, and
-a voice draw ahead runs beside it. At the edge (a fetch just aborted and
-not yet released, a card's sound in another window) the Go tab retries a
-429 three times, 0.4, 1 and 2 s later (`whenFree` in `web/src/api.ts`), so it
-costs a short wait, not a lost line. Pronunciation scoring that finds the
+The Go tab itself needs one at a time for speech: it fetches the next part
+of a line only once the current one has arrived, while that one plays. A
+voice draw (a recast mid-session) can run beside it, so two leaves room for
+that plus one more. A draw the browser gives up on (its 10 s timeout, Stop)
+has its provider calls aborted and frees its slot at once, as a line's do.
+At the edge (a fetch just aborted and not yet released, a card's sound in
+another window) the Go tab retries a 429 three times, 0.4, 1 and 2 s later
+(`whenFree` in `web/src/api.ts`), so it costs a short wait, not a lost line. Pronunciation scoring that finds the
 slots taken scores locally instead. Not counted: the voice turn itself
 (`claude -p` on your login, one at a time per conversation), and the free
 listing calls (`/voices`, the library search in Settings). Cloze writing
