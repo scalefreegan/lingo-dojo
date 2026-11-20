@@ -653,11 +653,6 @@ function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: Practi
   );
 }
 
-/**
- * Plays a phrase from /api/practice/audio (cached by the server, so the
- * replay and the next session cost nothing). Fetched once per card; the
- * first play starts by itself when the browser lets it.
- */
 /** Playback speeds for the listening drill. The browser slows the clip and
  *  keeps its pitch (`preservesPitch`), so tones stay recognisable. */
 const PLAY_SPEEDS = [1, 0.75, 0.5] as const;
@@ -672,6 +667,11 @@ function savedSpeed(): number {
   }
 }
 
+/**
+ * Plays a phrase from /api/practice/audio (cached by the server, so the
+ * replay and the next session cost nothing). Fetched once per card; the
+ * first play starts by itself when the browser lets it.
+ */
 function usePhraseAudio(phraseId: string) {
   const [ready, setReady] = useState(false);
   // Kept across cards (a learner who needs it slow needs it every time).
