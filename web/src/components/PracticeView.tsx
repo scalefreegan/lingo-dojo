@@ -554,6 +554,8 @@ function FlashCard({ item, languageName, nativeName, locale, answer, last, onNex
   const [revealed, setRevealed] = useState(false);
   // Kept here, not in the sentence: a flag on the reveal holds through the grade.
   const flag = useFlag();
+  // Fetched only on the result's Play (a miss spends TTS credits).
+  const phrasePlayer = useModelAudio(item.phraseId);
   const { busy, result } = answer;
   const sentence = item.sentence && <CardSentence sentence={item.sentence} locale={locale} lang={item.lang || undefined} flag={flag} busy={busy} />;
   // Readings go over the target words only where they are already shown:
@@ -593,7 +595,7 @@ function FlashCard({ item, languageName, nativeName, locale, answer, last, onNex
           <RatingRow current={null} busy={busy} focusFirst onPick={(r) => void answer.submit({ reveal: true, rating: r })} />
         </div>
       )}
-      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} extra={sentence} playable />}
+      {result && <Result result={result} item={item} locale={locale} answer={answer} last={last} onNext={onNext} extra={sentence} play={phrasePlayer} />}
     </>
   );
 }
@@ -970,6 +972,9 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
   const [typing, setTyping] = useState(false);
   // The recording of the answer sent, for its tone check.
   const [take, setTake] = useState<Blob | null>(null);
+  // One player for the result's Play and the tone check's model sound: one
+  // fetch (a miss is paid once) and one clip, never two over each other.
+  const phrasePlayer = useModelAudio(item.phraseId);
   const { busy, result } = answer;
   const idle = spoken.state.step === "idle";
   const target = languageName || "the language you're learning";
@@ -1015,8 +1020,8 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           last={last}
           onNext={onNext}
           how={typing ? "wrote" : "said"}
-          playable
-          extra={!typing && take ? <SpokenTones take={take} result={result} phraseId={item.phraseId} locale={locale} /> : undefined}
+          play={phrasePlayer}
+          extra={!typing && take ? <SpokenTones take={take} result={result} locale={locale} model={phrasePlayer} /> : undefined}
         />
       )}
     </>
@@ -1031,13 +1036,12 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
  * the phrase's own audio (the listening drill's, cached on the server),
  * fetched on the first tap.
  */
-function SpokenTones({ take, result, phraseId, locale }: { take: Blob; result: PracticeAnswerReply; phraseId: string; locale: string | null }) {
+function SpokenTones({ take, result, locale, model }: { take: Blob; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
   const text = result.expected.text;
   const wanted = scoresTonesHere(locale) && scorableText(text) && result.review.verdict !== "wrong";
   const state = useToneScore(take, text, wanted);
-  const model = useModelAudio(phraseId);
   if (!wanted) return null;
-  return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId }} />;
+  return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId: model.phraseId }} />;
 }
 
 /** The phrase's audio, fetched on the first play and kept for the card. */
@@ -1087,8 +1091,9 @@ function useModelAudio(phraseId: string) {
       if (mine === gen.current) setBusy(false);
     }
   }
-  return { play: () => void play(), busy, error };
+  return { play: () => void play(), busy, error, phraseId };
 }
+type ModelAudio = ReturnType<typeof useModelAudio>;
 
 /** The sentence around a gap: the context with its readings (Mandarin),
  *  the gap a fixed-width box that gives no length away (and no reading:
@@ -1229,8 +1234,7 @@ function ClozeCard({ item, languageName, locale, speechProblem, answer, last, on
 
 /** Hear the phrase after the grade. Fetched only on the click (a miss
  *  spends TTS credits; the server caches it, ld-6a0). */
-function PhrasePlay({ phraseId }: { phraseId: string }) {
-  const model = useModelAudio(phraseId);
+function PhrasePlay({ model }: { model: ModelAudio }) {
   return (
     <div className="mt-1.5 flex flex-wrap items-center gap-2">
       <Button className="px-2 py-1 text-sm" onClick={model.play} disabled={model.busy} data-testid="practice-result-play">
@@ -1256,7 +1260,7 @@ function Result({
   onNext,
   how = "wrote",
   extra,
-  playable = false,
+  play,
 }: {
   result: PracticeAnswerReply;
   item: PracticeItem;
@@ -1270,7 +1274,7 @@ function Result({
   extra?: ReactNode;
   /** A Play button under the phrase (flashcard and speak-it; the listening
    *  drill has its own, and a cloze's phrase is not the card's audio). */
-  playable?: boolean;
+  play?: ModelAudio;
 }) {
   const verdict = VERDICT[result.review.verdict];
   const lead = how === "said" ? "Heard" : how === "picked" ? "You picked" : "You wrote";
@@ -1287,7 +1291,7 @@ function Result({
           <RubyText text={result.expected.text} locale={locale} />
         </p>
         <p className="text-sm text-fg-2">{result.expected.meaning}</p>
-        {playable && <PhrasePlay phraseId={item.phraseId} />}
+        {play && <PhrasePlay model={play} />}
       </div>
       {extra}
       {result.replayed && (
