@@ -1456,9 +1456,28 @@ actually playing is reasoned, not measured); Safari's processing, where
 echo cancellation is Apple's voice-processing unit, which brings its own
 gain and noise reduction and may not let them be turned off separately
 (the recording page labels such clips `processed`); Firefox. With auto
-gain off a very quiet microphone may stay under the pause detector's
-floor (RMS 0.015), so a take ends on Stop or the idle cap rather than on
-the pause (ld-5cj).
+gain off a very quiet microphone may still be too quiet for the pause detector; see below.
+
+**The pause detector's threshold** (`web/shared/pause-threshold.ts`, tested
+in `scripts/tests/pause-threshold.test.mjs`): RMS must exceed
+max(minimum, 3 × the room's floor) for 200 ms to arm it. The floor is the
+quietest 50 ms tick of the first 350 ms, not their mean, so a learner who
+starts talking inside that window doesn't lift it. The minimum was 0.015
+(about −36 dBFS) everywhere. With auto gain off (`pitch`) that was too high:
+with Chromium's fake capture device a quiet speaker whose speech reached
+−28 dBFS with auto gain came in at −45 dBFS (RMS 0.0056) without, so the take
+never ended on the pause, only on Stop or the idle cap (ld-5cj). Now the
+minimum is 0.015 for `conversation` (unchanged, gain keeps speech loud) and
+0.004 (about −48 dBFS) for `pitch`. The floor takes over from the minimum in
+a room louder than about −58 dBFS, and speech must then be about 9.5 dB above
+the room: −45 dBFS speech arms it in a room quieter than about −54.5 dBFS
+(a quiet room at −60 dBFS gives the 0.004 minimum), but not at −50 dBFS
+(threshold 0.0095). Not measured on a real microphone or room. Known
+limits: a quiet voice in a noisier room still ends only on Stop or the idle
+cap; and the threshold is fixed after calibration, so a noise that starts
+later (a fan, typing, the model clip's echo on loud speakers) and stays above
+it keeps the take from ending on a pause, and if it lasts 200 ms counts as
+speech, which also skips the idle cap, leaving the 60 s maximum.
 
 ## Cost (rough, Nov 2026)
 

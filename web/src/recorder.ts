@@ -13,6 +13,7 @@
  * actually spoken, and then waits the full silence they chose. A long think
  * before the first word never ends the turn. */
 
+import { noiseFloor, pauseThreshold } from "../shared/pause-threshold.ts";
 import { downmix, encodeWav16k, resampleTo16k } from "./wav16k";
 
 export interface Recording {
@@ -95,8 +96,8 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
 
   const started = performance.now();
   const samples = new Float32Array(analyser.fftSize);
-  let floorSum = 0;
-  let floorN = 0;
+  const floorLevels: number[] = [];
+  let calibrated = false;
   let threshold = 0.02;
   let loudMs = 0;
   let spoke = false;
@@ -118,14 +119,15 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
     const elapsed = now - started;
     onLevel?.(Math.min(1, rms / 0.2));
     if (elapsed < CALIBRATE_MS) {
-      floorSum += rms;
-      floorN += 1;
+      floorLevels.push(rms);
       return;
     }
-    if (floorN) {
-      // Three times the room's own level, but never so low that hiss counts.
-      threshold = Math.max(0.015, (floorSum / floorN) * 3);
-      floorN = 0;
+    if (!calibrated) {
+      // Three times the room's own level (its quietest tick, so speech in the
+      // window doesn't count), but never so low that hiss counts (the minimum
+      // is lower for "pitch": no auto gain, see pause-threshold.ts).
+      threshold = pauseThreshold(noiseFloor(floorLevels), processing);
+      calibrated = true;
     }
     if (rms > threshold) {
       loudMs += TICK_MS;
