@@ -195,3 +195,64 @@ test("还 before 钱 / 书 / 你 is huán only where the phrase ends; elsewhere 
   const fix = zh.makeCorrections({ mine: [{ word: "还钱", reading: "hái qián" }] });
   assert.deepEqual(zh.uncertainWords("我还钱不够", "zh-CN", { cache: false, corrections: fix }), []);
 });
+
+const line = (t, loc = "zh-CN") => zh.readCodePoints(t, loc, { cache: false }).filter(Boolean).join(" ");
+
+test("every common word reads as CC-CEDICT reads it and is never marked (PR #67): the reduplicated and kids' words, names, in both scripts", () => {
+  // CC-CEDICT's reading, a doubled character read alike (狗狗 [gou3 gou1]
+  // is gǒu gǒu) with its neutral tone where CC-CEDICT gives one; 喳喳,
+  // 懒洋洋 and 宏碁 (WORD_SKIP: the reader's reading) settled too.
+  const words = {
+    狗狗: "gǒu gǒu", 宝宝: "bǎo bao", 妈妈: "mā ma", 爸爸: "bà ba", 哥哥: "gē ge", 姐姐: "jiě jie", 弟弟: "dì di", 妹妹: "mèi mei",
+    爷爷: "yé ye", 奶奶: "nǎi nai", 谢谢: "xiè xie", 星星: "xīng xing", 看看: "kàn kan", 刚刚: "gāng gang", 天天: "tiān tiān",
+    慢慢: "màn màn", 常常: "cháng cháng", 一点点: "yī diǎn diǎn", 猫猫: "māo māo", 想想: "xiǎng xiǎng", 试试: "shì shì",
+    喳喳: "zhā zhā", 懒洋洋: "lǎn yáng yáng", 宏碁: "hóng qí", 长沙: "cháng shā", 华盛顿: "huá shèng dùn", 基督教: "jī dū jiào",
+  };
+  for (const [w, r] of Object.entries(words)) {
+    for (const [t, loc] of [[w, "zh-CN"], [toTw(w), "zh-TW"]]) {
+      assert.equal(line(t, loc), r, `${t} ${loc}`);
+      assert.deepEqual(marked(t, loc), [], `${t} ${loc}`);
+    }
+  }
+  // In sentences, the same.
+  assert.equal(line("我家的狗狗很可爱"), "wǒ jiā de gǒu gǒu hěn kě ài");
+  assert.equal(line("谢谢妈妈"), "xiè xie mā ma");
+  assert.equal(line("你看看天上的星星"), "nǐ kàn kan tiān shàng de xīng xing");
+  for (const t of ["我家的狗狗很可爱", "谢谢妈妈", "我刚刚到", "去长沙玩"]) assert.deepEqual(marked(t), [], t);
+});
+
+test("the common words leave the reader's call where CC-CEDICT reads a word two ways, or a rule settled it otherwise (PR #67)", () => {
+  // 明朝: Míng cháo (the dynasty) / míng zhāo (tomorrow morning).
+  assert.equal(line("明朝"), "míng cháo");
+  assert.deepEqual(marked("明朝"), ["明朝"]);
+  assert.deepEqual(marked("结果"), ["结果"]);
+  // A reading the reader's rules chose stays (不当 is a word, but in
+  // 我不当老师 当 is dāng; 还给 in 我还给你做饭 is hái).
+  assert.equal(line("我不当老师"), "wǒ bù dāng lǎo shī");
+  assert.equal(line("我还给你做饭"), "wǒ hái gěi nǐ zuò fàn");
+  // A simplified character for two traditional ones: 散髮 (hair) is no 散發 sàn fā.
+  assert.equal(line("蓬頭散髮", "zh-TW"), "péng tóu sàn fǎ");
+  assert.equal(line("散發", "zh-TW"), "sàn fā");
+});
+
+test("gen-zh-words: CC-CEDICT's readings of the top words, doubles read alike, neutral-only variants together, two readings apart", async () => {
+  const { cedictWords, evenDoubles } = await import("../gen-zh-words.mjs");
+  const { cedictEntries } = await import("../gen-zh-freq.mjs");
+  assert.deepEqual(evenDoubles(["狗", "狗"], ["gǒu", "gōu"]), ["gǒu", "gǒu"]);
+  assert.deepEqual(evenDoubles(["妈", "妈"], ["mā", "ma"]), ["mā", "ma"]);
+  const text = [
+    "狗狗 狗狗 [gou3 gou1] /doggy/",
+    "東西 东西 [dong1 xi1] /east and west/",
+    "東西 东西 [dong1 xi5] /thing/",
+    "明朝 明朝 [Ming2 chao2] /Ming Dynasty/",
+    "明朝 明朝 [ming2 zhao1] /tomorrow morning/",
+    "長沙 长沙 [Chang2 sha1] /see 長沙市|长沙市[Chang2 sha1 Shi4]/",
+    "稀有 稀有 [xi1 you3] /rare/",
+  ].join("\n");
+  const freq = new Map([["狗狗", 5], ["东西", 9], ["明朝", 4], ["长沙", 3], ["稀有", 1], ["的", 10]]);
+  const { words, two } = cedictWords(cedictEntries(text), freq, 5);
+  const got = Object.fromEntries(words.map((w) => [w.word, w.readings.map((r) => r.join(" "))]));
+  // 稀有 is past the top 5; 的 is one character.
+  assert.deepEqual(got, { 东西: ["dōng xī", "dōng xi"], 狗狗: ["gǒu gǒu"], 长沙: ["cháng shā"] });
+  assert.deepEqual(two.map((t) => t.word), ["明朝"]);
+});

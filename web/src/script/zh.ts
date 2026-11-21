@@ -127,6 +127,9 @@ export function parsePrior(t: { RANKS: string; FALLBACK: string; WORDS: string; 
   return p;
 }
 let prior: Prior = parsePrior({ RANKS, FALLBACK, WORDS, ANYWHERE, BLOCK });
+/** The shipped prior: the common words (applyCommon) go with it, and are
+ *  left out while the builder or a test swaps in another (setPrior). */
+const SHIPPED = prior;
 let anywhereLongest = 0;
 const measure = () => (anywhereLongest = Math.max(0, ...[...prior.anywhere.keys()].map((w) => [...w].length)));
 measure();
@@ -209,17 +212,92 @@ function wordStarts(cps: string[]): boolean[] | null {
   starts[cps.length] = true;
   return starts;
 }
-/** Common words for the mark (zh-words.ts: CC-CEDICT words of a
- *  character with two ordinary readings, read one way), by simplified
- *  spelling. */
-const common = new Map<string, string[]>(
+/** The common words (zh-words.ts: wordfreq's top words that CC-CEDICT
+ *  reads one way), by simplified spelling: each word's readings, the
+ *  first the one applied, the others the same syllables with a neutral
+ *  tone where CC-CEDICT lists both (东西 dōng xī / dōng xi). */
+const common = new Map<string, { readings: string[][]; trad: string[][] | null }>(
   COMMON_WORDS.split("|")
     .filter(Boolean)
     .map((e) => {
-      const [w, r] = e.split("=");
-      return [w, r.split(" ")];
+      const [w, rest] = e.split("=");
+      const [r, t] = rest.split("~");
+      return [w, { readings: r.split("/").map((x) => x.split(" ")), trad: t ? t.split(",").map((x) => [...x]) : null }];
     }),
 );
+/** Off only for scripts/gen-zh-words.mjs, which compares the reader
+ *  without the list to CC-CEDICT. */
+let commonOn = true;
+export function useCommonWords(on: boolean): void {
+  commonOn = on;
+  cache.clear();
+}
+
+/**
+ * The common words over one text's readings, in place (PR #67): every
+ * run between word boundaries of the segmenter (one of its words, or
+ * several: ICU splits the traditional 再|見) that is a common word, and
+ * that cuts no word of the library's dictionary, is taken and settled
+ * (never marked) where the reader agrees with CC-CEDICT:
+ *   - a syllable read as CC-CEDICT reads it, or with the tone where
+ *     CC-CEDICT has the neutral one (几个 jǐ gè), stays;
+ *   - a doubled character CC-CEDICT reads neutral takes the neutral tone
+ *     (谢谢 xiè xie, 星星 xīng xing, 刚刚 gāng gang): the reduplicated
+ *     words, read alike in every word of the list;
+ *   - another reading of a character with one reading (no rare one
+ *     either), that nothing settled, takes CC-CEDICT's;
+ *   - any other difference (a character of two ordinary readings the
+ *     prior chose, 不当 dāng in 我不当老师, or with a rare one, 还给 hái
+ *     in 我还给你做饭; a reading a dictionary word,
+ *     rule or table entry settled) leaves the word to the reader: not
+ *     taken, so the mark may show.
+ * The longest word wins where two start together. A person's correction
+ * still outranks it (applyCorrections), and Taiwan's readings are laid
+ * over it after (taiwanize).
+ */
+function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[]): void {
+  const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
+  const bare = (r: string) => r === toneless(r);
+  /** The reading at k for CC-CEDICT's `x`: the reader's, x, or undefined (a
+   *  difference that leaves the word to the reader). */
+  const take = (k: number, x: string, doubled: boolean): string | undefined => {
+    const y = out[k];
+    if (y === x) return y;
+    if (y != null && bare(x) && toneless(y) === x) return doubled ? x : y;
+    // Any second reading, a rare one included (还 huán), is the reader's call.
+    const readings = (priorFor(prior.ranks, cps[k], simp[k])?.length ?? 0) + (priorFor(prior.rare, cps[k], simp[k])?.length ?? 0);
+    if (settled[k] || readings > 1) return undefined;
+    return x;
+  };
+  for (let i = 0; i < cps.length; ) {
+    if (!isHan(cps[i]) || !edge(i)) {
+      i++;
+      continue;
+    }
+    let hit = 0;
+    for (let e = Math.min(cps.length, i + COMMON_MAX); e >= i + 2 && !hit; e--) {
+      if (!edge(e) || !cps.slice(i, e).every(isHan)) continue;
+      const c = common.get(simp.slice(i, e).join(""));
+      if (!c || c.readings[0].length !== e - i) continue;
+      // Written in traditional characters: one of the word's spellings
+      // (散髮, hair, is no 散發 sàn fā).
+      if (c.trad && !c.trad.some((t) => t.every((x, n) => cps[i + n] === x || cps[i + n] === simp[i + n]))) continue;
+      for (const r of c.readings) {
+        const got = r.map((x, n) => take(i + n, x, n > 0 && simp[i + n] === simp[i + n - 1]));
+        if (got.some((x) => x === undefined)) continue;
+        got.forEach((x, n) => {
+          out[i + n] = x!;
+          settled[i + n] = true;
+        });
+        hit = e - i;
+        break;
+      }
+    }
+    i += hit || 1;
+  }
+}
+/** The longest common word, in characters (gen-zh-words.mjs MAX_CHARS). */
+const COMMON_MAX = 6;
 
 /** Whether a run of characters (simplified) is a word the reader knows of:
  *  a word of the library's dictionary (one segment: `joined` inside it),
@@ -258,10 +336,6 @@ function looseStarts(cps: string[], simp: string[], starts: boolean[] | null, jo
   }
   return out;
 }
-
-/** Whether a common word's reading (a neutral tone written bare) is the
- *  one read. */
-const sameReading = (want: string, got: string | null) => got != null && (want === got || (want === toneless(want) && toneless(got) === want));
 
 const cache = new Map<string, Detail>();
 const CACHE_MAX = 4000;
@@ -343,6 +417,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     // (looseStarts: 我还|书 lets 还书 apply).
     const edges = looseStarts(cps, simp, starts, joined);
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
+    if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
@@ -536,24 +611,6 @@ export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}
   const unsure = cps.map((_, k) => unsureAt(cps, d, k));
   if (!unsure.some(Boolean)) return [];
   const words = hanWords(cps, d);
-  // A common word (zh-words.ts) standing between word boundaries of the
-  // segmenter (one of its words, or several: ICU splits the traditional
-  // 再|見) and read as CC-CEDICT reads it is settled: the library's
-  // dictionary leaves out every word read by default (再见, 当然, 教练).
-  const edge = (k: number) => (d.starts ? d.starts[k] : true);
-  for (const [s0] of words) {
-    for (let s = s0; s < cps.length && isHan(cps[s]); s++) {
-      if (!edge(s)) continue;
-      for (let e = Math.min(cps.length, s + 4); e >= s + 2; e--) {
-        if (!edge(e) || !cps.slice(s, e).every(isHan)) continue;
-        const r = common.get(cps.slice(s, e).map(simplified).join(""));
-        if (!r || r.length !== e - s || !r.every((x, n) => sameReading(x, d.readings[s + n]))) continue;
-        for (let k = s; k < e; k++) unsure[k] = false;
-        break;
-      }
-    }
-  }
-  if (!unsure.some(Boolean)) return [];
   const out: UnsureWord[] = [];
   for (let w = 0; w < words.length; w++) {
     if (!unsure.slice(words[w][0], words[w][1]).some(Boolean)) continue;

@@ -228,8 +228,9 @@ Mandarin readings (ld-4i2, migration 0015, docs/VOICE.md §Uncertain readings,
 docs/DATA.md §Mandarin readings):
 - **The mark.** An adult sees a dotted, labelled mark on a word whose reading
   the reader only guessed (`uncertainWords` in `web/src/script/zh.ts`:
-  about 1.4 marks per 100 words; common words read as CC-CEDICT reads
-  them, `zh-words.ts` from `npm run pinyin:words`, are not marked). Never
+  about 1.4 marks per 100 words; wordfreq's top 20,000 words read as
+  CC-CEDICT reads them and are not marked unless CC-CEDICT reads them two
+  ways, `zh-words.ts` from `npm run pinyin:words`, `applyCommon`). Never
   in kids views.
 - **The correction.** The character card's **This reading is wrong** or
   **This is right** (`ReadingFix.tsx`) saves the learner's choice per

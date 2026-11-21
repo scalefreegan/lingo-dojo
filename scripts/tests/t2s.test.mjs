@@ -60,7 +60,7 @@ test("the words the old reader read right still read the same (zh-TW, then zh-CN
     乾淨: "gān jìng", 乾杯: "gān bēi", 頭髮: ["tóu fǎ", "tóu fa"], 發現: "fā xiàn", 睡著: "shuì zháo", 看著: "kàn zhe", 為什麼: "wèi shén me",
     銀行: "yín háng", 音樂: "yīn yuè", 快樂: "kuài lè", 還有: "hái yǒu", 覺得: "jué de", 睡覺: "shuì jiào", 計程車: "jì chéng chē",
     腳踏車: "jiǎo tà chē", 週末: "zhōu mò", 颱風: "tái fēng", 麵包: "miàn bāo", 臺灣: "tái wān", 老闆: "lǎo bǎn", 手錶: "shǒu biǎo",
-    遊戲: "yóu xì", 裡面: "lǐ miàn", 謝謝: "xiè xiè", 對不起: "duì bù qǐ", 沒關係: "méi guān xì", 喜歡: "xǐ huan", 電腦: "diàn nǎo",
+    遊戲: "yóu xì", 裡面: "lǐ miàn", 謝謝: "xiè xie" /* the common words (PR #67): CC-CEDICT and both standards */, 對不起: "duì bù qǐ", 沒關係: "méi guān xì", 喜歡: "xǐ huan", 電腦: "diàn nǎo",
     電話: "diàn huà", 學校: "xué xiào", 學生: "xué shēng", 老師: "lǎo shī", 朋友: "péng yǒu", 東西: "dōng xī", 時候: "shí hòu",
     現在: "xiàn zài", 認識: "rèn shi", 漂亮: "piào liang", 開車: "kāi chē", 飛機: "fēi jī", 醫院: "yī yuàn", 圖書館: "tú shū guǎn",
     餐廳: "cān tīng", 飯店: "fàn diàn", 機場: "jī chǎng", 車站: "chē zhàn", 捷運: "jié yùn", 網路: "wǎng lù", 簡單: "jiǎn dān",

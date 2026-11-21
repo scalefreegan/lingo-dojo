@@ -234,7 +234,7 @@ same license. Bundled third-party data keeps its own terms (see
 
 Two files are data under a different licence: `web/src/script/zh-freq.ts`, the
 Mandarin reading-frequency table, and `web/src/script/zh-words.ts`, the common
-words the reading marks treat as settled, are derived from CC-CEDICT and
+words read as CC-CEDICT reads them, are derived from CC-CEDICT and
 wordfreq and are licensed
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), separate from
 the AGPL code; their attributions are in `web/src/script/ZH-FREQ-LICENSE.txt`.

@@ -597,16 +597,48 @@ uncertain words in context.
   - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
     simplified form). The reader's context rules settle these characters
     almost always, and marking them made up most of the noise;
-  - it is not in a common word read as CC-CEDICT reads it (PR #67 review):
-    the library's dictionary holds only words whose reading isn't each
-    character's default, so 再见, 当然 and 教练 looked unsettled. The list is
-    `web/src/script/zh-words.ts` (`npm run pinyin:words`,
-    `scripts/gen-zh-words.mjs`): 3,826 CC-CEDICT words of 2–4 characters,
-    at least 1e-6 of wordfreq's Chinese words, with a character of two
-    ordinary readings, that CC-CEDICT reads one way (not 一行, which a
-    sentence often reads háng). A word counts where it stands between
-    word boundaries of the segmenter (ICU splits the traditional 再|見)
-    and the reader read it so; it never changes a reading.
+  - it is not in a common word (PR #67). Every common word reads as
+    CC-CEDICT reads it and is settled (`applyCommon` in zh.ts, after the
+    prior, before Taiwan's readings and a person's correction):
+    - The list is `web/src/script/zh-words.ts` (`npm run pinyin:words
+      [-- --top N] [-- --report]`, `scripts/gen-zh-words.mjs`): wordfreq's
+      top **20,000** Chinese words (94% of Chinese word tokens; the next
+      10,000 add 2 points, the 30,000 after those under 2 more) of 2–6
+      characters with a CC-CEDICT entry, name entries included (长江,
+      华盛顿), an entry that only points to another ("see 長沙市") where it
+      is the word's only one.
+    - A word CC-CEDICT reads two ways stays out: 57 of the 20,000 (结果,
+      当时, 重点, 不了, 教授, 当年, 教学, 高中, 分子, 当天, 教会, 便宜, 明朝 …;
+      the reader decides, and the mark may show). Readings that differ only
+      by a neutral tone are one word with both (东西 dōng xī / dōng xi: the
+      reader's stands). Not 一行 (a sentence often reads yī háng).
+    - Reduplicated words read alike: a doubled character takes the first
+      one's tone (狗狗, CC-CEDICT gou3 gou1, is gǒu gǒu), or the neutral tone
+      where CC-CEDICT gives the second one (妈妈 mā ma, 谢谢 xiè xie, 星星 xīng
+      xing, 看看 kàn kan), never a mix. `WORD_SKIP`'s words (喳喳, 懒洋洋, 宏碁:
+      CC-CEDICT's reading isn't the everyday one) keep the reader's reading,
+      settled.
+    - Stored only where it does something: 2,827 words (63 KB, 29 KB gzip)
+      that the reader alone reads otherwise in either script or with a
+      character of two readings; the other 12,608 read the same without it.
+      A simplified character written for two traditional ones (发: 發 / 髮)
+      names the word's traditional spellings, so 散髮 is no 散發 sàn fā.
+    - It applies where a word stands between word boundaries of the
+      segmenter (ICU splits the traditional 再|見), cuts no word of the
+      library's dictionary, and the reader agrees: a syllable read as
+      CC-CEDICT reads it (or toned where CC-CEDICT has the neutral tone)
+      stays, a character of one reading that nothing settled takes
+      CC-CEDICT's, and any other difference (a character of two readings
+      the prior or a rule chose: 当 dāng in 我不当老师, 还 hái in
+      我还给你做饭) leaves the word to the reader.
+    - Measured: of wordfreq's top 1,000 / 5,000 / 20,000 words read alone,
+      5 / 23 / 199 are marked in simplified (before: 5 / 38 / 290) and 5 /
+      22 / 207 in traditional (before: 6 / 39 / 300); what is left is
+      mostly words CC-CEDICT reads two ways and phrases it has no entry
+      for (一场, 更好, 很难, 长时间). On CC-CEDICT's 110,382 headwords
+      (`pinyin-sweep.mjs`) it changed only neutral tones of doubled
+      characters (谢谢, 星星, 看看, 太太, 娘娘, 泡泡 …), none broken; PR #63's
+      word and sentence sets unchanged (263/276, 70/87).
 
   The unit marked is the segmenter's word. A single character joins the
   word after it (得去, 长着, 倒车), or the word before when there is no next
@@ -621,8 +653,8 @@ uncertain words in context.
   - With the definition above, before the common words: 1.80 per 100 in
     simplified (17 in 946 words) and 1.63 in traditional (15 in 921); 教练,
     当然 were about a third of them. With them: **1.37 per 100 in
-    simplified** (13) and **1.19 in traditional** (11). The test holds both
-    under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
+    simplified** (13) and **1.19 in traditional** (11), the same after
+    the 20,000-word list (PR #67). The test holds both under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
     in 55 words, both 再見) to 0.
   - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
     misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
