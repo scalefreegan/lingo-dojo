@@ -20,6 +20,7 @@ import type {
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, turnsSettled } from "../conversationLife";
+import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
@@ -521,9 +522,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Draws on their way, by person, and which cast they belong to (Restart
   // or a whole new cast moves it on, and an older draw's answer is dropped).
   const drawing = useRef(new Map<string, Promise<void>>());
-  // The latest draw by slot: a second person's draw for the same tag waits
-  // for the first, so it can steer clear of the voice that one got.
-  const slotDraws = useRef(new Map<string, Promise<void>>());
+  // Every mid-session draw goes through one queue, one /cast at a time
+  // (requestDraw): a second person's draw, for the same tag or another,
+  // waits for the first, so it can steer clear of the voice that one got,
+  // and the draws never take both paid slots from the line playing.
+  // The queue outlives renders; it calls the latest render's runDraw (its
+  // locale and pack), set by the effect below.
+  const runDrawRef = useRef<(b: DrawBatch) => Promise<void>>(() => Promise.resolve());
+  const drawsRef = useRef<DrawQueue | null>(null);
+  drawsRef.current ??= drawQueue((b) => runDrawRef.current(b));
+  useEffect(() => {
+    runDrawRef.current = runDraw;
+  });
   // A retry after a failed or timed-out draw runs in the background (lines
   // play in the voice in use meanwhile); its voice waits here and is taken
   // up at the next turn (recast), so a voice never changes mid-turn.
@@ -1031,7 +1041,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
-        slotDraws.current.clear();
+        drawsRef.current?.reset();
         retrying.current.clear();
         deferred.current.clear();
         castRef.current = next;
@@ -1299,39 +1309,46 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const isRetry = (x: string) => (drawFails.current.get(keys[x]) ?? 0) > 0;
     const fresh = all.filter((x) => !isRetry(x));
     const again = all.filter(isRetry);
-    const first = fresh.length ? startDraw(fresh, false, draw, keys) : undefined;
-    // The retry goes after the first draw, so its `avoid` holds the voice
-    // the first draw got (two concurrent draws could pick the same voice).
-    // A retry doesn't hold playback, so waiting costs nothing.
-    if (again.length) startDraw(again, true, draw, keys, first);
+    if (fresh.length) requestDraw(fresh, false, draw, keys);
+    if (again.length) requestDraw(again, true, draw, keys);
   }
 
-  /** One /cast for `slotsToDraw` (see recast). */
-  function startDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>, after?: Promise<void>): Promise<void> | undefined {
-    if (!locale) return undefined;
+  /** Ask the session's draw queue (web/src/drawQueue.ts) for a /cast for
+   *  `slotsToDraw`: one draw is out at a time, so with the speech fetch of
+   *  the line playing the Go tab holds at most two paid slots, the user's
+   *  limit (web/server/paid.ts). A streamed reply asks once per change of
+   *  its CAST notes; what is asked while a draw is out waits, merged into
+   *  one next draw (first draws before retries, so a retry's `avoid` holds
+   *  the voice the first draw got). Each person is marked as being drawn
+   *  for at once, out or queued, so their lines wait for their own voice. */
+  function requestDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>) {
+    if (!locale || !drawsRef.current) return;
+    const pick = <T,>(m: Record<string, T>) => Object.fromEntries(slotsToDraw.map((x) => [x, m[x]]));
+    const run = drawsRef.current.request({ slots: slotsToDraw, retry, ages: pick(draw), keys: pick(keys) });
+    const by = retry ? retrying.current : drawing.current;
+    for (const slot of slotsToDraw) by.set(keys[slot], run);
+    void run.then(() => {
+      for (const slot of slotsToDraw) {
+        if (by.get(keys[slot]) === run) by.delete(keys[slot]);
+      }
+    });
+  }
+
+  /** One /cast for a batch the draw queue hands out (see requestDraw); it
+   *  never runs beside another. */
+  function runDraw(batch: DrawBatch): Promise<void> {
+    const { slots: slotsToDraw, retry, keys } = batch;
+    const draw = batch.ages as Record<string, VoiceAge>;
+    if (!locale) return Promise.resolve();
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-    // One deadline for the whole draw, the wait behind earlier draws for
-    // the same tags included: lines never wait longer than CAST_TIMEOUT_MS.
-    // (A retry queued after a first draw starts its clock once that lands.)
-    let deadline = Date.now() + CAST_TIMEOUT_MS;
+    // The deadline starts when the draw goes out: one queued behind another
+    // waited for it (as a retry behind a first draw always did), so a line
+    // waits at most CAST_TIMEOUT_MS per draw ahead of it plus its own.
+    const deadline = Date.now() + CAST_TIMEOUT_MS;
     const left = () => deadline - Date.now();
-    // Draws already out for these tags (someone else's): this one goes after
-    // them, one at a time per tag, so it knows the voices they got.
-    const ahead = slotsToDraw.map((x) => slotDraws.current.get(x)).filter((p): p is Promise<void> => !!p);
     const run = (async () => {
       try {
-        if (after) {
-          await after;
-          deadline = Date.now() + CAST_TIMEOUT_MS;
-        }
-        if (ahead.length) {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const late = new Promise<"late">((res) => (timer = setTimeout(() => res("late"), Math.max(0, left()))));
-          const won = await Promise.race([Promise.all(ahead), late]);
-          clearTimeout(timer);
-          if (won === "late") throw new DOMException("the draw ahead took too long", "TimeoutError");
-        }
         if (castEpoch.current !== epoch || !castRef.current) return;
         if (left() <= 0) throw new DOMException("no time left for the draw", "TimeoutError");
         const base = castRef.current;
@@ -1396,17 +1413,6 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         if (!(st?.handsFree && st.turn === "pause")) setNoticeState((was) => was ?? { text: "Couldn't find a better-matched voice; keeping this one." });
       }
     })();
-    const by = retry ? retrying.current : drawing.current;
-    for (const slot of slotsToDraw) {
-      by.set(keys[slot], run);
-      slotDraws.current.set(slot, run);
-    }
-    void run.then(() => {
-      for (const slot of slotsToDraw) {
-        if (by.get(keys[slot]) === run) by.delete(keys[slot]);
-        if (slotDraws.current.get(slot) === run) slotDraws.current.delete(slot);
-      }
-    });
     return run;
   }
 
@@ -1646,7 +1652,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     holder.current.clear();
     drawFails.current.clear();
     drawing.current.clear();
-    slotDraws.current.clear();
+    drawsRef.current?.reset();
     retrying.current.clear();
     deferred.current.clear();
     castEpoch.current += 1;

@@ -316,7 +316,13 @@ still the envelope's whole text.
   header gets plain JSON (the tests, any other caller). Should a malformed
   reply make the streamed lines differ from the whole reply's (a spoken line
   after GLOSS), the reply's lines stand and the server logs it; the browser
-  plays on from where it is.
+  plays on from where it is. Known gap: unlabelled spoken text after a
+  GLOSS line continues the last line in the whole parse, after that line
+  was already spoken, so the transcript can show words the learner never
+  heard.
+- **Voice draws**: each line's CAST notes can start a draw mid-reply; they
+  go out one at a time (§Paid calls at once), and a line waits for its
+  person's draw, queued or out.
 - **LOOKUP**: a LOOKUP before any line went out holds the run's lines back
   and reruns as before; the rerun's lines stream. A LOOKUP after lines went
   out can't take them back: the reply stands, the lookup isn't run (as one
@@ -1556,10 +1562,14 @@ pronunciation scoring. A third call while two run is a **429** at once,
 before any provider call, never a queue on the server. The upload of a
 recording is read before the slot is taken.
 
-The Go tab itself needs one at a time for speech: it fetches the next part
-of a line only once the current one has arrived, while that one plays. A
-voice draw (a recast mid-session) can run beside it, so two leaves room for
-that plus one more. A draw the browser gives up on (its 10 s timeout, Stop)
+The Go tab itself takes at most both: one speech fetch at a time (it
+fetches the next part of a line only once the current one has arrived,
+while that one plays) plus one voice draw (a recast mid-session). Draws go
+out one at a time per session (`web/src/drawQueue.ts`): a streamed reply
+asks for one each time its CAST notes change, and what is asked while a
+draw is out waits, merged into one next draw (first draws before retries).
+A person whose draw is queued is already marked as being drawn for, so
+their lines wait for it as for one that is out. A draw the browser gives up on (its 10 s timeout, Stop)
 has its provider calls aborted and frees its slot at once, as a line's do.
 At the edge (a fetch just aborted and not yet released, a card's sound in
 another window) the Go tab retries a 429 three times, 0.4, 1 and 2 s later

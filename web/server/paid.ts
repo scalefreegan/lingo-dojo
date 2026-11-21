@@ -16,9 +16,10 @@ import { HttpError } from "./sse.ts";
 
 /** Interactive paid calls at once per user, across every route above:
  *  the Go tab fetches one part of a line at a time (the next only once the
- *  current one has arrived), so two leaves room for a voice draw beside it
- *  (or a replay racing the next card), not a loop spending the owner's
- *  credits in parallel. The Go tab retries a 429 after a moment (web/src/api.ts
+ *  current one has arrived) and draws voices one at a time per session
+ *  (web/src/drawQueue.ts, however many new people a streamed reply brings
+ *  in), so two is one speech fetch plus one draw (or a replay racing the
+ *  next card), not a loop spending the owner's credits in parallel. The Go tab retries a 429 after a moment (web/src/api.ts
  *  whenFree), so a race at the edge (an aborted fetch not yet released)
  *  costs a short wait, not a lost line. */
 export const PAID_PER_USER = 2;
