@@ -1,7 +1,8 @@
 // The word game's pictures on disk (docs/DATA.md §Kids word game), beside
 // the phrase audio cache (scripts/audio-cache.mjs) and built the same way:
 //
-//   <dir>/<64 hex>.<png|webp|jpg>
+//   <dir>/<64 hex>.<png|webp|jpg>               a word's own picture
+//   <dir>/stock/<theme>/<concept id>.<ext>      the shared stock set (ld-6k7)
 //
 // Unlike the audio cache this is not a cache that may drop a file: a
 // picture is paid for once and kept until a grown-up removes or redraws it
@@ -16,11 +17,20 @@
 // a picture id the active language profile owns, so files are per learner
 // (and so per user) by the row that names them. Writes are atomic (a temp
 // file in the same directory, then rename), mode 0600 in a 0700 directory.
+//
+// The stock set lives apart, under stock/<theme>/ (pictures.mjs
+// PICTURE_THEME: a new theme is a new folder, never a mix), named by the
+// concept's id. A word pointing at one stores stockKey(theme, id) as its
+// `file`, which is never the name of a file here, and deletePicture only
+// ever touches <dir>/<64 hex>.<ext> directly inside <dir>: no per-word
+// removal, redraw or phrase delete can reach a stock file. Only
+// deleteStockPicture does (the grown-up's explicit stock management).
 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { REPO_ROOT } from "./content.mjs";
+import { STOCK_ID_RE, THEME_RE } from "./pictures.mjs";
 
 const KEY_RE = /^[0-9a-f]{64}$/;
 /** Content types kept, and the extension each is stored under. */
@@ -78,6 +88,86 @@ export function readPicture(key, type, { dir = imagesDir() } = {}) {
   } catch {
     return null;
   }
+}
+
+/* ---------------------------------- stock ---------------------------------- */
+
+/** The stock folder of `theme` (checked: a theme id is a plain name). */
+export function stockDir(theme, { dir = imagesDir() } = {}) {
+  if (!THEME_RE.test(String(theme)) || theme.includes("..")) throw new Error("not a theme id");
+  return path.join(dir, "stock", theme);
+}
+
+function stockFileFor(theme, id, type, dir) {
+  if (!STOCK_ID_RE.test(String(id))) throw new Error("not a stock id");
+  const ext = PICTURE_TYPES[type];
+  if (!ext) throw new Error("not a picture type");
+  return path.join(stockDir(theme, { dir }), `${id}.${ext}`);
+}
+
+/** The stock picture of concept `id` in `theme` on disk: `{ path, type }`,
+ *  or null when it isn't drawn (yet). */
+export function stockPicture(theme, id, { dir = imagesDir() } = {}) {
+  for (const type of Object.keys(PICTURE_TYPES)) {
+    const p = stockFileFor(theme, id, type, dir);
+    try {
+      if (fs.statSync(p).size > 0) return { path: p, type };
+    } catch {
+      /* not this type */
+    }
+  }
+  return null;
+}
+
+/** A stock picture's version: its file's modification time and size, short.
+ *  Its URL carries it (pictures.ts pictureRef), so a stock picture removed
+ *  and drawn again in the same theme is a new URL, not a year-old cached
+ *  one. Null when there is no file. */
+export function stockVersion(theme, id, { dir = imagesDir() } = {}) {
+  const at = stockPicture(theme, id, { dir });
+  if (!at) return null;
+  try {
+    const st = fs.statSync(at.path);
+    return `${Math.floor(st.mtimeMs).toString(36)}${st.size.toString(36)}`;
+  } catch {
+    return null;
+  }
+}
+
+/** A stock picture's bytes and type, or null. */
+export function readStockPicture(theme, id, { dir = imagesDir() } = {}) {
+  const at = stockPicture(theme, id, { dir });
+  if (!at) return null;
+  try {
+    const bytes = fs.readFileSync(at.path);
+    return bytes.length ? { bytes, type: at.type } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Store a stock picture (a temp file, then rename), replacing one of
+ *  another type. */
+export function writeStockPicture(theme, id, bytes, type, { dir = imagesDir() } = {}) {
+  const file = stockFileFor(theme, id, type, dir);
+  const folder = path.dirname(file);
+  fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
+  const tmp = path.join(folder, `.${id}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    fs.writeFileSync(tmp, bytes, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  for (const other of Object.keys(PICTURE_TYPES)) if (other !== type) fs.rmSync(stockFileFor(theme, id, other, dir), { force: true });
+}
+
+/** Delete a stock picture (any type); a missing one is fine. Words pointing
+ *  at it leave the game until it is drawn again (the server's stock rows
+ *  need the file). */
+export function deleteStockPicture(theme, id, { dir = imagesDir() } = {}) {
+  for (const type of Object.keys(PICTURE_TYPES)) fs.rmSync(stockFileFor(theme, id, type, dir), { force: true });
 }
 
 /** Delete a stored picture (any type it may be under); a missing file is

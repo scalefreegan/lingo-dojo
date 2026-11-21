@@ -811,10 +811,29 @@ export const phrasePictures = pgTable(
      *  client) while it is `ready`; also the cache-busting part of its URL. */
     file: text("file"),
     contentType: text("content_type"),
+    /** The picture theme the file was drawn in (pictures.mjs PICTURE_THEME's
+     *  id, with "+<provider>" when a provider other than the theme's own
+     *  drew it: pictures.mjs drawnTheme). Null for a picture drawn before
+     *  themes (0012), and while there is no file. "Not in the current
+     *  theme" is what Redraw all in the current style converts. */
+    theme: text("theme"),
+    /** Set when the file is a shared stock picture (content/pictures.yaml,
+     *  `stock/<theme>/<id>.<ext>` under the images directory) instead of
+     *  one drawn for this word: `file` is then pictures.mjs stockKey(theme,
+     *  id), never a file of its own, and no per-word deletion touches it. */
+    stockId: text("stock_id"),
+    /** A grown-up's Redraw all in the current style, waiting: `check` (ask
+     *  the picturable check whether a stock picture fits first) or `draw`
+     *  (draw it again in the theme). The old file stays in place, and in the
+     *  game, until the new one is ready. Null otherwise. */
+    restyle: text("restyle").$type<"check" | "draw">(),
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
   (t) => [
+    check("phrase_pictures_theme", sql`${t.theme} is null or ${t.theme} ~ '^[a-z0-9][a-z0-9.+-]{0,63}$'`),
+    check("phrase_pictures_stock", sql`${t.stockId} is null or (${t.status} = 'ready' and ${t.theme} is not null and ${t.stockId} ~ '^[a-z0-9][a-z0-9-]{0,47}$')`),
+    check("phrase_pictures_restyle", sql`${t.restyle} is null or (${t.status} = 'ready' and ${t.restyle} in ('check', 'draw'))`),
     check("phrase_pictures_status", sql`${t.status} in ('pending', 'ready', 'none', 'failed', 'removed')`),
     // A file exactly while ready; something to draw while pending or ready.
     check(

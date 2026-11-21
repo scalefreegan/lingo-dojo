@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
 import { hanChars, scriptFor } from "../script/script.ts";
@@ -76,6 +76,11 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
   // Bumped when a word's picture changed in its detail (or the word was
   // deleted): the pictures' status line above reads its counts again.
   const [pictureChanges, setPictureChanges] = useState(0);
+  // Bumped when a drawing run the status line watched has ended (Draw
+  // pictures, Redraw all in the current style): an open word's picture is
+  // read again, so it never shows the picture a run replaced.
+  const [picturesDrawn, setPicturesDrawn] = useState(0);
+  const onDrawn = useCallback(() => setPicturesDrawn((n) => n + 1), []);
   const [query, setQuery] = useState<Required<Pick<PhraseQuery, "q" | "show" | "band" | "sort">>>({ q: initialQuery.trim(), show: "all", band: "", sort: "recent" });
   const [data, setData] = useState<PhrasesReply | null>(null);
   const [loading, setLoading] = useState(true);
@@ -166,7 +171,7 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
         }}
       />
       {/* A kids learner's bank: the word game's pictures (the grown-up's side). */}
-      {kids && <PicturesBar refresh={pictureChanges} />}
+      {kids && <PicturesBar refresh={pictureChanges} onDrawn={onDrawn} />}
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -240,6 +245,7 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
               kids={kids}
               onChanged={refresh}
               onPictureChanged={() => setPictureChanges((n) => n + 1)}
+              picturesDrawn={picturesDrawn}
               onDeleted={() => {
                 setOpenId(null);
                 setPictureChanges((n) => n + 1);
@@ -321,6 +327,7 @@ function PhraseRow({
   onToggle,
   onChanged,
   onPictureChanged,
+  picturesDrawn = 0,
   onDeleted,
 }: {
   p: PhraseSummary;
@@ -330,6 +337,7 @@ function PhraseRow({
   onToggle: () => void;
   onChanged: () => void;
   onPictureChanged?: () => void;
+  picturesDrawn?: number;
   onDeleted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -395,7 +403,7 @@ function PhraseRow({
         </button>
       </div>
       {error && <p className="mt-1 text-sm text-err">{error}</p>}
-      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onPictureChanged={onPictureChanged} onDeleted={onDeleted} />}
+      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onPictureChanged={onPictureChanged} picturesDrawn={picturesDrawn} onDeleted={onDeleted} />}
     </li>
   );
 }
@@ -410,6 +418,7 @@ function PhraseDetailView({
   kids = false,
   onChanged,
   onPictureChanged,
+  picturesDrawn = 0,
   onDeleted,
 }: {
   id: string;
@@ -418,6 +427,7 @@ function PhraseDetailView({
   kids?: boolean;
   onChanged: () => void;
   onPictureChanged?: () => void;
+  picturesDrawn?: number;
   onDeleted: () => void;
 }) {
   const [detail, setDetail] = useState<PhraseDetail | null>(null);
@@ -661,7 +671,7 @@ function PhraseDetailView({
           ) : (
             <p className={`${fine} text-fg-3`}>No examples yet: they come from the lines the dojo master glosses it in.</p>
           )}
-          {kids && !detail.pending && <PictureSection phraseId={id} onChanged={onPictureChanged} />}
+          {kids && !detail.pending && <PictureSection phraseId={id} onChanged={onPictureChanged} reload={picturesDrawn} />}
           <div className="-ml-2 flex flex-wrap gap-1">
             <Button variant="ghost" className={small} onClick={startEdit} disabled={busy}>
               Edit
