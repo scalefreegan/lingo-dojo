@@ -551,8 +551,8 @@ lock while it checks and deletes, so a turn racing it either stores first
 Refusals change nothing: 409 `already_spoken`, 409 `no_other_scene` (a pool
 of one, or the draw landed on the same scene), 409 `conversation_ended`, 409
 for a conversation with no draw, 400 for a pack that isn't random, 404. The
-scenario's pending phrases the discarded scene added to the bank stay there
-(like a Restart's).
+phrases the discarded scene's lists and its opening's glosses added to the
+bank stay there, as after a Restart.
 
 Added by migration `0001_conversation_languages_from_client` (phase 3 review):
 `native_language`, `target_language` (with `target_variant`, the session's

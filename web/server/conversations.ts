@@ -557,7 +557,12 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
  * deleted; once a learner turn exists it is a 409 and nothing changes. A
  * refused draw (empty pool, no other scene) leaves the old one as it was.
  * The replacement is made before the old one goes, with the old scenario
- * passed as `avoid` since the recent scenes still count it.
+ * passed as `avoid` since the recent scenes still count it. Not one
+ * transaction: makeConversation's insert may retry without its revisit link
+ * (lostPrevious), which a transaction aborted by that error could not, and
+ * its reads and the bank write go through the shared pool. If the delete
+ * fails after the insert, the old row is an unspoken open conversation that
+ * the idle end closes, and the client is told it failed (nothing adopted).
  */
 async function redraw(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
   const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);

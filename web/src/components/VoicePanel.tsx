@@ -19,7 +19,7 @@ import type {
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
-import { conversationFate, turnsSettled } from "../conversationLife";
+import { conversationFate, redrawAdopted, turnsSettled } from "../conversationLife";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
@@ -1549,8 +1549,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     if (!c || redrawing) return;
     setRedrawing(true);
     stopAll();
+    // The session as it is now, as conversationFor reads it: the answer is
+    // adopted only if it is still this session and Go is still showing.
+    const epoch = sessionEpoch.current;
+    const life = closes.current;
     try {
       const { conversation } = await redrawConversation(c.id, { mode, pack, title: titleRef.current });
+      if (!redrawAdopted({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life })) {
+        // Left Go, switched learner or language, Restart or End came first:
+        // the old conversation is already gone and nothing will use the new.
+        void endOnce({ id: conversation.id, start: 0, page: c.page });
+        return;
+      }
       // The old conversation is gone on the server: nothing to end.
       convRef.current = null;
       restart();
@@ -1593,7 +1603,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       if (!active || e.code !== "Space" || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.closest("input, textarea, select, button, [contenteditable]") || t.isContentEditable)) return;
-      if (!entriesRef.current.length || !sttReady || ended) return;
+      if (!entriesRef.current.length || !sttReady || ended || redrawing) return;
       e.preventDefault();
       if (phase === "recording") void finishListening("tap");
       else if (phase === "idle" || phase === "speaking") void startListening();
@@ -1606,7 +1616,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Start.
   const canStart = !!settings && !!locale && ttsReady;
   const started = entries.length > 0;
-  const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
+  const busy = phase === "thinking" || phase === "transcribing" || phase === "opening" || redrawing;
   // Draw another's reset has landed: ask for the new scene's opening, once.
   useEffect(() => {
     if (!openAgain || entries.length > 0 || busy) return;
@@ -1617,7 +1627,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   }, [openAgain, entries.length, busy]);
   // Quick requests may cut off speech or a recording, like Talk does, but
   // not a turn already on its way.
-  const canAct = phase === "idle" || phase === "speaking" || phase === "recording";
+  // Not while Draw another is swapping the conversation: a line spoken then
+  // would go to the id being deleted.
+  const canAct = (phase === "idle" || phase === "speaking" || phase === "recording") && !redrawing;
   // Check-in answers belong to the latest turn only: once anything else is
   // said, they are stale.
   const lastEntry = entries[entries.length - 1];
