@@ -292,11 +292,12 @@ const TAG_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELP
 // milliseconds", "1,500ms"). Bounded so it can't run away on a long line, but wide enough
 // for a mark with a note ("<pause 1.5 seconds while she weighs them>").
 // The note may be long and may hold <t> marks ("<pause 1.5 while she weighs
-// <t>los jitomates</t>>"); a mark that isn't matched would be read out with
-// the tag after it. Each step takes one character or one whole <t>/</t> (the
-// two can't start on the same character, and a scan stops at any other <),
+// <t>los jitomates</t>>") or any other angle tag ("<i>she</i>"); a mark that
+// isn't matched would be read out with the tag after it. Each step takes one
+// character or one whole tag (the two can't start on the same character, and
+// a scan stops at a < that opens no tag),
 // so matching stays linear with no length cap.
-const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*t\s*>)*)>/gi;
+const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*[a-z][^<>\n]*>)*)>/gi;
 // A mark with any italics or bold hugging it, for taking marks out of a
 // line before it's matched as a hidden line. The lookbehind starts a match
 // only at the start of a run of * or _, so a long run of them (a
@@ -468,7 +469,10 @@ function metaRest(re, rawLine) {
   // Timing marks out first (with any italics hugging them, a note of any
   // length, <t> inside it), the same grammar the spoken path uses; then
   // bold anywhere.
-  const line = squeeze(String(rawLine).replace(MARK_OUT, " ").replace(/\*\*/g, "")).trimStart();
+  // A label in italics ("*GLOSS:*", "*GLOSS*:") loses its single stars too:
+  // an opening one (start of line or after a blank, hugging a word) and a
+  // closing one; a "* " bullet hugs nothing and stays.
+  const line = squeeze(String(rawLine).replace(MARK_OUT, " ").replace(/\*\*/g, "").replace(/(?<=^|[\s:])\*(?=\S)|(?<=\S)\*(?=[\s:]|$)/g, "")).trimStart();
   const m = line.slice(0, 200).match(re);
   return m ? line.slice(m[0].length) : null;
 }
@@ -588,7 +592,8 @@ const ageForYears = (n) => (n < 13 ? "child" : n < 30 ? "young" : n < 60 ? "midd
 // "old, Doña Carmen", "old; …", "old — …", "old (70s), …", "young.". Not
 // before a plain space or a hyphen, so "old man's daughter", "kid brother",
 // "middle schooler" and "old-fashioned" are never ages.
-const SEP = String.raw`(?=\s*(?:$|[,;:|—–(.])|\s+-\s)`;
+// A spaced hyphen or an ASCII double dash ("old -- Don Pedro") ends it too.
+const SEP = String.raw`(?=\s*(?:$|[,;:|—–(.])|\s+-\s|\s*-{2,})`;
 const CAST_AGE_WORD = new RegExp(String.raw`^(child|kid|young|teen|teenage|teenager|middle[\s-]aged?|middle|old|elderly|senior)${SEP}`, "i");
 const CAST_AGED = new RegExp(String.raw`^aged\s+(?:about\s+|around\s+|~\s*)?([a-z]+(?:-[a-z]+)?|\d{1,3})\+?${SEP}`, "i");
 const CAST_YEARS = new RegExp(String.raw`^([a-z]+(?:-[a-z]+)?|\d{1,3})[\s-]years?[\s-]old${SEP}`, "i");
@@ -824,7 +829,10 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
       gender = m[2] && (allowed.has(tag) || !opts.drill) ? GENDER_OF[m[2].toLowerCase()] : null;
       // "**NARRATOR-F:** Hola": the bold after the colon closes the tag's. In
       // "NARRATOR-F: **Hola**" it opens the text's, so it stays with the text.
-      const opensBold = /\*\*\s*$/.test(m[0]) && !/^\s*(?:[-•*]\s+)?\*\*/.test(raw);
+      // "**CHARACTER-F**: **Hola**": the tag closed its own bold before the
+      // colon, so the ** after it opens the text's. Told apart by parity: an
+      // odd count of ** in the match means the last one is the text's.
+      const opensBold = /\*\*\s*$/.test(m[0]) && (m[0].match(/\*\*/g) ?? []).length % 2 === 1;
       line = raw.slice(opensBold ? m[0].replace(/\*\*\s*$/, "").length : m[0].length);
       // A new speaker starts outside any wrap: a <t> the previous speaker
       // never closed must not turn this one's English into Spanish.

@@ -1396,3 +1396,36 @@ test("library locales: every app locale maps to a library one or is knowingly se
   assert.equal(elevenLibrarySearchable("zh-HK"), false, "Cantonese is never searched as zh: that returns Mandarin");
   assert.equal(elevenLibrarySearchable("zh-TW"), true);
 });
+
+// ld-teo: parsing leftovers from the fourteenth review.
+test("a tag bolded alone before the colon does not leave the text's bold unpaired", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  const lines = parseVoiceReply("**CHARACTER-F**: **Hola** *waves*");
+  assert.deepEqual(lines.map((l) => l.text), ["Hola"], "the *waves* stage direction is not spoken");
+  assert.equal(parseVoiceReply("**NARRATOR-F:** Hola")[0].text, "Hola");
+  assert.equal(parseVoiceReply("NARRATOR-F: **Hola** *waves*")[0].text, "Hola");
+});
+
+test("an italic GLOSS label is a shown-not-spoken line", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  for (const label of ["*GLOSS:*", "*GLOSS*:", "* GLOSS:"]) {
+    const lines = parseVoiceReply(`NARRATOR: Hi\n${label} hola = hi`);
+    assert.deepEqual(lines.map((l) => l.text), ["Hi"], label);
+    assert.deepEqual(parseGlosses(`${label} hola = hi`), [{ term: "hola", meaning: "hi" }], label);
+  }
+});
+
+test("a CAST age may end at an ASCII double dash", async () => {
+  const { parseCast } = await import("../voice.mjs");
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old -- Don Pedro"), [{ slot: "character:male", age: "old", who: "Don Pedro" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old--Don Pedro"), [{ slot: "character:male", age: "old", who: "Don Pedro" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old-fashioned man"), [], "a single hyphen inside a word is still no age");
+});
+
+test("a timing note holding other angle tags is still one mark", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  const [l] = parseVoiceReply("<pause 1.5 while <i>she</i> thinks> CHARACTER-F: Hola");
+  assert.equal(l.text, "Hola");
+  assert.equal(l.gap, 1.5);
+  assert.equal(parseVoiceReply("<pause 1> CHARACTER-F: a < b")[0].text, "a < b", "a bare < is no tag");
+});

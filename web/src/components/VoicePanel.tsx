@@ -39,6 +39,10 @@ const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
 /** How long a mid-session voice draw may take before it counts as failed. */
 const CAST_TIMEOUT_MS = 10_000;
+/** How long a first draw (it holds its person's lines) waits for someone
+ *  else's retry on the same tag, which holds nothing: the wait only helps
+ *  the draw avoid the retry's voice, so it is short. */
+const RETRY_AHEAD_WAIT_MS = 1_500;
 const HELD_NOTICE = "Your words to the dojo master are waiting above the box.";
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
 
@@ -1200,7 +1204,15 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         if (ahead.length) {
           let timer: ReturnType<typeof setTimeout> | undefined;
           const late = new Promise<"late">((res) => (timer = setTimeout(() => res("late"), Math.max(0, left()))));
-          const won = await Promise.race([Promise.all(ahead), late]);
+          // A first draw doesn't sit behind someone else's slow retry for
+          // the whole deadline: that held its person's line up to 10 s.
+          const retryRuns = new Set(retrying.current.values());
+          const soon = (p: Promise<void>) =>
+            new Promise<void>((res) => {
+              const t = setTimeout(res, RETRY_AHEAD_WAIT_MS);
+              void p.then(() => (clearTimeout(t), res()));
+            });
+          const won = await Promise.race([Promise.all(ahead.map((p) => (!retry && retryRuns.has(p) ? soon(p) : p))), late]);
           clearTimeout(timer);
           if (won === "late") throw new DOMException("the draw ahead took too long", "TimeoutError");
         }
