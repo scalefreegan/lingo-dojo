@@ -128,6 +128,16 @@ test("the shipped declarations: the kids endings and the adult closing debriefs 
   const kids = loadContent(modeRoot("kids"));
   assert.equal(unitIssues(kids, ["ending-celebration", "ending-goodnight"]).conflicts.length, 1);
   assert.deepEqual(unitIssues(kids, ["ending-celebration"]).messages, []);
+  // Bedtime against both bouncy units (by tag) and the cheerful ending; calm picks are fine.
+  const clash = (ids) => unitIssues(kids, ids).conflicts.map((k) => [k.a, k.b].sort().join("+"));
+  assert.deepEqual(clash(["story-bedtime", "energy-bouncy-5"]), ["energy-bouncy-5+story-bedtime"]);
+  assert.deepEqual(clash(["story-bedtime", "energy-bouncy-10"]), ["energy-bouncy-10+story-bedtime"]);
+  assert.deepEqual(clash(["story-bedtime", "ending-celebration"]), ["ending-celebration+story-bedtime"]);
+  assert.deepEqual(clash(["story-bedtime", "energy-calm-5", "ending-goodnight"]), []);
+  // A pack-level warning only: the library itself loads without a problem.
+  assert.deepEqual(kids.problems.filter((p) => /conflicts|requires/.test(p.message)), []);
+  const w = assemble(kids, { title: "t", units: ["story-bedtime", "energy-bouncy-5"] }, "kids").warnings;
+  assert.ok(w.some((m) => /Bedtime story.*contradict/.test(m)), w.join("|"));
   const adult = loadContent(modeRoot("adult"));
   assert.equal(unitIssues(adult, ["debrief-top-three", "debrief-first-steps"]).conflicts.length, 1);
   assert.deepEqual(unitIssues(adult, ["debrief-top-three", "debrief-vocab-list"]).messages, []);

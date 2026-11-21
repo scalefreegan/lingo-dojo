@@ -4,6 +4,7 @@ slot: story
 title: Bedtime story
 summary: Calm and slow, winding down; the helper gets sleepier as the story goes on.
 tags: [story, bedtime, calm]
+conflicts: [tag:bouncy, ending-celebration]   # "never speed up or add excitement" vs high energy and sound effects; vs a big cheerful sendoff
 level: [First words, Getting going, Chatty]
 ---
 Shape the session as a bedtime story: slow, soft, and winding down from

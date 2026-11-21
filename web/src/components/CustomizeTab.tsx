@@ -30,7 +30,10 @@ export default function CustomizeTab({
   const drill = draft.scenarioMode === "library" && content.scenarios.find((s) => s.id === draft.scenario)?.format === "drill";
   // Units that declare a clash or a missing partner (docs/CONTENT.md
   // "Conflicts and requirements"): a note beside each, never a block.
-  const notes = useMemo(() => issuesByUnit(unitIssues(content, draft.units, { drill: !!drill })), [content, draft.units, drill]);
+  const { notes, clashing } = useMemo(() => {
+    const issues = unitIssues(content, draft.units, { drill: !!drill });
+    return { notes: issuesByUnit(issues), clashing: new Set(issues.conflicts.flatMap((c) => [c.a, c.b])) };
+  }, [content, draft.units, drill]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -52,6 +55,7 @@ export default function CustomizeTab({
                   changed={changed.has(slot.id)}
                   skipped={drill && !!slot.scene_only}
                   notes={notes}
+                  clashing={clashing}
                   onToggle={() => setOpenSlot((cur) => (cur === slot.id ? null : slot.id))}
                   onChange={onChange}
                 />
@@ -118,6 +122,7 @@ function SlotRow({
   changed,
   skipped = false,
   notes,
+  clashing,
   onToggle,
   onChange,
 }: {
@@ -131,6 +136,8 @@ function SlotRow({
   skipped?: boolean;
   /** Clashes and unmet requirements by unit id (unitIssues). */
   notes: Map<string, string[]>;
+  /** Unit ids in a clash (a subset of `notes`' keys). */
+  clashing: Set<string>;
   onToggle: () => void;
   onChange: (d: Draft) => void;
 }) {
@@ -138,6 +145,8 @@ function SlotRow({
   const selected = draft.units.filter((id) => units.some((u) => u.id === id));
   const missing = !skipped && slot.required && selected.length === 0;
   const flagged = !skipped && selected.some((id) => notes.has(id));
+  // "clash" when a pick contradicts another, "needs" when only a requirement is unmet.
+  const flagLabel = selected.some((id) => clashing.has(id)) ? "clash" : "needs";
   const name = `slot-${slot.id}`;
   const summary = selected.length === 0 ? "None" : selected.map((id) => units.find((u) => u.id === id)?.title ?? id).join(", ");
   const rowClass = (on: boolean) =>
@@ -152,7 +161,7 @@ function SlotRow({
           {flagged && " "}
           {flagged && (
             <Badge tone="warn" title="A unit here clashes with another pick, or needs one that isn't picked">
-              check
+              {flagLabel}
             </Badge>
           )}
         </span>
