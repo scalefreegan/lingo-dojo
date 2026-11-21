@@ -18,8 +18,8 @@ import { toggled, useTheme, type ThemeChoice } from "../theme";
  * rather than widening the page. The language switcher sits beside the
  * Profile pill: which of the learner's languages this session practises.
  * Practice (flashcards over the phrase bank) is a destination too, beside
- * Library and in the menu with it below `md`; kids learners don't have it
- * (docs/DATA.md §Kids learners). The sun/moon button flips light and dark
+ * Library and in the menu with it below `md`; for a kids learner it is the
+ * word game only (docs/DATA.md §Kids word game). The sun/moon button flips light and dark
  * in one tap (from `sm` up; a phone's bar has no room), and the menu's
  * Appearance row has all three choices, Auto (follow the system) included. */
 export default function TopBar({
@@ -114,11 +114,11 @@ export default function TopBar({
           <ProfileControl content={content} draft={draft} mode={mode} learner={learner} language={language} learners={learners} onSwitchLearner={onSwitchLearner}
             onSwitchLanguage={onSwitchLanguage} onManageLearners={onManageLearners} onChange={onChange} onSaveDefaults={onSaveDefaults} onSaveLanguageNotes={onSaveLanguageNotes} />
         )}
-        {mode !== "kids" && <TabButton label="Practice" active={tab === "practice"} onClick={() => onTab("practice")} className="hidden md:flex" />}
+        <TabButton label="Practice" active={tab === "practice"} onClick={() => onTab("practice")} className="hidden md:flex" />
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <ThemeToggle />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")}
-          practiceActive={mode === "kids" ? null : tab === "practice"} onPractice={() => onTab("practice")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
+          practiceActive={tab === "practice"} onPractice={() => onTab("practice")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
     </header>
   );

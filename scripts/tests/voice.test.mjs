@@ -63,7 +63,7 @@ test("voiceKeys: the file fills in, the environment wins; configuredProviders ne
   const file = path.join(dir, ".env.local");
   fs.writeFileSync(file, "ELEVENLABS_API_KEY=from-file\nAZURE_SPEECH_KEY=az\n");
   const keys = voiceKeys({ ELEVENLABS_API_KEY: "from-env" }, file);
-  assert.deepEqual(keys, { elevenlabs: "from-env", azureKey: "az", azureRegion: "" });
+  assert.deepEqual(keys, { elevenlabs: "from-env", azureKey: "az", azureRegion: "", openai: "" });
   assert.deepEqual(configuredProviders(keys, "darwin"), { elevenlabs: true, azure: false, system: true });
   assert.deepEqual(configuredProviders(voiceKeys({}, path.join(dir, "missing")), "linux"), { elevenlabs: false, azure: false, system: false });
 });

@@ -252,7 +252,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
  *  macOS voice for the locale), so the mode picker can say so before a
  *  session rather than card by card. No voice saved is not a problem: the
  *  route then speaks in the provider's default voice. */
-async function audioProblem(ctx: LearnerCtx): Promise<string | null> {
+export async function audioProblem(ctx: LearnerCtx): Promise<string | null> {
   const locale = targetLocale(ctx);
   if (!locale) return "this language has no voice locale, so its phrases can't be played";
   try {

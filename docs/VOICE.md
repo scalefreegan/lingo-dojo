@@ -17,6 +17,8 @@ ELEVENLABS_API_KEY=...
 # Azure Speech: voices and speech to text (both lines needed)
 AZURE_SPEECH_KEY=...
 AZURE_SPEECH_REGION=eastus
+# OpenAI: the kids word game's pictures only (docs/DATA.md §Kids word game)
+OPENAI_API_KEY=...
 ```
 
 `npx -y @elevenlabs/cli@latest onboard connect --env-path .env.local` writes the
@@ -566,7 +568,9 @@ The Practice tab's listening and speak-it drills (docs/DATA.md §As built
   macOS voice setup with no voice installed for the locale is a 400, not
   the Mac's own-language voice. Paid calls from these routes (an audio
   miss, a transcription) share the user's two paid slots with the Go tab
-  (§Paid calls at once; 429 beyond).
+  (§Paid calls at once; 429 beyond). The kids word game's
+  `GET /api/game/audio/:phraseId` (docs/DATA.md §Kids word game) is the
+  same clip through the same cache and slots, for a kids learner.
 - **Speak-it.** `POST /api/practice/transcribe` takes the recording (the
   same 16 kHz WAV as a turn) and answers `{text}` with your STT provider
   in the language's locale. Unlike a turn it sends **no keyterms**: the

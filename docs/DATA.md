@@ -1848,12 +1848,12 @@ a session length picker (5 / 10 / 20 items).
   lean on the claude check (or self-grade via Reveal). The claude check is told
   to be generous.
 
-### Kids learners (proposed)
+### Kids learners
 
-Kids get the phrase bank, session capture and the review block in v1. The
-practice modes above assume reading and typing, which conflicts with kids
-goals ("entirely by ear"), so the Practice tab is hidden for kids learners. A
-follow-up bead covers a kids audio game (hear a word, tap a picture).
+Kids get the phrase bank, session capture and the review block. The practice
+modes above assume reading and typing, which conflicts with kids goals
+("entirely by ear"), so a kids learner's Practice tab is the word game
+instead (§Kids word game). The drills' routes are a 403 for kids.
 
 ### As built (phase 7a: flashcards)
 
@@ -3032,6 +3032,199 @@ server and the Scene tab alike:
 Tests: `hidden.test.mjs` (pure rules, rows, isolation, the table's checks),
 `hidden.http.test.mjs` (401, 409 `stale_learner`, 400s, the draw and the
 export), `db-migration-0009.test.mjs`.
+
+## Kids word game
+
+Added 2026-11-20 (bead `ld-8zu`, migration `0011_word_pictures`). A kids
+learner's Practice tab is a by-ear game: the child hears a word of the
+language they learn and taps the matching picture. Adults are unchanged and
+get no game. A kids learner's adult drills stay a 403.
+
+### Tables
+
+`phrase_pictures (id, phrase_id, learner_id, language_profile_id,
+phrase_key, status, description, file, content_type, created_at,
+updated_at)`:
+
+- There is one row per phrase (unique `(language_profile_id, phrase_id)`).
+- Composite foreign keys go to `phrases` and the language profile, both `ON
+  DELETE CASCADE`.
+- `phrase_key` is `pictureKey(phrase)` (`scripts/pictures.mjs`): a hash of
+  the words and meaning the verdict was made for. When either is edited the
+  row is stale, so the word is judged again and its old picture leaves the
+  game at once.
+- `status` is one of:
+  - `pending`: picturable and waiting to be drawn.
+  - `ready`: it has a `file`.
+  - `none`: no clear picture, so it stays out of the game.
+  - `failed`: the provider refused. It is never retried by itself.
+  - `removed`: a grown-up took it out.
+- The checks:
+  - `file` (64 hex) and `content_type` (png, webp or jpeg) are present
+    exactly when the row is `ready`.
+  - `pending` and `ready` rows need a `description`.
+
+`picture_calls (id, learner_id, language_profile_id, kind, words, outcome,
+created_at)` is the ledger of paid calls:
+
+- `kind` is `judge` or `image`.
+- Each row is written as its call starts, so a failure counts too and a
+  restart doesn't reset the count.
+- `outcome` is filled after the call, for diagnosis only.
+- It cascades with the profile only: a deleted phrase's calls still count.
+- Each insert prunes that language's rows older than a day.
+
+`reviews.mode` adds `picture`. The reader role (0005) gets nothing on either
+table. Queries are only in `scripts/db/pictures.ts`, through
+`forLanguageProfile`.
+
+### Pictures, made ahead of play
+
+There is one background run per language profile (`web/server/pictures.ts`
+`fillPictures`).
+
+Triggers:
+- a kids session's end, after its recap is stored, from `extraction.ts`
+  (`picturesAfterSession` checks the learner is kids, so adults start
+  nothing);
+- the grown-up's **Draw pictures** (Library → Phrase bank) or **Draw again**;
+- a game's start, as a top-up. The game is built only from ready pictures
+  and never waits for it.
+
+Nothing is drawn from a poll, a count or a page load.
+
+Each run, in order:
+
+1. **The picturable check.** One tool-less `claude -p` call (Haiku) per 20
+   words that have no current verdict. Its reply is a numbered yes/no with a
+   short description (`judgePrompt` / `parseJudgeReply`; a yes with no
+   usable description counts as a no). The verdict is stored once per words
+   and meaning.
+2. **The drawing.** One image per picturable word, newest words first,
+   through the image provider (`web/server/imageProvider.ts`, one small
+   swappable module). The prompt is a fixed safe style (`picturePrompt`: a
+   flat, friendly picture-book cartoon with no text and nothing frightening).
+   The description is inserted only as cleaned data (`cleanDescription`:
+   letters, digits, spaces and `,.'-`, at most 160 characters).
+
+Limits:
+- Every call runs in the user's background paid slot (`paid.ts`). If the
+  slot is busy, the run stops and the next trigger carries on.
+- At most `PICTURE_DAILY_IMAGES` (50) images and `PICTURE_DAILY_JUDGES` (10)
+  checks per language in any 24 hours. Both are counted from the ledger.
+
+Failures:
+- A moderation refusal (`moderation_blocked`, or no image in the reply)
+  marks the word `failed`, and the run goes on to the next word.
+- Any other failure (network, 429, a bad key, the CLI) stops the run and
+  leaves the word `pending`. A new run waits 10 minutes.
+
+**How the backlog drains:** every trigger works newest-first until the caps
+of the last 24 hours. Older words, and words past the cap, wait for a later
+trigger once the window frees up: the next session's end, the grown-up's
+Draw pictures, or a game start.
+
+**The cache:**
+- A verdict is never made twice for the same words and meaning.
+- A drawn picture is never drawn again unless a grown-up asks for a redraw.
+  A redraw writes a new file under a new random name and deletes the old
+  one.
+- Files are in `data/images/` (or `LINGO_IMAGES_DIR`), named by 64 random
+  hex characters, with mode 0600 in a 0700 folder
+  (`scripts/picture-store.mjs`). They are checked by their magic bytes and
+  capped at 4 MB.
+
+**No key:** with no `OPENAI_API_KEY` in `.env.local`, nothing is judged or
+drawn. `GET /api/game` and `GET /api/pictures` give a `problem` sentence for
+the grown-up, `POST /api/pictures/fill` is a 400 with that sentence, and
+nothing 500s. The key is read only into the request's Authorization header.
+It never reaches the browser or a log line. `LINGO_IMAGE_PROVIDER=stub`
+draws coloured placeholder PNGs, for tests and UI checks.
+
+### The provider (as of 2026-11-20)
+
+The OpenAI Images API, `POST https://api.openai.com/v1/images/generations`,
+with these settings:
+
+| Setting | Value |
+|---|---|
+| model | `gpt-image-1-mini` |
+| size | `1024x1024` |
+| quality | `low` |
+| output_format | `webp` |
+| output_compression | 70 |
+| background | `opaque` |
+| moderation | `auto` |
+
+The reply is always `b64_json`. `gpt-image-1` was shut down on 2026-10-23.
+
+The cost is about $0.005 per image at low quality and 1024², from the
+pricing page's image table. At the cap that is about $0.25 per language per
+day. The Haiku checks run on the Claude Code login.
+
+Sources: developers.openai.com/api/reference/resources/images,
+/api/docs/guides/image-generation, /api/docs/pricing and
+/api/docs/guides/error-codes.
+
+### The game
+
+Routes are in `web/server/pictures.ts`, all mounted with wrap's `learner:
+true` and for kids learners only (a 403 for adults):
+
+- `GET /api/game` returns the status (`pictured`, `ready`, `drawing`,
+  `waiting`, `limited`, `problem`, `audio`). It starts nothing.
+- `POST /api/game/start` returns up to 8 rounds (`gameRounds`):
+  - The rounds are built only from `ready` pictures whose key is current.
+  - The order is due words first, then new words (starred and recent
+    first), then the rest.
+  - With fewer than 3 pictured words there is no game. The child sees a
+    friendly "pictures are being drawn" state, with nothing to fail at, and
+    a note for grown-ups.
+  - Each round has 2–4 pictures, with distractors drawn by a seed from the
+    phrase and card version (`roundChoices`). Words with the same meaning
+    are never distractors.
+- `POST /api/game/answer` takes `{phraseId, version, revision, submitId,
+  pictureId}`:
+  - The server checks the tap against its own seeded draw.
+  - The tap is a quiet review of the word's `listen` card through
+    `recordAnswer`: drill `picture`, rating 3 when right and 1 when wrong.
+  - The lock order is phrase then card. A resend with the same submit id
+    replays. A stale version or revision, or a picture not on offer, is a
+    409.
+- `GET /api/game/audio/:phraseId` is Practice's phrase audio and its cache.
+- `GET /api/game/pictures/:id/:file` serves only the session's own learner
+  and language. Its headers are `Cache-Control: private, max-age=31536000,
+  immutable`, `Vary: Cookie, X-Learner-Id, X-Language-Profile-Id` and
+  `nosniff`.
+
+The page (`web/src/components/KidsGameView.tsx`):
+- It preloads every round's audio and pictures before round 1, behind
+  Mochi's short loading state, so there is no spinner between rounds.
+- The word auto-plays, and a big button replays it.
+- Right: a cheer and a star, then on to the next round.
+- Wrong: gentle. The right picture is shown, the word is replayed, and a
+  Next button appears.
+- About 8 rounds, then a row of stars.
+- There is no score, no wrong count and nothing the child must read.
+  `prefers-reduced-motion` switches off the pop and cheer animations.
+
+The grown-up's side (`web/src/components/WordPictures.tsx`, in the
+Library's Phrase bank, never in the game):
+- a status line with **Draw pictures**;
+- in each word's detail, its picture, what it was drawn as, **Remove
+  picture** and **Draw again**.
+
+Routes for it:
+- `GET /api/pictures`
+- `POST /api/pictures/fill`
+- `GET /api/pictures/phrase/:id`
+- `POST /api/pictures/phrase/:id/remove|redraw`
+
+Tests:
+- `scripts/tests/pictures.test.mjs`: the pure rules.
+- `scripts/tests/pictures.http.test.mjs`: the HTTP side, with OpenAI and
+  claude stubbed.
+- `scripts/tests/db-migration-0011.test.mjs`: the migration.
 
 ## Docs to update as phases land
 

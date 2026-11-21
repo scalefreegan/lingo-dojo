@@ -164,6 +164,9 @@ export function voiceKeys(env = process.env, file = envFile()) {
     elevenlabs: get("ELEVENLABS_API_KEY"),
     azureKey: get("AZURE_SPEECH_KEY"),
     azureRegion: get("AZURE_SPEECH_REGION"),
+    // The kids word game's pictures (web/server/imageProvider.ts), not a voice
+    // provider: read from the same file, never sent to the browser.
+    openai: get("OPENAI_API_KEY"),
   };
 }
 

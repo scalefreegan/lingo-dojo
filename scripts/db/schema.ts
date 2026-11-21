@@ -645,7 +645,9 @@ export const reviews = pgTable(
     cardId: uuid("card_id").notNull(),
     learnerId: uuid("learner_id").notNull(),
     languageProfileId: uuid("language_profile_id").notNull(),
-    mode: text("mode").$type<"flashcard" | "cloze" | "listening" | "speak" | "session">().notNull(),
+    /** The drill that wrote it; `picture` is the kids word game (a tap on a
+     *  picture reviews the listen card: migration 0011). */
+    mode: text("mode").$type<"flashcard" | "cloze" | "listening" | "speak" | "picture" | "session">().notNull(),
     rating: smallint("rating").notNull(),
     answer: text("answer"),
     verdict: text("verdict").$type<"exact" | "close" | "accepted" | "wrong" | "self">(),
@@ -658,7 +660,7 @@ export const reviews = pgTable(
     cardBefore: jsonb("card_before").$type<Record<string, unknown>>().notNull(),
   },
   (t) => [
-    check("reviews_mode", sql`${t.mode} in ('flashcard', 'cloze', 'listening', 'speak', 'session')`),
+    check("reviews_mode", sql`${t.mode} in ('flashcard', 'cloze', 'listening', 'speak', 'picture', 'session')`),
     check("reviews_rating", sql`${t.rating} between 1 and 4`),
     check("reviews_verdict", sql`${t.verdict} in ('exact', 'close', 'accepted', 'wrong', 'self')`),
     foreignKey({ columns: [t.cardId, t.learnerId], foreignColumns: [cards.id, cards.learnerId] }).onDelete("cascade"),
@@ -776,6 +778,89 @@ export const clozeCalls = pgTable(
     foreignKey({ name: "cloze_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
     // The daily cap counts one language's recent calls.
     index("cloze_calls_profile_idx").on(t.languageProfileId, t.createdAt),
+  ],
+);
+
+/* ------------------------------ word pictures ------------------------------ */
+
+/**
+ * A word's picture for the kids word game (docs/DATA.md §Kids word game,
+ * migration 0011): one row per phrase, for its words and meaning as
+ * `phrase_key` names them (pictures.mjs pictureKey; an edit leaves the row
+ * stale, and the word is judged and drawn again). The picturable verdict is
+ * stored once (`none`: no clear picture, left out of the game; `pending`:
+ * picturable, with the description to draw), the image once (`ready`: the
+ * file under the images directory, scripts/picture-store.mjs), and never
+ * made again unless a grown-up asks for a redraw. `failed`: the provider
+ * refused it or gave no image (not retried by itself); `removed`: a
+ * grown-up took it out. The bank reader role of 0005 gets nothing on it.
+ */
+export const phrasePictures = pgTable(
+  "phrase_pictures",
+  {
+    id: id(),
+    phraseId: uuid("phrase_id").notNull(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** pictures.mjs pictureKey of the phrase the verdict and picture are for. */
+    phraseKey: text("phrase_key").notNull(),
+    status: text("status").$type<"pending" | "ready" | "none" | "failed" | "removed">().notNull(),
+    /** What to draw (the picturable check's, cleaned); null for `none`. */
+    description: text("description"),
+    /** The image's file name stem (64 hex, made by the server, never from a
+     *  client) while it is `ready`; also the cache-busting part of its URL. */
+    file: text("file"),
+    contentType: text("content_type"),
+    createdAt: createdAt(),
+    updatedAt: tz("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("phrase_pictures_status", sql`${t.status} in ('pending', 'ready', 'none', 'failed', 'removed')`),
+    // A file exactly while ready; something to draw while pending or ready.
+    check(
+      "phrase_pictures_file",
+      sql`(${t.status} = 'ready') = (${t.file} is not null) and (${t.file} is null or ${t.file} ~ '^[0-9a-f]{64}$') and (${t.file} is null) = (${t.contentType} is null)`,
+    ),
+    check("phrase_pictures_type", sql`${t.contentType} is null or ${t.contentType} in ('image/png', 'image/webp', 'image/jpeg')`),
+    check("phrase_pictures_description", sql`${t.status} not in ('pending', 'ready') or ${t.description} is not null`),
+    foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "phrase_pictures_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
+    // One row per phrase; an upsert's target leads with the owner (owned.ts).
+    unique("phrase_pictures_profile_phrase").on(t.languageProfileId, t.phraseId),
+  ],
+);
+
+/**
+ * One paid call for the word game's pictures (docs/DATA.md §Kids word
+ * game): a picturable check (`judge`, a claude call) or an image (`image`,
+ * the image provider). Written as the call starts, whatever it then gives,
+ * and kept apart from phrase_pictures (an edit, a delete or a redraw
+ * changes those rows; a call paid for must count all the same): the daily
+ * caps (pictures.mjs PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES) count
+ * these rows, and a restart doesn't reset them. Pruned past the window as
+ * calls are made; goes with its language profile. The reader role gets
+ * nothing on it.
+ */
+export const pictureCalls = pgTable(
+  "picture_calls",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    kind: text("kind").$type<"judge" | "image">().notNull(),
+    /** Words the call was for (an image: 1). */
+    words: integer("words").notNull(),
+    /** How it ended, for diagnosis: null while it runs or when the server stopped. */
+    outcome: text("outcome").$type<"ok" | "refused" | "failed">(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_calls_kind", sql`${t.kind} in ('judge', 'image')`),
+    check("picture_calls_words", sql`${t.words} > 0`),
+    check("picture_calls_outcome", sql`${t.outcome} is null or ${t.outcome} in ('ok', 'refused', 'failed')`),
+    foreignKey({ name: "picture_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    // The daily caps count one language's recent calls.
+    index("picture_calls_profile_idx").on(t.languageProfileId, t.createdAt),
   ],
 );
 

@@ -4,6 +4,7 @@ import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, 
 import { hanChars, scriptFor } from "../script/script.ts";
 import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
+import { PictureSection, PicturesBar } from "./WordPictures";
 
 /* Phrase bank, in the Library tab: the active language's phrases
  * (docs/DATA.md §Phrase bank), what the dojo master glossed, the scenes'
@@ -70,7 +71,7 @@ function dueLabel(p: PhraseSummary): string {
 }
 
 /** `initialQuery`: a search to open with (a session recap's "In the bank"). */
-export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: string } = {}) {
+export default function PhraseBankView({ initialQuery = "", kids = false }: { initialQuery?: string; kids?: boolean } = {}) {
   const [q, setQ] = useState(initialQuery);
   const [query, setQuery] = useState<Required<Pick<PhraseQuery, "q" | "show" | "band" | "sort">>>({ q: initialQuery.trim(), show: "all", band: "", sort: "recent" });
   const [data, setData] = useState<PhrasesReply | null>(null);
@@ -161,6 +162,8 @@ export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: s
           refresh();
         }}
       />
+      {/* A kids learner's bank: the word game's pictures (the grown-up's side). */}
+      {kids && <PicturesBar />}
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -231,6 +234,7 @@ export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: s
               locale={lang?.locale ?? undefined}
               open={openId === p.id}
               onToggle={() => setOpenId((id) => (id === p.id ? null : p.id))}
+              kids={kids}
               onChanged={refresh}
               onDeleted={() => {
                 setOpenId(null);
@@ -308,6 +312,7 @@ function PhraseRow({
   p,
   locale,
   open,
+  kids = false,
   onToggle,
   onChanged,
   onDeleted,
@@ -315,6 +320,7 @@ function PhraseRow({
   p: PhraseSummary;
   locale?: string;
   open: boolean;
+  kids?: boolean;
   onToggle: () => void;
   onChanged: () => void;
   onDeleted: () => void;
@@ -382,7 +388,7 @@ function PhraseRow({
         </button>
       </div>
       {error && <p className="mt-1 text-sm text-err">{error}</p>}
-      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} onChanged={onChanged} onDeleted={onDeleted} />}
+      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onDeleted={onDeleted} />}
     </li>
   );
 }
@@ -394,12 +400,14 @@ function PhraseDetailView({
   id,
   locale,
   summary,
+  kids = false,
   onChanged,
   onDeleted,
 }: {
   id: string;
   locale?: string;
   summary: PhraseSummary;
+  kids?: boolean;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
@@ -644,6 +652,7 @@ function PhraseDetailView({
           ) : (
             <p className={`${fine} text-fg-3`}>No examples yet: they come from the lines the dojo master glosses it in.</p>
           )}
+          {kids && !detail.pending && <PictureSection phraseId={id} />}
           <div className="-ml-2 flex flex-wrap gap-1">
             <Button variant="ghost" className={small} onClick={startEdit} disabled={busy}>
               Edit

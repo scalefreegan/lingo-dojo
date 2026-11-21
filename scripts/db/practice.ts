@@ -58,8 +58,10 @@ export class PracticeError extends Error {
 
 const SKILLS: PracticeSkill[] = ["recognize", "produce", "listen"];
 /** The review modes a practice answer writes (reviews.mode): every one but
- *  a session's recap. A submit id or an override is looked up among these. */
-const DRILL_MODES: PracticeDrill[] = ["flashcard", "listening", "speak", "cloze"];
+ *  a session's recap, the kids word game's `picture` included (its taps go
+ *  through recordAnswer too). A submit id or an override is looked up among
+ *  these. */
+const DRILL_MODES: (PracticeDrill | "picture")[] = ["flashcard", "listening", "speak", "cloze", "picture"];
 
 /* ---------------------------------- reads ---------------------------------- */
 
@@ -193,8 +195,9 @@ async function latestReview(tx: Db, profile: LanguageProfileRef, cardId: string)
 export interface AnswerWrite {
   phraseId: string;
   skill: PracticeSkill;
-  /** The drill the answer came from: the review's mode. */
-  drill: PracticeDrill;
+  /** The drill the answer came from: the review's mode (`picture`: the
+   *  kids word game, web/server/pictures.ts). */
+  drill: PracticeDrill | "picture";
   /** The card version the client answered against. */
   version: string;
   /** The phrase revision the card was shown (and graded) at: an edit of

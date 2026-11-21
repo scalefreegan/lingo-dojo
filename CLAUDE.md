@@ -22,7 +22,7 @@ transcript; its summary, kept phrases, corrections and FSRS session reviews
 are stored once per conversation by a claim on `conversations.extraction_status`,
 re-runs replace; `web/server/extraction.ts`, `scripts/db/extraction.ts`,
 pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.tsx`); and the
-Practice tab's flashcards (phase 7a, hidden for kids: queue and grading
+Practice tab's flashcards (phase 7a, adults only; kids get the word game below: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
 `web/src/components/PracticeView.tsx`), with the listening and speak-it
@@ -113,6 +113,32 @@ by Practice), is judged against every reading the card shows; nothing is stored,
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
 Practice's speak-it (grading unchanged) and the character card; First steps
 drills are not wired (no reliable target text per turn).
+Kids word game (ld-8zu, migration 0011, docs/DATA.md §Kids word game): a
+kids learner's Practice tab is a by-ear game, where the child hears a word
+and taps its picture.
+- Each tap is a quiet review of the word's `listen` card (drill `picture`,
+  through `recordAnswer`).
+- The child sees stars and cheers only, never a score.
+- Pictures are drawn ahead of play by the background run in
+  `web/server/pictures.ts`. Its triggers are a kids session's end (after the
+  recap), the grown-up's Draw pictures or Draw again in the Phrase bank, and
+  a top-up at game start. Never a poll, a count or a page load.
+- Each run does one tool-less Haiku picturable check per 20 words (the
+  verdict is stored once), then one OpenAI image per picturable word
+  (`web/server/imageProvider.ts`, `OPENAI_API_KEY`, `gpt-image-1-mini` at
+  low quality).
+- Each call is in the background paid slot, with a ledger row
+  (`picture_calls`) written as it starts. The caps are
+  `PICTURE_DAILY_IMAGES` (50) images per language a day.
+- `phrase_pictures` holds one row per phrase: pending, ready, none, failed
+  or removed. Queries are in `scripts/db/pictures.ts`, and the pure rules in
+  `scripts/pictures.mjs`.
+- The files are in `data/images/` or `LINGO_IMAGES_DIR`
+  (`scripts/picture-store.mjs`). They are served immutably by id and file
+  to their own learner only.
+- A game is built only from ready pictures and is preloaded before round
+  1. Adults have no game.
+- `LINGO_IMAGE_PROVIDER=stub` draws placeholders for tests and UI checks.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
