@@ -5,7 +5,7 @@ import { listCorrections, phrasesWith, saveCorrection, saveRecapReading, setPhra
 import { SharedFullError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
-import { correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type Corrections } from "../src/script/zh.ts";
+import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
 import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -188,6 +188,28 @@ export interface JudgedReading {
   verdict: "differs" | "agrees" | "dropped";
 }
 
+/** Tone marks and numbers: a syllable with none is toneless as written. */
+const TONED = /[̀́̄̌1-4]/u;
+
+/**
+ * validateHint reads a toneless syllable as the reader's own tone (a hint
+ * often leaves tones out), but in a recap's answer the neutral tone is the
+ * point: "wèn de" says the reader's 问得 wèn dé is wrong. So a syllable
+ * written without a tone keeps the character's neutral reading when it has
+ * one (得 de, 着 zhe, 了 le); otherwise validateHint's reading stands. Only
+ * when the answer splits into one syllable per character.
+ */
+function keptNeutral(word: string, raw: string, reading: string[], locale: string): string[] {
+  const sylls = raw.normalize("NFD").toLowerCase().split(/[\s'’\-]+/u).filter(Boolean);
+  const chars = [...word.normalize("NFC")];
+  if (sylls.length !== chars.length || reading.length !== chars.length) return reading;
+  return reading.map((r, k) => {
+    if (TONED.test(sylls[k]) && !/[50]$/.test(sylls[k])) return r;
+    const bare = sylls[k].replace(/[05]$/, "").normalize("NFC");
+    return charReadings(chars[k], locale).includes(bare) ? bare : r;
+  });
+}
+
 /**
  * The recap's `readings` judged (pure, before anything is written): each
  * answer for a word it was asked about passes zh.ts validateHint (one
@@ -208,7 +230,7 @@ export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, lo
       return { ...base, answer: null, verdict: "dropped" };
     }
     stats.accepted++;
-    const answer = v.reading.join(" ");
+    const answer = keptNeutral(w.word, raw!, v.reading, locale).join(" ");
     if (answer === base.reader) return { ...base, answer, verdict: "agrees" };
     stats.differs++;
     return { ...base, answer, verdict: "differs" };

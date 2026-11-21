@@ -87,6 +87,17 @@ test("judgeRecapReadings: each answer checked like a hint; agrees, differs, drop
     assert.equal(j.judged[0].verdict, "dropped", JSON.stringify(bad));
     assert.equal(j.judged[0].answer, null);
   }
+  // A toneless syllable keeps the character's neutral reading (得 de): it
+  // says the reader's dé is wrong, never confirms it. Without one (係 xì)
+  // validateHint's reading stands.
+  const de = uncertainInTranscript([{ role: "master", lines: [{ text: "你问得很好！", segments: [] }] }], "zh-CN", null);
+  assert.deepEqual(de.map((w) => [w.word, w.reading.join(" ")]), [["问得", "wèn dé"]]);
+  for (const said of ["wèn de", "wen4 de5", "wèn de0"]) {
+    const j = judgeRecapReadings(de, [{ word: "问得", pinyin: said }], "zh-CN").judged[0];
+    assert.deepEqual([j.answer, j.verdict], ["wèn de", "differs"], said);
+  }
+  assert.equal(judgeRecapReadings(de, [{ word: "问得", pinyin: "wèn dé" }], "zh-CN").judged[0].verdict, "agrees");
+  assert.ok(zh.validateCorrection("问得", "wèn de", "zh-CN").ok, "and it can be kept");
   // zh-TW: the answer in Taiwan's readings.
   const tw = uncertainInTranscript([{ role: "master", lines: [{ text: "你得去銀行。", segments: [] }] }], "zh-TW", null);
   assert.equal(judgeRecapReadings(tw, [{ word: "得去", pinyin: "děi qù" }], "zh-TW").judged[0].verdict, "differs");
