@@ -437,7 +437,28 @@ export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}
   const cps = [...text];
   const unsure = cps.map((_, k) => unsureAt(cps, d, k));
   if (!unsure.some(Boolean)) return [];
-  // The segmenter's words, as [start, end) runs of Chinese characters.
+  const words = hanWords(cps, d);
+  const out: UnsureWord[] = [];
+  for (let w = 0; w < words.length; w++) {
+    if (!unsure.slice(words[w][0], words[w][1]).some(Boolean)) continue;
+    const unit = widened(words, w);
+    if (!unit) continue;
+    let [s] = unit;
+    const e = unit[1];
+    const last = out[out.length - 1];
+    if (last && s < last.end) s = last.start;
+    if (e - s > MAX_WORD_CHARS) continue;
+    if (last && s === last.start) out.pop();
+    const at = [];
+    for (let k = s; k < e; k++) if (unsure[k]) at.push(k);
+    out.push({ start: s, end: e, word: cps.slice(s, e).join(""), reading: d.readings.slice(s, e).map((r) => r ?? ""), unsure: at, suggested: at.some((k) => d.fixed[k] === "suggested") });
+  }
+  return out;
+}
+
+/** The segmenter's words of a read text, as [start, end) runs of Chinese
+ *  characters (each character alone without a segmenter). */
+function hanWords(cps: string[], d: Detail): [number, number][] {
   const words: [number, number][] = [];
   for (let k = 0; k < cps.length; ) {
     if (!isHan(cps[k])) {
@@ -449,26 +470,54 @@ export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}
     words.push([k, e]);
     k = e;
   }
-  const out: UnsureWord[] = [];
-  for (let w = 0; w < words.length; w++) {
-    let [s, e] = words[w];
-    if (!unsure.slice(s, e).some(Boolean)) continue;
-    if (e - s < 2) {
-      const next = words[w + 1];
-      const prev = words[w - 1];
-      if (next && next[0] === e) e = next[1];
-      else if (prev && prev[1] === s) s = prev[0];
-      else continue;
-    }
-    const last = out[out.length - 1];
-    if (last && s < last.end) s = last.start;
-    if (e - s > MAX_WORD_CHARS) continue;
-    if (last && s === last.start) out.pop();
-    const at = [];
-    for (let k = s; k < e; k++) if (unsure[k]) at.push(k);
-    out.push({ start: s, end: e, word: cps.slice(s, e).join(""), reading: d.readings.slice(s, e).map((r) => r ?? ""), unsure: at, suggested: at.some((k) => d.fixed[k] === "suggested") });
+  return words;
+}
+
+/** Word 13:16  up 9 days, 28 mins, 3 users, load averages: 3.69 2.87 2.71
+USER       TTY      FROM    LOGIN@  IDLE WHAT
+brooks     console  -      12Nov26 9days -
+brooks     s001     -      Tue19       1 caffeinate -i -t 300
+brooks     s002     -      Tue06    1:54 caffeinate -i -t 300 as a mark or a correction takes it: one of a single character
+ *  joined to the word after it, else the one before; null when it has no
+ *  Chinese neighbour. */
+function widened(words: [number, number][], w: number): [number, number] | null {
+  const [s, e] = words[w];
+  if (e - s >= 2) return [s, e];
+  const next = words[w + 1];
+  const prev = words[w - 1];
+  if (next && next[0] === e) return [s, next[1]];
+  if (prev && prev[1] === s) return [prev[0], e];
+  return null;
+}
+
+/**
+ * The word a correction of the character at UTF-16 offset `at` of `text`
+ * is about (the character card's "This reading is wrong"): the uncertain
+ * word holding it when there is one, else the segmenter's word, widened as
+ * uncertainWords widens one; null when there is none of two to
+ * MAX_WORD_CHARS characters. With the readings shown over it now.
+ */
+export function wordAt(text: string, locale: string, at: number): { word: string; reading: string[]; start: number; unsure: boolean; suggested: boolean } | null {
+  let k = 0;
+  let n = 0;
+  for (const ch of text) {
+    if (n === at) break;
+    n += ch.length;
+    k++;
   }
-  return out;
+  if (n !== at) return null;
+  const cps = [...text];
+  if (!isHan(cps[k] ?? "")) return null;
+  const hit = uncertainWords(text, locale).find((u) => u.start <= k && k < u.end);
+  if (hit) return { word: hit.word, reading: hit.reading, start: hit.start, unsure: true, suggested: hit.suggested };
+  const d = readDetail(text, locale);
+  const words = hanWords(cps, d);
+  const w = words.findIndex(([s, e]) => s <= k && k < e);
+  const unit = w >= 0 ? widened(words, w) : null;
+  if (!unit || unit[1] - unit[0] > MAX_WORD_CHARS) return null;
+  const reading = d.readings.slice(unit[0], unit[1]);
+  if (!reading.every((r) => r)) return null;
+  return { word: cps.slice(unit[0], unit[1]).join(""), reading: reading as string[], start: unit[0], unsure: false, suggested: false };
 }
 
 /** The same, as UTF-16 offsets: [start, end) of each uncertain word's

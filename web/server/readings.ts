@@ -1,0 +1,198 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { localeFor } from "../../scripts/voice.mjs";
+import { listCorrections, phrasesWith, saveCorrection, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
+import { SharedFullError, activeList, adminList, confirm, exportActive, propose, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
+import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
+import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
+import { correctionKey, correctionScope, makeCorrections, readCodePoints, validateCorrection, type Corrections } from "../src/script/zh.ts";
+import { isHan } from "../src/script/script.ts";
+import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
+import { rawDb } from "./db.ts";
+import { readsHints } from "./hints.ts";
+import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
+
+// Mandarin readings settled by people (docs/VOICE.md §Uncertain readings,
+// docs/DATA.md §Reading corrections and §Shared readings, bead ld-4i2).
+//
+//   GET  /api/readings/shared            → {version, entries}: the shared list's active entries
+//                                          (any logged-in user; ETag = version, 304 when unchanged)
+//   GET  /api/readings                   → {readings}: the active language's own
+//   POST /api/readings {word, reading, kind}
+//                                        → {reading, shared, phrases}: "This reading is wrong"
+//                                          (kind corrected) or "This is right" (confirmed)
+//   GET  /api/readings/admin             → {rows, changed30d}            (admin)
+//   POST /api/readings/admin/:id/confirm → {rows, changed30d}            (admin)
+//   DELETE /api/readings/admin/:id       → {rows, changed30d}            (admin)
+//   GET  /api/readings/admin/export?format=yaml|json → a file of the active entries (admin)
+//
+// /api/readings is mounted with wrap's `learner: true`: the page must name
+// the session's learner and language (else 409 stale_learner), and what it
+// writes is that language's (forLanguageProfile in scripts/db/readings.ts).
+// A kids learner gets no control (no marks are shown to a child): a write
+// for one is a 403. Nothing unchecked is stored: every reading passes
+// zh.ts validateCorrection (two to eight Chinese characters, each syllable
+// a reading the character really has).
+
+/** The active language's locale when it is Mandarin, else null. */
+export const mandarinLocale = (lang: { targetLanguage: string; targetVariant: string }): string | null => {
+  const locale = localeFor(lang.targetLanguage, lang.targetVariant) ?? null;
+  return readsHints(locale) ? locale : null;
+};
+
+const wire = (r: CorrectionRow): MyReading => ({ word: r.word, reading: r.reading, kind: r.kind });
+
+/**
+ * The corrections a server-side read of this learner's text uses (the
+ * recap's uncertain words, a bank phrase's stored reading): the learner's
+ * own by hand and the recap's suggestions for them, and the shared list's
+ * active entries. What the browser lays over the reader for them too.
+ */
+export async function correctionsFor(profile: LanguageProfileRef | null, opts: { shared?: boolean } = {}): Promise<Corrections> {
+  const db = rawDb();
+  const mine = profile ? await listCorrections(db, profile) : [];
+  const shared = opts.shared === false ? [] : (await activeList(db)).entries;
+  return makeCorrections({
+    mine: mine.filter((r) => r.kind !== "suggested"),
+    suggested: mine.filter((r) => r.kind === "suggested"),
+    shared,
+  });
+}
+
+/**
+ * The bank phrases of this language that hold `word` read again with the
+ * learner's corrections, and their stored reading (phrases.reading, what
+ * Practice's tone check and the picture game read on the server) set where
+ * it now differs from the reader's own, as a dojo master's hint is kept
+ * only where it differs (hints.ts). Returns how many changed.
+ */
+export async function rereadPhrases(profile: LanguageProfileRef, locale: string, word: string): Promise<number> {
+  const db = rawDb();
+  const found = await phrasesWith(db, profile, [word, correctionKey(word)]);
+  if (!found.length) return 0;
+  const fixes = await correctionsFor(profile);
+  let changed = 0;
+  for (const p of found) {
+    const base = readCodePoints(p.text, locale, { cache: false, corrections: null });
+    const now = readCodePoints(p.text, locale, { cache: false, corrections: fixes });
+    const han = [...p.text].map((c, k) => (isHan(c) ? k : -1)).filter((k) => k >= 0);
+    const differs = han.some((k) => now[k] !== base[k]);
+    const reading = differs && han.length >= 2 && han.every((k) => now[k]) ? han.map((k) => now[k]).join(" ") : null;
+    // A stored reading that no longer differs is the reader's own again:
+    // left as it is (a dojo master's hint may still be what it holds).
+    if (reading && reading !== p.reading && (await setPhraseReading(db, profile, p.id, p.text, reading))) changed++;
+  }
+  return changed;
+}
+
+/** /api/readings, mounted with wrap's `learner: true`. */
+export async function handleReadings(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
+  const locale = mandarinLocale(ctx.language);
+  if (req.method === "GET") {
+    const rows = locale ? await listCorrections(rawDb(), ctx.language) : [];
+    return sendJson(res, 200, { readings: rows.map(wire) } satisfies MyReadingsReply);
+  }
+  if (req.method !== "POST") return methodNotAllowed(res, "GET, POST");
+  if (learnerMode(req, ctx) === "kids") throw new HttpError(403, "a kids learner's readings are not corrected by hand");
+  if (!locale) throw new HttpError(400, "readings are corrected for Mandarin only");
+  const body = (await readJsonBody(req)) as { word?: unknown; reading?: unknown; kind?: unknown } | null;
+  const kind = body?.kind;
+  if (kind !== "corrected" && kind !== "confirmed") throw new HttpError(400, 'kind is "corrected" or "confirmed"');
+  const v = validateCorrection(body?.word, body?.reading, locale);
+  if (!v.ok) {
+    const why = { shape: "a word is two to eight Chinese characters", count: "one syllable for each character", unknown: "each syllable must be a reading its character has" }[v.why];
+    throw new HttpError(400, `that reading can't be kept: ${why}`);
+  }
+  const reading = v.reading.join(" ");
+  const key = correctionKey(v.word);
+  const row = await saveCorrection(rawDb(), ctx.language, { key, word: v.word, reading, kind });
+  // A correction goes to the shared list too (words and readings only):
+  // active for an admin, a suggestion otherwise. A confirmation of the
+  // reader's own reading changes nothing for anyone else.
+  let shared: ReadingSaveReply["shared"] = null;
+  if (kind === "corrected") {
+    const entry: SharedEntry = { word: v.word, key, reading, scope: correctionScope(v.word, v.reading, locale) };
+    shared = await propose(rawDb(), entry, ctx.user.isAdmin ? "admin" : "user", ctx.user.id).catch((e) => {
+      if (e instanceof SharedFullError) return null;
+      throw e;
+    });
+  }
+  const phrases = await rereadPhrases(ctx.language, locale, v.word);
+  return sendJson(res, 200, { reading: wire(row), shared, phrases } satisfies ReadingSaveReply);
+}
+
+/** /api/readings/shared (any logged-in user). */
+export async function handleSharedReadings(req: IncomingMessage, res: ServerResponse, _ctx: Ctx): Promise<void> {
+  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
+  if (req.method !== "GET") return methodNotAllowed(res, "GET");
+  const list = await activeList(rawDb());
+  const etag = `"${list.version}"`;
+  // Revalidated each page load, never re-sent while unchanged.
+  res.setHeader("Cache-Control", "private, no-cache");
+  res.setHeader("ETag", etag);
+  if (req.headers["if-none-match"] === etag) {
+    res.writeHead(304);
+    return void res.end();
+  }
+  sendJson(res, 200, list satisfies SharedReadingsReply);
+}
+
+async function adminReply(): Promise<SharedReadingsAdminReply> {
+  const db = rawDb();
+  const rows = await adminList(db);
+  return {
+    rows: rows.map((r) => ({
+      id: r.id, word: r.word, key: r.key, reading: r.reading, scope: r.scope, status: r.status, source: r.source, byUser: r.byUser, byRecap: r.byRecap,
+      suggestedBy: r.suggestedByName, confirmedBy: r.confirmedByName, updatedAt: r.updatedAt.toISOString(),
+    })),
+    changed30d: await usesSince(db, 30),
+  };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The export: the active entries as YAML (a list of word, other spelling,
+ *  reading, scope) or JSON. Words and readings only. */
+export function exportText(entries: SharedEntry[], format: "yaml" | "json"): string {
+  const list = entries.map((e) => ({ word: e.word, ...(e.key !== e.word ? { simplified: e.key } : {}), reading: e.reading, ...(e.scope !== "all" ? { scope: e.scope } : {}) }));
+  if (format === "json") return `${JSON.stringify({ readings: list }, null, 2)}\n`;
+  const q = (s: string) => JSON.stringify(s);
+  return [
+    "# Lingo Dojo: the shared list's active Mandarin readings (whole words).",
+    "# Words and readings only. Fold into READING_FIXES / the pinyin sweep's",
+    "# regression list, or report to pinyin-pro.",
+    "readings:",
+    ...list.map((e) => `  - { word: ${q(e.word)}${"simplified" in e ? `, simplified: ${q(e.simplified!)}` : ""}, reading: ${q(e.reading)}${"scope" in e ? `, scope: ${e.scope}` : ""} }`),
+    "",
+  ].join("\n");
+}
+
+/** /api/readings/admin, mounted with wrap's `auth: "admin"`. */
+export async function handleReadingsAdmin(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+  const parts = subPath(req).split("/").filter(Boolean);
+  if (!parts.length) {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return sendJson(res, 200, await adminReply());
+  }
+  if (parts.length === 1 && parts[0] === "export") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    const format = new URL(req.url ?? "/", "http://localhost").searchParams.get("format") === "json" ? "json" : "yaml";
+    res.writeHead(200, {
+      "Content-Type": format === "json" ? "application/json; charset=utf-8" : "text/yaml; charset=utf-8",
+      "Content-Disposition": `attachment; filename="shared-readings.${format === "json" ? "json" : "yaml"}"`,
+      "Cache-Control": "no-store",
+    });
+    return void res.end(exportText(await exportActive(rawDb()), format));
+  }
+  const [id, verb] = parts;
+  if (!UUID_RE.test(id) || parts.length > 2) throw new HttpError(404, "no such entry");
+  if (verb === "confirm") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    if (!(await confirm(rawDb(), id, ctx.user.id))) throw new HttpError(404, "no such entry");
+    return sendJson(res, 200, await adminReply());
+  }
+  if (verb !== undefined) throw new HttpError(404, "no such route");
+  if (req.method !== "DELETE") return methodNotAllowed(res, "DELETE");
+  if (!(await remove(rawDb(), id))) throw new HttpError(404, "no such entry");
+  sendJson(res, 200, await adminReply());
+}

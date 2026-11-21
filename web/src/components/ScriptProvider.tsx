@@ -51,7 +51,7 @@ export default function ScriptProvider({ languageId, kids, children }: { languag
     opener.current = null;
   }, [card]);
 
-  const value = useMemo<ScriptState>(() => ({ stored, setMode, kids, openChar }), [stored, setMode, kids, openChar]);
+  const value = useMemo<ScriptState>(() => ({ stored, setMode, kids, openChar, languageId }), [stored, setMode, kids, openChar, languageId]);
   return (
     <ScriptContext.Provider value={value}>
       {children}

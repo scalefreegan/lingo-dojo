@@ -1,13 +1,14 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import type HanziWriterType from "hanzi-writer";
 import { listPhrases } from "../api";
-import { loadZh, useScript, useZhReader, type CharContext } from "../script/ruby.tsx";
+import { loadZh, useCorrectionsVersion, useScript, useZhReader, type CharContext } from "../script/ruby.tsx";
 import { ARPHIC_LICENSE_URL, parseRadical } from "../script/script.ts";
 import { TONE_SOUNDS, syllableParts, zhuyinSound } from "../script/sounds.ts";
 import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
 import type { PhraseSummary } from "../types";
 import { scoresTonesHere } from "../pronunciationApi";
 import { CharTerm } from "./Ruby";
+import { ReadingFix } from "./ReadingFix";
 import { SayItCheck } from "./ToneCheck";
 import { Button } from "./ui";
 import { useTheme } from "../theme";
@@ -45,7 +46,12 @@ type ZhReader = typeof import("../script/zh.ts");
  *
  * Say it (Mandarin): the learner records the character and sees its tone
  * mark and picture (ToneCheck.tsx SayItCheck, /api/pronunciation/score,
- * which judges the character against every reading listed here). */
+ * which judges the character against every reading listed here).
+ *
+ * This reading is wrong (ld-4i2, ReadingFix): opened from a character in a
+ * text, the card names the word it is in (zh.ts wordAt: the uncertain word
+ * when it is marked) and lets an adult learner correct its reading, or
+ * confirm a marked one. */
 
 type Chars = Record<string, ZhCharRow>;
 let charsLoad: Promise<Chars> | null = null;
@@ -113,7 +119,9 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
   const fromAt = from?.at ?? -1;
   // The hints by value (callers build the list inline): "term=reading|…".
   const hintKey = (from?.hints ?? []).map((h) => `${h.term}=${h.reading}`).join("|");
-  const readKey = `${ch}\u0001${locale}\u0001${fromText}\u0001${fromAt}\u0001${hintKey}`;
+  // The learner's corrections move the reading in context too.
+  const version = useCorrectionsVersion();
+  const readKey = `${ch}\u0001${locale}\u0001${fromText}\u0001${fromAt}\u0001${hintKey}\u0001${version}`;
   useEffect(() => {
     let gone = false;
     loadZh().then(
@@ -141,6 +149,9 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
   const inWord = read?.key === readKey && !!read.inWord;
   const error = loaded?.error ?? (read?.key === readKey ? read.error : undefined);
   const radicalMeaning = loaded?.radicalMeaning ?? "";
+  // The word a correction from here is about (null: opened from no text,
+  // or the character stands in no word of two characters or more).
+  const unit = zh && fromText && fromAt >= 0 && !kids ? (void version, zh.wordAt(fromText, locale, fromAt)) : null;
 
   // The bank's phrases with this character or its counterpart (a phrase
   // saved in the other script still teaches it), through the bank's own
@@ -251,6 +262,11 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
             )}
             {shownReadings.length > 0 && (
               <p className="text-sm text-fg-3 sm:text-xs">{kids ? "Tap a sound to hear it." : "Tap a letter, a zhuyin symbol or the tone mark to hear it."}</p>
+            )}
+            {unit && (
+              <section aria-label="Reading in this word" className="rounded-lg border border-line p-2">
+                <ReadingFix key={`${unit.word}\u0001${unit.reading.join(" ")}`} word={unit.word} reading={unit.reading} locale={locale} unsure={unit.unsure} suggested={unit.suggested} />
+              </section>
             )}
             {/* A part's failure (Hear it shows its own); with the chart open, above the chart. */}
             {!chart && soundError}
