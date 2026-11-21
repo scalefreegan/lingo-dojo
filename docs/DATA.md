@@ -3396,7 +3396,8 @@ personal rows, so not through `owned.ts`; queries only in
 `scripts/db/pictureStock.ts`):
 
 - `picture_stock_concepts (id, category, description, words text[],
-  created_by → users ON DELETE SET NULL, created_at)`: a concept an admin
+  adults boolean not null default false, created_by → users ON DELETE SET
+  NULL, created_at)`: a concept an admin
   added from the page. Checks: id `^[a-z0-9][a-z0-9-]{0,47}$`, category
   1–40 characters, description 1–80, 1–20 words. Never written to
   `content/` (`content/pictures.yaml` is the content agent's file).
@@ -3408,9 +3409,14 @@ personal rows, so not through `owned.ts`; queries only in
 **Merging.** Everywhere the stock list is read (the picturable check's
 offer, the page, `npm run pictures:stock`), `mergeStock` in
 `scripts/pictures.mjs` puts the file's concepts first and then the
-database's; a database concept with a file concept's id is skipped with a
-warning; all of them pass `readStockList`'s rules. Each comes back marked
-`custom` or not. The CLI reads the database's concepts when it can (a
+database's; all of them pass `readStockList`'s rules. Each comes back marked
+`custom` or not. If the file later gains a concept with an added one's id,
+the file's wins (its description, flags and the picture file); the added
+row is returned as `shadowed`, with one warning naming them all (the
+server logs it once per change, not per read). The list reply gives an
+admin `shadowed`, the page shows them under "Shadowed by the app's own
+list", and `:id/remove` deletes such a row only, never the picture (the
+file's concept owns it now). The CLI reads the database's concepts when it can (a
 warning and the file alone when it can't).
 
 **Routes** (`web/server/stockPictures.ts`, all through `wrap()`):
@@ -3437,7 +3443,10 @@ warning and the file alone when it can't).
     400, a cap already reached a 429.
   - `:id/draw`: queues a draw (or a redraw) of one; 429 at the cap.
   - `:id/remove`: a file concept is a 409 (it can be drawn again, not
-    deleted); an added one's row and its current-theme file are deleted.
+    deleted), unless an added row it shadows exists, which is deleted
+    alone (the picture stays); an added one's row and its current-theme
+    file are deleted.
+  - `concepts` also takes `adults` (true or false; anything else is a 400).
 
 **Drawing.** Queued draws are drawn by one install-wide run, a picture at
 a time, each in the asking admin's background paid slot (the same slot as
@@ -3455,10 +3464,19 @@ changes its version (`stockVersion`: mtime and size), which a word's
 stock picture URL carries (`pictureRef`), so the game and the Phrase bank
 get a new URL and the old one is a 404; the immutable headers stay.
 
-**Kids and the adults flag.** Concepts added from the page have no
-look-alike `group` and no `adults` flag (the file's keep theirs through
-`mergeStock`), so an added concept is offered to a kids learner's check
-too (bead filed).
+**Kids and the adults flag.** The Add form has an "Adults only (never
+shown to kids learners)" box, stored as `adults`; the file's concepts keep
+`adults: true` through `mergeStock`. Either kind flagged is, for a kids
+learner:
+- never offered to the picturable check (`stockOffer` → `stockForMode`
+  over the merged list), so never matched;
+- out of the game if a word already points at it (`playable` reads the
+  merged list; a kids learner's stock row whose concept isn't in the list
+  at all leaves the game too);
+- left out of `GET /api/stock-pictures` and a 404 from its file route when
+  the session's active learner is a kids learner.
+The shared-library grid shows an "Adults only" badge on both kinds. Added
+concepts have no look-alike `group`.
 
 **Deleting an added concept** deletes its file; words pointing at it leave
 the game until each is drawn again (nothing re-points them; bead filed).

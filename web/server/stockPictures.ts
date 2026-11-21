@@ -6,7 +6,8 @@ import {
 } from "../../scripts/db/pictureStock.ts";
 import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
-import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, readNewConcept } from "../../scripts/pictures.mjs";
+import { loadPictureStock } from "../../scripts/content.mjs";
+import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, mergeStock, readNewConcept } from "../../scripts/pictures.mjs";
 import type { StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
 import type { Ctx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -32,7 +33,9 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // content/: content/pictures.yaml is the content agent's, and a concept
 // added here lives in picture_stock_concepts, merged with the file's
 // wherever the list is read (pictures.mjs mergeStock). A file concept can't
-// be deleted here (a 409), only drawn again.
+// be deleted here (a 409), only drawn again; an added row the file later
+// shadows (same id) can, the row alone. An adults-only concept (either
+// kind) is left out of the list and its file for a kids learner's session.
 //
 // Drawing: an admin's draw is queued, and one install-wide run draws the
 // queue a picture at a time, each in the asking admin's background paid
@@ -78,6 +81,27 @@ export async function customConcepts(): Promise<CustomConcept[]> {
 export async function stockList() {
   return listStock({ custom: await customConcepts() });
 }
+
+/** The ids whose shadowing was last logged: one warning per change, not
+ *  one per poll of the page. */
+let warnedShadowed = "";
+
+/** The added concepts content/pictures.yaml now has an id of too (mergeStock
+ *  `shadowed`): the file's wins and owns the picture; the rows are unused
+ *  until an admin deletes them. Logged once (per distinct set). */
+export async function shadowedConcepts(): Promise<ReturnType<typeof mergeStock>["shadowed"]> {
+  const merged = mergeStock(loadPictureStock().concepts, await customConcepts());
+  const ids = merged.shadowed.map((c) => c.id).join(",");
+  if (ids && ids !== warnedShadowed) {
+    for (const p of merged.problems) if (p.message.startsWith("added stock concept(s)")) console.warn(`[lingo-dojo] pictures: ${p.message}`);
+  }
+  warnedShadowed = ids;
+  return merged.shadowed;
+}
+
+/** Whether a session may see a stock concept: an adults-only one is never
+ *  shown to a session whose active learner is a kids learner. */
+const visibleTo = (ctx: Ctx, c: { adults?: boolean }) => !(c.adults && ctx.learner?.mode === "kids");
 
 /* ---------------------------------- the run --------------------------------- */
 
@@ -193,11 +217,13 @@ function versionOf(id: string): string | null {
 }
 
 async function listReply(ctx: Ctx): Promise<StockListReply> {
-  const list = await stockList();
+  const list = (await stockList()).filter((c) => visibleTo(ctx, c));
   const concepts: StockConceptView[] = list.map((c) => ({
-    id: c.id, category: c.category, description: c.description, words: c.words, custom: c.custom,
+    id: c.id, category: c.category, description: c.description, words: c.words, custom: c.custom, adults: c.adults === true,
     version: c.drawn ? versionOf(c.id) : null, queued: queue.has(c.id), refused: refused.has(c.id),
   }));
+  // Shadowed rows are an admin's to clean up; nobody else needs them.
+  const shadowed = ctx.user.isAdmin ? (await shadowedConcepts()).filter((c) => visibleTo(ctx, c)) : [];
   return {
     theme: PICTURE_THEME.id,
     concepts,
@@ -208,6 +234,7 @@ async function listReply(ctx: Ctx): Promise<StockListReply> {
     costEach: BFL_CREDITS_PER_IMAGE / 100,
     problem: stockProblem(),
     stopped,
+    shadowed,
   };
 }
 
@@ -222,6 +249,8 @@ export async function handleStock(req: IncomingMessage, res: ServerResponse, ctx
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     const [, id, version] = parts;
     if (!STOCK_ID_RE.test(id) || versionOf(id) !== version) throw new HttpError(404, "no such picture");
+    // An adults-only picture is not served to a kids learner's session.
+    if (ctx.learner?.mode === "kids" && (await stockList()).find((c) => c.id === id)?.adults) throw new HttpError(404, "no such picture");
     const pic = readStockPicture(PICTURE_THEME.id, id);
     if (!pic) throw new HttpError(404, "no such picture");
     res.writeHead(200, {
@@ -269,6 +298,12 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
     const id = parts[0];
     const concept = STOCK_ID_RE.test(id) ? (await stockList()).find((c) => c.id === id) : undefined;
     if (!concept) throw new HttpError(404, "no such shared picture");
+    if (parts[1] === "remove" && !concept.custom && (await shadowedConcepts()).some((c) => c.id === id)) {
+      // An added row the file's concept of the same id now shadows: the
+      // row goes, the picture stays (it is the file's concept's now).
+      if (!(await deleteCustomStockConcept(rawDb(), id))) throw new HttpError(404, "no such shared picture");
+      return sendJson(res, 200, (await listReply(ctx)) satisfies StockChangeReply);
+    }
     if (parts[1] === "draw") {
       const problem = stockProblem();
       if (problem) throw new HttpError(400, problem);

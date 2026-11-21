@@ -399,6 +399,13 @@ test("mergeStock: the file's concepts first, then the admin's own by the same ru
   assert.ok(out.problems.some((p) => /"dog".*pictures\.yaml/.test(p.message)));
   assert.ok(out.problems.some((p) => /hat/.test(p.message)), "a stored description that no longer passes is skipped, not offered");
   assert.deepEqual(mergeStock(base).concepts.map((c) => c.custom), [false]);
+  // The clash is reported, not silent: the added row is `shadowed`, in one warning.
+  assert.deepEqual(out.shadowed.map((c) => [c.id, c.description, c.adults]), [["dog", "another dog", false]]);
+  assert.equal(out.problems.filter((p) => /pictures\.yaml/.test(p.message)).length, 1);
+  assert.deepEqual(mergeStock(base).shadowed, []);
+  // An added concept keeps its adults flag.
+  const added = mergeStock(base, [{ id: "wine", category: "Drinks", description: "a glass of wine", words: ["wine"], adults: true }, { id: "kite", category: "Toys", description: "a kite", words: ["kite"], adults: false }]);
+  assert.deepEqual(added.concepts.map((c) => [c.id, c.adults ?? null]), [["dog", null], ["wine", true], ["kite", null]]);
   // The file's look-alike group and adults flag survive the merge (else a
   // kids learner would be offered beer, and a boy and a brother share a round).
   const flagged = readStockList({ categories: { Drinks: [{ id: "beer", description: "a glass of beer", words: ["beer"], adults: true }], People: [{ id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" }] } }).concepts;
@@ -410,9 +417,11 @@ test("readNewConcept: an id from the name, new; a category; a description by cle
   assert.equal(stockIdFrom("  Ice Cream!  "), "ice-cream");
   assert.equal(stockIdFrom("Crème brûlée"), "creme-brulee");
   assert.deepEqual(readNewConcept({ name: "Ice cream", category: "Food", description: "a cone of “ice cream”", words: "Ice cream, ice-cream cone, ice cream" }, existing), {
-    concept: { id: "ice-cream", category: "Food", description: "a cone of ice cream", words: ["ice cream", "ice-cream cone"] },
+    concept: { id: "ice-cream", category: "Food", description: "a cone of ice cream", words: ["ice cream", "ice-cream cone"], adults: false },
   });
   assert.deepEqual(readNewConcept({ name: "kite", category: "Toys", description: "a kite", words: ["kite", "Kites"] }).concept.words, ["kite", "kites"]);
+  assert.equal(readNewConcept({ name: "wine", category: "Drinks", description: "a glass of wine", words: "wine", adults: true }).concept.adults, true);
+  assert.match(readNewConcept({ name: "wine", category: "Drinks", description: "a glass of wine", words: "wine", adults: "yes" }).error, /Adults only/);
   for (const [body, re] of [
     [{ name: "Dog", category: "Animals", description: "a dog", words: "dog" }, /already/],
     [{ name: "!!", category: "Food", description: "a cake", words: "cake" }, /letter or digit/],

@@ -184,14 +184,20 @@ function anyStockDrawn(): boolean {
   }
 }
 
-/** Every stock concept of content/pictures.yaml by id (drawn or not), for
- *  the game's rules: its look-alike group and its adults flag (an added
- *  concept has neither). Never throws. */
-function stockById(): Map<string, StockConcept> {
+/** Every stock concept by id (drawn or not), from the merged list
+ *  (content/pictures.yaml and the ones added from the picture library), for
+ *  the game's rules: its look-alike group and its adults flag. Never throws:
+ *  a list that can't be read is the file's alone, and if that fails too,
+ *  null (playable then shows a kids learner no stock picture at all). */
+async function stockById(): Promise<Map<string, StockConcept> | null> {
   try {
-    return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+    return new Map((await stockList()).map((c) => [c.id, c as StockConcept]));
   } catch {
-    return new Map();
+    try {
+      return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -207,18 +213,21 @@ function stockPointer(id: string): StockPointer | null {
  *    or another theme's never drawn here) has no picture to show, so it
  *    leaves the game (and the round's draw) until the file is there;
  *  - for a kids learner, a word pointing at an `adults` concept leaves it
- *    too (one matched before the flag was set);
+ *    too (one matched before the flag was set), whether the concept is
+ *    pictures.yaml's or added from the picture library; and so does one
+ *    whose concept is gone or unknown (deleted, or the list unreadable):
+ *    for a child, a stock picture nobody can vouch for isn't shown;
  *  - a stock row carries its concept's look-alike `group`, so a round
  *    never offers two of one (pictures.mjs roundChoices).
  *  The background work reads the rows as they are. */
-function playable(rows: Map<string, PictureRow>, mode: string): Map<string, PictureRow & { group?: string | null }> {
-  const concepts = stockById();
+async function playable(rows: Map<string, PictureRow>, mode: string): Promise<Map<string, PictureRow & { group?: string | null }>> {
+  const concepts = await stockById();
   const out = new Map<string, PictureRow & { group?: string | null }>();
   for (const [k, r] of rows) {
     if (r.status === "ready" && r.stockId) {
-      const c = concepts.get(r.stockId);
+      const c = concepts?.get(r.stockId);
       if (!r.theme || !stockPicture(r.theme, r.stockId)) continue;
-      if (mode === "kids" && c?.adults) continue;
+      if (mode === "kids" && (!c || c.adults)) continue;
       out.set(k, c?.group ? { ...r, group: c.group } : r);
     } else out.set(k, r);
   }
@@ -523,7 +532,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
-  const pictured = pictureBank(phrases, playable(rows, ctx.learner.mode)).length;
+  const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
   const stock = (await stockOffer(ctx.learner.mode)).length;
@@ -566,7 +575,7 @@ const op = async <T>(fn: () => Promise<T>): Promise<T> => {
 async function start(ctx: LearnerCtx): Promise<GameStartReply> {
   const profile = profileOf(ctx);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all, ctx.learner.mode);
+  const rows = await playable(all, ctx.learner.mode);
   const game = gameRounds(phrases, rows, { now: new Date() });
   fillPictures(targetOf(ctx));
   const byId = new Map([...rows.values()].map((r) => [r.id, r]));
@@ -599,7 +608,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all, ctx.learner.mode);
+  const rows = await playable(all, ctx.learner.mode);
   const bank = pictureBank(phrases, rows);
   const own = bank.find((x) => x.phrase.id === phrase.id)?.picture ?? rows.get(phrase.id);
   let outcome: typeof RIGHT | typeof WRONG | null = null;

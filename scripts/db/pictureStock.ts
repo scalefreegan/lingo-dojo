@@ -21,12 +21,14 @@ export interface CustomConcept {
   category: string;
   description: string;
   words: string[];
+  /** Adults only: never offered to, matched for or shown to a kids learner. */
+  adults?: boolean;
 }
 
 /** Every added concept, oldest first (the order they join their category). */
 export async function customStockConcepts(db: Db): Promise<CustomConcept[]> {
   const rows = await db
-    .select({ id: pictureStockConcepts.id, category: pictureStockConcepts.category, description: pictureStockConcepts.description, words: pictureStockConcepts.words })
+    .select({ id: pictureStockConcepts.id, category: pictureStockConcepts.category, description: pictureStockConcepts.description, words: pictureStockConcepts.words, adults: pictureStockConcepts.adults })
     .from(pictureStockConcepts)
     .orderBy(asc(pictureStockConcepts.createdAt), asc(pictureStockConcepts.id));
   return rows;
@@ -37,7 +39,7 @@ export async function customStockConcepts(db: Db): Promise<CustomConcept[]> {
 export async function addCustomStockConcept(db: Db, c: CustomConcept, createdBy: string): Promise<boolean> {
   const rows = await db
     .insert(pictureStockConcepts)
-    .values({ id: c.id, category: c.category, description: c.description, words: c.words, createdBy })
+    .values({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true, createdBy })
     .onConflictDoNothing()
     .returning({ id: pictureStockConcepts.id });
   return rows.length === 1;

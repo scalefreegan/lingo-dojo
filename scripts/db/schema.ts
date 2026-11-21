@@ -967,6 +967,9 @@ export const pictureStockConcepts = pgTable(
     description: text("description").notNull(),
     /** The English words it stands for (what the picturable check matches). */
     words: text("words").array().notNull(),
+    /** Adults only (pictures.mjs stockForMode): never offered to, matched
+     *  for or shown to a kids learner, like pictures.yaml's `adults: true`. */
+    adults: boolean("adults").notNull().default(false),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },

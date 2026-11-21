@@ -39,7 +39,7 @@ const { apiPlugins } = await import("../../web/server/api.ts");
 const { resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
 const { resetStockMemory, settleStockDraws } = await import("../../web/server/stockPictures.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
-const { PICTURE_DAILY_STOCK, PICTURE_THEME } = await import("../pictures.mjs");
+const { PICTURE_DAILY_STOCK, PICTURE_THEME, stockKey } = await import("../pictures.mjs");
 const { writeStockPicture } = await import("../picture-store.mjs");
 
 const fake = fakeClaude();
@@ -355,4 +355,114 @@ test("an admin's stock redraw reaches a word pointing at it: a new URL, the old 
   assert.equal((await ada.call("GET", url)).status, 404);
   const fresh = await ada.call("GET", `/api/game/pictures/${after.picture.id}/${after.picture.file}`);
   assert.equal(fresh.status, 200);
+});
+
+/* ------------------- adults-only concepts and shadowing (PR #61 review) ------------------- */
+
+const ADULTS_YAML = [
+  "categories:",
+  "  Animals:",
+  "    - { id: dog, description: a friendly brown dog, words: [dog, puppy] }",
+  "  Drinks:",
+  "    - { id: beer, description: a glass of beer, words: [beer], adults: true }",
+  "",
+].join("\n");
+
+test("adults-only concepts, pictures.yaml's and added ones, are never offered to, matched for or shown to a kids learner; an adult gets them", async () => {
+  fs.writeFileSync(path.join(root, "pictures.yaml"), ADULTS_YAML);
+  const ada = await someone([ADULT], { admin: true });
+  const wine = await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "wine", category: "Drinks", description: "a glass of red wine", words: "wine", adults: true });
+  assert.equal(wine.status, 201, wine.text);
+  const kite = await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" });
+  assert.equal(kite.status, 201, kite.text);
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "x", category: "Toys", description: "a top", words: "top", adults: "yes" })).status, 400);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts order by id"), [{ id: "kite", adults: false }, { id: "wine", adults: true }]);
+  await settleStockDraws();
+  await ada.call("POST", "/api/stock-pictures/admin/missing", { count: 2 });
+  await settleStockDraws();
+  const list = (await ada.call("GET", "/api/stock-pictures")).body;
+  assert.deepEqual(
+    list.concepts.map((c) => [c.id, c.adults, c.custom, !!c.version]).sort(),
+    [["beer", true, false, true], ["dog", false, false, true], ["kite", false, true, true], ["wine", true, true, true]],
+    "the flag is shown for both kinds; all drawn",
+  );
+
+  const words = [["das Bier", "beer"], ["der Wein", "wine"], ["der Drachen", "kite"], ["der Hund", "dog"]];
+  const stockOf = async (who) =>
+    Object.fromEntries((await q("select p.meaning, pp.stock_id from phrase_pictures pp join phrases p on p.id = pp.phrase_id where pp.language_profile_id = $1", [who.languageId])).map((r) => [r.meaning, r.stock_id]));
+
+  // A kids learner: the check is never offered beer or wine, so neither is matched.
+  const pip = await someone([KID]);
+  await add(pip, words);
+  await drawAll(pip);
+  const kidArgs = fake.pictureArgs().join("\n");
+  assert.match(kidArgs, /kite: kite/);
+  assert.match(kidArgs, /dog: dog/);
+  assert.doesNotMatch(kidArgs, /beer: beer/, "pictures.yaml's adults-only concept is not offered");
+  assert.doesNotMatch(kidArgs, /wine: wine/, "an added adults-only concept is not offered");
+  const kidStock = await stockOf(pip);
+  assert.deepEqual([kidStock.kite, kidStock.dog], ["kite", "dog"]);
+  assert.ok(kidStock.beer !== "beer" && kidStock.wine !== "wine");
+  // Shown: not in the kids session's stock list, nor its files.
+  assert.deepEqual((await pip.call("GET", "/api/stock-pictures")).body.concepts.map((c) => c.id).sort(), ["dog", "kite"]);
+  for (const id of ["wine", "beer"]) {
+    const v = list.concepts.find((c) => c.id === id).version;
+    assert.equal((await ada.call("GET", `/api/stock-pictures/file/${id}/${v}`)).status, 200);
+    assert.equal((await pip.call("GET", `/api/stock-pictures/file/${id}/${v}`)).status, 404, `${id}'s file is not served to a kids session`);
+  }
+  // A kids word pointing at either (matched before the flag was set) leaves the game.
+  const before = (await pip.call("GET", "/api/game")).body.status.pictured;
+  let gone = 0;
+  for (const [meaning, id] of [["kite", "wine"], ["dog", "beer"]]) {
+    await q(
+      "update phrase_pictures pp set stock_id = $2, file = $3 from phrases p where p.id = pp.phrase_id and pp.language_profile_id = $1 and p.meaning = $4",
+      [pip.languageId, id, stockKey(PICTURE_THEME.id, id), meaning],
+    );
+    gone++;
+    assert.equal((await pip.call("GET", "/api/game")).body.status.pictured, before - gone, `a kids word pointing at ${id} leaves the game`);
+  }
+
+  // An adult: both are offered and matched, and listed.
+  const sam = await someone([ADULT]);
+  await add(sam, words);
+  await drawAll(sam);
+  const adultArgs = fake.pictureArgs().join("\n");
+  assert.match(adultArgs, /beer: beer/);
+  assert.match(adultArgs, /wine: wine/);
+  const adultStock = await stockOf(sam);
+  assert.deepEqual([adultStock.beer, adultStock.wine], ["beer", "wine"]);
+  assert.deepEqual((await sam.call("GET", "/api/stock-pictures")).body.concepts.map((c) => c.id).sort(), ["beer", "dog", "kite", "wine"]);
+});
+
+test("an added concept pictures.yaml later takes the id of: the file's wins, the row is shown as shadowed (one warning) and can be deleted, its picture kept", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  const bo = await someone([ADULT]);
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" })).status, 201);
+  await settleStockDraws();
+  assert.ok(fs.existsSync(stockFile("kite")));
+  // The content agent adds kite to the file.
+  fs.appendFileSync(path.join(root, "pictures.yaml"), "  Toys:\n    - { id: kite, description: a blue kite in the sky, words: [kite], adults: true }\n");
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  let list, again;
+  try {
+    list = (await ada.call("GET", "/api/stock-pictures")).body;
+    again = (await ada.call("GET", "/api/stock-pictures")).body;
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.filter((w) => /"kite".*pictures\.yaml/.test(w)).length, 1, "one warning, not one per read");
+  const k = list.concepts.find((c) => c.id === "kite");
+  assert.deepEqual([k.custom, k.description, k.adults], [false, "a blue kite in the sky", true], "the file's wins");
+  assert.deepEqual(list.shadowed.map((c) => c.id), ["kite"]);
+  assert.deepEqual(again.shadowed.map((c) => c.id), ["kite"]);
+  assert.deepEqual((await bo.call("GET", "/api/stock-pictures")).body.shadowed, [], "only an admin sees them");
+  assert.equal((await bo.call("POST", "/api/stock-pictures/admin/kite/remove", {})).status, 403);
+  const del = await ada.call("POST", "/api/stock-pictures/admin/kite/remove", {});
+  assert.equal(del.status, 200, del.text);
+  assert.deepEqual(del.body.shadowed, []);
+  assert.deepEqual(await q("select id from picture_stock_concepts"), []);
+  assert.ok(fs.existsSync(stockFile("kite")), "the picture is the file's concept's now: kept");
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/kite/remove", {})).status, 409, "then it is the file's alone: not deletable");
 });

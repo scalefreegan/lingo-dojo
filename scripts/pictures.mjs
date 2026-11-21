@@ -201,13 +201,14 @@ export const PICTURE_DAILY_STOCK = 300;
  * The stock list as everything reads it: content/pictures.yaml's concepts
  * (`base`, already checked by readStockList) and the admin's own from the
  * database (`custom`: rows of picture_stock_concepts), merged by the same
- * rules. The file's come first and keep their id: a custom concept with an
- * id the file also has is left out (with a warning), so the content agent
- * adding a concept by that name never makes two. Each concept says whether
- * it is `custom` (it may be deleted from the page; the file's may not).
- * The file's keep their look-alike `group` and `adults` flag; an added one
- * has neither (so it is offered to kids learners too: bead filed).
- * `{ concepts, problems }`.
+ * rules. The file's come first and keep their id: an added concept whose
+ * id the file also has (the content agent added one by that name later) is
+ * left out, the file's owning the id and its picture file, and returned in
+ * `shadowed` so the page can show it and let an admin delete the row; one
+ * warning names them all. Each concept says whether it is `custom` (it may
+ * be deleted from the page; the file's may not). Both kinds keep their
+ * `adults` flag (stockForMode); only the file's have a look-alike `group`.
+ * `{ concepts, shadowed, problems }`.
  */
 export function mergeStock(base, custom = []) {
   const taken = new Set(base.map((c) => c.id));
@@ -215,16 +216,21 @@ export function mergeStock(base, custom = []) {
   for (const c of base) (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, group: c.group, adults: c.adults });
   const problems = [];
   const mine = new Set();
+  const shadowed = [];
   for (const c of custom ?? []) {
     if (taken.has(c.id)) {
-      problems.push({ level: "warning", message: `the added stock concept "${c.id}" has the id of one in pictures.yaml; the file's is used` });
+      shadowed.push({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true });
       continue;
     }
     mine.add(c.id);
-    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words });
+    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(c.adults === true ? { adults: true } : {}) });
+  }
+  if (shadowed.length) {
+    const ids = shadowed.map((c) => `"${c.id}"`).join(", ");
+    problems.push({ level: "warning", message: `added stock concept(s) ${ids} now share an id with pictures.yaml: the file's are used (and own the picture); delete the added ones from the picture library` });
   }
   const out = readStockList(raw);
-  return { concepts: out.concepts.map((c) => ({ ...c, custom: mine.has(c.id) })), problems: [...problems, ...out.problems] };
+  return { concepts: out.concepts.map((c) => ({ ...c, custom: mine.has(c.id) })), shadowed, problems: [...problems, ...out.problems] };
 }
 
 /** A stock category's name as the page takes it: letters, digits, spaces
@@ -261,8 +267,10 @@ export function readNewConcept(body, existing = [], names = []) {
   if (!words.length) return { error: "List the English words it stands for, like \"ice cream, ice-cream cone\"." };
   if (words.length > 20) return { error: "At most 20 words." };
   if (words.some((w) => w.length > 60)) return { error: "Each word at most 60 characters." };
-  return { concept: { id, category, description: d.description, words } };
+  if (b.adults != null && typeof b.adults !== "boolean") return { error: "Adults only is yes or no." };
+  return { concept: { id, category, description: d.description, words, adults: b.adults === true } };
 }
+
 /** The stock concepts a learner of `mode` may be offered or shown: an
  *  `adults` concept (beer, wine, pills) never reaches a kids learner. */
 export const stockForMode = (concepts, mode) => (mode === "kids" ? concepts.filter((c) => !c.adults) : concepts);

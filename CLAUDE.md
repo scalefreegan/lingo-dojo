@@ -204,8 +204,8 @@ docs/DATA.md §The game for adults, and the picture library):
   draws go through the background paid slot, Black Forest Labs, at most
   `PICTURE_DAILY_STOCK` (300) a day install-wide, counted from
   `picture_stock_calls` written as each call starts (`scripts/db/pictureStock.ts`).
-- An added concept has no `group` or `adults` flag, so kids learners are
-  offered it too (the file's keep theirs through `mergeStock`).
+- An added concept may be **Adults only** (`adults` column): like the file's,
+  never offered to, matched for or shown to a kids learner (`stockForMode` and `playable` read the merged list). If `content/pictures.yaml` later takes an added id, the file's wins and the row shows as `shadowed` (one warning), deletable without its picture.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

@@ -43,6 +43,12 @@ test("0013 on a 0012 database: the stock concept and ledger tables, their checks
   await assert.rejects(concept("kite", "Toys", "x".repeat(81), ["x"]), /picture_stock_concepts_description/);
   await assert.rejects(concept("kite", "Toys", "a kite", []), /picture_stock_concepts_words/);
   await assert.rejects(concept("ice-cream", "Food", "again", ["x"]), /duplicate key/);
+  // Adults only: not null, false unless said (an added concept is for
+  // everyone unless the admin ticks the box).
+  assert.deepEqual(await query(`select adults from picture_stock_concepts where id = 'ice-cream'`), [{ adults: false }]);
+  await query(`insert into picture_stock_concepts (id, category, description, words, adults) values ('beer', 'Drinks', 'a glass of beer', '{beer}', true)`);
+  await assert.rejects(query(`insert into picture_stock_concepts (id, category, description, words, adults) values ('wine', 'Drinks', 'a glass of wine', '{wine}', null)`), /null value/);
+  await query(`delete from picture_stock_concepts where id = 'beer'`);
 
   await query(`insert into picture_stock_calls (user_id, concept_id) values ($1, 'ice-cream')`, [user.id]);
   await query(`insert into picture_stock_calls (user_id, concept_id, outcome) values ($1, 'ice-cream', 'ok')`, [user.id]);

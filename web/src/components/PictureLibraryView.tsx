@@ -302,6 +302,37 @@ function SharedLibrary() {
           }}
         />
       )}
+      {list.canEdit && list.shadowed.length > 0 && (
+        <Card className="flex flex-col gap-2" data-testid="stock-shadowed">
+          <h4 className={`${fine} font-medium text-warn`}>Shadowed by the app's own list</h4>
+          <p className={`${fine} text-fg-2`}>
+            The app's list (content/pictures.yaml) now has a picture with the same name as one added here; the app's is used, and the
+            added one does nothing. Delete it to tidy up: the picture stays with the app's.
+          </p>
+          <ul className="flex flex-col gap-1">
+            {list.shadowed.map((c) => (
+              <li key={c.id} className="flex flex-wrap items-center gap-2 text-sm text-fg" data-shadowed={c.id}>
+                <span className="font-medium">{label(c.id)}</span>
+                <span className={`${fine} text-fg-3`}>
+                  {c.category} · {c.description}
+                </span>
+                <Button
+                  variant="ghost"
+                  className={`${small} text-err`}
+                  disabled={busy}
+                  onClick={() => {
+                    if (!window.confirm(`Delete the added "${label(c.id)}"? The app's own picture of that name stays.`)) return;
+                    void act(() => changeStockPicture(c.id, "remove"));
+                  }}
+                  data-testid="stock-shadowed-remove"
+                >
+                  Delete
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {[...byCategory.entries()].map(([category, concepts]) => (
         <Card key={category} className="flex flex-col gap-2">
           <h4 className={`${fine} font-medium text-fg-2`}>
@@ -338,9 +369,16 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
       <span className="truncate text-sm font-medium text-fg" title={c.words.join(", ")}>
         {label(c.id)}
       </span>
-      {c.custom && (
-        <span>
-          <Badge title="Added from this page">Added</Badge>
+      {(c.custom || c.adults) && (
+        <span className="flex flex-wrap gap-1">
+          {c.custom && <Badge title="Added from this page">Added</Badge>}
+          {c.adults && (
+            <span data-testid="stock-adults">
+              <Badge tone="warn" title="Adults only: never shown to kids learners">
+                Adults only
+              </Badge>
+            </span>
+          )}
         </span>
       )}
       {canEdit && (
@@ -361,17 +399,19 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
 
 /** An admin's new concept: a name, a category, the English words it stands
  *  for, and what the picture shows (the server checks it like a word's). */
-function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: boolean; onAdd: (body: { name: string; category: string; words: string; description: string }) => Promise<boolean> }) {
+function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: boolean; onAdd: (body: { name: string; category: string; words: string; description: string; adults: boolean }) => Promise<boolean> }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [words, setWords] = useState("");
   const [description, setDescription] = useState("");
+  const [adults, setAdults] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (await onAdd({ name, category, words, description })) {
+    if (await onAdd({ name, category, words, description, adults })) {
       setName("");
       setWords("");
       setDescription("");
+      setAdults(false);
     }
   }
   return (
@@ -397,6 +437,10 @@ function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: b
         <label className={`flex flex-col gap-1 ${fine} text-fg-2`}>
           What the picture shows (a few plain words)
           <input className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="a cone of strawberry ice cream" required maxLength={80} />
+        </label>
+        <label className={`flex items-center gap-2 ${fine} text-fg-2 sm:col-span-2`}>
+          <input type="checkbox" checked={adults} onChange={(e) => setAdults(e.target.checked)} data-testid="stock-add-adults" />
+          Adults only (never shown to kids learners)
         </label>
         <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
           <Button type="submit" variant="primary" disabled={busy} data-testid="stock-add-submit">

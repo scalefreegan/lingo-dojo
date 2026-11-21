@@ -1,5 +1,5 @@
 {
-  "id": "2a6de185-db45-42f4-bf00-fbc45afa0a3e",
+  "id": "c0c5755c-eadc-4f49-8812-d8f180684ebb",
   "prevId": "0bd2f406-9bc8-4e8a-9459-5cd1be1811fb",
   "version": "7",
   "dialect": "postgresql",
@@ -2906,6 +2906,13 @@
           "type": "text[]",
           "primaryKey": false,
           "notNull": true
+        },
+        "adults": {
+          "name": "adults",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "created_by": {
           "name": "created_by",

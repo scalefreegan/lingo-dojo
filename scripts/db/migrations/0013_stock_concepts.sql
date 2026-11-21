@@ -12,6 +12,7 @@ CREATE TABLE "picture_stock_concepts" (
 	"category" text NOT NULL,
 	"description" text NOT NULL,
 	"words" text[] NOT NULL,
+	"adults" boolean DEFAULT false NOT NULL,
 	"created_by" uuid,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "picture_stock_concepts_id" CHECK ("picture_stock_concepts"."id" ~ '^[a-z0-9][a-z0-9-]{0,47}$'),

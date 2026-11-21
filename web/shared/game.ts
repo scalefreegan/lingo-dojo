@@ -157,6 +157,9 @@ export interface StockConceptView {
   /** Added from the page (the database): an admin may delete it. The
    *  file's (content/pictures.yaml) are only redrawn. */
   custom: boolean;
+  /** Adults only (pictures.yaml's `adults: true`, or the Add form's box):
+   *  never offered to, matched for or shown to a kids learner. */
+  adults: boolean;
   /** The picture's version in the current theme (the file URL's
    *  cache-busting part: /api/stock-pictures/file/:id/:version), or null
    *  while it isn't drawn. */
@@ -187,6 +190,10 @@ export interface StockListReply {
   problem: string | null;
   /** Why the last stock run stopped early (a failure, the cap), or null. */
   stopped: string | null;
+  /** Concepts added from the page whose id content/pictures.yaml now has
+   *  too: the file's wins (and owns the picture), so these are unused; an
+   *  admin may delete them (the row only, never the picture). */
+  shadowed: { id: string; category: string; description: string; words: string[]; adults: boolean }[];
 }
 
 /** POST /api/stock-pictures/admin/concepts. `words` is a list or a
@@ -196,6 +203,8 @@ export interface AddStockConceptRequest {
   category: string;
   description: string;
   words: string[] | string;
+  /** Adults only: never offered to or shown to a kids learner. */
+  adults?: boolean;
 }
 
 /** POST /api/stock-pictures/admin/missing: `count` is the number the page
