@@ -360,8 +360,9 @@ export function deleteFolder(mode: Mode, name: string): Promise<FolderDeleteRepl
   return req<FolderDeleteReply>(inMode(`/api/folders/${encodeURIComponent(name)}`, mode), { method: "DELETE" });
 }
 
-export function assemblePack(mode: Mode, pack: PackInput, signal?: AbortSignal): Promise<AssembleResult> {
-  return req<AssembleResult>(inMode("/api/assemble", mode), { ...json({ pack }), signal });
+/** `draw`: Copy's, for a random scene (the reply's `drawn` says which). */
+export function assemblePack(mode: Mode, pack: PackInput, signal?: AbortSignal, draw = false): Promise<AssembleResult> {
+  return req<AssembleResult>(inMode("/api/assemble", mode), { ...json(draw ? { pack, draw } : { pack }), signal });
 }
 
 export function exportPack(mode: Mode, id: string, pack: PackInput): Promise<ExportResult> {

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { exportPack, type VoiceLanguages } from "../api";
 import { splitPackId, unitCount } from "../draft";
 import type { AssembleResult, ContentReply, ConversationSummary, ExportResult, PackInput, RecallReview } from "../types";
-import { useCopyStatus } from "../useCopyStatus";
+import { useCopyPrompt } from "../useCopyPrompt";
 import { RubyText } from "./Ruby";
 import { Button, Card, FolderSelect, inputClass } from "./ui";
 import { RANDOM_COPY_HINT, inBankLanguage, type PackStatus, type SaveOutcome } from "./shared";
@@ -82,7 +82,7 @@ export default function GoTab({
    *  request has been used. Stable. */
   onRevisitUsed?: () => void;
 }) {
-  const [copyStatus, copy] = useCopyStatus();
+  const random = poolSize != null;
   // Counts picks in "How long do you have?", the same length again included:
   // a running session restarts its pacing clock on every pick, which a
   // change of value alone can't signal.
@@ -92,6 +92,7 @@ export default function GoTab({
   const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const markdown = result?.markdown ?? "";
+  const { status: copyStatus, copy, note: copyNote, busy } = useCopyPrompt(content.mode, pack, markdown, random);
   // The bank phrases this session revisits: the preview's (as of now), or
   // the running session's (each turn says, as of its start) until the
   // preview is assembled again (a new pack, a new length).
@@ -106,7 +107,6 @@ export default function GoTab({
   const onReview = useCallback((r: RecallReview) => setLive({ review: r, result: resultRef.current }), []);
   // A random scene's draw, as the server made it when the session started
   // (null before Start, and again after Restart until the next one).
-  const random = poolSize != null;
   const [drawnId, setDrawnId] = useState<string | null>(null);
   const drawn = random && drawnId ? content.scenarios.find((s) => s.id === drawnId) : undefined;
   // A drill (First steps) is voiced by the narrator alone. A random scene is
@@ -152,8 +152,8 @@ export default function GoTab({
           <button
             type="button"
             className="-mt-1 -mr-1 shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
-            onClick={() => copy(markdown)}
-            disabled={!markdown || random}
+            onClick={copy}
+            disabled={!markdown || busy || (random && !!blocked)}
             aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
             title={random ? RANDOM_COPY_HINT : "Copy the prompt, to paste into ChatGPT or Claude voice instead"}
             data-testid="copy-prompt"
@@ -161,6 +161,11 @@ export default function GoTab({
             {copyStatus === "copied" ? "✓" : copyStatus === "failed" ? "!" : "⧉"}
           </button>
         </div>
+        {copyNote && (
+          <p className="text-sm text-fg-2" role="status" data-testid="copy-note">
+            {copyNote}
+          </p>
+        )}
         {random &&
           (blocked ? (
             <p role="alert" className="text-sm text-err" data-testid="random-blocked">

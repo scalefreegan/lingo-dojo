@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Mochi } from "./Mascots";
 import type { AssembleResult, ContentReply, PackInput } from "../types";
 import { changedSlots, type Draft } from "../draft";
-import { useCopyStatus } from "../useCopyStatus";
+import { useCopyPrompt } from "../useCopyPrompt";
 import { Button } from "./ui";
 import { RANDOM_COPY_HINT, type Tab } from "./shared";
 
@@ -39,8 +39,8 @@ export default function SummaryBar({
 }) {
   const changedCount = useMemo(() => changedSlots(content, draft).size, [content, draft]);
   const warningsCount = result?.warnings.length ?? 0;
-  const [copyStatus, copy] = useCopyStatus();
   const markdown = result?.markdown ?? "";
+  const { status: copyStatus, copy, note, busy } = useCopyPrompt(content.mode, pack, markdown, poolSize != null);
 
   return (
     <div className="sticky top-12 z-20 flex items-center gap-3 border-b border-line bg-panel px-4 py-2 text-sm sm:pr-10">
@@ -61,6 +61,11 @@ export default function SummaryBar({
           {result ? `${result.stats.words.toLocaleString()} words` : "…"}
           {pending && " · updating"}
         </span>
+        {note && (
+          <span className="max-w-full truncate text-fg-3" role="status" data-testid="copy-note">
+            {note}
+          </span>
+        )}
         {warningsCount > 0 && (
           <button type="button" className="text-warn hover:underline" onClick={() => onTab("go")}>
             {warningsCount} warning{warningsCount === 1 ? "" : "s"}
@@ -72,10 +77,10 @@ export default function SummaryBar({
       <button
         type="button"
         className="shrink-0 rounded-md px-2 py-1 text-base text-fg-3 hover:bg-raised hover:text-fg-2 disabled:opacity-40"
-        onClick={() => copy(markdown)}
-        // A random scene has no scene until one is drawn: the preview's
-        // prompt would paste without one (Export file draws one).
-        disabled={!markdown || poolSize != null}
+        onClick={copy}
+        // A random scene has no scene in the preview: Copy has the server
+        // draw one (an empty pool can't).
+        disabled={!markdown || busy || (poolSize != null && (poolSize === 0 || !!blocked))}
         aria-label={copyStatus === "copied" ? "Prompt copied" : copyStatus === "failed" ? "Copy failed" : "Copy prompt"}
         title={poolSize != null ? RANDOM_COPY_HINT : "Copy the prompt, to paste into ChatGPT or Claude voice instead"}
       >

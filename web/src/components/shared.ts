@@ -5,9 +5,9 @@ import type { Pack } from "../types";
 
 export type Tab = "scene" | "customize" | "go" | "library" | "practice";
 
-/** Why Copy is off for a random scene: until a scene is drawn the prompt
- *  has none, and Export file draws one. */
-export const RANDOM_COPY_HINT = "A random scene has no scene to copy until one is drawn: Start draws one here, and Export file draws one into the file";
+/** What Copy does for a random scene: the preview has no scene, so the
+ *  server draws one for the copied prompt (ld-mdz). */
+export const RANDOM_COPY_HINT = "Copy draws a scene for this prompt (not the one Start will draw) and says which";
 
 export type SaveOutcome = { ok: true; id: string } | { ok: false; conflict: string } | { ok: false; error: string };
 

@@ -364,6 +364,43 @@ test("an export draws its own scene, says which, and writes that scene's prompt;
   assert.equal((await sam.call("GET", "/api/conversations")).body.conversations.length, 0);
 });
 
+test("Copy draws: assemble with draw:true gives the drawn scene's prompt and says which, records nothing, ignores recent scenes; without it nothing is drawn (ld-mdz)", async () => {
+  const sam = await someone();
+  const pack = randomPack(["Travel essentials"]);
+  // One session first, so there is a recent scene a session would avoid.
+  useSceneRandom(() => 0);
+  await start(sam, pack);
+  const conversationsBefore = (await q("select count(*)::int as n from conversations"))[0].n;
+  const seen = new Set();
+  for (const r of [0, 0, 0.99]) {
+    useSceneRandom(() => r);
+    const res = await sam.call("POST", "/api/assemble", { pack, draw: true });
+    assert.equal(res.status, 200, res.text);
+    assert.equal(res.body.drawn.pool, 2);
+    assert.ok(res.body.markdown.startsWith(`# Lingo Dojo session: ${res.body.drawn.title}\n`), "the drawn scene's prompt");
+    assert.doesNotMatch(res.body.markdown, /is drawn when the session starts/);
+    seen.add(res.body.drawn.id);
+  }
+  assert.deepEqual([...seen].sort(), ["hotel", "taxi"], "both reachable: the recent scene is not avoided");
+  assert.equal((await q("select count(*)::int as n from conversations"))[0].n, conversationsBefore, "no conversation, no history");
+  // Not asked to draw, or not random: unchanged.
+  const preview = await sam.call("POST", "/api/assemble", { pack });
+  assert.equal(preview.body.drawn, undefined);
+  assert.match(preview.body.markdown, /is drawn when the session starts/);
+  const plain = await sam.call("POST", "/api/assemble", { pack: libraryPack("plaza"), draw: true });
+  assert.equal(plain.body.drawn, undefined);
+  // An empty pool is the session's 400.
+  assert.equal((await sam.call("POST", "/api/assemble", { pack: randomPack(["Gone"]), draw: true })).status, 400);
+  // A draw that isn't a boolean is a 400, never a quiet sceneless prompt.
+  for (const draw of ["true", 1, null]) assert.equal((await sam.call("POST", "/api/assemble", { pack, draw })).status, 400, `draw ${JSON.stringify(draw)}`);
+  // Kids work the same, from the kids library.
+  const pip = await someone(KID);
+  const kid = await pip.call("POST", "/api/assemble", { mode: "kids", pack: randomPack(), draw: true });
+  assert.equal(kid.status, 200, kid.text);
+  assert.ok(["farm", "park"].includes(kid.body.drawn.id));
+  assert.equal(kid.body.drawn.pool, 2);
+});
+
 test("kids: the pool is the kids library's scenes for the kid's language, never the adult library's", async () => {
   const pip = await someone(KID);
   const seen = new Set();
