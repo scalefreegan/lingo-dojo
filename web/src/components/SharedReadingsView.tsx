@@ -81,7 +81,7 @@ export default function SharedReadingsView() {
       <div className="flex flex-col gap-1">
         <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-fg">Shared readings</h2>
         <p className="text-sm text-fg-3">
-          Mandarin words whose reading people settled. Active ones read that way for every learner, over the program’s own reading (a learner’s own choice still comes first). A suggestion becomes active when you confirm it, or when two different people stand behind it (a recap counts as the learner whose session it was). Words and readings only.
+          Mandarin words whose reading people settled. Active ones read that way for every learner, over the program’s own reading (a learner’s own choice still comes first). A suggestion becomes active when you confirm it, or when two different people stand behind it, at least one choosing it by hand (a recap counts as the learner whose session it was; two recaps alone never do). Words and readings only.
         </p>
       </div>
       {error && <p className="text-sm text-err" role="alert">{error}</p>}

@@ -229,8 +229,10 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
       if (stored && zhLocale && read) {
         logRecapReadings(conv.id, read.stats);
         // After the recap is stored (its kept phrases are in the bank): a
-        // failure here is logged, never the recap's.
-        await settleRecapReadings(profile, owner.userId, conv.id, zhLocale, read.judged, rows).catch((e) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: readings: ${detail(e)}`));
+        // failure here is logged, never the recap's. A kids session's recap
+        // settles the child's own marks and votes for nothing shared (a
+        // kids learner corrects nothing by hand either).
+        await settleRecapReadings(profile, conv.mode === "kids" ? null : owner.userId, conv.id, zhLocale, read.judged, rows).catch((e) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: readings: ${detail(e)}`));
       }
       return;
     }

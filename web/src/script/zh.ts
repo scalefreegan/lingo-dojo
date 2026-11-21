@@ -54,16 +54,6 @@ export const READING_FIXES: Record<string, string> = {
   简单明了: "jiǎn dān míng liǎo", // 明了 alone would also catch 说明了 le
   北斗星: "běi dǒu xīng", // 北斗 alone would also catch 华北斗争 dòu
   北斗七星: "běi dǒu qī xīng",
-  // 还 huán, give back, before what is given back or to whom (PR #67
-  // review): huán is under 5% of 还's uses, so the prior reads hái, and
-  // ICU segments 我还|钱 so no word could settle it. CC-CEDICT reads 还书
-  // huán; no headword holds 还钱 or 还你 otherwise, and none ends in a 还
-  // read hái that these would join. A run that is 还 (still) + 钱/书/你 is
-  // rare beside give-back (我还钱不够, 他还书包: accepted). Not 还给: 给 is
-  // as often the preposition after 还 hái (我还给你做饭).
-  还钱: "huán qián",
-  还书: "huán shū",
-  还你: "huán nǐ",
 };
 
 /* --------------------------- the frequency prior -------------------------- */
@@ -183,6 +173,10 @@ export interface Detail {
    *  ("shared"), or the recap's suggestion for this learner ("suggested",
    *  which leaves the reading uncertain); null where none applied. */
   fixed: (FixKind | null)[];
+  /** Left at its usual reading by a rule that couldn't tell (giveBack:
+   *  还 before 钱 / 书 / 你 that may be hái or huán): marked uncertain
+   *  whatever its ranks say, until a person settles it. */
+  doubt: boolean[];
 }
 
 /** Options for a read: `cache: false` neither reads nor fills the cache;
@@ -301,6 +295,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
   let dict = settled;
   let joined = settled;
   let starts: boolean[] | null = null;
+  const doubt = cps.map(() => false);
   if (cps.some(isHan)) {
     // A zh-TW profile's text is always read as traditional. A zh-CN one's
     // by its characters (t2s.ts scriptOf): simplified text (one with a
@@ -351,14 +346,47 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
+    giveBack(cps, simp, dict, out, doubt);
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
     if (fixes) fixed = applyCorrections(cps, simp, { joined, starts: edges }, fixes, tw, out, settled);
   }
-  const detail = { readings: out, settled, dict, joined, starts, fixed };
+  const detail = { readings: out, settled, dict, joined, starts, fixed, doubt };
   if (!useCache) return detail;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, detail);
   return detail;
+}
+
+/** What may follow 钱 / 书 after 还 for it to be huán (give back): a
+ *  particle, the 给 of whom, 的时候, a number. */
+const AFTER_GIVEN = "了吗吧呢啊给";
+const NUMERALS = "一二两三四五六七八九十百千万几半0123456789０１２３４５６７８９";
+
+/**
+ * 还 huán, give back (PR #67 reviews), in place: huán is under 5% of 还's
+ * uses, so the prior reads hái, and ICU segments 我还|钱 so no word could
+ * settle it. 还 before 钱 or 书 (or 你 then 钱 / 书, or 你 alone) is read
+ * huán only where the phrase ends there: the text's end, punctuation or
+ * another non-Chinese character, a particle or 给 (AFTER_GIVEN), 的时候,
+ * or a number (我还钱, 我要还钱, 你还书了吗, 还你钱, 还钱三百). Anywhere
+ * else it is left hái and marked (`doubt`): 还钱不够, 还书包里, 还书店,
+ * 还你一个 can be either, and the learner or the recap settles it. Never
+ * inside a dictionary word, and not 还给: 给 is as often the preposition
+ * after 还 hái (我还给你做饭). CC-CEDICT reads 还书 huán; no headword holds
+ * 还钱 or 还你.
+ */
+function giveBack(cps: string[], simp: string[], dict: boolean[], out: (string | null)[], doubt: boolean[]): void {
+  for (let k = 0; k + 1 < simp.length; k++) {
+    if (simp[k] !== "还" || dict[k] || out[k] !== "hái" || dict[k + 1]) continue;
+    let j: number;
+    if (simp[k + 1] === "钱" || simp[k + 1] === "书") j = k + 2;
+    else if (simp[k + 1] === "你") j = simp[k + 2] === "钱" || simp[k + 2] === "书" ? k + 3 : k + 2;
+    else continue;
+    const next = cps[j];
+    const ends = next == null || !isHan(next) || AFTER_GIVEN.includes(simp[j]) || simp.slice(j, j + 3).join("") === "的时候" || NUMERALS.includes(next);
+    if (ends) out[k] = "huán";
+    else doubt[k] = true;
+  }
 }
 
 /** The prior over one text's readings, in place: each run of Chinese
@@ -470,6 +498,7 @@ export const MAX_WORD_CHARS = 8;
 function unsureAt(cps: string[], d: Detail, k: number): boolean {
   const cur = d.readings[k];
   if (cur == null || d.settled[k]) return false;
+  if (d.doubt[k]) return true;
   const s = simplified(cps[k]);
   if (CONTEXT_SETTLED.includes(s)) return false;
   const ranks = priorFor(prior.ranks, cps[k], s);
@@ -553,7 +582,9 @@ function hanWords(cps: string[], d: Detail): [number, number][] {
       continue;
     }
     let e = k + 1;
-    while (e < cps.length && isHan(cps[e]) && !(d.starts ? d.starts[e] : true)) e++;
+    // A doubtful 还 (giveBack) stands on its own, so its mark is 还钱, not
+    // ICU's 我还 (a correction of which would reach 我还有).
+    while (e < cps.length && isHan(cps[e]) && !(d.starts ? d.starts[e] : true) && !d.doubt[e]) e++;
     words.push([k, e]);
     k = e;
   }

@@ -144,6 +144,14 @@ export function loadReadings(languageId: string | null): void {
   );
 }
 
+/** Fetch `languageId`'s own readings again: a recap that has just
+ *  written its suggestions (they were not there when the page loaded). */
+export function reloadMyReadings(languageId: string | null): void {
+  if (!languageId || mineLoad?.id !== languageId) return;
+  mineLoad = null;
+  loadReadings(languageId);
+}
+
 /** A reading the learner just saved: laid over the reader at once. */
 export function noteMyReading(languageId: string, r: MyReading): void {
   if (mineFor !== languageId) return;

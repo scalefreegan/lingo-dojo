@@ -64,8 +64,15 @@ export function ReadingFix({ word, reading, locale, unsure, suggested = false, o
     try {
       const r = await saveReading({ word, reading: syllables.join(" "), kind });
       if (languageId) noteMyReading(languageId, r.reading);
-      const shared = r.shared === "active" ? " It is on the shared list for everyone." : r.shared === "suggested" ? " It is suggested for the shared list." : "";
-      setState({ busy: false, error: null, note: kind === "confirmed" ? "Thanks: marked as right." : `Saved: ${word} now reads ${syllables.map(show).join(" ")} for you.${shared}` });
+      const shared =
+        r.shared === "active"
+          ? " It is on the shared list for everyone."
+          : r.shared === "suggested"
+            ? " It is suggested for the shared list."
+            : r.shared === "limited"
+              ? " Your suggestions for the shared list are used up for today, so it wasn't sent to others."
+              : "";
+      setState({ busy: false, error: null, note: kind === "confirmed" ? `Thanks: marked as right.${shared}` : `Saved: ${word} now reads ${syllables.map(show).join(" ")} for you.${shared}` });
       setChoosing(false);
       onSaved?.(syllables);
     } catch (e) {

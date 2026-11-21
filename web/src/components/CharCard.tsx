@@ -265,7 +265,10 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
             )}
             {unit && (
               <section aria-label="Reading in this word" className="rounded-lg border border-line p-2">
-                <ReadingFix key={`${unit.word}\u0001${unit.reading.join(" ")}`} word={unit.word} reading={unit.reading} locale={locale} unsure={unit.unsure} suggested={unit.suggested} />
+                {/* Keyed by the word only: a saved reading changes `reading`, and
+                    the note saying what became of it (shared, or the day's
+                    suggestions used up) must stay. */}
+                <ReadingFix key={unit.word} word={unit.word} reading={unit.reading} locale={locale} unsure={unit.unsure} suggested={unit.suggested} />
               </section>
             )}
             {/* A part's failure (Hear it shows its own); with the chart open, above the chart. */}

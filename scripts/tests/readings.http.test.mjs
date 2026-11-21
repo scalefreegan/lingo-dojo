@@ -174,7 +174,7 @@ test("one user adds at most MAX_DAILY_VOTES votes a day, by hand or by their rec
   // Her correction is still hers, but adds nothing to the shared list.
   const r = await sol.call("POST", "/api/readings", { word: "倒車", reading: "dǎo chē", kind: "corrected" });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.body.shared, null);
+  assert.equal(r.body.shared, "limited", "she is told it wasn't sent");
   assert.equal(r.body.reading.reading, "dǎo chē");
   await assert.rejects(propose(testDb.db, { word: "一行", key: "一行", reading: "yī háng", scope: "all" }, "recap", sol.userId), SharedLimitError);
   // Another user is not limited by her.
@@ -183,6 +183,17 @@ test("one user adds at most MAX_DAILY_VOTES votes a day, by hand or by their rec
   // A vote older than a day doesn't count.
   await q(`update shared_reading_votes set created_at = now() - interval '25 hours' where user_id = $1`, [sol.userId]);
   assert.equal((await sol.call("POST", "/api/readings", { word: "抽空", reading: "chōu kòng", kind: "corrected" })).body.shared, "active", "hers and Tom’s");
+});
+
+test("an inactive user's vote doesn't count toward activation (PR #67 second review)", async () => {
+  await q(`delete from shared_readings`);
+  const dee = await someone(CN);
+  const eve = await someone(CN);
+  assert.equal((await dee.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "suggested");
+  await q(`update users set disabled_at = now() where id = $1`, [dee.userId]);
+  assert.equal((await eve.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "suggested", "Dee's account is off");
+  const fay = await someone(CN);
+  assert.equal((await fay.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "active", "Eve and Fay");
 });
 
 test("the export: active words and readings only, YAML or JSON, nothing personal; the 30-day count", async () => {

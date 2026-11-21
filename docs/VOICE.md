@@ -627,10 +627,15 @@ uncertain words in context.
   - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
     misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
     得严重 (dé for de), 长着 (cháng for zhǎng).
-  - Not marked: 还 before what is given back is now read huán by
-    `READING_FIXES` (还钱, 还书, 还你; not 还给, as often 还 hái + the
-    preposition 给), and the dictionary words 银行, 第五行 (in most lines),
-    一行人 and, in simplified, 抽空.
+  - 还 before 钱 / 书 / 你 (`giveBack`, PR #67 reviews): read huán only
+    where the phrase ends there (the text's end, punctuation, 了吗吧呢啊,
+    给, 的时候, a number: 我还钱, 你还书了吗, 我还你钱, 还钱三百); anywhere
+    else left hái and marked whatever its ranks say (`doubt`: 他还书包里,
+    我还钱不够, 他去还书店, 我还钱包), with the mark on 还 and what follows,
+    never ICU's 我还. Never 还给 (as often 还 hái + the preposition 给:
+    我还给你做饭) and never inside a dictionary word.
+  - Not marked: the dictionary words 银行, 第五行 (in most lines), 一行人
+    and, in simplified, 抽空.
   - The adversarial `EVERYDAY_SENTENCES` set, written to trip the reader,
     marks 8.8 per 100 (CN) and 7.8 (TW).
   - Revert check: emptying `CONTEXT_SETTLED` gives 8.67 per 100 and fails
@@ -684,10 +689,11 @@ uncertain words in context.
   dictionary, the prior's tables or the common words), the boundary is
   opened: a 還書 correction applies in 我還書. Only there: opening every
   unknown piece let the prior's words fire inside real words (五行 in
-  第五行, 局长 in 公安局长时间). The CC-CEDICT sweep moved one reading, 还书
-  / 還書 (hái → huán) in all three readings, and broke none; PR #63's
-  everyday sets went from 261 to 263 of 276 words (还书, 还钱) and stayed
-  at 70 of 87 sentences. A reading hint (§Reading hints) never overrides a
+  第五行, 局长 in 公安局长时间). A correction still ends only at a word
+  boundary, so 还书 never applies in 他还书包 (书包 is one word). The
+  CC-CEDICT sweep moved one reading, 还书 / 還書 (hái → huán) in all three
+  readings, and broke none; PR #63's everyday sets went from 261 to 263 of
+  276 words (还书, 还钱) and stayed at 70 of 87 sentences. A reading hint (§Reading hints) never overrides a
   word settled by a person.
 - **The shared list** (`shared_readings`, `scripts/db/sharedReadings.ts`;
   docs/DATA.md §Mandarin readings). It is install-wide and holds a word, its
@@ -698,9 +704,13 @@ uncertain words in context.
     (`shared_reading_votes`): a recap's is its session owner's, so a
     learner agreeing with the recap of their own session is one vote (their
     own lines can steer that answer). It becomes active when an admin
-    confirms it, or when two different users have voted for it.
-  - A user adds at most 50 votes a day (`MAX_DAILY_VOTES`); past it their
-    corrections are still theirs but reach no one else.
+    confirms it, or when two different users have voted for it, at least
+    one of them by hand: two recaps are one model on one prompt, one
+    source. A disabled user's vote doesn't count. A kids session's recap
+    votes for nothing (it settles the child's own marks only).
+  - A user adds at most 50 votes a day (`MAX_DAILY_VOTES`, counted under a
+    lock on the user's row); past it their corrections are still theirs
+    but reach no one else, and the card says so (`shared: "limited"`).
   - A reading already active is never touched by a vote (its
     `updated_at` is the browsers' cache version).
   - The browser fetches the active list once a page

@@ -173,3 +173,25 @@ test("还 giving back is huán (PR #67 review); a correction starts after a pron
   assert.equal(zh.readCodePoints("第五行写错了", "zh-CN", { cache: false })[2], "háng");
   assert.equal(zh.readCodePoints("公安局长时间加班", "zh-CN", { cache: false })[3], "cháng");
 });
+
+test("还 before 钱 / 书 / 你 is huán only where the phrase ends; elsewhere hái and marked, until a person settles it (PR #67 second review)", () => {
+  const at = (t, k, loc = "zh-CN") => zh.readCodePoints(t, loc, { cache: false })[k];
+  // Ends: the text's end, punctuation, a particle, 给, 的时候, a number.
+  for (const [t, k, loc] of [["我还钱", 1], ["我要还钱", 2], ["你还书了吗", 1], ["我还书。", 1], ["我还你钱", 1], ["还钱三百", 0], ["你还书的时候", 1], ["我還書。", 1, "zh-TW"], ["還錢", 0, "zh-TW"]]) {
+    assert.equal(at(t, k, loc), "huán", t);
+    assert.deepEqual(marked(t, loc ?? "zh-CN"), [], t);
+  }
+  // Can't tell: hái, and the 还 word marked (never ICU's 我还).
+  for (const [t, k, word] of [["他还书包里放了一本书", 1, "还书包"], ["我还钱不够", 1, "还钱"], ["他去还书店", 2, "还书店"], ["我还钱包", 1, "还钱包"]]) {
+    assert.equal(at(t, k), "hái", t);
+    assert.deepEqual(marked(t), [word], t);
+  }
+  // Never 还给, nor 还 before anything else.
+  for (const [t, k] of [["我还给你做饭", 1], ["我还有钱", 1], ["他还在", 1]]) {
+    assert.equal(at(t, k), "hái", t);
+    assert.deepEqual(marked(t), [], t);
+  }
+  // A person's reading settles a doubtful one: the mark goes.
+  const fix = zh.makeCorrections({ mine: [{ word: "还钱", reading: "hái qián" }] });
+  assert.deepEqual(zh.uncertainWords("我还钱不够", "zh-CN", { cache: false, corrections: fix }), []);
+});

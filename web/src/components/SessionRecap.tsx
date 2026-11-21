@@ -5,7 +5,7 @@ import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
 import { ReadingFix } from "./ReadingFix";
-import { useCorrectionsVersion, useZhReader } from "../script/ruby.tsx";
+import { reloadMyReadings, useCorrectionsVersion, useScript, useZhReader } from "../script/ruby.tsx";
 import { Badge, Button } from "./ui";
 
 /* The session recap (docs/DATA.md §Post-session extraction), under the
@@ -290,9 +290,20 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
 function ReadingsToCheck({ items, locale }: { items: { word: string; sentence: string; at: number; suggested: boolean }[]; locale: string }) {
   const zh = useZhReader(true);
   const version = useCorrectionsVersion();
+  const { languageId } = useScript();
+  // Words saved here stay on the list, settled, so the note on what became
+  // of the choice (shared, or the day's suggestions used up) is seen.
+  const [saved, setSaved] = useState<ReadonlySet<string>>(new Set());
+  // The recap wrote its suggestions after this page loaded the learner's
+  // readings: fetch them again, so a suggested word shows the recap's
+  // reading (and This is right confirms that one, not the program's).
+  const anySuggested = items.some((it) => it.suggested);
+  useEffect(() => {
+    if (anySuggested) reloadMyReadings(languageId);
+  }, [anySuggested, languageId]);
   if (!zh) return null;
   void version;
-  const open = items.map((it) => ({ it, unit: zh.wordAt(it.sentence, locale, it.at) })).filter((x) => x.unit?.unsure);
+  const open = items.map((it) => ({ it, unit: zh.wordAt(it.sentence, locale, it.at) })).filter((x) => x.unit?.unsure || (x.unit && saved.has(`${x.it.word}:${x.it.at}`)));
   if (!open.length) return null;
   // One entry per line, with each of its words: a line with three words to
   // check is shown once, not three times.
@@ -309,7 +320,15 @@ function ReadingsToCheck({ items, locale }: { items: { word: string; sentence: s
               <RubyText text={sentence} locale={locale} check />
             </p>
             {words.map(({ it, unit }) => (
-              <ReadingFix key={`${it.word}:${it.at}`} word={unit!.word} reading={unit!.reading} locale={locale} unsure suggested={unit!.suggested} />
+              <ReadingFix
+                key={`${it.word}:${it.at}`}
+                word={unit!.word}
+                reading={unit!.reading}
+                locale={locale}
+                unsure={unit!.unsure}
+                suggested={unit!.suggested}
+                onSaved={() => setSaved((s) => new Set(s).add(`${it.word}:${it.at}`))}
+              />
             ))}
           </li>
         ))}

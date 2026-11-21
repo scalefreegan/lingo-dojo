@@ -162,8 +162,9 @@ test("an answer that fails a check is dropped: nothing written, the word still t
   assert.equal((await q(`select count(*)::int as n from shared_readings where key = '倒车'`))[0].n, 0);
 });
 
-test("a kids learner's recap may settle readings, and shows none", async () => {
+test("a kids learner's recap may settle readings, and shows none; it casts no shared vote (PR #67 second review)", async () => {
   const bo = await someone(KID_ZH);
+  await q(`delete from shared_readings`);
   fake.recap(recapWith([{ word: "倒車", pinyin: "dào chē" }]));
   const c = await session(bo, "kids");
   assert.match(promptOf().user, /WORDS TO READ/);
@@ -173,6 +174,28 @@ test("a kids learner's recap may settle readings, and shows none", async () => {
   assert.equal(recap.status, "done");
   assert.deepEqual(recap.readings, []);
   assert.deepEqual((await bo.call("GET", "/api/readings")).body.readings.map((r) => [r.word, r.kind]), [["倒車", "suggested"]]);
+  // The child's own marks only: nothing on the shared list, no vote.
+  assert.equal((await q(`select count(*)::int as n from shared_readings`))[0].n, 0);
+  assert.equal((await q(`select count(*)::int as n from shared_reading_votes where user_id = $1`, [bo.userId]))[0].n, 0);
+});
+
+test("two recaps agreeing stay a suggestion (one model, one prompt); a person's hand choice with them activates (PR #67 second review)", async () => {
+  await q(`delete from shared_readings`);
+  const a = await someone({ ...TW, name: "Ai" });
+  const b = await someone({ ...TW, name: "Bai" });
+  fake.recap(recapWith([{ word: "倒車", pinyin: "dào chē" }]));
+  await session(a);
+  fake.recap(recapWith([{ word: "倒車", pinyin: "dào chē" }]));
+  await session(b);
+  const row = async () => (await q(`select status from shared_readings where key = '倒车' and reading = 'dào chē'`))[0].status;
+  assert.equal((await q(`select count(*)::int as n from shared_reading_votes`))[0].n, 2);
+  assert.equal(await row(), "suggested", "two recaps, no person");
+  // B agrees by hand: her recap's vote becomes hers by hand (still one vote
+  // of hers), and with A's recap that is two users, one by hand.
+  const r = await b.call("POST", "/api/readings", { word: "倒車", reading: "dào chē", kind: "confirmed" });
+  assert.equal(r.body.shared, "active");
+  assert.equal(await row(), "active");
+  assert.equal((await q(`select count(*)::int as n from shared_reading_votes`))[0].n, 2);
 });
 
 test("another language: the recap prompt asks for no readings", async () => {

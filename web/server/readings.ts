@@ -260,11 +260,13 @@ export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, lo
  * for this learner, a suggestion (differs) or a confirmation (agrees),
  * never over a choice they made by hand; a suggestion to the shared list,
  * a vote of the conversation's owner (`ownerId`: their recap and their own
- * confirmation are one source; another user must agree, or an admin
- * confirm); the bank phrases with a suggested word reread. Then the
+ * confirmation are one source; another user must agree, one of them by
+ * hand, or an admin confirm), and none when `ownerId` is null (a kids
+ * session: it settles the child's own marks only); the bank phrases with
+ * a suggested word reread. Then the
  * session's count of readings the shared list changed.
  */
-export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: string, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
+export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: string | null, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
   const db = rawDb();
   for (const j of judged) {
     if (j.verdict === "dropped" || !j.answer) continue;
@@ -272,7 +274,7 @@ export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: 
     const wrote = await saveRecapReading(db, profile, { key: j.key, word: j.word, reading: j.answer, kind });
     if (j.verdict !== "differs") continue;
     const v = validateCorrection(j.word, j.answer, locale);
-    if (v.ok) {
+    if (v.ok && ownerId) {
       await propose(db, { word: v.word, key: j.key, reading: j.answer, scope: correctionScope(v.word, v.reading, locale) }, "recap", ownerId).catch((e) => {
         if (!(e instanceof SharedFullError || e instanceof SharedLimitError)) throw e;
       });
@@ -314,15 +316,17 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   // active for an admin, else this user's vote for it. So does a
   // confirmation of a reading that isn't the reader's own (a recap's
   // suggestion the learner says is right); when it was the recap of their
-  // own session, it is the same user's vote, so it stays a suggestion
-  // until another user agrees or an admin confirms. A confirmation of the
+  // own session, it is the same user's vote (now theirs by hand), so it
+  // stays a suggestion until another user agrees or an admin confirms. A confirmation of the
   // reader's own reading changes nothing for anyone else.
   const own = readCodePoints(v.word, locale, { cache: false, corrections: null }).filter(Boolean).join(" ");
   let shared: ReadingSaveReply["shared"] = null;
   if (kind === "corrected" || reading !== own) {
     const entry: SharedEntry = { word: v.word, key, reading, scope: correctionScope(v.word, v.reading, locale) };
     shared = await propose(rawDb(), entry, ctx.user.isAdmin ? "admin" : "user", ctx.user.id).catch((e) => {
-      if (e instanceof SharedFullError || e instanceof SharedLimitError) return null;
+      // Past the day's cap the learner is told (their own reading is kept).
+      if (e instanceof SharedLimitError) return "limited" as const;
+      if (e instanceof SharedFullError) return null;
       throw e;
     });
   }

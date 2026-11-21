@@ -243,9 +243,12 @@ docs/DATA.md §Mandarin readings):
   `scripts/db/sharedReadings.ts`) is install-wide.
   - An admin's entry is active at once. A learner's or a recap's is a
     suggestion and a vote of one user (`shared_reading_votes`, migration
-    0016; a recap's is its session owner's), active when an admin
-    confirms it or when two different users vote for it; at most 50
-    votes a user a day.
+    0016; a recap's is its session owner's, a kids recap's none), active
+    when an admin confirms it or when two different users who are not
+    disabled vote for it, at least one by hand; at most 50 votes a user a
+    day (counted under a lock on the user's row).
+  - 还 before 钱 / 书 / 你 is huán only where the phrase ends (`giveBack`
+    in zh.ts), else hái and marked.
   - Only a choice made by hand ranks as the learner's own; a recap's
     agreement with the reader only clears the mark.
   - The browser fetches `GET /api/readings/shared` once a page (with an

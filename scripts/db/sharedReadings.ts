@@ -17,14 +17,17 @@
 //     (`shared_reading_votes`; a recap's is its conversation owner's, so a
 //     learner agreeing with the recap of their own session is one vote,
 //     not two: their own lines can steer that answer). One is activated
-//     when two different users have voted for it and no reading is active
-//     for the word yet, or when an admin confirms it (`confirm`);
+//     when two different users who are not disabled have voted for it, at
+//     least one of them by hand (`user`: recaps are one model on one prompt,
+//     so two recaps agreeing is one source, not two), and no reading is
+//     active for the word yet; or when an admin confirms it (`confirm`);
 //   - a user adds at most MAX_DAILY_VOTES votes a day (SharedLimitError),
-//     so no one person fills the list for everyone.
+//     so no one person fills the list for everyone; the count is taken
+//     under a lock on the user's row, so concurrent votes can't pass it.
 //
 // Erasable TypeScript only, like schema.ts: the tests import it as is.
 
-import { and, asc, desc, eq, gte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "./owned.ts";
 import { sharedReadingUses, sharedReadingVotes, sharedReadings, users } from "./schema.ts";
 
@@ -125,7 +128,15 @@ export async function propose(db: Db, entry: SharedEntry, source: SharedSource, 
     }
     // A vote needs a person; without one (no owner) nothing is written.
     if (!userId) return row?.status ?? "suggested";
-    const voted = row ? (await tx.select({ u: sharedReadingVotes.userId }).from(sharedReadingVotes).where(and(eq(sharedReadingVotes.sharedReadingId, row.id), eq(sharedReadingVotes.userId, userId)))).length > 0 : false;
+    // One voter at a time per user: the daily count below is exact under
+    // concurrent votes (no key update: it doesn't block rows referencing
+    // the user).
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("no key update");
+    const [mine] = row ? await tx.select({ source: sharedReadingVotes.source }).from(sharedReadingVotes).where(and(eq(sharedReadingVotes.sharedReadingId, row.id), eq(sharedReadingVotes.userId, userId))) : [];
+    const voted = !!mine;
+    // A person's own choice after their recap's answer makes that vote theirs
+    // by hand (not a new vote, so not counted against the cap).
+    if (mine && mine.source !== "user" && source === "user") await tx.update(sharedReadingVotes).set({ source: "user" }).where(and(eq(sharedReadingVotes.sharedReadingId, row!.id), eq(sharedReadingVotes.userId, userId)));
     if (!voted) {
       const since = new Date(Date.now() - 86_400_000);
       const [{ n }] = await tx.select({ n: sql<number>`count(*)::int` }).from(sharedReadingVotes).where(and(eq(sharedReadingVotes.userId, userId), gte(sharedReadingVotes.createdAt, since)));
@@ -138,8 +149,13 @@ export async function propose(db: Db, entry: SharedEntry, source: SharedSource, 
     const flags = { byUser: row.byUser || source === "user", byRecap: row.byRecap || source === "recap" };
     if (flags.byUser !== row.byUser || flags.byRecap !== row.byRecap) await tx.update(sharedReadings).set(flags).where(eq(sharedReadings.id, row.id));
     if (row.status === "active") return "active";
-    const [{ voters }] = await tx.select({ voters: sql<number>`count(distinct ${sharedReadingVotes.userId})::int` }).from(sharedReadingVotes).where(eq(sharedReadingVotes.sharedReadingId, row.id));
-    if (voters >= VOTES_TO_ACTIVATE) {
+    // Voters who are not disabled, and whether any of them chose it by hand.
+    const [{ voters, byHand }] = await tx
+      .select({ voters: sql<number>`count(distinct ${sharedReadingVotes.userId})::int`, byHand: sql<boolean>`coalesce(bool_or(${sharedReadingVotes.source} = 'user'), false)` })
+      .from(sharedReadingVotes)
+      .innerJoin(users, eq(users.id, sharedReadingVotes.userId))
+      .where(and(eq(sharedReadingVotes.sharedReadingId, row.id), isNull(users.disabledAt)));
+    if (voters >= VOTES_TO_ACTIVATE && byHand) {
       const [other] = await tx.select({ id: sharedReadings.id }).from(sharedReadings).where(and(eq(sharedReadings.key, entry.key), eq(sharedReadings.scope, entry.scope), eq(sharedReadings.status, "active")));
       if (!other) {
         await tx.update(sharedReadings).set({ status: "active", updatedAt: sql`now()` }).where(eq(sharedReadings.id, row.id));

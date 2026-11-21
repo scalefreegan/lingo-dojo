@@ -48,9 +48,11 @@ export interface ReadingSaveRequest {
 
 export interface ReadingSaveReply {
   reading: MyReading;
-  /** What the shared list made of it: active (an admin's, or a learner
-   *  and a recap agreeing), suggested, or null (a confirmation, not sent). */
-  shared: "active" | "suggested" | null;
+  /** What the shared list made of it: active (an admin's, or two users'
+   *  with one chosen by hand), suggested, limited (this user's votes for
+   *  the day are used up: kept for them, not sent), or null (a
+   *  confirmation of the reader's own reading, not sent). */
+  shared: "active" | "suggested" | "limited" | null;
   /** Bank phrases of this language whose stored reading changed. */
   phrases: number;
 }

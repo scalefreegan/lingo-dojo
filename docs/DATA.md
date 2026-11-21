@@ -3846,12 +3846,17 @@ The rules:
   - An admin's correction is active at once, and demotes the active row
     for the same word and scope.
   - A learner's correction or confirmation, and a recap's answer, is a
-    vote of one user (the recap's: its conversation owner's). With votes
-    from two different users and nothing active for that word, it becomes
-    active. A learner and the recap of their own session are one vote.
+    vote of one user (the recap's: its conversation owner's; a kids
+    session's recap casts none). With votes from two different users who
+    are not disabled, at least one by hand (`source` user), and nothing
+    active for that word, it becomes active: two recaps alone never do.
+    A learner and the recap of their own session are one vote; their hand
+    choice after it turns that vote's source to user.
   - An admin's confirm activates it.
-  - A user adds at most 50 votes in 24 hours (`MAX_DAILY_VOTES`,
-    `SharedLimitError`: their own correction is kept, nothing shared).
+  - A user adds at most 50 votes in 24 hours (`MAX_DAILY_VOTES`, counted
+    after locking the user's row, so concurrent votes can't pass it;
+    `SharedLimitError`: their own correction is kept, nothing shared, the
+    reply's `shared` is `limited`).
   - A vote for a row already active changes nothing on it (`updated_at`
     is the active list's version).
   - The list holds at most 20,000 rows (`SharedFullError`).
