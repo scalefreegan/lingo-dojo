@@ -1,10 +1,10 @@
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
-import { languageProfileOwner } from "../../scripts/db/accounts.ts";
+import { languageProfileOwner, listLearners } from "../../scripts/db/accounts.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import {
-  changePicture, markFailed, markReady, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureOf, pictureRows, storeVerdict, type PictureRow,
+  changePicture, markFailed, markNone, markReady, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureOf, pictureRows, storeVerdict, type PictureRow,
 } from "../../scripts/db/pictures.ts";
 import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer } from "../../scripts/db/practice.ts";
 import { isUuid } from "../../scripts/phrases.mjs";
@@ -121,18 +121,22 @@ export function fillPictures(t: FillTarget): boolean {
   const id = t.profile.id;
   if (filling.has(id) || (retryAt.get(id) ?? 0) > Date.now() || imageProvider().problem()) return false;
   const run = (async () => {
+    // Every learner name on the account (archived ones too), read once a
+    // run: no word of one goes to the check's description or the image
+    // provider (pictures.mjs cleanDescription).
+    const names = (await listLearners(rawDb(), t.userId, { archived: true })).map((l) => l.name);
     // Each pass is one call: re-reading between them picks up an edit, a
     // removal or a redraw made meanwhile.
     for (;;) {
       const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), t.profile), pictureRows(rawDb(), t.profile)]);
       const work = pictureWork(phrases, rows);
       if (work.judge.length && (await pictureCallsSince(rawDb(), t.profile, "judge", since())) < PICTURE_DAILY_JUDGES) {
-        if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH)))) return;
+        if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names))) return;
         continue;
       }
       if (work.draw.length && (await pictureCallsSince(rawDb(), t.profile, "image", since())) < PICTURE_DAILY_IMAGES) {
         const p = work.draw[0];
-        if (!(await draw(t, p.id, pictureKey(p), rows.get(p.id)!.description!))) return;
+        if (!(await draw(t, p.id, pictureKey(p), rows.get(p.id)!.description!, names))) return;
         continue;
       }
       if (work.judge.length || work.draw.length) console.log(`[lingo-dojo] pictures: today's calls for this language are used up; ${work.judge.length + work.draw.length} word(s) wait`);
@@ -152,7 +156,7 @@ export function fillPictures(t: FillTarget): boolean {
 
 /** One picturable check for `words`; false when the background slot was
  *  busy (the run stops; nothing was paid). Throws on a failed call. */
-async function judge(t: FillTarget, words: { id: string; text: string | null; meaning: string | null }[]): Promise<boolean> {
+async function judge(t: FillTarget, words: { id: string; text: string | null; meaning: string | null }[], names: string[]): Promise<boolean> {
   const sent = words.map((w) => ({ id: w.id, text: w.text ?? "", meaning: w.meaning, key: pictureKey(w) }));
   const { system, user } = judgePrompt({ words: sent, targetLanguage: t.targetLanguage, nativeLanguage: t.nativeLanguage });
   let callId = "";
@@ -171,7 +175,7 @@ async function judge(t: FillTarget, words: { id: string; text: string | null; me
     const msg = String((e as Error)?.message || e);
     throw new Error(`the picturable check failed: ${failureHint(msg) || msg}`);
   }
-  const parsed = parseJudgeReply(text, sent.length);
+  const parsed = parseJudgeReply(text, sent.length, names);
   if (!parsed.ok) {
     await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
     throw new Error(`the picturable check's reply wasn't usable (${parsed.error})`);
@@ -196,9 +200,16 @@ async function judge(t: FillTarget, words: { id: string; text: string | null; me
 /** One picture for a pending word; false when the slot was busy. A
  *  refusal marks the word failed and the run goes on; any other failure
  *  throws (the run stops and waits). */
-async function draw(t: FillTarget, phraseId: string, phraseKey: string, description: string): Promise<boolean> {
+async function draw(t: FillTarget, phraseId: string, phraseKey: string, description: string, names: string[]): Promise<boolean> {
   const provider = imageProvider();
-  const prompt = picturePrompt(description);
+  const prompt = picturePrompt(description, names);
+  if (!prompt) {
+    // Nothing left once the names are out (a learner added since the
+    // check, say): no call, and the word gets no picture.
+    await markNone(rawDb(), t.profile, phraseId, phraseKey);
+    console.log("[lingo-dojo] pictures: a word's description had nothing left to draw; it is left out");
+    return true;
+  }
   let callId = "";
   let got: { bytes: Buffer; type: string };
   try {

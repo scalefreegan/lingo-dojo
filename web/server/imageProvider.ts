@@ -7,22 +7,48 @@ import { voiceKeys } from "../../scripts/voice.mjs";
 // word game), in one small module so another can be swapped in: the rest of
 // the server sees only `imageProvider()` → { name, problem(), draw(prompt) }.
 //
-// OpenAI Images (POST /v1/images/generations), checked against OpenAI's
-// API reference and image generation guide on 2026-11-20
-// (developers.openai.com/api/reference/resources/images,
-// /api/docs/guides/image-generation, /api/docs/pricing):
-//  - the GPT image models always answer base64 (`data[0].b64_json`); there
-//    is no URL to fetch;
-//  - `gpt-image-1-mini` is the cheapest model; at `quality: "low"` and
-//    1024x1024 it is listed at about $0.005 an image ($0.011 medium);
-//  - the smallest square size the GPT image models take is 1024x1024 (256
-//    and 512 are DALL·E 2's), so the size is bounded by the format instead:
-//    WebP at compression 70, a few tens of KB, and the page draws it at a
-//    tap target's size;
-//  - `moderation: "auto"` (the stricter default) stays: these are for
-//    children. A refusal comes back as an error whose code is
-//    `moderation_blocked` (or `content_policy_violation` on older models):
-//    that word is `failed` and never retried by itself.
+// OpenAI Images (POST /v1/images/generations). Read again on 2026-11-20
+// (PR #56 review) from OpenAI's deprecations page
+// (https://developers.openai.com/api/docs/deprecations), the API reference
+// (https://developers.openai.com/api/reference/resources/images), the image
+// generation guide (https://developers.openai.com/api/docs/guides/image-generation)
+// and the pricing page (https://developers.openai.com/api/docs/pricing):
+//  - the model is IMAGE_MODEL, `gpt-image-2.6-flare`. The deprecations page
+//    lists gpt-image-1-mini, gpt-image-1.5 and chatgpt-image-latest as
+//    shutting down Dec 1, 2026 (announced Jun 2, 2026), and gpt-image-2 on
+//    Feb 10, 2027, all with "gpt-image-2.6-sunburst or gpt-image-2.6-flare"
+//    as the replacement. The guide calls Flare the one "for fast,
+//    high-quality everyday image generation" (Sunburst is for precise
+//    edits), and both cost the same: $30 per 1M image output tokens, $5 per
+//    1M text input tokens. gpt-image-2.5-* isn't listed as deprecated yet,
+//    costs the same, and is a generation older;
+//  - price per image: there is no per-image figure for 2.6. The guide's
+//    calculator is interactive, and its only fixed figures are for older
+//    models (gpt-image-2 low, 1024x1024: $0.006, at the same $30 per 1M
+//    output tokens). The estimate is therefore about $0.006 per image plus
+//    under $0.001 of prompt, ~$0.007 a word. `usage` comes back with each
+//    image and its output tokens are logged (no prompt, no key), so the real
+//    figure shows on the first real draw;
+//  - `quality: "low"` (the guide: low/medium/high/xhigh/max/auto for
+//    Sunburst and Flare), `complexity: "low"` (the guide's 2.6 section: low,
+//    medium or high, default high; planning compute a single plain cartoon
+//    doesn't need; the pages don't say it changes the price);
+//  - `size: "1024x1024"`, the square the guide recommends for 2.6. Smaller
+//    sizes are below its 655,360-pixel minimum, so the file is kept small
+//    by its format instead: WebP (`output_format`, png/jpeg/webp) at
+//    `output_compression` 70 (0-100, JPEG and WebP only), and the page draws
+//    it at a tap target's size;
+//  - `background: "auto"`, the default. The reference confirms opaque and
+//    transparent only for gpt-image-2.5-* and gpt-image-2, not for 2.6, so
+//    nothing unconfirmed is sent (the game's tiles have their own
+//    background);
+//  - `moderation: "auto"`, the default and the stricter of auto and low:
+//    these are for children. A refusal is an error with
+//    `type: "image_generation_user_error"` and `code: "moderation_blocked"`
+//    (`content_policy_violation` on older models). The guide says not to
+//    retry it unchanged, so that word is `failed` and never retried by
+//    itself;
+//  - GPT image models always answer base64 (`data[0].b64_json`).
 // The key is OPENAI_API_KEY in the gitignored .env.local (or the shell),
 // read per call like the voice keys; it goes only into the request's
 // Authorization header, never into a log line, a reply or the browser.
@@ -47,15 +73,19 @@ export interface ImageProvider {
   draw(prompt: string, signal?: AbortSignal): Promise<{ bytes: Buffer; type: string }>;
 }
 
+/** The image model (see above): change it here only. */
+export const IMAGE_MODEL = "gpt-image-2.6-flare";
+
 /** The model, size and tier asked for (one place to change them). */
 export const OPENAI_IMAGE = {
   url: "https://api.openai.com/v1/images/generations",
-  model: "gpt-image-1-mini",
+  model: IMAGE_MODEL,
   size: "1024x1024",
   quality: "low",
+  complexity: "low",
   output_format: "webp",
   output_compression: 70,
-  background: "opaque",
+  background: "auto",
   moderation: "auto",
 } as const;
 const TIMEOUT_MS = 120_000;
@@ -80,7 +110,7 @@ const openai: ImageProvider = {
       throw new ImageFailed(timeout.aborted ? `OpenAI gave no answer in ${TIMEOUT_MS / 1000}s` : `OpenAI could not be reached: ${String((e as Error)?.message || e)}`);
     }
     const text = await res.text().catch(() => "");
-    let body: { data?: { b64_json?: string }[]; error?: { code?: string; type?: string; message?: string } } = {};
+    let body: { data?: { b64_json?: string }[]; usage?: { output_tokens?: number }; error?: { code?: string; type?: string; message?: string } } = {};
     try {
       body = JSON.parse(text);
     } catch {
@@ -93,6 +123,9 @@ const openai: ImageProvider = {
       const hint = res.status === 401 ? " (check OPENAI_API_KEY)" : "";
       throw new ImageFailed(`OpenAI answered ${res.status}${code ? ` ${code}` : ""}${hint}`);
     }
+    // The tokens billed, for the cost (no prompt, no key in the line).
+    const tokens = body.usage?.output_tokens;
+    if (typeof tokens === "number") console.log(`[lingo-dojo] pictures: ${IMAGE_MODEL} image, ${tokens} output tokens`);
     const b64 = body.data?.[0]?.b64_json;
     if (typeof b64 !== "string" || !b64) throw new ImageRefused("OpenAI sent no image");
     const bytes = Buffer.from(b64, "base64");

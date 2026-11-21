@@ -120,6 +120,17 @@ export async function changePicture(
   return { row, oldFile: before.file };
 }
 
+/** Nothing left to draw for a pending word (its description held only a
+ *  learner's name, or filler: scripts/pictures.mjs cleanDescription): `none`,
+ *  out of the game, as if the check had said so. */
+export async function markNone(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
+  await forLanguageProfile(db, profile).update(
+    phrasePictures,
+    { status: "none", description: null, updatedAt: sql`now()` },
+    and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "pending")) as SQL,
+  );
+}
+
 /* ---------------------------------- ledger --------------------------------- */
 
 /**

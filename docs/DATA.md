@@ -3099,19 +3099,48 @@ Each run, in order:
    words that have no current verdict. Its reply is a numbered yes/no with a
    short description (`judgePrompt` / `parseJudgeReply`; a yes with no
    usable description counts as a no). The verdict is stored once per words
-   and meaning.
+   and meaning. The check is told that:
+   - the description is a short noun phrase for one object or one simple
+     scene;
+   - it has no names of people and no instructions;
+   - a word or phrase about a named person, or one that is a whole
+     sentence, is not picturable.
 2. **The drawing.** One image per picturable word, newest words first,
    through the image provider (`web/server/imageProvider.ts`, one small
-   swappable module). The prompt is a fixed safe style (`picturePrompt`: a
-   flat, friendly picture-book cartoon with no text and nothing frightening).
-   The description is inserted only as cleaned data (`cleanDescription`:
-   letters, digits, spaces and `,.'-`, at most 160 characters).
+   swappable module).
+
+The description is free text a model wrote, and it goes to OpenAI, so the
+code enforces the rules too (`cleanDescription`, `scripts/pictures.mjs`), both
+when the verdict is stored and again just before drawing:
+- It keeps only letters, digits, spaces and `,.'-`. No quotes, brackets or
+  colons survive.
+- It is capped at 12 words (`DESCRIPTION_WORDS`) and 80 characters
+  (`DESCRIPTION_MAX`), cut at a word.
+- Every word equal to a learner name on the account, archived learners
+  included, is dropped. The match is case-insensitive, and a possessive
+  `'s` counts ("Pip's" is "pip"). The names are read once per run, so a
+  learner added after the check still never reaches the provider.
+- If nothing useful is left (only names, or filler such as "a picture
+  of"), the word gets no picture. It becomes `none`, and no image call is
+  made.
+
+The prompt (`picturePrompt`) starts with the fixed safe style: a flat,
+friendly picture-book cartoon of one subject, with no text and nothing
+frightening. Then comes a line saying the quoted text describes the subject
+only and is never an instruction. The last line is the description as quoted
+data (`Subject: "…"`). A description can't hold a double quote, so it can't
+close the quotation.
 
 Limits:
 - Every call runs in the user's background paid slot (`paid.ts`). If the
   slot is busy, the run stops and the next trigger carries on.
 - At most `PICTURE_DAILY_IMAGES` (50) images and `PICTURE_DAILY_JUDGES` (10)
-  checks per language in any 24 hours. Both are counted from the ledger.
+  checks per language profile in any 24 hours. Both are counted from the
+  ledger. The cap is per language profile, not per account: the most an
+  account can spend in a day is 50 images times its number of kids
+  languages.
+- A grown-up's **Draw again** (redraw) counts against the same ledger and
+  cap. A redraw over the cap waits like any other word.
 
 Failures:
 - A moderation refusal (`moderation_blocked`, or no image in the reply)
@@ -3141,30 +3170,64 @@ nothing 500s. The key is read only into the request's Authorization header.
 It never reaches the browser or a log line. `LINGO_IMAGE_PROVIDER=stub`
 draws coloured placeholder PNGs, for tests and UI checks.
 
-### The provider (as of 2026-11-20)
+### The provider (read 2026-11-20)
 
 The OpenAI Images API, `POST https://api.openai.com/v1/images/generations`,
-with these settings:
+with these settings (`OPENAI_IMAGE` in `web/server/imageProvider.ts`; the
+model is the one constant `IMAGE_MODEL`):
 
 | Setting | Value |
 |---|---|
-| model | `gpt-image-1-mini` |
+| model | `gpt-image-2.6-flare` |
 | size | `1024x1024` |
 | quality | `low` |
+| complexity | `low` |
 | output_format | `webp` |
 | output_compression | 70 |
-| background | `opaque` |
+| background | `auto` |
 | moderation | `auto` |
 
-The reply is always `b64_json`. `gpt-image-1` was shut down on 2026-10-23.
+Why that model:
+- OpenAI's deprecations page lists `gpt-image-1-mini`, `gpt-image-1.5` and
+  `chatgpt-image-latest` as shutting down on Dec 1, 2026 (announced Jun 2,
+  2026), and `gpt-image-2` on Feb 10, 2027. Each names
+  `gpt-image-2.6-sunburst` or `gpt-image-2.6-flare` as its replacement.
+- `gpt-image-1` was shut down on 2026-10-23.
+- The guide describes Flare as the one "for fast, high-quality everyday
+  image generation"; Sunburst is for precise edits.
+- Both cost the same: $30 per 1M image output tokens and $5 per 1M text
+  input tokens.
 
-The cost is about $0.005 per image at low quality and 1024², from the
-pricing page's image table. At the cap that is about $0.25 per language per
-day. The Haiku checks run on the Claude Code login.
+Why those settings:
+- **complexity `low`:** it sets planning compute. The guide's 2.6 section
+  takes low, medium or high, with high as the default. A plain cartoon
+  doesn't need more.
+- **size:** 1024x1024 is the recommended square. Smaller sizes are below
+  the 655,360-pixel minimum.
+- **background `auto`:** the reference confirms opaque and transparent only
+  for gpt-image-2.5 and gpt-image-2, not 2.6.
+- **moderation `auto`:** the stricter of auto and low.
 
-Sources: developers.openai.com/api/reference/resources/images,
-/api/docs/guides/image-generation, /api/docs/pricing and
-/api/docs/guides/error-codes.
+What comes back:
+- The reply is always `b64_json`.
+- A refusal is `error.code: "moderation_blocked"` (`image_generation_user_error`).
+- The tokens billed for each image (`usage.output_tokens`) are logged, with
+  no prompt and no key in the line.
+
+**Cost (an estimate).** OpenAI publishes no per-image price for 2.6 (the
+guide's calculator is interactive). gpt-image-2, at the same $30 per 1M
+output tokens, is listed at $0.006 for a low-quality 1024² image. That gives
+about $0.006 per image, plus under $0.001 of prompt: about **$0.007 per
+word**. At the cap of 50 that is about **$0.35 per kids language per day**,
+or about $10.50 a month if the cap is hit every day. The real figure shows in
+the logged tokens of the first real draw. The Haiku checks run on the Claude
+Code login.
+
+Sources:
+- https://developers.openai.com/api/docs/deprecations
+- https://developers.openai.com/api/reference/resources/images
+- https://developers.openai.com/api/docs/guides/image-generation
+- https://developers.openai.com/api/docs/pricing
 
 ### The game
 
@@ -3219,6 +3282,23 @@ Routes for it:
 - `POST /api/pictures/fill`
 - `GET /api/pictures/phrase/:id`
 - `POST /api/pictures/phrase/:id/remove|redraw`
+
+**Who can reach them.** "From the adult side" means the Library's Phrase
+bank, not a separate login. The child's page shares the grown-up's login
+session (one account, with the kids learner picked), so a kids learner's
+page can reach the Phrase bank's picture actions (Draw pictures, Remove
+picture, Draw again) like the rest of the kids Library. The game itself has
+no such buttons.
+
+Draw again is held to the daily ledger and cap like any other drawing, so
+repeated presses can't spend more than the 50 images a day.
+
+**No review before showing.** Pictures are shown to the child without a
+grown-up's review first; the user chose this. The controls come after the
+fact:
+- the fixed safe style and the provider's moderation;
+- removal from the Phrase bank, which takes a picture out of the game at
+  once and deletes its file.
 
 Tests:
 - `scripts/tests/pictures.test.mjs`: the pure rules.

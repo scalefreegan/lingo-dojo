@@ -20,15 +20,18 @@ declare module "*/scripts/pictures.mjs" {
   export const MIN_PICTURED: number;
   export const GAME_CHOICES: number;
   export const DESCRIPTION_MAX: number;
+  export const DESCRIPTION_WORDS: number;
+  export function nameWords(names: Iterable<string | null | undefined>): Set<string>;
   export const PICTURE_STATUSES: readonly string[];
   export function pictureKey(phrase: { text: string | null; meaning: string | null }): string;
   export function isCurrent(row: PictureLike | undefined | null, phrase: { text: string | null; meaning: string | null }): boolean;
-  export function cleanDescription(v: unknown): string | null;
-  export function picturePrompt(description: string): string;
+  export function cleanDescription(v: unknown, names?: Iterable<string | null | undefined> | Set<string>): string | null;
+  export function picturePrompt(description: string, names?: Iterable<string | null | undefined> | Set<string>): string | null;
   export function judgePrompt(input: { words: { text: string; meaning: string | null }[]; targetLanguage?: string; nativeLanguage?: string }): { system: string; user: string };
   export function parseJudgeReply(
     text: string,
     count: number,
+    names?: Iterable<string | null | undefined>,
   ): { ok: true; verdicts: ({ picturable: boolean; description: string | null } | undefined)[] } | { ok: false; error: string };
   export function pictureWork<P extends CandidatePhrase>(phrases: P[], rows: Map<string, PictureLike>): { judge: P[]; draw: P[] };
   export function readyPicture<R extends PictureLike>(phrase: CandidatePhrase, rows: Map<string, R>): R | null;

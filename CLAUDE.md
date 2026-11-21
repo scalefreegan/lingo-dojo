@@ -125,11 +125,15 @@ and taps its picture.
   a top-up at game start. Never a poll, a count or a page load.
 - Each run does one tool-less Haiku picturable check per 20 words (the
   verdict is stored once), then one OpenAI image per picturable word
-  (`web/server/imageProvider.ts`, `OPENAI_API_KEY`, `gpt-image-1-mini` at
+  (`web/server/imageProvider.ts`, `OPENAI_API_KEY`, `IMAGE_MODEL` `gpt-image-2.6-flare` at
   low quality).
+- The check's description goes to OpenAI only through `cleanDescription`: a
+  noun phrase of at most 12 words and 80 characters, with every learner
+  name on the account dropped (nothing left means no picture). It is sent as
+  quoted data after the fixed style.
 - Each call is in the background paid slot, with a ledger row
-  (`picture_calls`) written as it starts. The caps are
-  `PICTURE_DAILY_IMAGES` (50) images per language a day.
+  (`picture_calls`) written as it starts. The cap is `PICTURE_DAILY_IMAGES`
+  (50) images per language profile a day, redraws included.
 - `phrase_pictures` holds one row per phrase: pending, ready, none, failed
   or removed. Queries are in `scripts/db/pictures.ts`, and the pure rules in
   `scripts/pictures.mjs`.
