@@ -341,7 +341,11 @@ snapshot records it (docs/DATA.md §Conversations), every turn plays it (the
 draft sent with a turn is still random; the server reads the scene from the
 conversation, never redraws), its phrases go to the bank, and recall, the
 recap, casting, `{{location}}` and the title all use it. Restart, and Close
-then Start, make a new conversation and so a new draw. When a conversation
+then Start, make a new conversation and so a new draw. **Draw another** (a
+button beside Restart, shown until the learner has spoken) swaps the
+unspoken conversation for a new draw that is never the scene just shown,
+with no History row left behind (docs/DATA.md §Conversations); once the
+learner has spoken it is a 409 and Restart is the way. When a conversation
 ends while its voice session stays open (leaving the Go tab, two idle
 hours, another device's End), the session's next conversation keeps the
 scene while it is still in the pool (even though it is now a recent

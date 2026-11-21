@@ -567,6 +567,13 @@ export function createConversation(body: ConversationCreateRequest, signal?: Abo
   return req<ConversationReply>("/api/conversations", { ...json(body), signal });
 }
 
+/** POST /api/conversations/:id/redraw: Draw another. A random scene's
+ *  conversation the learner hasn't spoken in is replaced by a new one drawn
+ *  afresh (never the same scene); 409 `already_spoken` once they have. */
+export function redrawConversation(id: string, body: ConversationCreateRequest): Promise<ConversationReply> {
+  return req<ConversationReply>(`/api/conversations/${encodeURIComponent(id)}/redraw`, json(body));
+}
+
 /** GET /api/conversations: History, newest first, a page at a time;
  *  with `scene`, only that scene's sessions. */
 export function listConversations(offset = 0, limit = 20, scene?: string): Promise<ConversationsReply> {
