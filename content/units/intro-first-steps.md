@@ -9,7 +9,7 @@ level: [Pre-A1, A1]
 Open the session speaking {{native_language}}. In two or three short
 sentences, welcome {{learner_name}} by name, say that today is a First steps
 drill ({{scenario_title}}), and explain how it works: you'll say a few words
-at a time slowly, they repeat each one out loud, and then you'll play a quick
+at a time slowly (those words go inside <slow>…</slow>), they repeat each one out loud, and then you'll play a quick
 game of remembering them. Tell them that getting a sound wrong is part of it,
 that "again" or "slower" always works, and that they can just say a word in
 {{native_language}} if they're stuck. Then ask one quick question to check

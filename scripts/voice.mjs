@@ -39,6 +39,64 @@ export const ELEVEN_MODELS = [
 ];
 export const DEFAULT_ELEVEN_MODEL = "eleven_v4";
 
+/* ---------------------------------- pace ---------------------------------- */
+
+/** How fast a piece of a line is spoken: the dojo master's <slow> mark, or
+ *  not. The browser sends one of these words with each piece, never a
+ *  number: the numbers below are the server's. */
+export const PACES = ["normal", "slow"];
+
+/** A request's `pace`: absent is "normal"; anything that isn't one of the
+ *  two words is null (the route's 400), never a guess. */
+export function paceOf(v) {
+  if (v == null || v === "") return "normal";
+  return typeof v === "string" && PACES.includes(v) ? v : null;
+}
+
+/** The one slow pace, about four-fifths of normal: clearly slower, short of
+ *  the stretch that smears syllables (and tones). By ear still to be
+ *  checked per language (ld-9gz). */
+export const SLOW_RATE = 0.8;
+/** ElevenLabs voice_settings.speed: 0.7 to 1.2, default 1 ("Values outside
+ *  the 0.7-1.2 range are not supported": elevenlabs.io/docs, Speed control,
+ *  read 2026-11-20). */
+export const ELEVEN_SPEED_RANGE = Object.freeze([0.7, 1.2]);
+/** The ElevenLabs models that take a speed. The same page: "Speed control
+ *  is not available for Eleven v3, Eleven v4, or Eleven v4 Turbo models",
+ *  so those are never sent one (what they do with it isn't documented). */
+export const ELEVEN_SPEED_MODELS = Object.freeze(["eleven_flash_v2_5", "eleven_flash_v2", "eleven_turbo_v2_5", "eleven_turbo_v2", "eleven_multilingual_v2"]);
+/** Azure SSML <prosody rate>: a multiplier "within 0.5 to 2 times the
+ *  original audio" (learn.microsoft.com, speech-synthesis-markup-voice).
+ *  HD voices (DragonHD, DragonHD Omni: a colon in the name) don't support
+ *  <prosody> at all (high-definition-voices, the SSML elements table). */
+export const AZURE_RATE_RANGE = Object.freeze([0.5, 2]);
+/** macOS `say -r`, words a minute. There is no relative rate, and the
+ *  default differs by voice (175 for the older ones), so one number lands
+ *  differently: measured 2026-11 at 100, a sentence took 1.2x to 1.37x as
+ *  long (0.73x to 0.83x the pace) across six es, zh, ar and en voices. */
+export const SAY_SLOW_WPM = 100;
+
+const clamp = (n, [lo, hi]) => Math.max(lo, Math.min(hi, n));
+
+/**
+ * How `pace` is produced for one synthesis call:
+ *   speed         what the provider is asked for, as a multiplier of its
+ *                 normal pace (1 = nothing asked: the request is the one
+ *                 sent before pace existed). Part of the audio cache key.
+ *   playbackRate  what the browser must do instead, when this provider,
+ *                 model or voice can't slow down itself: play the normal
+ *                 clip at this rate, pitch kept (1 = nothing to do).
+ * Exactly one of the two is below 1 for a slow piece, so a slow mark is
+ * always heard and never applied twice.
+ */
+export function speechPace(provider, pace, { model = "", voice = "" } = {}) {
+  if (pace !== "slow") return { speed: 1, playbackRate: 1 };
+  const native = provider === "elevenlabs" ? ELEVEN_SPEED_MODELS.includes(model)
+    : provider === "azure" ? !String(voice).includes(":")
+    : provider === "system";
+  return native ? { speed: SLOW_RATE, playbackRate: 1 } : { speed: 1, playbackRate: SLOW_RATE };
+}
+
 /** Models offered for the dojo master's turns. A turn is one tool-less reply,
  *  ~3.7 s wall for Haiku and Sonnet alike (measured 2026-11-09), so Sonnet's
  *  better teaching costs no latency. */
@@ -205,7 +263,10 @@ export function voiceAdapter(mode = "adult", { drill = false } = {}) {
 - Timing between lines is yours to set. There is always a short pause between lines, and a longer one whenever the narrator and the scene hand over. To change it, start a line with <pause N> (wait N seconds first, e.g. <pause 1.5> for a beat before a reply, or while a vendor weighs the tomatoes) or <overlap N> (start N seconds before the previous line ends, for people talking over each other or cutting in, at most 1.5). Use them in the scene where the moment calls for it; most lines need neither. Never overlap the narrator.
   <pause 1.2> CHARACTER-M: <t>Mmm… a ver, déjeme pesarlos.</t>
   <overlap 0.4> CHARACTER-F: <t>¡Oiga, yo estaba primero!</t>`;
-  const secondExample = drill ? "  NARRATOR-F: <t>¡Muy bien!</t> One more time, slowly: <t>por favor</t>." : "  CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>";
+  const secondExample = drill ? "  NARRATOR-F: <t>¡Muy bien!</t> One more time, slowly: <slow><t>por favor</t></slow>." : "  CHARACTER-M: <t>¡Claro que sí, güero! ¿Algo más?</t>";
+  const slowExample = drill
+    ? "  NARRATOR-F: Listen: <slow><t>gracias</t></slow>. And at normal speed: <t>gracias</t>."
+    : "  NARRATOR-F: Sure, here it is again, slowly: <slow><t>¿Cuánto cuesta el kilo?</t></slow>";
   const castRule = drill
     ? "- Write no CAST lines: the narrator's voice is chosen by the app, and there is nobody else to cast."
     : `- When someone speaks for the first time, and whenever a different person takes over a voice tag (a new vendor, the grandson arriving), write one CAST line just before their first line: the tag, then exactly one of the words child, young, middle-aged or old, then a comma and a few words on who they are. The app picks a voice of that age; it reads only that word, in that place. It is shown, not spoken. For example:
@@ -219,6 +280,9 @@ ${speakerRules}
 - Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
   NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
 ${secondExample}
+- Pace is yours to set too, and only by a mark. Everything is spoken at a normal pace except what you wrap in <slow>…</slow> (a word, a phrase or all of a line's words): only the text inside it is spoken slower. The mark goes after the speaker tag, around words, never before the tag. Put <slow> outside <t> when both apply. The voice cannot slow down any other way; writing "slowly", stretching a word's spelling or adding dots changes nothing. So whenever you say you are slowing down, model a word or phrase slowly, or your instructions ask for slow speech, put those words inside <slow>. Never say that something is, was or will be said slowly unless it is inside <slow>. No mark where the pace is normal. For example:
+${slowExample}
+- When the learner asks you to slow down ("[direct]" with such a request, the "Slow down" choice, or asking for it in the practice), wrap everything you say in the target language in <slow>…</slow> from then on, in every turn, until they ask for normal speed again. Your own earlier turns show whether you are doing that: if their target language is inside <slow> and nobody has asked for normal speed since, keep marking.
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
   GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
@@ -390,36 +454,69 @@ export function joinSegments(segments) {
   return segments.reduce((acc, g, i) => (i === 0 || /^[.,;:!?)\]»…]/.test(g.text) ? acc + g.text : `${acc} ${g.text}`), "");
 }
 
-/** A line back in the model's own notation: target segments in <t>. */
+/** A line back in the model's own notation: target segments in <t>, and
+ *  each run of slow segments in one <slow>, outside the <t> (the order the
+ *  adapter asks for), so a replayed turn parses to the segments it came
+ *  from and the model keeps seeing the pace it set. */
 export function markedText(line) {
   const segs = Array.isArray(line?.segments) && line.segments.length ? line.segments : [{ lang: "native", text: line?.text ?? "" }];
-  return segs.map((g) => (g.lang === "target" ? `<t>${g.text}</t>` : g.text)).join(" ");
+  const out = [];
+  let slow = false;
+  for (const g of segs) {
+    const piece = g.lang === "target" ? `<t>${g.text}</t>` : g.text;
+    if (!!g.slow === slow) out.push(piece);
+    else if (g.slow) out.push(`<slow>${piece}`);
+    else {
+      out[out.length - 1] += "</slow>";
+      out.push(piece);
+    }
+    slow = !!g.slow;
+  }
+  if (slow) out[out.length - 1] += "</slow>";
+  return out.join(" ");
 }
+
+/** The marks inside a line: <t>…</t> (the target language) and
+ *  <slow>…</slow> (the pace). "<slowly>" is the same mark, the spelling a
+ *  model drifts to. Neither is ever spoken or shown. */
+const MARK_RE = /<(\/?)\s{0,3}(t|slow(?:ly)?)\s{0,3}>/gi;
+/** The same marks, for taking them out of a shown-not-spoken line (a
+ *  gloss, a choice, a CAST note, a LOOKUP query). */
+const MARKS_RE = /<\/?\s*(?:t|slow(?:ly)?)\s*>/gi;
+/** One or more of those marks at the very start of a line (a bullet or
+ *  bold before them allowed, as before a tag). */
+const LEAD_MARKS_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(?:<\/?\s{0,3}(?:t|slow(?:ly)?)\s{0,3}>\s*)+/i;
 
 /** One line's text → language segments. <t>…</t> is the target language;
  *  an unclosed <t> runs to the end of the line (a model that forgets to close
  *  a whole-line wrap still gets it right). Each segment is made speakable;
  *  empty ones drop. */
 export function splitSegments(text) {
-  return segmentsFrom(text, false).segments;
+  return segmentsFrom(text, false, false).segments;
 }
 
-/** splitSegments with the <t> state carried in and out, so a wrap that
- *  opens on one line and closes on a later one marks every line between. */
-function segmentsFrom(text, inside) {
+/** splitSegments with the <t> and <slow> states carried in and out, so a
+ *  wrap that opens on one line and closes on a later one marks every line
+ *  between. The two marks are independent switches, so they nest either
+ *  way round (<slow><t>…</t></slow>, the order asked for, or <t><slow>…
+ *  </slow></t>) and a slow span may cover both languages. A segment said
+ *  slower carries `slow: true`; one at the normal pace has no such key, so
+ *  lines stored before the mark existed are already in today's shape. */
+function segmentsFrom(text, inside, slow) {
   const segments = [];
   const push = (raw) => {
     const said = speakable(raw);
-    if (said) segments.push({ lang: inside ? "target" : "native", text: said });
+    if (said) segments.push({ lang: inside ? "target" : "native", text: said, ...(slow ? { slow: true } : {}) });
   };
   let last = 0;
-  for (const m of String(text).matchAll(/<(\/?)t>/gi)) {
+  for (const m of String(text).matchAll(MARK_RE)) {
     push(String(text).slice(last, m.index));
-    inside = !m[1];
+    if (m[2].toLowerCase() === "t") inside = !m[1];
+    else slow = !m[1];
     last = m.index + m[0].length;
   }
   push(String(text).slice(last));
-  return { segments, inside };
+  return { segments, inside, slow };
 }
 
 /** Punctuation that belongs to the words before it, never a segment (and so
@@ -502,7 +599,7 @@ export function parseGlosses(text) {
     for (const entry of rest.split("|")) {
       const eq = entry.indexOf("=");
       if (eq < 0) continue;
-      const clean = (x) => x.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim();
+      const clean = (x) => x.replace(MARKS_RE, "").replace(/\*\*/g, "").trim();
       const term = clean(entry.slice(0, eq)).replace(/^["“”']+|["“”']+$/g, "").trim().slice(0, GLOSS_TERM_CHARS);
       const meaning = clean(entry.slice(eq + 1)).slice(0, GLOSS_MEANING_CHARS);
       if (!term || !meaning || seen.has(term.toLowerCase())) continue;
@@ -528,7 +625,7 @@ export function parseChoices(text) {
     const rest = metaRest(CHOICES_RE, rawLine);
     if (rest == null) continue;
     for (const c of rest.split("|")) {
-      const label = c.replace(/<\/?\s*t\s*>/gi, "").replace(/\*\*/g, "").trim().slice(0, CHOICE_CHARS);
+      const label = c.replace(MARKS_RE, "").replace(/\*\*/g, "").trim().slice(0, CHOICE_CHARS);
       if (label && !out.some((o) => o.toLowerCase() === label.toLowerCase())) out.push(label);
       if (out.length >= MAX_CHOICES) return out;
     }
@@ -555,7 +652,7 @@ export function parseLookup(text) {
   for (const rawLine of String(text ?? "").split(/\r?\n/)) {
     const rest = metaRest(LOOKUP_RE, rawLine);
     if (rest == null) continue;
-    const q = rest.replace(/<\/?\s*t\s*>/gi, "").replace(/\s+/g, " ").trim().slice(0, LOOKUP_CHARS);
+    const q = rest.replace(MARKS_RE, "").replace(/\s+/g, " ").trim().slice(0, LOOKUP_CHARS);
     if (q) return q;
   }
   return null;
@@ -637,7 +734,7 @@ export function parseCast(text, mode = "adult", opts = {}) {
     if (!t || !t[2]) continue;
     const speaker = t[1].toLowerCase() === "helper" ? "sidekick" : t[1].toLowerCase();
     if (!allowed.has(speaker)) continue;
-    const after = body.slice(t[0].length).replace(/<\/?\s*t\s*>/gi, "").replace(/^[\s,|:–—-]+/, "");
+    const after = body.slice(t[0].length).replace(MARKS_RE, "").replace(/^[\s,|:–—-]+/, "");
     const { age, rest: tail } = castAge(after.slice(0, 200));
     if (!age) continue;
     // Who they are: what follows the age, after any comma, dash or
@@ -659,7 +756,7 @@ export function replayCastNotes(raw) {
   return raw
     .filter((n) => typeof n?.slot === "string" && /^(narrator|character|sidekick):(female|male)$/.test(n.slot) && !!ageOf(n.age))
     .slice(0, 6)
-    .map((n) => ({ slot: n.slot, age: ageOf(n.age), who: typeof n.who === "string" ? oneLine(n.who.replace(/<\/?\s*t\s*>/gi, "")).slice(0, CAST_WHO_CHARS) : "" }));
+    .map((n) => ({ slot: n.slot, age: ageOf(n.age), who: typeof n.who === "string" ? oneLine(n.who.replace(MARKS_RE, "")).slice(0, CAST_WHO_CHARS) : "" }));
 }
 
 /** A turn's cast notes as the CAST lines it came with, for the replay. */
@@ -801,6 +898,7 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
   let current = "narrator";
   let gender = null;
   let inside = false;
+  let slow = false;
   // A timing mark waits for the next line that has words (it may sit on a
   // line of its own).
   let gap = null;
@@ -827,6 +925,22 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
       raw = raw.replace(TIMING_RE, " ").replace(/(\*{1,2}|_{1,2})\s*\1/g, " ").replace(/\*\*\s+/, "**");
       if (!raw.replace(/\*/g, "").trim()) continue;
     }
+    // "<slow>CHARACTER-M: <t>hola</t></slow>", "<t>NARRATOR-F: hola</t>",
+    // "<slow><pause 1> NARRATOR-F: …": a mark written before the speaker tag
+    // (asked for after it). Left there, the tag isn't at the start of the
+    // line, so it would be read out in the previous speaker's voice. The
+    // marks come off the front, as the timing marks and the tag's ** do,
+    // and the ones that open are carried onto this line's words below.
+    let lead = null;
+    const before = raw.match(LEAD_MARKS_RE);
+    if (before && TAG_RE.test(raw.slice(before[0].length))) {
+      lead = { inside: false, slow: false };
+      for (const x of before[0].matchAll(MARK_RE)) {
+        if (x[2].toLowerCase() === "t") lead.inside = !x[1];
+        else lead.slow = !x[1];
+      }
+      raw = raw.slice(before[0].length);
+    }
     let line = raw;
     const m = raw.match(TAG_RE);
     if (m) {
@@ -844,11 +958,13 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
       line = raw.slice(opensBold ? m[0].replace(/\*\*\s*$/, "").length : m[0].length);
       // A new speaker starts outside any wrap: a <t> the previous speaker
       // never closed must not turn this one's English into Spanish.
-      inside = false;
+      // The same for a <slow> left open: the pace is each speaker's own.
+      inside = lead?.inside ?? false;
+      slow = lead?.slow ?? false;
       tagged = true;
     }
     let segments;
-    ({ segments, inside } = segmentsFrom(line, inside));
+    ({ segments, inside, slow } = segmentsFrom(line, inside, slow));
     if (!segments.length) continue;
     let target = out[out.length - 1];
     // A timed or tagged line is its own line even from the same speaker:
@@ -863,9 +979,11 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
     for (const g of segments) {
       const prev = target.segments[target.segments.length - 1];
       let text = g.text;
-      if (prev && prev.lang !== g.lang) {
+      const same = prev && prev.lang === g.lang && !!prev.slow === !!g.slow;
+      if (prev && !same) {
         // "<t>jitomate</t>. Try…": the period ends the Spanish, so it goes
-        // with it rather than becoming an English call of its own.
+        // with it rather than becoming an English call of its own. The
+        // same after a slow span: "<slow>despacio</slow>. Now…".
         const punct = text.match(LEADING_PUNCT_RE)?.[0] ?? "";
         if (punct) {
           prev.text += punct.trim();
@@ -873,12 +991,14 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
           if (!text) continue;
         }
       }
-      if (prev && prev.lang === g.lang) prev.text = `${prev.text} ${text}`;
-      else target.segments.push({ lang: g.lang, text });
+      // Each segment is one synthesis call at one pace, so a change of
+      // pace starts a new one as a change of language does.
+      if (same) prev.text = `${prev.text} ${text}`;
+      else target.segments.push({ ...g, text });
     }
   }
   out.forEach((l, i) => {
-    l.segments = l.segments.flatMap((g) => splitLong(g.text).map((t) => ({ lang: g.lang, text: t })));
+    l.segments = l.segments.flatMap((g) => splitLong(g.text).map((t) => ({ ...g, text: t })));
     l.text = joinSegments(l.segments);
     l.pauseMs = linePauseMs(out[i - 1], l);
   });
@@ -987,8 +1107,20 @@ export const SPEECH_FORMATS = Object.freeze({
   system: "LEI16@24000",
 });
 
-export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_MODEL, locale }) {
+export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_MODEL, locale, speed = 1, settings = null }) {
   const body = { text, model_id: model };
+  // A pace other than normal, only for a model that takes one and never
+  // outside the documented range. Nothing at speed 1, so a normal line's
+  // request (and the voice's own stored settings) is untouched.
+  // Never the speed alone: a voice_settings holding only `speed` resets the
+  // voice's other stored settings to the API defaults (measured, docs/
+  // VOICE.md §Pace), so the slow part would be delivered differently from
+  // the rest of its line. It goes with the voice's stored settings
+  // (`settings`, elevenStoredSettings of GET /v1/voices/{id}/settings) or
+  // not at all; the caller then slows the playback instead.
+  const rate = Number(speed);
+  const stored = elevenStoredSettings(settings);
+  if (Number.isFinite(rate) && rate !== 1 && ELEVEN_SPEED_MODELS.includes(model) && stored) body.voice_settings = { ...stored, speed: clamp(rate, ELEVEN_SPEED_RANGE) };
   // language_code steers pronunciation and number reading toward the target
   // language. Multilingual v2 rejects it; the others take it.
   if (locale && model !== "eleven_multilingual_v2") body.language_code = languageOf(locale);
@@ -1000,6 +1132,33 @@ export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_M
       body: JSON.stringify(body),
     },
   };
+}
+
+/** A voice's stored settings (a free read, not synthesis). */
+export function elevenVoiceSettingsRequest({ key, voice }) {
+  return {
+    url: `https://api.elevenlabs.io/v1/voices/${encodeURIComponent(voice)}/settings`,
+    init: { method: "GET", headers: { "xi-api-key": key } },
+  };
+}
+
+/** That read's reply as the settings to send back with a speed: only the
+ *  fields the API names, each of its own type (the stored speed is left
+ *  out: ours replaces it). null unless it has the two that shape a voice
+ *  most, stability and similarity_boost: half a settings object would be
+ *  the partial one this exists to avoid. */
+export function elevenStoredSettings(json) {
+  if (!json || typeof json !== "object") return null;
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const out = {
+    stability: num(json.stability),
+    similarity_boost: num(json.similarity_boost),
+    style: num(json.style),
+    use_speaker_boost: typeof json.use_speaker_boost === "boolean" ? json.use_speaker_boost : undefined,
+  };
+  if (out.stability === undefined || out.similarity_boost === undefined) return null;
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return out;
 }
 
 export function elevenVoicesRequest({ key }) {
@@ -1079,10 +1238,14 @@ export const AZURE_VOICE_RE = /^[A-Za-z]{2,3}-[A-Za-z0-9]{2,4}-[A-Za-z0-9:]+$/;
 /** `locale` is the language this text is in. A multilingual voice speaks
  *  it inside <lang> (same voice, that language's pronunciation); any other
  *  voice speaks only its own language, so the text goes in as-is. */
-export function azureSsml({ voice, text, locale }) {
+export function azureSsml({ voice, text, locale, speed = 1 }) {
   if (!AZURE_VOICE_RE.test(voice)) throw new Error(`not an Azure voice name: ${JSON.stringify(voice)}`);
   const own = voice.split("-").slice(0, 2).join("-");
-  const body = xmlEscape(text);
+  // <prosody> goes innermost, around the text alone: it may not contain
+  // <lang>. Never for an HD voice (see AZURE_RATE_RANGE), never at rate 1.
+  const rate = Number(speed);
+  const paced = Number.isFinite(rate) && rate !== 1 && !voice.includes(":");
+  const body = paced ? `<prosody rate="${clamp(rate, AZURE_RATE_RANGE)}">${xmlEscape(text)}</prosody>` : xmlEscape(text);
   const inner = locale && BCP47_RE.test(locale) && locale !== own && /Multilingual/i.test(voice)
     ? `<lang xml:lang="${locale}">${body}</lang>`
     : body;
@@ -1095,7 +1258,7 @@ function region(r) {
   return r;
 }
 
-export function azureSpeechRequest({ key, region: r, voice, text, locale }) {
+export function azureSpeechRequest({ key, region: r, voice, text, locale, speed = 1 }) {
   return {
     url: `https://${region(r)}.tts.speech.microsoft.com/cognitiveservices/v1`,
     init: {
@@ -1106,7 +1269,7 @@ export function azureSpeechRequest({ key, region: r, voice, text, locale }) {
         "X-Microsoft-OutputFormat": SPEECH_FORMATS.azure,
         "User-Agent": "lingo-dojo",
       },
-      body: azureSsml({ voice, text, locale }),
+      body: azureSsml({ voice, text, locale, speed }),
     },
   };
 }

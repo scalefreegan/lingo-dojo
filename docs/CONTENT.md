@@ -207,7 +207,9 @@ twists:
 
 A brand-new beginner can't follow even an A1 scene. A **drill** is a
 scenario with `format: drill`: no character and no conversation, only the
-narrator drilling a few words at a time (say it slowly, give the meaning,
+narrator drilling a few words at a time (say it slowly, inside the voice
+session's `<slow>…</slow>` mark, the only thing that slows the voice:
+docs/VOICE.md §Pace; give the meaning,
 the learner repeats, a quick recall), with more of the guiding moving into
 the target language as the learner succeeds. A pack that picks a drill is a
 First steps session; there is no separate mode, pack field or migration.

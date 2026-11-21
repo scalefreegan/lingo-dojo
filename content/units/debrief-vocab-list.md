@@ -13,5 +13,5 @@ the warm-up or the scenario's vocab list, and that a learner at {{level}}
 likely didn't already know — aim for five to ten items. For each, say the
 {{target_language}} term clearly, pause briefly, then give a short gloss in
 {{native_language}}. Go at a slower, dictation-like pace for this list
-specifically, since {{learner_name}} is writing while you talk. Close the
+specifically (each term inside <slow>…</slow>), since {{learner_name}} is writing while you talk. Close the
 session once the list is done.
