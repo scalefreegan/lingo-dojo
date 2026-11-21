@@ -20,11 +20,11 @@ import type {
 import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath, type SseSend } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
-import { recallPhrases } from "../../scripts/db/phrases.ts";
+import { hintPhrases } from "../../scripts/db/phrases.ts";
 import { CONVERSATION_ID_RE } from "../../scripts/conversations.mjs";
-import { recentBankPhrases, sessionKeyterms } from "../../scripts/keyterms.mjs";
+import { KEYTERM_SHARE, sessionKeyterms } from "../../scripts/keyterms.mjs";
 import { rawDb } from "./db.ts";
-import { conversationKeyterms, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
+import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
@@ -226,21 +226,44 @@ export async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
  * conversation's scene vocab and the learner's recent phrases. Only a
  * request that names a conversation (the page sends one with a listening
  * turn, never with a direct request to the dojo master, which is in the
- * native language) gets the last two. A failed read costs the hints, never
- * the transcription (logged). Practice's speak-it doesn't come here.
+ * native language) gets the last two. Hints must never help a recall: no
+ * source may send a phrase of the conversation's frozen review or a
+ * revisit's kept phrases, and a drill (the learner says each word from its
+ * meaning) gets no keyterms at all, `heard` included. The conversation read is the gate: if it fails, only `heard`
+ * goes. A failed bank read costs only the bank's hints. Nothing here costs
+ * the transcription (failures are logged). Practice's speak-it doesn't come
+ * here.
  */
 async function sessionTerms(req: IncomingMessage, ctx: LearnerCtx, heard: string[], conversation: string | null): Promise<string[]> {
-  let scenario: string[] = [];
-  let bank: string[] = [];
+  let scene: Awaited<ReturnType<typeof conversationHints>> = null;
   if (conversation && CONVERSATION_ID_RE.test(conversation)) {
     try {
-      scenario = await conversationKeyterms(ctx, conversation.toLowerCase(), learnerMode(req, ctx));
-      bank = recentBankPhrases(await recallPhrases(rawDb(), ctx.language));
+      scene = await conversationHints(ctx, conversation.toLowerCase(), learnerMode(req, ctx));
     } catch (e) {
-      console.error("[lingo-dojo] transcribe: reading the scene or the phrase bank failed; going on without those keyterms:", e);
+      console.error("[lingo-dojo] transcribe: reading the scene failed; going on without its keyterms:", e);
     }
   }
-  return sessionKeyterms({ heard, scenario, bank });
+  if (!scene) return sessionKeyterms({ heard });
+  // A drill has the narrator say each word (so `heard` names the word being
+  // recalled a turn later) and asks for it from its meaning: no hints.
+  if (scene.drill) return [];
+  let bank: string[] = [];
+  let review: string[] = [];
+  try {
+    const read = await hintPhrases(rawDb(), ctx.language, { recent: KEYTERM_SHARE.bank, ids: scene.reviewIds });
+    bank = read.recent;
+    review = read.review;
+  } catch (e) {
+    console.error("[lingo-dojo] transcribe: reading the phrase bank failed; going on without its keyterms:", e);
+    // The review's texts are unknown, so any source could be naming one.
+    return [];
+  }
+  return sessionKeyterms({
+    heard,
+    scenario: scene.vocab,
+    bank,
+    exclude: [...review, ...scene.kept],
+  });
 }
 
 export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
@@ -258,9 +281,10 @@ export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerRes
     .split(",")
     .map((s) => s.trim())
     .filter((s) => LOCALE_RE.test(s));
-  const keyterms = heard.length || params.has("conversation") ? await sessionTerms(req, ctx, heard, params.get("conversation")) : [];
-  const audio = await readAudio(req);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
+  // Only Scribe takes keyterms: no reads for the other providers.
+  const keyterms = provider === "elevenlabs" && (heard.length || params.has("conversation")) ? await sessionTerms(req, ctx, heard, params.get("conversation")) : [];
+  const audio = await readAudio(req);
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
   // In one of the user's paid slots (paid.ts), taken after the upload so a
   // slow one holds nothing.

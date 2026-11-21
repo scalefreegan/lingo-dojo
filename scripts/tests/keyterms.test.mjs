@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KEYTERM_SHARE, recentBankPhrases, scenarioKeyterms, sessionKeyterms } from "../keyterms.mjs";
+import { KEYTERM_SHARE, scenarioKeyterms, sessionKeyterms } from "../keyterms.mjs";
 import { keytermsFrom } from "../voice.mjs";
 
 test("keytermsFrom drops the characters Scribe refuses and keeps every term within 50 characters and 5 words", () => {
@@ -23,16 +23,9 @@ test("scenarioKeyterms: vocab terms only, none for a scenario of another languag
   assert.deepEqual(scenarioKeyterms(undefined, "es-MX"), []);
 });
 
-test("recentBankPhrases: newest first, complete and not suspended, capped", () => {
-  const rows = [
-    { text: "viejo", lastSeenAt: "2026-01-01T00:00:00Z" },
-    { text: null, lastSeenAt: "2026-06-01T00:00:00Z" },
-    { text: "pausado", suspended: true, lastSeenAt: "2026-06-01T00:00:00Z" },
-    { text: "nuevo", lastSeenAt: "2026-05-01T00:00:00Z" },
-    { text: "sin visto", createdAt: "2026-03-01T00:00:00Z" },
-  ];
-  assert.deepEqual(recentBankPhrases(rows), ["nuevo", "sin visto", "viejo"]);
-  assert.deepEqual(recentBankPhrases(rows, 1), ["nuevo"]);
+test("sessionKeyterms: excluded phrases (a review, kept phrases) are sent from no source", () => {
+  const out = sessionKeyterms({ heard: ["Cuánto cuesta", "hola"], scenario: ["cuánto cuesta", "mezcal"], bank: ["¿Cuánto cuesta?", "la vuelta"], exclude: ["¿Cuánto cuesta?"] });
+  assert.deepEqual(out, ["hola", "mezcal", "la vuelta"]);
 });
 
 test("sessionKeyterms: each source under its share, deduplicated across, at most 100 in all", () => {

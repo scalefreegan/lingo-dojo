@@ -77,7 +77,13 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   name a list; the route is a learner route (409 `stale_learner`), an
   unknown, malformed or other-learner id just adds nothing, and a failed
   read costs the hints, not the transcription. A scenario written for
-  another language than the session's adds no vocab. A direct request to
+  another language than the session's adds no vocab. Hints never help a
+  recall: no source (including the master's own phrases) sends a phrase of
+  the conversation's frozen review (`pack_snapshot.review.phraseIds`, which
+  holds a revisit's kept phrases too) or a revisit's kept texts, and a
+  First steps drill, where the learner says each word from its meaning and
+  the narrator has just said it, gets no keyterms at all. Only Scribe
+  reads anything: other providers skip the reads. A direct request to
   the dojo master (native language) sends no id, so no hints. Scribe's
   limits (ElevenLabs speech-to-text reference, `keyterms`): each term at
   most 50 characters and 5 words, none containing `< > { } [ ] \`, at most

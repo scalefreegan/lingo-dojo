@@ -93,3 +93,46 @@ test("no conversation: only what the page heard; a stranger's or malformed id: n
   const stale = await sam.call("POST", "/api/voice/transcribe?locales=es-MX", wav, { "Content-Type": "audio/wav", "X-Learner-Id": "00000000-0000-0000-0000-000000000000" });
   assert.equal(stale.status, 409);
 });
+
+const freeze = (id, key, value) =>
+  testDb.query("update conversations set pack_snapshot = jsonb_set(pack_snapshot, $2, $3::jsonb) where id = $1", [id, `{${key}}`, JSON.stringify(value)]);
+
+test("a phrase in the conversation's frozen review is never hinted, from any source (it would hear a near miss into the right recall)", async () => {
+  const c = await sam.call("POST", "/api/conversations", { mode: "adult", pack: pack(), title: "At the market" });
+  await sam.call("POST", "/api/phrases", { text: "la vuelta", meaning: "the change" });
+  // "kilo | medio" is both the scene's vocab and in the bank (starting the
+  // session put it there); freeze it as this session's review.
+  const [row] = await testDb.query("select id from phrases where text = 'kilo | medio' limit 1");
+  await freeze(c.body.conversation.id, "review", { phraseIds: [row.id] });
+  forms.length = 0;
+  // ...and the master having just said it (a term= the page sends) too.
+  const r = await listen(sam, `&conversation=${c.body.conversation.id}&term=${encodeURIComponent("kilo | medio")}&term=${encodeURIComponent("buen día")}`);
+  assert.equal(r.status, 200, r.text);
+  const terms = forms[0].keyterms;
+  assert.ok(!terms.includes("kilo | medio"), JSON.stringify(terms));
+  for (const want of ["buen día", "Cuánto cuesta", "la vuelta"]) assert.ok(terms.includes(want), `${want} in ${JSON.stringify(terms)}`);
+});
+
+test("a revisit's kept phrases are never hinted either", async () => {
+  const c = await sam.call("POST", "/api/conversations", { mode: "adult", pack: pack(), title: "At the market" });
+  await freeze(c.body.conversation.id, "revisit", {
+    from: "x", startedAt: new Date().toISOString(), title: "t", summary: "s", kept: [{ text: "Cuánto cuesta", meaning: "how much" }], corrections: [], events: [],
+  });
+  forms.length = 0;
+  await listen(sam, `&conversation=${c.body.conversation.id}`);
+  assert.ok(!forms[0].keyterms.includes("Cuánto cuesta"), JSON.stringify(forms[0].keyterms));
+  assert.ok(forms[0].keyterms.includes("kilo | medio"));
+});
+
+test("a First steps drill gets no keyterms at all: not the scene, the bank or the master's phrases", async () => {
+  fs.writeFileSync(
+    path.join(root, "scenarios", "drill-market.md"),
+    ["---", "id: drill-market", "title: Market words", "summary: Drill a few market words.", "language: es-MX", "format: drill", "beats:", "  - Round one", "vocab:", '  - { term: "mango", gloss: "mango" }', "---", "Drill the words.", ""].join("\n"),
+  );
+  const c = await sam.call("POST", "/api/conversations", { mode: "adult", pack: { ...pack(), scenario: "drill-market" }, title: "Drill" });
+  assert.equal(c.status, 201, c.text);
+  await sam.call("POST", "/api/phrases", { text: "la vuelta", meaning: "the change" });
+  forms.length = 0;
+  await listen(sam, `&conversation=${c.body.conversation.id}&term=mango`);
+  assert.deepEqual(forms[0].keyterms, []);
+});

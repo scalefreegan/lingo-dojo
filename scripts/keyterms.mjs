@@ -20,23 +20,16 @@ export function scenarioKeyterms(scenario, sessionLocale) {
   return keytermsFrom(scenarioEntries(scenario, sessionLocale || null).complete.map((e) => e.text));
 }
 
-/** The learner's most recently seen complete phrases (newest first), up to
- *  `max`: a bank row is `{ text, suspended, lastSeenAt, createdAt }`. */
-export function recentBankPhrases(rows, max = KEYTERM_SHARE.bank) {
-  const when = (r) => Date.parse(r.lastSeenAt ?? r.createdAt ?? "") || 0;
-  return (Array.isArray(rows) ? rows : [])
-    .filter((r) => typeof r?.text === "string" && r.text && !r.suspended)
-    .sort((a, b) => when(b) - when(a))
-    .slice(0, max)
-    .map((r) => r.text);
-}
-
 /** The terms of one transcription: `heard` (the client's target phrases from
  *  the master's last turns, already bounded), `scenario` (terms) and `bank`
- *  (phrases), each under its share, deduplicated across, at most 100. */
-export function sessionKeyterms({ heard = [], scenario = [], bank = [] }) {
+ *  (phrases), each under its share, deduplicated across, at most 100.
+ *  `exclude` are phrases the learner is asked to recall from their meaning
+ *  (the session's review, a revisit's kept phrases, a drill's words):
+ *  hinting one would hear a near miss into the right answer, so no source
+ *  may send them (matched by term, case-insensitively). */
+export function sessionKeyterms({ heard = [], scenario = [], bank = [], exclude = [] }) {
   const out = [];
-  const seen = new Set();
+  const seen = new Set(keytermsFrom(exclude).map((t) => t.toLowerCase()));
   for (const [list, share] of [[heard, KEYTERM_SHARE.heard], [scenario, KEYTERM_SHARE.scenario], [bank, KEYTERM_SHARE.bank]]) {
     let taken = 0;
     for (const t of keytermsFrom(list)) {
