@@ -747,7 +747,7 @@ tables were keyed by learner and `lang`; the language profiles of
   `due` is the earliest due of the cards that have been reviewed, so the
   bank isn't all due at once. Due stays a reviewed card whose time has come.
 - **Filters and sorts.** Show: all, starred, new, due, trouble, pending (no
-  words yet), suspended (new and due leave out pending and suspended
+  words yet), suspended, with picture (a ready picture, drawn or shared stock; new and due leave out pending and suspended
   phrases). Band: one
   mastery band, also leaving out pending and suspended phrases (so New
   matches the new filter; a suspended phrase is found under Suspended). Sort: recently seen, due first, weakest first, A to Z,

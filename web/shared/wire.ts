@@ -1318,7 +1318,7 @@ export interface TranscribeReply {
 export type MasteryBand = "New" | "Learning" | "Familiar" | "Mastered";
 export type PhraseSource = "gloss" | "extraction" | "manual" | "scenario";
 /** The bank view's filters (GET /api/phrases?show=). */
-export type PhraseShow = "all" | "starred" | "new" | "due" | "trouble" | "pending" | "suspended";
+export type PhraseShow = "all" | "starred" | "new" | "due" | "trouble" | "pending" | "suspended" | "pictures";
 export type PhraseSort = "recent" | "due" | "weakest" | "alpha" | "added";
 
 /** One phrase as the bank lists it, with its metrics (DATA.md §Metrics). */
@@ -1353,6 +1353,9 @@ export interface PhraseSummary {
   trouble: boolean;
   cardCount: number;
   exampleCount: number;
+  /** The phrase has a ready picture (drawn or shared stock); set by the
+   *  bank's list only, absent elsewhere. */
+  hasPicture?: boolean;
 }
 
 export interface PhraseExample {
