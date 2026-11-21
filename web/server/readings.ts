@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { localeFor } from "../../scripts/voice.mjs";
-import { listCorrections, phrasesWith, saveCorrection, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
-import { SharedFullError, activeList, adminList, confirm, exportActive, propose, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
+import { MAX_RECAP_READINGS, parseRecapReadings } from "../../scripts/extraction.mjs";
+import { listCorrections, phrasesWith, saveCorrection, saveRecapReading, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
+import { SharedFullError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
-import { correctionKey, correctionScope, makeCorrections, readCodePoints, validateCorrection, type Corrections } from "../src/script/zh.ts";
+import { correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
 import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -82,6 +83,169 @@ export async function rereadPhrases(profile: LanguageProfileRef, locale: string,
     if (reading && reading !== p.reading && (await setPhraseReading(db, profile, p.id, p.text, reading))) changed++;
   }
   return changed;
+}
+
+/* ---------------------------------- recap ---------------------------------- */
+
+/** A stored turn as the recap reads it. */
+interface TurnLike {
+  role: string;
+  fromClient?: boolean | null;
+  lines?: { text?: string; segments?: { lang?: string; text?: string }[] }[] | null;
+}
+
+/** The dojo master's target-language text in `turns`, piece by piece (a
+ *  line's target segments, else its text). Never the learner's words: a
+ *  kids learner's are not sent anywhere for this, and an adult's are what
+ *  the speech-to-text heard, not text the reader showed them. */
+function masterTexts(turns: readonly TurnLike[]): string[] {
+  const out: string[] = [];
+  for (const t of turns) {
+    if (t.role !== "master" || t.fromClient) continue;
+    for (const l of t.lines ?? []) {
+      const segs = (l.segments ?? []).filter((s) => s?.lang === "target" && typeof s.text === "string" && s.text.trim());
+      if (segs.length) for (const s of segs) out.push(s.text!.normalize("NFC"));
+      else if (typeof l.text === "string" && l.text.trim()) out.push(l.text.normalize("NFC"));
+    }
+  }
+  return out;
+}
+
+/** One uncertain word of a session, as the recap is asked about it. */
+export interface RecapWord {
+  word: string;
+  key: string;
+  /** The dojo master's text it is in (the first). */
+  sentence: string;
+  /** Where it starts there, as a UTF-16 offset. */
+  at: number;
+  /** What the reader shows over it there (for this learner). */
+  reading: string[];
+}
+
+/**
+ * The uncertain words of a session's dojo-master lines (zh.ts
+ * uncertainWords, read with this learner's corrections and the shared
+ * list, so a word a person settled is not asked again): each once (by its
+ * key), with the first line it is in, at most `max`, in order of
+ * appearance.
+ */
+export function uncertainInTranscript(turns: readonly TurnLike[], locale: string, corrections: Corrections | null, max = MAX_RECAP_READINGS): RecapWord[] {
+  const out: RecapWord[] = [];
+  const seen = new Set<string>();
+  for (const text of masterTexts(turns)) {
+    for (const w of uncertainWords(text, locale, { cache: false, corrections })) {
+      const key = correctionKey(w.word);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ word: w.word, key, sentence: text, at: [...text].slice(0, w.start).join("").length, reading: w.reading });
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
+/** How many words of a session's dojo-master lines the shared list read
+ *  otherwise than the reader would have (the admin view's count). */
+export function sharedChanges(turns: readonly TurnLike[], locale: string, shared: Corrections): number {
+  if (!shared.shared.size) return 0;
+  let n = 0;
+  for (const text of masterTexts(turns)) {
+    const base = readDetail(text, locale, { cache: false, corrections: null });
+    const now = readDetail(text, locale, { cache: false, corrections: shared });
+    for (let k = 0; k < now.fixed.length; ) {
+      if (now.fixed[k] !== "shared") {
+        k++;
+        continue;
+      }
+      let e = k;
+      let differs = false;
+      // A run of the list's readings (two entries side by side count once).
+      while (e < now.fixed.length && now.fixed[e] === "shared") {
+        if (now.readings[e] !== base.readings[e]) differs = true;
+        e++;
+      }
+      if (differs) n++;
+      k = e;
+    }
+  }
+  return n;
+}
+
+/** What became of one word the recap was asked about. */
+export interface JudgedReading {
+  word: string;
+  key: string;
+  sentence: string;
+  at: number;
+  /** The reader's reading there, space separated. */
+  reader: string;
+  /** The model's answer once checked (validateHint), or null. */
+  answer: string | null;
+  /** differs: checked, and not the reader's (a suggestion); agrees:
+   *  checked, the reader's (confirmed for this learner); dropped: no
+   *  answer, or one that failed a check. */
+  verdict: "differs" | "agrees" | "dropped";
+}
+
+/**
+ * The recap's `readings` judged (pure, before anything is written): each
+ * answer for a word it was asked about passes zh.ts validateHint (one
+ * syllable per character, each a reading that character has, never
+ * against the library's dictionary) or is dropped; an accepted one is
+ * compared with the reader's reading in the line.
+ */
+export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, locale: string): { judged: JudgedReading[]; stats: { offered: number; answered: number; accepted: number; differs: number; dropped: number } } {
+  const { readings } = parseRecapReadings(raw, asked.map((w) => w.word));
+  const answers = new Map(readings.map((r) => [r.word, r.pinyin]));
+  const stats = { offered: asked.length, answered: readings.length, accepted: 0, differs: 0, dropped: 0 };
+  const judged = asked.map((w): JudgedReading => {
+    const base = { word: w.word, key: w.key, sentence: w.sentence, at: w.at, reader: w.reading.join(" ") };
+    const raw = answers.get(w.word);
+    const v = raw == null ? null : validateHint(w.word, raw, locale);
+    if (!v || !v.ok) {
+      stats.dropped++;
+      return { ...base, answer: null, verdict: "dropped" };
+    }
+    stats.accepted++;
+    const answer = v.reading.join(" ");
+    if (answer === base.reader) return { ...base, answer, verdict: "agrees" };
+    stats.differs++;
+    return { ...base, answer, verdict: "differs" };
+  });
+  return { judged, stats };
+}
+
+/**
+ * What a recap's judged readings write, once the recap itself is stored:
+ * for this learner, a suggestion (differs) or a confirmation (agrees),
+ * never over a choice they made by hand; a suggestion to the shared list
+ * (the recap's, active once a learner agrees or an admin confirms); the
+ * bank phrases with a suggested word reread. Then the session's count of
+ * readings the shared list changed.
+ */
+export async function settleRecapReadings(profile: LanguageProfileRef, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
+  const db = rawDb();
+  for (const j of judged) {
+    if (j.verdict === "dropped" || !j.answer) continue;
+    const kind = j.verdict === "differs" ? "suggested" : "confirmed";
+    const wrote = await saveRecapReading(db, profile, { key: j.key, word: j.word, reading: j.answer, kind });
+    if (j.verdict !== "differs") continue;
+    const v = validateCorrection(j.word, j.answer, locale);
+    if (v.ok) {
+      await propose(db, { word: v.word, key: j.key, reading: j.answer, scope: correctionScope(v.word, v.reading, locale) }, "recap", null).catch((e) => {
+        if (!(e instanceof SharedFullError)) throw e;
+      });
+    }
+    if (wrote) await rereadPhrases(profile, locale, j.word);
+  }
+  await recordUses(db, conversationId, sharedChanges(turns, locale, makeCorrections({ shared: (await activeList(db)).entries })));
+}
+
+/** One log line per recap that was asked to read: counts only, never the words. */
+export function logRecapReadings(conversationId: string, s: ReturnType<typeof judgeRecapReadings>["stats"]): void {
+  if (!s.offered) return;
+  console.log(`[lingo-dojo] recap of conversation ${conversationId}: readings ${s.offered} asked, ${s.answered} answered, ${s.accepted} accepted (${s.differs} differ from the reader), ${s.dropped} dropped`);
 }
 
 /** /api/readings, mounted with wrap's `learner: true`. */

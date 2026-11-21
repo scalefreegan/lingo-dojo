@@ -20,6 +20,8 @@ import { getModel } from "./store.ts";
 import { loadContent, modeRoot } from "../../scripts/content.mjs";
 import { picturesAfterSession } from "./pictures.ts";
 import { offeredReview } from "./recall.ts";
+import { correctionsFor, judgeRecapReadings, logRecapReadings, settleRecapReadings, uncertainInTranscript } from "./readings.ts";
+import { readsHints } from "./hints.ts";
 
 // The post-session extraction (docs/DATA.md §Post-session extraction): when
 // a conversation ends, one tool-less `claude -p` reads its transcript and
@@ -176,7 +178,14 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
     // carries no corrections, and storedRevisit says so).
     const revisit = storedRevisit(conv.packSnapshot);
     const lastTime = lastTimeSection(revisit);
+    // Mandarin (ld-4i2, docs/VOICE.md §Uncertain readings): the dojo
+    // master's words the reader couldn't settle for this learner, so the
+    // recap reads them in context. None (or another language): the prompt
+    // is exactly what it was.
+    const zhLocale = locale && readsHints(locale) ? locale : null;
+    const toRead = zhLocale ? uncertainInTranscript(rows, zhLocale, await correctionsFor(profile)) : [];
     const { system, user } = extractionPrompt({
+      readings: toRead.map((w) => ({ word: w.word, sentence: w.sentence })),
       lastTime,
       transcript: sessionTranscript(rows),
       nativeLanguage: conv.nativeLanguage || owner.nativeLanguage || "English",
@@ -212,9 +221,17 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
       if (parsed.dropped) console.warn(`[lingo-dojo] recap of conversation ${conv.id}: ${parsed.dropped} malformed item(s) dropped`);
       const judged = parseLastTime(extractJsonObject(text)?.last_time, revisit?.corrections?.length ?? 0);
       const vsLast = compareAttempts(revisit, parsed.value.events, judged);
+      // The readings it gave, each checked like a hint (nothing is written yet).
+      const read = zhLocale ? judgeRecapReadings(toRead, extractJsonObject(text)?.readings, zhLocale) : null;
       // null: the claim was taken over (this run was presumed dead); the
       // run that has it now writes.
-      await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows, vsLast });
+      const stored = await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows, vsLast, readings: read?.judged });
+      if (stored && zhLocale && read) {
+        logRecapReadings(conv.id, read.stats);
+        // After the recap is stored (its kept phrases are in the bank): a
+        // failure here is logged, never the recap's.
+        await settleRecapReadings(profile, conv.id, zhLocale, read.judged, rows).catch((e) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: readings: ${detail(e)}`));
+      }
       return;
     }
     await fail(why || REASON.none, logged || why || REASON.none);
@@ -271,6 +288,9 @@ async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<Se
     // The earlier session's id only while it still exists (the link
     // column nulls on its delete); the comparison itself stays.
     vsLast: stored?.vsLast ? { ...stored.vsLast, from: c.previousConversationId } : null,
+    // The words to check (ld-4i2): an adult's only (nothing of it is shown
+    // to a child); the card shows each one the learner hasn't settled since.
+    readings: c.mode === "kids" ? [] : (stored?.readings ?? []).filter((r) => r.verdict !== "agrees").map((r) => ({ word: r.word, sentence: r.sentence, at: r.at, suggested: r.verdict === "differs" })),
   };
 }
 

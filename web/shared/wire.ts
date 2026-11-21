@@ -992,6 +992,11 @@ export interface SessionRecap {
   /** Compared with the attempt this session built on (adults); null when
    *  it built on none. */
   vsLast: RecapVsLast | null;
+  /** Mandarin readings to check (ld-4i2, adults; [] for a kids learner):
+   *  words the reader couldn't settle that the recap didn't confirm, each
+   *  in the dojo master's line it came from (`at`: UTF-16 offset there);
+   *  `suggested`: the recap gave a reading of its own, now shown. */
+  readings: { word: string; sentence: string; at: number; suggested: boolean }[];
 }
 
 /** The recap's "since last time" (scripts/revisit.mjs compareAttempts). */

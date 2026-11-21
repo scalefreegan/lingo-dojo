@@ -4,6 +4,8 @@ import { openBank } from "../bankLink";
 import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from "../types";
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
+import { ReadingFix } from "./ReadingFix";
+import { useCorrectionsVersion, useZhReader } from "../script/ruby.tsx";
 import { Badge, Button } from "./ui";
 
 /* The session recap (docs/DATA.md §Post-session extraction), under the
@@ -268,6 +270,7 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
             </div>
           )}
           {!kids && recap.vsLast && <SinceLastTime vs={recap.vsLast} locale={locale} />}
+          {!kids && locale && recap.readings?.length > 0 && <ReadingsToCheck items={recap.readings} locale={locale} />}
           {!recap.inBank && <p className="text-xs text-fg-3">This session was in another language than this phrase bank's, so nothing went into it.</p>}
           {recap.inBank && !kids && recap.events.some((e) => e.reviewed) && (
             <p className="text-xs text-fg-3">How you did on these phrases is in your phrase bank's practice schedule.</p>
@@ -275,6 +278,37 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
         </>
       )}
     </section>
+  );
+}
+
+/** "Readings to check" (ld-4i2, docs/VOICE.md §Uncertain readings): the
+ *  words of the session the reader couldn't settle and the recap didn't
+ *  confirm, each in the dojo master's line, read now (with the learner's
+ *  corrections), and only while it is still uncertain: one corrected or
+ *  confirmed since (here, on the card, anywhere) leaves the list. Adults
+ *  only; nothing when every one is settled. */
+function ReadingsToCheck({ items, locale }: { items: { word: string; sentence: string; at: number; suggested: boolean }[]; locale: string }) {
+  const zh = useZhReader(true);
+  const version = useCorrectionsVersion();
+  if (!zh) return null;
+  void version;
+  const open = items.map((it) => ({ it, unit: zh.wordAt(it.sentence, locale, it.at) })).filter((x) => x.unit?.unsure);
+  if (!open.length) return null;
+  return (
+    <div data-testid="recap-readings">
+      <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">Readings to check</h4>
+      <p className="mt-0.5 text-xs text-fg-3">The program wasn't sure how these were read. Check each one: your choice is kept, and helps everyone's readings.</p>
+      <ul className="mt-1 flex flex-col gap-2">
+        {open.map(({ it, unit }) => (
+          <li key={`${it.word}:${it.at}`} className="rounded-lg border border-line p-2">
+            <p className="mb-1 text-sm text-fg-2" lang={locale}>
+              <RubyText text={it.sentence} locale={locale} check />
+            </p>
+            <ReadingFix word={unit!.word} reading={unit!.reading} locale={locale} unsure suggested={unit!.suggested} />
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
