@@ -252,11 +252,37 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   The readings come from the browser, not the dojo master or a model:
   `web/src/script/zh.ts` runs pinyin-pro word by word (so 銀行 reads yín
   háng, 長大 zhǎng dà) over the text spelled in simplified characters one
-  for one (its word list is simplified; the table is Unihan's), then
-  applies Taiwan's standard readings for a zh-TW profile (星期 xīng qí,
-  垃圾 lè sè). A traditional character that shares its simplified form
-  with another keeps a reading of its own (髮 fà, never 發's fā; 幹 gàn,
-  not 乾's gān). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  for one (its word list is simplified). The spelling is OpenCC's
+  traditional → simplified tables (`web/src/script/t2s.ts`: TSPhrases then
+  TSCharacters, longest match), which choose by the word where a character
+  has several simplified forms (蘋果 苹果 píng guǒ, 瞭解 了解, 徵求 征求 but
+  宮商角徵羽, 乾淨 干净 but 乾隆); t2s.ts runs them itself so every character
+  keeps its place (a table entry that is not one for one is taken character
+  by character), and decides Taiwan's 著 by its neighbours (看著 zhe, 睡著
+  zháo, 著名 zhù). OpenCC assumes traditional input, so simplified text is
+  never converted (it would turn 打坏 into 打坯, pī): a zh-TW profile's text
+  always is converted; a zh-CN profile's is decided by its characters
+  (`scriptOf`): one with a traditional-only character (見 這 們 蘋) is
+  converted, else one with a simplified-only character (们 这 发) is read
+  as it is, and one with neither (乾杯, 看著, 於是, 瞭解) is converted with
+  著 read zhù unless its neighbours make it zhe / zháo / zhuó (著者, 合著
+  stay zhù) and 徵 kept as the note alone or beside another. A phrase whose
+  key is already simplified text (坏, 么 …) is never applied, and a 瞭
+  OpenCC spells 了 (明瞭, 瞭解) is always liǎo, the particle after it le. Then it applies Taiwan's standard readings for a zh-TW
+  profile (星期 xīng qí, 垃圾 lè sè). A traditional character that shares
+  its simplified form with another keeps a reading of its own (髮 fà, never
+  發's fā; 幹 gàn, not 乾's gān); any other reading from the word stands,
+  since the library's lists for traditional characters are short (間 lists
+  only jiàn: 時間 is shí jiān). A short correction list (`READING_FIXES`:
+  囂 xiāo, 睡不著 / 找不著 / 用不著 / 犯不著 zháo, 處理不當 dàng, 年輕有為
+  wéi, 挨餓 / 挨打 ái, 簡單明瞭 liǎo, 北斗星 dǒu) fixes everyday words the library misreads in either
+  script; each entry wins over the library's word matching even across two
+  words, so only ones that can't misfire are kept (和面 would read
+  牛奶和面包 huó), found by the CC-CEDICT sweep (`npm run pinyin:sweep`,
+  `scripts/pinyin-sweep.mjs`: every traditional headword of CC-CEDICT read
+  for zh-TW and zh-CN and its simplified one for zh-CN, compared with the
+  dictionary; run by hand, the dictionary downloaded into the gitignored
+  `data/cedict/`, nothing of it shipped). The library reads every 地 dì, 得 dé and 儿 ér, so a few
   narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
   開心地) and never where it starts a word (看看地圖); 得 is de only after
   a listed verb and before a degree word (跑得很快), never after a pronoun
@@ -282,7 +308,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   counterpart, and the phrases in this language's bank that contain it or
   its counterpart (the bank's own search). Transcript lines keep their one
   tap (a glossed word's meaning); characters are reached through the
-  definition, so the two never compete. Kids mode makes the glyph bigger,
+  definition, so the two never compete. A character tapped in a word leads
+  with its reading there (蘋 from 蘋果: píng, ㄆㄧㄥˊ; 行 from 銀行: háng),
+  then the rest; alone, a traditional character that is just the spelling
+  of its simplified form leads with that form's usual reading (蘋 píng, 間
+  jiān, 還 hái). Only the usual reading is played as the character itself;
+  a word's other reading is said by an exemplar. Kids mode makes the glyph bigger,
   plays the strokes first and slower, and words it for a child. Everything
   is served by this app: stroke data from the hanzi-writer-data package at
   `/hanzi-data/<character>.json` (`web/server/hanzi.ts`, one small file per
@@ -290,7 +321,11 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   stroke counts and counterparts from `web/src/script/zh-chars.json`
   (generated from the Unicode Unihan database by
   `scripts/gen-zh-chars.mjs`, its own chunk, fetched on the first tap).
-  Licences: pinyin-pro and Hanzi Writer are MIT; the stroke data is from
+  Licences: pinyin-pro, opencc-js and Hanzi Writer are MIT; OpenCC's
+  dictionary data (TSPhrases, TSCharacters, in the reader's chunk) is
+  Apache-2.0, its notice in `web/src/script/OPENCC-LICENSE.txt`; the
+  CC-CEDICT the sweep downloads is CC BY-SA 4.0 and is never committed or
+  bundled; the stroke data is from
   Make Me a Hanzi under the Arphic Public License (its text ships in the
   package; the card credits it); Unihan is under the Unicode License v3,
   whose notice is in the generated files and

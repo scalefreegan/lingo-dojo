@@ -71,20 +71,11 @@ for (const ch of [...wanted].sort()) {
   chars[ch] = [row.kDefinition ?? "", row.kMandarin ?? "", (row.kRSUnicode ?? "").split(/\s+/)[0], strokes, trad, simp];
 }
 
-// The traditional → simplified table the pinyin reader spells a text with
-// (script.ts simplifyForReading): every character with exactly one
-// simplified form that isn't itself, one for one. One that is also its own
-// simplified form (乾: 乾 or 干) is left out: context decides those.
-const t2s = {};
-for (const [ch, row] of data) {
-  const simp = fromCps(row.kSimplifiedVariant);
-  if (!simp.length || simp.includes(ch)) continue;
-  const one = [...new Set(simp)];
-  if (one.length === 1 && [...one[0]].length === 1 && ch.length === 1) t2s[ch] = one[0];
-}
-
+// The pinyin reader's traditional → simplified spelling is no longer built
+// here (it was zh-t2s.json, one character for one, which left out every
+// character with several simplified forms: 蘋 read pín in 蘋果); it is
+// OpenCC's phrase tables now (web/src/script/t2s.ts, ld-37t).
 const notice = fs.readFileSync(path.join(here, "..", "web", "src", "script", "UNICODE-LICENSE.txt"), "utf8");
 const source = `Unicode Unihan database ${version} (https://www.unicode.org/reports/tr38/)`;
 fs.writeFileSync(path.join(web, "src", "script", "zh-chars.json"), JSON.stringify({ _source: source, _license: notice, chars }) + "\n");
-fs.writeFileSync(path.join(web, "src", "script", "zh-t2s.json"), JSON.stringify({ _source: source, _license: notice, t2s }) + "\n");
-console.log(`${Object.keys(chars).length} characters and ${Object.keys(t2s).length} traditional → simplified pairs from Unihan ${version}`);
+console.log(`${Object.keys(chars).length} characters from Unihan ${version}`);

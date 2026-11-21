@@ -16,8 +16,16 @@ export interface ScriptState {
   setMode: (mode: RubyMode) => void;
   /** Kids mode: the character card is sized and worded for a child. */
   kids: boolean;
-  /** Open the character card for `ch`, read for `locale`. */
-  openChar: (ch: string, locale: string) => void;
+  /** Open the character card for `ch`, read for `locale`; `from` is the
+   *  text it was tapped in and its UTF-16 offset there, so the card leads
+   *  with the reading it has in that word (蘋 in 蘋果: píng). */
+  openChar: (ch: string, locale: string, from?: CharContext) => void;
+}
+
+/** Where a character on the card was tapped: its text and offset. */
+export interface CharContext {
+  text: string;
+  at: number;
 }
 
 const NONE: ScriptState = { stored: null, setMode: () => undefined, kids: false, openChar: () => undefined };

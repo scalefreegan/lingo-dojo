@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import type HanziWriterType from "hanzi-writer";
 import { listPhrases } from "../api";
-import { loadZh, useScript, useZhReader } from "../script/ruby.tsx";
+import { loadZh, useScript, useZhReader, type CharContext } from "../script/ruby.tsx";
 import { ARPHIC_LICENSE_URL, parseRadical } from "../script/script.ts";
 import { TONE_SOUNDS, syllableParts, zhuyinSound } from "../script/sounds.ts";
 import type { ZhCharRow } from "../script/zh-chars.d.json.ts";
@@ -70,7 +70,7 @@ const css = (name: string) => getComputedStyle(document.documentElement).getProp
 const firstSense = (s: string) => s.split(/;|,(?![^(]*\))/)[0].trim();
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-export default function CharCard({ ch, locale, onClose }: { ch: string; locale: string; onClose: () => void }) {
+export default function CharCard({ ch, locale, from, onClose }: { ch: string; locale: string; from?: CharContext; onClose: () => void }) {
   const { kids, openChar } = useScript();
   const zh = useZhReader(true);
   const sound = useSound(locale);
@@ -81,7 +81,9 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
   // reply: a card that moved on to another character shows "loading" for
   // it rather than the last one's data.
   const [entry, setEntry] = useState<{ ch: string; row: ZhCharRow | null; radicalMeaning: string; error?: string } | null>(null);
-  const [read, setRead] = useState<{ key: string; list: string[] | null; error?: string } | null>(null);
+  // The readings to list (the one in the word it was tapped in first) and
+  // the character's usual one (what a voice says for it alone).
+  const [read, setRead] = useState<{ key: string; list: string[] | null; usual?: string; inWord?: boolean; error?: string } | null>(null);
   const [bank, setBank] = useState<{ key: string; list: PhraseSummary[] | null; error?: string } | null>(null);
 
   // A modal from the first frame: the rest of the page is inert behind it.
@@ -107,21 +109,33 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
     };
   }, [ch]);
 
-  const readKey = `${ch}\u0001${locale}`;
+  const fromText = from?.text ?? "";
+  const fromAt = from?.at ?? -1;
+  const readKey = `${ch}\u0001${locale}\u0001${fromText}\u0001${fromAt}`;
   useEffect(() => {
     let gone = false;
     loadZh().then(
-      (zh) => !gone && setRead({ key: readKey, list: zh.charReadings(ch, locale) }),
+      (zh) => {
+        if (gone) return;
+        // The reading over the character where it was tapped (蘋 in 蘋果:
+        // píng), when it is there: it leads the list.
+        const inContext = fromAt >= 0 && fromText.startsWith(ch, fromAt) ? zh.readOffsets(fromText, locale)[fromAt] : null;
+        const usual = zh.charReadings(ch, locale)[0];
+        const list = zh.charReadings(ch, locale, inContext);
+        setRead({ key: readKey, list, usual, inWord: !!inContext && inContext !== usual });
+      },
       () => !gone && setRead({ key: readKey, list: null, error: "The pinyin reader didn't load." }),
     );
     return () => {
       gone = true;
     };
-  }, [ch, locale, readKey]);
+  }, [ch, locale, readKey, fromText, fromAt]);
 
   const loaded = entry?.ch === ch ? entry : null;
   const row = loaded ? loaded.row : undefined;
   const readings = read?.key === readKey ? read.list : null;
+  const usualReading = read?.key === readKey ? read.usual : undefined;
+  const inWord = read?.key === readKey && !!read.inWord;
   const error = loaded?.error ?? (read?.key === readKey ? read.error : undefined);
   const radicalMeaning = loaded?.radicalMeaning ?? "";
 
@@ -223,11 +237,15 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
             {shownReadings.length > 0 && (
               <ul className={`flex flex-wrap gap-x-5 gap-y-2 ${kids ? "justify-center" : ""}`} aria-label="Readings">
                 {(kids ? shownReadings.slice(0, 1) : shownReadings).map((r, k) => (
-                  <Reading key={r} reading={r} primary={k === 0} ch={ch} locale={locale} kids={kids} zh={zh} sound={sound} />
+                  <Reading key={r} reading={r} primary={k === 0} usual={r === usualReading} ch={ch} locale={locale} kids={kids} zh={zh} sound={sound} />
                 ))}
               </ul>
             )}
-            {readings && readings.length > 1 && !kids && <p className="text-sm text-fg-3 sm:text-xs">First is the usual reading; the others depend on the word.</p>}
+            {readings && readings.length > 1 && !kids && (
+              <p className="text-sm text-fg-3 sm:text-xs">
+                {inWord ? "First is its reading in the word you tapped; the others depend on the word." : "First is the usual reading; the others depend on the word."}
+              </p>
+            )}
             {shownReadings.length > 0 && (
               <p className="text-sm text-fg-3 sm:text-xs">{kids ? "Tap a sound to hear it." : "Tap a letter, a zhuyin symbol or the tone mark to hear it."}</p>
             )}
@@ -338,7 +356,7 @@ export default function CharCard({ ch, locale, onClose }: { ch: string; locale: 
           <a className="underline" href={ARPHIC_LICENSE_URL} target="_blank" rel="noreferrer">
             Arphic Public License
           </a>
-          ) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro.
+          ) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro, traditional text through OpenCC's tables (Apache-2.0).
         </p>
       </div>
     </dialog>
@@ -506,13 +524,15 @@ function Strokes({ ch, locale, kids, sound }: { ch: string; locale: string; kids
  *  the whole syllable (the character for the first reading, an exemplar
  *  read only this way for another). `zh` is the reader once loaded: until
  *  then an exemplar is unknown and its button waits. */
-function Reading({ reading, primary, ch, locale, kids, zh, sound }: { reading: string; primary: boolean; ch: string; locale: string; kids: boolean; zh: ZhReader | null; sound: SoundPlayer }) {
+function Reading({ reading, primary, usual, ch, locale, kids, zh, sound }: { reading: string; primary: boolean; usual: boolean; ch: string; locale: string; kids: boolean; zh: ZhReader | null; sound: SoundPlayer }) {
   const parts = syllableParts(reading);
   const inScript = (t: string) => (zh ? zh.inScript(t, locale) : t);
   // What the speaker button says: the character's own usual reading, or a
   // character whose only reading is this one (null: none among the common
   // characters; undefined: the reader is still loading).
-  const said: string | null | undefined = primary ? ch : zh ? zh.exemplars(locale).exact(reading) : undefined;
+  // Only the usual reading is the character said alone: one led with
+  // because of its word (行 háng from 銀行) is said by an exemplar too.
+  const said: string | null | undefined = usual ? ch : zh ? zh.exemplars(locale).exact(reading) : undefined;
   const symbolText = (s: string) => {
     const e = zhuyinSound(s);
     return e ? inScript(e.char) : null;
@@ -557,12 +577,12 @@ function Reading({ reading, primary, ch, locale, kids, zh, sound }: { reading: s
           style={{ borderBottom: 0 }}
           disabled={!said}
           aria-busy={said != null && sound.busy === said}
-          aria-label={said ? `Hear ${reading}${primary ? "" : `, as in ${said}`}` : `Can't play ${reading} on its own`}
+          aria-label={said ? `Hear ${reading}${usual ? "" : `, as in ${said}`}` : `Can't play ${reading} on its own`}
           title={
             said === null
               ? `No common character is read only ${reading}, and ${ch} alone would be said with its usual reading, so this one can't be played on its own.`
               : said
-                ? `Hear ${reading}${primary ? "" : ` (said with ${said}, read only ${reading}; ${ch} alone would be said its usual way)`}`
+                ? `Hear ${reading}${usual ? "" : ` (said with ${said}, read only ${reading}; ${ch} alone would be said its usual way)`}`
                 : "Loading…"
           }
           onClick={() => said && void sound.play(said)}
@@ -570,7 +590,7 @@ function Reading({ reading, primary, ch, locale, kids, zh, sound }: { reading: s
         >
           🔊
         </button>
-        {!primary && said && (
+        {!usual && said && (
           <span className="text-sm text-fg-3">
             as in{" "}
             <span lang={locale} className="text-fg-2">

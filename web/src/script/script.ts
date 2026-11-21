@@ -131,31 +131,7 @@ export function hanChars(text: string): string[] {
   return seen;
 }
 
-/* ------------------------- traditional → simplified ----------------------- */
-
-/** The text in simplified characters, one for one (the same length and
- *  offsets), for reading: pinyin-pro's word dictionary is simplified, so
- *  a traditional word only gets its in-context reading (銀行 yín háng, not
- *  yín xíng) once it is spelled that way. `toSimp` is the Unihan table
- *  (zh-t2s.json), which leaves out 裡 / 裏 (both 里 here) and the two
- *  characters whose simplified form depends on their neighbours: 著 is 着
- *  (the zhe / zháo of 看著, 睡著) except in 著名, 顯著 and their like, and
- *  乾 is 干 (dry: 乾淨) except in 乾隆, 乾坤. */
-export function simplifyForReading(text: string, toSimp: Record<string, string>): string {
-  const cps = [...text];
-  return cps
-    .map((c, i) => {
-      // "\0" for no neighbour: "".includes would find it in any list.
-      const next = cps[i + 1] ?? "\0";
-      const prev = cps[i - 1] ?? "\0";
-      if (c === "著") return "名作稱称述".includes(next) || "顯显名土編编原巨論论專专".includes(prev) ? c : "着";
-      if (c === "乾") return "隆坤".includes(next) ? c : "干";
-      const s = c === "裡" || c === "裏" ? "里" : toSimp[c];
-      // Only a one-for-one swap: anything else would shift every offset after it.
-      return s && [...s].length === 1 ? s : c;
-    })
-    .join("");
-}
+/* ----------------------------- Taiwan readings ---------------------------- */
 
 /** Taiwan's standard readings (the Ministry of Education's dictionary)
  *  where they differ from the mainland's, for common characters. Applied

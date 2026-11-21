@@ -36,7 +36,7 @@ categories:
     - { id: rabbit, description: a grey rabbit with long ears, words: [rabbit, bunny] }
     - { id: frog, description: a green frog sitting, words: [frog] }
     - { id: bear, description: a friendly brown bear sitting, words: [bear] }
-    - { id: lion, description: a smiling lion with a golden mane, words: [lion] }
+    - { id: lion, description: a friendly lion cub with a fluffy golden mane, words: [lion] }
     - { id: elephant, description: a grey elephant with a curled trunk, words: [elephant] }
     - { id: monkey, description: a cheerful brown monkey, words: [monkey] }
     - { id: giraffe, description: a tall spotted giraffe, words: [giraffe] }
