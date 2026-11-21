@@ -9,8 +9,9 @@ import { HttpError } from "./sse.ts";
 //    /transcribe, /cast), the character card's sounds (/sound), the
 //    Practice tab's phrase audio and speak-it transcription, and Azure
 //    pronunciation scoring (which scores locally when it's busy);
-//  - background (backgroundSlot): writing cloze sentences, which nothing
-//    waits for.
+//  - background (backgroundSlot): writing cloze sentences and the word
+//    game's pictures, which nothing waits for. A picture run that finds it
+//    taken waits its turn (backgroundSlotWhenFree); cloze skips.
 // The Go tab's turn is not here: it runs `claude -p` on the owner's login,
 // one at a time per conversation already (conversations.ts takeTurnLock).
 
@@ -56,4 +57,39 @@ export class BackgroundBusy extends Error {}
 /** Run `fn` in the user's background slot, or throw BackgroundBusy. */
 export function backgroundSlot<T>(userId: string, fn: () => Promise<T>): Promise<T> {
   return slot(backgroundRunning, BACKGROUND_PER_USER, userId, () => new BackgroundBusy("a background call is already running"), fn);
+}
+
+/** How long a background caller waits for the user's slot, and how often
+ *  it looks. */
+export interface SlotWait {
+  maxMs: number;
+  everyMs: number;
+}
+
+/**
+ * Run `fn` in the user's background slot, waiting while it is taken: asked
+ * again every `everyMs` (the server's side of web/src/api.ts whenFree),
+ * for at most `maxMs`, then BackgroundBusy like backgroundSlot. Nothing is
+ * held while it waits: the slot is only ever taken by the try that runs
+ * `fn`, so a waiter never blocks whoever has it or anyone else, and `fn`
+ * runs at most once. What `fn` checks (a daily cap) it must check inside:
+ * the wait may have been long. The timer is unref'd: a wait never keeps a
+ * stopping server alive.
+ */
+export async function backgroundSlotWhenFree<T>(userId: string, fn: () => Promise<T>, wait: SlotWait): Promise<T> {
+  const until = Date.now() + wait.maxMs;
+  for (;;) {
+    // BackgroundBusy from the slot itself, before `fn` started: `started`
+    // tells it from one `fn` threw (a nested call), which is never retried.
+    let started = false;
+    try {
+      return await backgroundSlot(userId, () => {
+        started = true;
+        return fn();
+      });
+    } catch (e) {
+      if (started || !(e instanceof BackgroundBusy) || Date.now() + wait.everyMs > until) throw e;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, wait.everyMs).unref());
+  }
 }

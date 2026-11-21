@@ -134,6 +134,20 @@ export function cleanDescription(v, names = []) {
 }
 
 /**
+ * A description a grown-up gave for a word the check left out (`none`), by
+ * the same rules as the check's own (cleanDescription: the characters, the
+ * caps, no learner's name): `{ description }`, or `{ error }` saying why
+ * there is nothing to draw, so the grown-up can be told which: "name" (a
+ * word of it names a learner on the account, so none of it is sent) or
+ * "nothing" (no word says what to draw).
+ */
+export function grownUpDescription(v, names = []) {
+  const description = cleanDescription(v, names);
+  if (description) return { description };
+  return { error: cleanDescription(v, []) ? "name" : "nothing" };
+}
+
+/**
  * What the image provider is asked, or null when there is nothing left to
  * draw (see cleanDescription; the word then gets no picture). The fixed
  * style comes first and is the safety: a flat friendly children's-book

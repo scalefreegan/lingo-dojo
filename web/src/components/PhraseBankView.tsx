@@ -73,6 +73,9 @@ function dueLabel(p: PhraseSummary): string {
 /** `initialQuery`: a search to open with (a session recap's "In the bank"). */
 export default function PhraseBankView({ initialQuery = "", kids = false }: { initialQuery?: string; kids?: boolean } = {}) {
   const [q, setQ] = useState(initialQuery);
+  // Bumped when a word's picture changed in its detail (or the word was
+  // deleted): the pictures' status line above reads its counts again.
+  const [pictureChanges, setPictureChanges] = useState(0);
   const [query, setQuery] = useState<Required<Pick<PhraseQuery, "q" | "show" | "band" | "sort">>>({ q: initialQuery.trim(), show: "all", band: "", sort: "recent" });
   const [data, setData] = useState<PhrasesReply | null>(null);
   const [loading, setLoading] = useState(true);
@@ -163,7 +166,7 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
         }}
       />
       {/* A kids learner's bank: the word game's pictures (the grown-up's side). */}
-      {kids && <PicturesBar />}
+      {kids && <PicturesBar refresh={pictureChanges} />}
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -236,8 +239,10 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
               onToggle={() => setOpenId((id) => (id === p.id ? null : p.id))}
               kids={kids}
               onChanged={refresh}
+              onPictureChanged={() => setPictureChanges((n) => n + 1)}
               onDeleted={() => {
                 setOpenId(null);
+                setPictureChanges((n) => n + 1);
                 setNotice(`Deleted “${p.text ?? p.meaning}”.`);
                 refresh();
               }}
@@ -315,6 +320,7 @@ function PhraseRow({
   kids = false,
   onToggle,
   onChanged,
+  onPictureChanged,
   onDeleted,
 }: {
   p: PhraseSummary;
@@ -323,6 +329,7 @@ function PhraseRow({
   kids?: boolean;
   onToggle: () => void;
   onChanged: () => void;
+  onPictureChanged?: () => void;
   onDeleted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -388,7 +395,7 @@ function PhraseRow({
         </button>
       </div>
       {error && <p className="mt-1 text-sm text-err">{error}</p>}
-      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onDeleted={onDeleted} />}
+      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onPictureChanged={onPictureChanged} onDeleted={onDeleted} />}
     </li>
   );
 }
@@ -402,6 +409,7 @@ function PhraseDetailView({
   summary,
   kids = false,
   onChanged,
+  onPictureChanged,
   onDeleted,
 }: {
   id: string;
@@ -409,6 +417,7 @@ function PhraseDetailView({
   summary: PhraseSummary;
   kids?: boolean;
   onChanged: () => void;
+  onPictureChanged?: () => void;
   onDeleted: () => void;
 }) {
   const [detail, setDetail] = useState<PhraseDetail | null>(null);
@@ -652,7 +661,7 @@ function PhraseDetailView({
           ) : (
             <p className={`${fine} text-fg-3`}>No examples yet: they come from the lines the dojo master glosses it in.</p>
           )}
-          {kids && !detail.pending && <PictureSection phraseId={id} />}
+          {kids && !detail.pending && <PictureSection phraseId={id} onChanged={onPictureChanged} />}
           <div className="-ml-2 flex flex-wrap gap-1">
             <Button variant="ghost" className={small} onClick={startEdit} disabled={busy}>
               Edit

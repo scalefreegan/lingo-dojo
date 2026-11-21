@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
-import { changePhrasePicture, fillPictures, phrasePicture, pictureBlob, pictureStatus } from "../gameApi";
+import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus } from "../gameApi";
 import type { PhrasePicture, PictureStatus } from "../types";
-import { Button } from "./ui";
+import { Button, inputClass } from "./ui";
 
 /* The grown-up's side of the kids word game (docs/DATA.md §Kids word
  * game), in a kids learner's Phrase bank, out of the game where a child
  * could press it: the pictures' status with Draw pictures (the backlog:
  * words met before pictures existed, or past a day's cap), and per word
- * its picture with Remove and Draw again. Pictures are otherwise drawn by
+ * its picture with Remove and Draw again, or, for a word left out as
+ * having no clear picture, Draw it anyway with the grown-up's own words
+ * for what to show. Pictures are otherwise drawn by
  * themselves after each kids session; nothing here is a child's. */
 
 const small = "px-2 py-1 text-sm sm:text-xs";
@@ -17,8 +19,11 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 const POLL_MS = 5000;
 
 /** The status line and Draw pictures, above the bank's list. Polls the
- *  counts (which start nothing) only while a drawing runs. */
-export function PicturesBar({ onDrawn }: { onDrawn?: () => void }) {
+ *  counts (which start nothing) only while a drawing runs. `refresh` is a
+ *  counter the bank bumps when a word's picture changed below (Remove,
+ *  Draw again, Draw it anyway, a deleted word): the counts are read again,
+ *  and if that started a drawing the poll takes over. */
+export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; refresh?: number }) {
   const [status, setStatus] = useState<PictureStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -43,7 +48,7 @@ export function PicturesBar({ onDrawn }: { onDrawn?: () => void }) {
       ctrl.abort();
       clearTimeout(timer);
     };
-  }, [tick, onDrawn]);
+  }, [tick, refresh, onDrawn]);
 
   async function draw() {
     setBusy(true);
@@ -90,8 +95,10 @@ const STATE_TEXT: Record<PhrasePicture["status"], string> = {
 /** One word's picture in its detail: the image, and Remove / Draw again. */
 const REDRAW_POLL_MS = 3000;
 const REDRAW_POLLS = 20;
+/** pictures.mjs DESCRIPTION_MAX: the server cuts a longer one at a word. */
+const DESCRIPTION_MAX = 80;
 
-export function PictureSection({ phraseId }: { phraseId: string }) {
+export function PictureSection({ phraseId, onChanged }: { phraseId: string; onChanged?: () => void }) {
   const [picture, setPicture] = useState<PhrasePicture | null | undefined>(undefined);
   // The blob URL with the file it was made for: a removed or redrawn
   // picture's old one is never shown.
@@ -102,6 +109,8 @@ export function PictureSection({ phraseId }: { phraseId: string }) {
   // the row is read again (a plain GET: reading never draws) every few
   // seconds until it is no longer pending, a bounded number of times.
   const [watch, setWatch] = useState(0);
+  // What the grown-up wants drawn for a word the check left out.
+  const [wanted, setWanted] = useState("");
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -164,6 +173,24 @@ export function PictureSection({ phraseId }: { phraseId: string }) {
     try {
       setPicture((await changePhrasePicture(phraseId, action)).picture);
       setWatch(action === "redraw" ? REDRAW_POLLS : 0);
+      onChanged?.();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** A word with "no clear picture", drawn anyway: the server cleans the
+   *  description (and refuses a learner's name with a sentence shown here). */
+  async function drawAnyway() {
+    setBusy(true);
+    setError(null);
+    try {
+      setPicture((await drawPhrasePictureAnyway(phraseId, wanted)).picture);
+      setWanted("");
+      setWatch(REDRAW_POLLS);
+      onChanged?.();
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -189,12 +216,36 @@ export function PictureSection({ phraseId }: { phraseId: string }) {
                   Remove picture
                 </Button>
               )}
-              {picture.description && picture.status !== "pending" && (
+              {picture.description && picture.status !== "pending" && picture.status !== "none" && (
                 <Button variant="ghost" className={small} onClick={() => void change("redraw")} disabled={busy} data-testid="picture-redraw">
                   Draw again
                 </Button>
               )}
             </div>
+            {picture.status === "none" && (
+              <form
+                className="flex flex-wrap items-center gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void drawAnyway();
+                }}
+              >
+                <input
+                  type="text"
+                  value={wanted}
+                  onChange={(e) => setWanted(e.target.value)}
+                  maxLength={DESCRIPTION_MAX}
+                  placeholder="What should it show? (optional)"
+                  aria-label="What the picture should show (optional)"
+                  disabled={busy}
+                  className={`${inputClass} ${fine} min-w-0 flex-1 sm:max-w-xs`}
+                  data-testid="picture-describe"
+                />
+                <Button type="submit" variant="ghost" className={small} disabled={busy} data-testid="picture-draw-anyway">
+                  Draw it anyway
+                </Button>
+              </form>
+            )}
           </div>
         </div>
       )}

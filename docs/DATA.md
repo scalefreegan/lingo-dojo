@@ -3065,7 +3065,8 @@ updated_at)`:
 - `status` is one of:
   - `pending`: picturable and waiting to be drawn.
   - `ready`: it has a `file`.
-  - `none`: no clear picture, so it stays out of the game.
+  - `none`: no clear picture, so it stays out of the game, unless a
+    grown-up has it drawn anyway (below).
   - `failed`: the provider refused. It is never retried by itself.
   - `removed`: a grown-up took it out.
 - The checks:
@@ -3096,7 +3097,8 @@ Triggers:
 - a kids session's end, after its recap is stored, from `extraction.ts`
   (`picturesAfterSession` checks the learner is kids, so adults start
   nothing);
-- the grown-up's **Draw pictures** (Library → Phrase bank) or **Draw again**;
+- the grown-up's **Draw pictures** (Library → Phrase bank), **Draw again**
+  or **Draw it anyway**;
 - a game's start, as a top-up. The game is built only from ready pictures
   and never waits for it.
 
@@ -3154,14 +3156,22 @@ close the quotation.
 
 Limits:
 - Every call runs in the user's background paid slot (`paid.ts`). If the
-  slot is busy, the run stops and the next trigger carries on.
+  slot is busy (cloze writing has it, or another language's pictures), the
+  call waits for it (`backgroundSlotWhenFree`, bead `ld-8ou`): it asks
+  again every 2 seconds for at most 2 minutes (`SLOT_WAIT` in
+  `web/server/pictures.ts`). While it waits it holds no slot and has
+  written nothing to the ledger. Past the 2 minutes the run stops, with
+  nothing paid and no 10-minute backoff, and the next trigger carries on.
+- The daily cap is counted twice per call: before the wait, and again
+  inside the slot just before the ledger row is written. A cap reached
+  during the wait means the call isn't made.
 - At most `PICTURE_DAILY_IMAGES` (50) images and `PICTURE_DAILY_JUDGES` (10)
   checks per language profile in any 24 hours. Both are counted from the
   ledger. The cap is per language profile, not per account: the most an
   account can spend in a day is 50 images times its number of kids
   languages.
-- A grown-up's **Draw again** (redraw) counts against the same ledger and
-  cap. A redraw over the cap waits like any other word.
+- A grown-up's **Draw again** (redraw) and **Draw it anyway** count against
+  the same ledger and cap. Either over the cap waits like any other word.
 
 Failures:
 - A moderation refusal (`moderation_blocked`, or no image in the reply)
@@ -3179,6 +3189,26 @@ Draw pictures, or a game start.
 - A drawn picture is never drawn again unless a grown-up asks for a redraw.
   A redraw writes a new file under a new random name and deletes the old
   one.
+- **A file goes with its row** (bead `ld-0dl`, `dropPictureFile` in
+  `web/server/pictures.ts`). The file is deleted from disk when:
+  - its phrase is deleted from the Phrase bank (`DELETE /api/phrases/:id`:
+    `deletePhrase` returns the file its picture row named, and the route
+    deletes it after the commit);
+  - its picture is removed or redrawn;
+  - its word is edited and judged again.
+
+  The rules for every one of those:
+  - The file is kept while any `phrase_pictures` row still names its key
+    (`pictureFileInUse`, the one query across owners: a yes/no about a
+    random key). If that can't be asked, the file is kept too.
+  - A file already missing is not an error, and a failure to delete never
+    fails the request (it is logged).
+  - Only a file directly inside the images directory is ever deleted: the
+    key must be 64 hex and the path made from it is checked again
+    (`deletePicture`, `scripts/picture-store.mjs`).
+  - Not covered: phrases that go by other paths (a recap re-run's
+    `settleUnseen`, or a deleted learner or language) still leave their
+    file behind (bead `ld-co8`).
 - Files are in `data/images/` (or `LINGO_IMAGES_DIR`), named by 64 random
   hex characters, with mode 0600 in a 0700 folder
   (`scripts/picture-store.mjs`). They are checked by their magic bytes and
@@ -3300,21 +3330,50 @@ The page (`web/src/components/KidsGameView.tsx`):
 
 The grown-up's side (`web/src/components/WordPictures.tsx`, in the
 Library's Phrase bank, never in the game):
-- a status line with **Draw pictures**;
+- a status line with **Draw pictures**. It reads its counts again after
+  any picture action in a word's detail and after a word is deleted;
 - in each word's detail, its picture, what it was drawn as, **Remove
-  picture** and **Draw again**.
+  picture** and **Draw again**;
+- for a word judged "no clear picture" (`none`), **Draw it anyway** with an
+  optional box for what the picture should show.
 
 Routes for it:
 - `GET /api/pictures`
 - `POST /api/pictures/fill`
 - `GET /api/pictures/phrase/:id`
 - `POST /api/pictures/phrase/:id/remove|redraw`
+- `POST /api/pictures/phrase/:id/draw` with `{description?}`
+
+**Draw it anyway** (bead `ld-of0`, no migration: the row goes from `none`
+to `pending` with a description, which the checks already allow):
+- It works only on a `none` row for the word as it is now. Anything else is
+  a 409 (a failed or removed picture has Draw again).
+- The description is what the grown-up typed. With nothing typed, it is
+  the word's meaning.
+- It goes through `cleanDescription` like the check's own
+  (`grownUpDescription`, `scripts/pictures.mjs`): the same characters, the
+  same caps of 12 words and 80 characters, cut at a word.
+- A description with a learner's name in it is a 400 with a sentence that
+  says so. Nothing is stored and nothing is sent. The same goes for one
+  with nothing to draw ("a picture of").
+- The word is then drawn by the usual run: the same background slot, the
+  same ledger and the same daily cap. The names are checked again just
+  before drawing.
+- A refusal from the provider ends as `failed`, as for any word. Nothing
+  retries it; the grown-up can press Draw again.
+- If the word is edited later it is judged again from scratch, and may be
+  `none` again.
+- Pressed during the 10-minute backoff after a failed run, Draw it anyway
+  (like Draw again) still answers `pending`, but no run starts. The word is
+  drawn by the first trigger after the backoff ends. The word's detail
+  re-reads its picture for only 60 seconds, so it goes from "Being drawn…"
+  back to "Waiting to be drawn" and shows the picture when reopened later.
 
 **Who can reach them.** "From the adult side" means the Library's Phrase
 bank, not a separate login. The child's page shares the grown-up's login
 session (one account, with the kids learner picked), so a kids learner's
 page can reach the Phrase bank's picture actions (Draw pictures, Remove
-picture, Draw again) like the rest of the kids Library. The game itself has
+picture, Draw again, Draw it anyway) like the rest of the kids Library. The game itself has
 no such buttons.
 
 Draw again is held to the daily ledger and cap like any other drawing, so
@@ -3326,6 +3385,9 @@ fact:
 - the fixed safe style and the provider's moderation;
 - removal from the Phrase bank, which takes a picture out of the game at
   once and deletes its file.
+
+A picture the grown-up asked for with Draw it anyway is shown the same way,
+with the same controls.
 
 Tests:
 - `scripts/tests/pictures.test.mjs`: the pure rules.

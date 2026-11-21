@@ -8,9 +8,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, cleanDescription, nameWords, gameRounds, judgePrompt, parseJudgeReply, pictureBank, pictureKey, picturePrompt,
+  DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, cleanDescription, nameWords, gameRounds, grownUpDescription, judgePrompt, parseJudgeReply, pictureBank, pictureKey, picturePrompt,
   pictureWork, readGameAnswer, roundChoices,
 } from "../pictures.mjs";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { deletePicture, writePicture } from "../picture-store.mjs";
 import { cardVersion, phraseRevision } from "../practice.mjs";
 
 const NOW = new Date("2026-11-20T12:00:00Z");
@@ -211,4 +215,40 @@ test("the answer body", () => {
   assert.match(readGameAnswer({ ...ok, version: "x" }).error, /version/);
   assert.match(readGameAnswer({ ...ok, submitId: undefined }).error, /submitId/);
   assert.match(readGameAnswer([]).error, /object/);
+});
+
+test("a grown-up's description goes by the check's rules, and says why it can't be drawn (ld-of0)", () => {
+  assert.deepEqual(grownUpDescription('a hand "waving" [hello]', ["Pip"]), { description: "a hand waving hello" });
+  assert.equal(grownUpDescription(Array(20).fill("apple").join(" ")).description.split(" ").length, DESCRIPTION_WORDS);
+  assert.ok(grownUpDescription("x".repeat(30) + " " + "y".repeat(30) + " " + "z".repeat(30)).description.length <= DESCRIPTION_MAX);
+  // A learner's name, however written: refused whole, never trimmed out.
+  for (const d of ["Pip waving", "a hand for PIP", "pip's hand", "José’s cat", "Jose waving"]) assert.deepEqual(grownUpDescription(d, ["Pip", "José"]), { error: "name" }, d);
+  for (const d of ["", "   ", "a picture of", "!!!", null, 7]) assert.deepEqual(grownUpDescription(d, ["Pip"]), { error: "nothing" }, String(d));
+});
+
+test("deleting a picture file: only that key's files, only inside the pictures directory; a missing file is fine (ld-0dl)", () => {
+  const top = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-pics-"));
+  const dir = path.join(top, "images");
+  const key = "ab".repeat(32);
+  const other = "cd".repeat(32);
+  writePicture(key, Buffer.from("one"), "image/png", { dir });
+  writePicture(other, Buffer.from("two"), "image/webp", { dir });
+  const outside = path.join(top, `${key}.png`);
+  fs.writeFileSync(outside, "outside");
+  // Nothing that isn't a key becomes a path.
+  for (const bad of [`../${key}`, `${key}/../../x`, "..", "", null, `${key}.png`, key.toUpperCase()]) deletePicture(bad, { dir });
+  assert.deepEqual(fs.readdirSync(dir).sort(), [`${key}.png`, `${other}.webp`]);
+  assert.ok(fs.existsSync(outside));
+  deletePicture(key, { dir });
+  assert.deepEqual(fs.readdirSync(dir), [`${other}.webp`]);
+  assert.ok(fs.existsSync(outside), "a file of the same name outside the directory is never touched");
+  // Again (already gone), and in a directory that doesn't exist: no error.
+  deletePicture(key, { dir });
+  deletePicture(key, { dir: path.join(top, "nowhere") });
+  // A directory under a picture's name is left alone, not removed with what is in it.
+  fs.mkdirSync(path.join(dir, `${key}.jpg`));
+  fs.writeFileSync(path.join(dir, `${key}.jpg`, "kept"), "x");
+  assert.throws(() => deletePicture(key, { dir }));
+  assert.ok(fs.existsSync(path.join(dir, `${key}.jpg`, "kept")));
+  fs.rmSync(top, { recursive: true, force: true });
 });

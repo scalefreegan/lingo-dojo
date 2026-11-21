@@ -33,10 +33,11 @@ fs.writeFileSync(process.env.LINGO_ENV_FILE, KEYED);
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION", "OPENAI_API_KEY", "LINGO_IMAGE_PROVIDER", "LINGO_IMAGES_DIR"]) delete process.env[k];
 
 const { apiPlugins } = await import("../../web/server/api.ts");
-const { resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
+const { SLOT_WAIT, resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
+const { backgroundSlot } = await import("../../web/server/paid.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
-const { PICTURE_DAILY_IMAGES } = await import("../pictures.mjs");
+const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES } = await import("../pictures.mjs");
 
 const fake = fakeClaude();
 
@@ -71,9 +72,11 @@ after(async () => {
   await close();
   await testDb.close();
 });
+const REAL_WAIT = { ...SLOT_WAIT };
 beforeEach(async () => {
   await settlePictureFills();
   resetPictureMemory();
+  Object.assign(SLOT_WAIT, REAL_WAIT);
   openai.calls = [];
   openai.mode = "ok";
   fake.picture("!auto");
@@ -503,4 +506,228 @@ test("a parameter the model refuses (a 400) is logged plainly: status, type, cod
   assert.match(line, /gpt-image-2\.6-flare/);
   assert.doesNotMatch(line, /picture of|Subject|cartoon/i, "no prompt text");
   assert.deepEqual((await picturesOf(pip)).map((r) => r.status), ["pending"]);
+});
+
+/* ------------------- ld-of0: "no clear picture", drawn anyway ------------------ */
+
+const drawAnyway = (who, phrase, body = {}) => who.call("POST", `/api/pictures/phrase/${phrase.id}/draw`, body);
+const pictureOfPhrase = async (who, phrase) => (await who.call("GET", `/api/pictures/phrase/${phrase.id}`)).body.picture;
+
+test("a grown-up has a word with no clear picture drawn anyway, as they describe it: cleaned, never with a learner's name, on the same ledger", async () => {
+  const { pip, p } = await pictured();
+  assert.equal((await pictureOfPhrase(pip, p.hallo)).status, "none");
+  assert.equal(openai.calls.length, 3);
+
+  // A learner's name (the kid's own, any case): refused with a sentence
+  // that says so; nothing stored, nothing sent.
+  const named = await drawAnyway(pip, p.hallo, { description: "PIP waving hello" });
+  assert.equal(named.status, 400, named.text);
+  assert.match(named.body.error, /learner's name/);
+  const empty = await drawAnyway(pip, p.hallo, { description: "a picture of" });
+  assert.equal(empty.status, 400);
+  assert.match(empty.body.error, /doesn't say what to draw/);
+  assert.equal((await drawAnyway(pip, p.hallo, { description: 7 })).status, 400);
+  await settlePictureFills();
+  assert.equal((await pictureOfPhrase(pip, p.hallo)).status, "none");
+  assert.equal(openai.calls.length, 3);
+
+  // Their own words, by cleanDescription's rules: quotes and brackets go,
+  // capped at 12 words.
+  const ok = await drawAnyway(pip, p.hallo, { description: 'a small hand "waving" [hello] one two three four five six seven eight nine' });
+  assert.equal(ok.status, 200, ok.text);
+  assert.deepEqual([ok.body.picture.status, ok.body.picture.description], ["pending", "a small hand waving hello one two three four five six seven"]);
+  await settlePictureFills();
+  const after = await pictureOfPhrase(pip, p.hallo);
+  assert.equal(after.status, "ready");
+  assert.ok(filesOnDisk().includes(`${after.file}.png`));
+  assert.equal(openai.calls.length, 4, "one image call");
+  assert.match(openai.calls[3].body.prompt, /Subject: "a small hand waving hello one two three four five six seven"$/);
+  assert.equal((await ledger(pip, "image")).length, 4, "in the same ledger");
+  assert.equal((await status(pip)).pictured, 4, "and in the game");
+
+  // Only a word left out as "no clear picture": a ready one has Draw again.
+  assert.equal((await drawAnyway(pip, p.hallo, { description: "a hand" })).status, 409);
+  assert.equal((await drawAnyway(pip, p["der Hund"], { description: "a dog" })).status, 409);
+  const fresh = await add(pip, [["der Baum", "tree"]]);
+  assert.equal((await drawAnyway(pip, fresh["der Baum"], { description: "a tree" })).status, 409, "not judged yet");
+});
+
+test("drawn anyway with nothing typed: the word's meaning is drawn; a refusal ends as failed, with no loop", async () => {
+  const { pip, p } = await pictured();
+  openai.mode = "refuse";
+  const r = await drawAnyway(pip, p.danke, { description: "   " });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual([r.body.picture.status, r.body.picture.description], ["pending", "thank you"]);
+  await settlePictureFills();
+  assert.equal((await pictureOfPhrase(pip, p.danke)).status, "failed");
+  assert.equal(openai.calls.length, 4);
+  assert.deepEqual((await ledger(pip, "image")).map((x) => x.outcome).sort(), ["ok", "ok", "ok", "refused"]);
+  // No trigger tries it again, and it can't be "drawn anyway" twice.
+  openai.mode = "ok";
+  await drawAll(pip);
+  await pip.call("POST", "/api/game/start");
+  await settlePictureFills();
+  assert.equal(openai.calls.length, 4, "a refused picture isn't retried by itself");
+  assert.equal((await drawAnyway(pip, p.danke)).status, 409);
+
+  // A meaning that names a learner: the grown-up is asked for their own words.
+  const more = await add(pip, [["hallo Pip", "hello Pip"]]);
+  await drawAll(pip);
+  assert.equal((await pictureOfPhrase(pip, more["hallo Pip"])).status, "none");
+  const named = await drawAnyway(pip, more["hallo Pip"]);
+  assert.equal(named.status, 400);
+  assert.match(named.body.error, /meaning has a learner's name/);
+  assert.equal(openai.calls.length, 4);
+});
+
+test("drawn anyway is held to the daily cap like any drawing, and needs a provider", async () => {
+  const { pip, p } = await pictured();
+  const [lp] = await q("select id, learner_id from language_profiles where id = $1", [pip.languageId]);
+  for (let i = 0; i < PICTURE_DAILY_IMAGES - 3; i++) {
+    await q("insert into picture_calls (learner_id, language_profile_id, kind, words, outcome) values ($1, $2, 'image', 1, 'ok')", [lp.learner_id, lp.id]);
+  }
+  const r = await drawAnyway(pip, p.hallo, { description: "a waving hand" });
+  assert.equal(r.status, 200, r.text);
+  await settlePictureFills();
+  assert.equal(openai.calls.length, 3, "no call past the cap");
+  assert.equal((await pictureOfPhrase(pip, p.hallo)).status, "pending", "it waits like any other word");
+  assert.equal((await ledger(pip, "image")).length, PICTURE_DAILY_IMAGES);
+
+  fs.writeFileSync(process.env.LINGO_ENV_FILE, "");
+  const noKey = await drawAnyway(pip, p.danke, { description: "a bow" });
+  assert.equal(noKey.status, 400);
+  assert.match(noKey.body.error, /OPENAI_API_KEY/);
+  assert.equal((await pictureOfPhrase(pip, p.danke)).status, "none");
+});
+
+/* ---------------------- ld-0dl: a picture's file goes too --------------------- */
+
+test("a deleted phrase's picture file is deleted from disk, unless another row still names the file; a missing file is fine", async () => {
+  const { pip, p } = await pictured();
+  const dog = await pictureOfPhrase(pip, p["der Hund"]);
+  const cat = await pictureOfPhrase(pip, p["die Katze"]);
+  const ball = await pictureOfPhrase(pip, p["der Ball"]);
+  for (const x of [dog, cat, ball]) assert.ok(filesOnDisk().includes(`${x.file}.png`));
+
+  assert.equal((await pip.call("DELETE", `/api/phrases/${p["der Hund"].id}`)).status, 200);
+  assert.ok(!filesOnDisk().includes(`${dog.file}.png`), "the deleted phrase's file is gone");
+  assert.ok(filesOnDisk().includes(`${cat.file}.png`) && filesOnDisk().includes(`${ball.file}.png`), "the others stay");
+
+  // Two rows naming one file: it stays until the last of them goes.
+  await q("update phrase_pictures set file = $1 where id = $2", [cat.file, ball.id]);
+  assert.equal((await pip.call("DELETE", `/api/phrases/${p["die Katze"].id}`)).status, 200);
+  assert.ok(filesOnDisk().includes(`${cat.file}.png`), "still named by another row");
+  assert.equal((await pip.call("GET", `/api/game/pictures/${ball.id}/${cat.file}`)).status, 200);
+  assert.equal((await pip.call("DELETE", `/api/phrases/${p["der Ball"].id}`)).status, 200);
+  assert.ok(!filesOnDisk().includes(`${cat.file}.png`), "the last row gone, so the file");
+
+  // A file already missing is not an error; a phrase with no picture neither.
+  const more = await add(pip, [["das Auto", "car"]]);
+  await drawAll(pip);
+  const car = await pictureOfPhrase(pip, more["das Auto"]);
+  fs.rmSync(path.join(imagesDir, `${car.file}.png`));
+  assert.equal((await pip.call("DELETE", `/api/phrases/${more["das Auto"].id}`)).status, 200);
+  assert.equal((await pip.call("DELETE", `/api/phrases/${p.danke.id}`)).status, 200);
+  assert.equal((await picturesOf(pip)).length, 1, "only hallo's row is left");
+});
+
+test("a removed picture's file is kept while another row names it", async () => {
+  const { pip, p } = await pictured();
+  const dog = await pictureOfPhrase(pip, p["der Hund"]);
+  const cat = await pictureOfPhrase(pip, p["die Katze"]);
+  await q("update phrase_pictures set file = $1 where id = $2", [dog.file, cat.id]);
+  assert.equal((await pip.call("POST", `/api/pictures/phrase/${p["der Hund"].id}/remove`)).status, 200);
+  assert.ok(filesOnDisk().includes(`${dog.file}.png`), "the cat's row still shows it");
+  assert.equal((await pip.call("POST", `/api/pictures/phrase/${p["die Katze"].id}/redraw`)).status, 200);
+  await settlePictureFills();
+  assert.ok(!filesOnDisk().includes(`${dog.file}.png`), "redrawn under a new name: the old file goes");
+});
+
+/* ------------------- ld-8ou: a busy background slot is waited for ------------------ */
+
+const userOf = async (who) => (await q("select l.user_id from learners l join language_profiles p on p.learner_id = l.id where p.id = $1", [who.languageId]))[0].user_id;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Take the user's background slot (as cloze writing would) until release(). */
+function holdSlot(userId) {
+  let release;
+  const held = backgroundSlot(userId, () => new Promise((r) => (release = r)));
+  return { release: () => (release(), held) };
+}
+
+test("a picture run that finds the background slot busy waits for it instead of stopping, holding nothing meanwhile", async () => {
+  Object.assign(SLOT_WAIT, { maxMs: 10_000, everyMs: 10 });
+  const pip = await someone();
+  await add(pip, WORDS.slice(0, 2));
+  const userId = await userOf(pip);
+  const slot = holdSlot(userId);
+  assert.equal((await pip.call("POST", "/api/pictures/fill")).status, 202);
+  await sleep(150);
+  assert.equal((await ledger(pip, "judge")).length, 0, "nothing in the ledger while it waits");
+  assert.equal(openai.calls.length, 0, "and nothing called");
+  assert.equal((await status(pip)).drawing, true, "the run is still going");
+  // The waiter holds no slot: once the holder lets go, anyone can take it.
+  await slot.release();
+  await settlePictureFills();
+  assert.deepEqual((await picturesOf(pip)).map((x) => x.status), ["ready", "ready"], "the same run carried on");
+  assert.equal(openai.calls.length, 2);
+  await backgroundSlot(userId, async () => {});
+});
+
+test("the wait for the slot is bounded (the run then stops with nothing paid), and the daily cap is counted again after it", async () => {
+  const pip = await someone();
+  await add(pip, WORDS.slice(0, 2));
+  const userId = await userOf(pip);
+  // The check runs; then the slot is taken before any drawing.
+  openai.mode = "down";
+  await drawAll(pip);
+  openai.mode = "ok";
+  openai.calls = [];
+  resetPictureMemory();
+  await q("delete from picture_calls where language_profile_id = $1 and kind = 'image'", [pip.languageId]);
+  assert.deepEqual((await picturesOf(pip)).map((x) => x.status), ["pending", "pending"]);
+
+  // Bounded: held past the wait, the run ends; no call, no ledger row, no backoff.
+  Object.assign(SLOT_WAIT, { maxMs: 60, everyMs: 10 });
+  let slot = holdSlot(userId);
+  const t0 = Date.now();
+  await drawAll(pip);
+  assert.ok(Date.now() - t0 >= 40, "it waited");
+  assert.equal(openai.calls.length, 0);
+  assert.equal((await ledger(pip, "image")).length, 0);
+  await slot.release();
+
+  // The cap, reached while the run waited: no call is made after the wait.
+  Object.assign(SLOT_WAIT, { maxMs: 10_000, everyMs: 10 });
+  slot = holdSlot(userId);
+  assert.equal((await pip.call("POST", "/api/pictures/fill")).status, 202);
+  await sleep(100);
+  const [lp] = await q("select id, learner_id from language_profiles where id = $1", [pip.languageId]);
+  for (let i = 0; i < PICTURE_DAILY_IMAGES; i++) {
+    await q("insert into picture_calls (learner_id, language_profile_id, kind, words, outcome) values ($1, $2, 'image', 1, 'ok')", [lp.learner_id, lp.id]);
+  }
+  await slot.release();
+  await settlePictureFills();
+  assert.equal(openai.calls.length, 0, "the cap holds across the wait");
+  assert.equal((await ledger(pip, "image")).length, PICTURE_DAILY_IMAGES);
+  assert.deepEqual((await picturesOf(pip)).map((x) => x.status), ["pending", "pending"]);
+});
+
+test("the daily cap of checks is counted again after the wait for the slot: reached meanwhile, no check is made", async () => {
+  Object.assign(SLOT_WAIT, { maxMs: 10_000, everyMs: 10 });
+  const pip = await someone();
+  await add(pip, WORDS.slice(0, 2));
+  const slot = holdSlot(await userOf(pip));
+  const runs = fake.pictureRuns();
+  assert.equal((await pip.call("POST", "/api/pictures/fill")).status, 202);
+  await sleep(100);
+  const [lp] = await q("select id, learner_id from language_profiles where id = $1", [pip.languageId]);
+  for (let i = 0; i < PICTURE_DAILY_JUDGES; i++) {
+    await q("insert into picture_calls (learner_id, language_profile_id, kind, words, outcome) values ($1, $2, 'judge', 20, 'ok')", [lp.learner_id, lp.id]);
+  }
+  await slot.release();
+  await settlePictureFills();
+  assert.equal(fake.pictureRuns(), runs, "no check past the cap");
+  assert.equal((await ledger(pip, "judge")).length, PICTURE_DAILY_JUDGES);
+  assert.equal((await picturesOf(pip)).length, 0, "the words stay unjudged");
+  assert.equal(openai.calls.length, 0);
 });

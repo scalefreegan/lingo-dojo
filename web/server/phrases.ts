@@ -5,6 +5,7 @@ import { localeFor } from "../../scripts/voice.mjs";
 import type { PhraseInput, PhraseLookupReply, PhraseReply, PhrasesReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
+import { dropPictureFile } from "./pictures.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The phrase bank's routes (docs/DATA.md §Phrase bank): the active
@@ -16,7 +17,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET    /api/phrases/lookup     ?text= → {phrase | null}: the phrase with those words (the ☆'s state)
 //   GET    /api/phrases/:id        → {phrase}: with its examples
 //   PATCH  /api/phrases/:id        {text?, meaning?, note?, starred?, suspended?, alternates?, removeAlternates?} → {phrase}
-//   DELETE /api/phrases/:id        → {deleted: true}; its cards, reviews and examples go with it
+//   DELETE /api/phrases/:id        → {deleted: true}; its cards, reviews and examples go with it, and its word game picture (row and file)
 //
 // Mounted with wrap's `learner: true`: the page must name the session's
 // learner and language (else 409 stale_learner), and every row is read and
@@ -90,7 +91,10 @@ export async function handlePhrases(req: IncomingMessage, res: ServerResponse, c
     return sendJson(res, 200, { phrase: await op(() => updatePhrase(rawDb(), ctx.language, id, body)) } satisfies PhraseReply);
   }
   if (req.method === "DELETE") {
-    await op(() => deletePhrase(rawDb(), ctx.language, id));
+    const { pictureFile } = await op(() => deletePhrase(rawDb(), ctx.language, id));
+    // Its word game picture's row went with it; the file follows (never a
+    // reason for the delete to fail).
+    await dropPictureFile(pictureFile);
     return sendJson(res, 200, { deleted: true });
   }
   methodNotAllowed(res, "GET, PATCH, DELETE");

@@ -26,6 +26,7 @@ declare module "*/scripts/pictures.mjs" {
   export function pictureKey(phrase: { text: string | null; meaning: string | null }): string;
   export function isCurrent(row: PictureLike | undefined | null, phrase: { text: string | null; meaning: string | null }): boolean;
   export function cleanDescription(v: unknown, names?: Iterable<string | null | undefined> | Set<string>): string | null;
+  export function grownUpDescription(v: unknown, names?: Iterable<string | null | undefined> | Set<string>): { description: string; error?: undefined } | { error: "name" | "nothing" };
   export function picturePrompt(description: string, names?: Iterable<string | null | undefined> | Set<string>): string | null;
   export function judgePrompt(input: { words: { text: string; meaning: string | null }[]; targetLanguage?: string; nativeLanguage?: string }): { system: string; user: string };
   export function parseJudgeReply(

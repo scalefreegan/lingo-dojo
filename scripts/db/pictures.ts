@@ -120,6 +120,46 @@ export async function changePicture(
   return { row, oldFile: before.file };
 }
 
+/**
+ * A grown-up's override of the check's "no clear picture" (ld-of0): the
+ * `none` row for these words and meaning becomes pending with the
+ * description they gave (cleaned by the caller: pictures.mjs
+ * grownUpDescription), and is then drawn like any other pending word, under
+ * the same ledger and cap. Only from `none`: a failed or removed picture
+ * has Draw again. Returns the row after, or a reason it can't.
+ */
+export async function drawAnyway(
+  db: Db,
+  profile: LanguageProfileRef,
+  phraseId: string,
+  phraseKey: string,
+  description: string,
+): Promise<{ row: PictureRow } | { problem: "none" | "stale" | "state" }> {
+  const mine = forLanguageProfile(db, profile);
+  const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, phraseId));
+  if (!before) return { problem: "none" };
+  if (before.phraseKey !== phraseKey) return { problem: "stale" };
+  if (before.status !== "none") return { problem: "state" };
+  const [row] = await mine.update(
+    phrasePictures,
+    { status: "pending", description, updatedAt: sql`now()` },
+    and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "none")) as SQL,
+  );
+  return row ? { row } : { problem: "state" };
+}
+
+/**
+ * Whether any picture row still names this file (ld-0dl), asked before a
+ * file is deleted from disk. Across every owner on purpose, and the one
+ * query here outside forLanguageProfile: a file on disk belongs to whichever
+ * rows name it, and the answer is a yes/no about a random key, nothing of
+ * anyone's.
+ */
+export async function pictureFileInUse(db: Db, file: string): Promise<boolean> {
+  const [row] = await db.select({ id: phrasePictures.id }).from(phrasePictures).where(eq(phrasePictures.file, file)).limit(1);
+  return !!row;
+}
+
 /** Nothing left to draw for a pending word (its description held only a
  *  learner's name, or filler: scripts/pictures.mjs cleanDescription): `none`,
  *  out of the game, as if the check had said so. */
