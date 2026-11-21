@@ -3321,7 +3321,8 @@ The page (`web/src/components/KidsGameView.tsx`):
 
 The grown-up's side (`web/src/components/WordPictures.tsx`, in the
 Library's Phrase bank, never in the game):
-- a status line with **Draw pictures**;
+- a status line with **Draw pictures**. It reads its counts again after
+  any picture action in a word's detail and after a word is deleted;
 - in each word's detail, its picture, what it was drawn as, **Remove
   picture** and **Draw again**;
 - for a word judged "no clear picture" (`none`), **Draw it anyway** with an
@@ -3353,6 +3354,11 @@ to `pending` with a description, which the checks already allow):
   retries it; the grown-up can press Draw again.
 - If the word is edited later it is judged again from scratch, and may be
   `none` again.
+- Pressed during the 10-minute backoff after a failed run, Draw it anyway
+  (like Draw again) still answers `pending`, but no run starts. The word is
+  drawn by the first trigger after the backoff ends. The word's detail
+  re-reads its picture for only 60 seconds, so it goes from "Being drawn…"
+  back to "Waiting to be drawn" and shows the picture when reopened later.
 
 **Who can reach them.** "From the adult side" means the Library's Phrase
 bank, not a separate login. The child's page shares the grown-up's login

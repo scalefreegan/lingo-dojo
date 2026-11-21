@@ -89,6 +89,8 @@ export function deletePicture(key, { dir = imagesDir() } = {}) {
   const root = path.resolve(dir);
   for (const type of Object.keys(PICTURE_TYPES)) {
     const file = path.resolve(fileFor(dir, key, type));
+    // Unreachable today (a 64-hex key plus a fixed extension can't leave
+    // the directory): kept as a second guard should the key rule change.
     if (path.dirname(file) !== root) continue;
     try {
       fs.unlinkSync(file);

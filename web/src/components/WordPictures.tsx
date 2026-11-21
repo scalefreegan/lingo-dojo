@@ -19,8 +19,11 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 const POLL_MS = 5000;
 
 /** The status line and Draw pictures, above the bank's list. Polls the
- *  counts (which start nothing) only while a drawing runs. */
-export function PicturesBar({ onDrawn }: { onDrawn?: () => void }) {
+ *  counts (which start nothing) only while a drawing runs. `refresh` is a
+ *  counter the bank bumps when a word's picture changed below (Remove,
+ *  Draw again, Draw it anyway, a deleted word): the counts are read again,
+ *  and if that started a drawing the poll takes over. */
+export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; refresh?: number }) {
   const [status, setStatus] = useState<PictureStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -45,7 +48,7 @@ export function PicturesBar({ onDrawn }: { onDrawn?: () => void }) {
       ctrl.abort();
       clearTimeout(timer);
     };
-  }, [tick, onDrawn]);
+  }, [tick, refresh, onDrawn]);
 
   async function draw() {
     setBusy(true);
@@ -95,7 +98,7 @@ const REDRAW_POLLS = 20;
 /** pictures.mjs DESCRIPTION_MAX: the server cuts a longer one at a word. */
 const DESCRIPTION_MAX = 80;
 
-export function PictureSection({ phraseId }: { phraseId: string }) {
+export function PictureSection({ phraseId, onChanged }: { phraseId: string; onChanged?: () => void }) {
   const [picture, setPicture] = useState<PhrasePicture | null | undefined>(undefined);
   // The blob URL with the file it was made for: a removed or redrawn
   // picture's old one is never shown.
@@ -170,6 +173,7 @@ export function PictureSection({ phraseId }: { phraseId: string }) {
     try {
       setPicture((await changePhrasePicture(phraseId, action)).picture);
       setWatch(action === "redraw" ? REDRAW_POLLS : 0);
+      onChanged?.();
     } catch (e) {
       setError(errText(e));
     } finally {
@@ -186,6 +190,7 @@ export function PictureSection({ phraseId }: { phraseId: string }) {
       setPicture((await drawPhrasePictureAnyway(phraseId, wanted)).picture);
       setWanted("");
       setWatch(REDRAW_POLLS);
+      onChanged?.();
     } catch (e) {
       setError(errText(e));
     } finally {

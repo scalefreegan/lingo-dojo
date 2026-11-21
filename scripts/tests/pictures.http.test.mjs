@@ -37,7 +37,7 @@ const { SLOT_WAIT, resetPictureMemory, settlePictureFills } = await import("../.
 const { backgroundSlot } = await import("../../web/server/paid.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
-const { PICTURE_DAILY_IMAGES } = await import("../pictures.mjs");
+const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES } = await import("../pictures.mjs");
 
 const fake = fakeClaude();
 
@@ -710,4 +710,24 @@ test("the wait for the slot is bounded (the run then stops with nothing paid), a
   assert.equal(openai.calls.length, 0, "the cap holds across the wait");
   assert.equal((await ledger(pip, "image")).length, PICTURE_DAILY_IMAGES);
   assert.deepEqual((await picturesOf(pip)).map((x) => x.status), ["pending", "pending"]);
+});
+
+test("the daily cap of checks is counted again after the wait for the slot: reached meanwhile, no check is made", async () => {
+  Object.assign(SLOT_WAIT, { maxMs: 10_000, everyMs: 10 });
+  const pip = await someone();
+  await add(pip, WORDS.slice(0, 2));
+  const slot = holdSlot(await userOf(pip));
+  const runs = fake.pictureRuns();
+  assert.equal((await pip.call("POST", "/api/pictures/fill")).status, 202);
+  await sleep(100);
+  const [lp] = await q("select id, learner_id from language_profiles where id = $1", [pip.languageId]);
+  for (let i = 0; i < PICTURE_DAILY_JUDGES; i++) {
+    await q("insert into picture_calls (learner_id, language_profile_id, kind, words, outcome) values ($1, $2, 'judge', 20, 'ok')", [lp.learner_id, lp.id]);
+  }
+  await slot.release();
+  await settlePictureFills();
+  assert.equal(fake.pictureRuns(), runs, "no check past the cap");
+  assert.equal((await ledger(pip, "judge")).length, PICTURE_DAILY_JUDGES);
+  assert.equal((await picturesOf(pip)).length, 0, "the words stay unjudged");
+  assert.equal(openai.calls.length, 0);
 });
