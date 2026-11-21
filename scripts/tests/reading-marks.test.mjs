@@ -44,6 +44,8 @@ test("what is marked: a word no dictionary word settled, with a character of two
   assert.deepEqual(marked("住一宿"), ["一宿"]);
   assert.deepEqual(marked("他长着大眼睛"), ["长着"]);
   assert.deepEqual(marked("我的头发有点干。"), ["有点干"], "no word after it: the one before");
+  assert.deepEqual(marked("停车场很窄"), ["停车场"], "a function word after it (很): the one before");
+  assert.deepEqual(marked("房间在五楼，第五行的那个门。"), ["第五行"]);
   // The reader's own mistakes are among them (得 after a verb is de).
   assert.deepEqual(marked("你问得很好"), ["问得"]);
   // Both scripts.

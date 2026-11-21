@@ -441,7 +441,7 @@ export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}
   const out: UnsureWord[] = [];
   for (let w = 0; w < words.length; w++) {
     if (!unsure.slice(words[w][0], words[w][1]).some(Boolean)) continue;
-    const unit = widened(words, w);
+    const unit = widened(words, w, cps);
     if (!unit) continue;
     let [s] = unit;
     const e = unit[1];
@@ -473,20 +473,25 @@ function hanWords(cps: string[], d: Detail): [number, number][] {
   return words;
 }
 
-/** Word 13:16  up 9 days, 28 mins, 3 users, load averages: 3.69 2.87 2.71
-USER       TTY      FROM    LOGIN@  IDLE WHAT
-brooks     console  -      12Nov26 9days -
-brooks     s001     -      Tue19       1 caffeinate -i -t 300
-brooks     s002     -      Tue06    1:54 caffeinate -i -t 300 as a mark or a correction takes it: one of a single character
- *  joined to the word after it, else the one before; null when it has no
- *  Chinese neighbour. */
-function widened(words: [number, number][], w: number): [number, number] | null {
+/** Words that start with one of these are function words (adverbs,
+ *  conjunctions, the copula, final particles): a single character before
+ *  one belongs with the word before it instead (停车|场|很 → 停车场, not
+ *  场很; 第五|行|的 → 第五行). */
+const FUNCTION_START = "很也都就不没太还又再才和跟与是在吗呢吧啊的";
+
+/** Word `w` as a mark or a correction takes it: one of a single character
+ *  joined to the word after it (得去, 长着, 倒车), else, or when that word
+ *  is a function word, to the one before (有点干, 停车场); null when it has
+ *  no Chinese neighbour. */
+function widened(words: [number, number][], w: number, cps: string[]): [number, number] | null {
   const [s, e] = words[w];
   if (e - s >= 2) return [s, e];
   const next = words[w + 1];
   const prev = words[w - 1];
-  if (next && next[0] === e) return [s, next[1]];
-  if (prev && prev[1] === s) return [prev[0], e];
+  const nextOk = next && next[0] === e;
+  const prevOk = prev && prev[1] === s;
+  if (nextOk && !(prevOk && FUNCTION_START.includes(cps[e]))) return [s, next[1]];
+  if (prevOk) return [prev[0], e];
   return null;
 }
 
@@ -513,7 +518,7 @@ export function wordAt(text: string, locale: string, at: number): { word: string
   const d = readDetail(text, locale);
   const words = hanWords(cps, d);
   const w = words.findIndex(([s, e]) => s <= k && k < e);
-  const unit = w >= 0 ? widened(words, w) : null;
+  const unit = w >= 0 ? widened(words, w, cps) : null;
   if (!unit || unit[1] - unit[0] > MAX_WORD_CHARS) return null;
   const reading = d.readings.slice(unit[0], unit[1]);
   if (!reading.every((r) => r)) return null;
