@@ -622,7 +622,13 @@ uncertain words in context.
       from general knowledge of Taiwan usage, not a checked source), never
       inside a longer word the segmenter splits (好事|者 hào, 便宜|行事 biàn),
       and by its traditional spelling where a character has two (儘量 jǐn,
-      盡量 jìn). The other 19 stay to the reader and may be marked: 转动
+      盡量 jìn). The other 19 keep the reader's reading and are always
+      marked, even where the library's dictionary has the word
+      (`UNSETTLED_WORDS`; 同行 tóng háng or tóng xíng), until a person
+      settles them; inside a dictionary word (受不了) they are not. Longer
+      words holding a table word that the reader misread are rows too,
+      read as CC-CEDICT reads them (便宜行事 biàn yí, where the prior's table
+      had biàn yi; 京片子, 面恶心善, 空地导弹, 年较差, 日较差, 丫头片子): 转动
       (HSK lists both), 背着, 看好, 同行, 正当, 所长 (HSK lists one, but the
       other is as common in running text: 背着书包, 看好孩子, 正当…时,
       一无所长), and 13 not in HSK (不了, 分子, 教会, 明朝, 总长, 重重, 朝阳,

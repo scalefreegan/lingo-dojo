@@ -15,7 +15,8 @@
  * applies to zh-CN only and a zh-TW profile keeps the reader's reading.
  * A neutral tone is written bare; "/" separates readings that are both
  * standard (the reader's stands if it gives one). Words CC-CEDICT reads
- * two ways that are not here stay marked:
+ * two ways that are not here are always marked (UNSETTLED_WORDS, over any
+ * dictionary entry the reader has), until a person settles them:
  *   - 转动: HSK 3.0 lists zhuǎndòng (level 4) and zhuàndòng (level 6);
  *   - 背着, 看好, 同行, 正当: HSK 3.0 lists one reading (bèizhe, kànhǎo,
  *     tóngháng, zhèngdàng, level 6), but the other is as common in running
@@ -81,4 +82,20 @@ export const STANDARD_READINGS: StandardReading[] = [
   { word: "禁用", reading: "jìn yòng", tw: true, note: "judgement: not in HSK 3.0; jīn yòng, durable, is rare" },
   { word: "失调", reading: "shī tiáo", tw: true, note: "judgement: not in HSK 3.0; shī diào, out of tune, is rare" },
   { word: "大王", reading: "dà wáng", tw: true, note: "judgement: not in HSK 3.0; dài wang is the old stories' robber king" },
+  // Longer words holding a word above that the reader misread (the
+  // prior's table had 便宜行事 biàn yi): CC-CEDICT's reading, over it.
+  { word: "便宜行事", reading: "biàn yí xíng shì", tw: true, note: "CC-CEDICT: a longer word holding 便宜" },
+  { word: "面恶心善", reading: "miàn è xīn shàn", tw: true, note: "CC-CEDICT: a longer word holding 恶心" },
+  { word: "空地导弹", reading: "kōng dì dǎo dàn", tw: true, note: "CC-CEDICT: a longer word holding 空地" },
+  { word: "丫头片子", reading: "yā tou piàn zi", tw: true, note: "CC-CEDICT: a longer word holding 片子" },
+  { word: "京片子", reading: "jīng piàn zi", tw: true, note: "CC-CEDICT: a longer word holding 片子" },
+  { word: "年较差", reading: "nián jiào chā", tw: true, note: "CC-CEDICT: a longer word holding 较差" },
+  { word: "日较差", reading: "rì jiào chā", tw: true, note: "CC-CEDICT: a longer word holding 较差" },
+];
+
+/** The words CC-CEDICT reads two ways that have no standard reading here
+ *  (above): always marked, whatever the reader's dictionary says. */
+export const UNSETTLED_WORDS: string[] = [
+  "转动", "背着", "看好", "同行", "正当", "所长",
+  "不了", "分子", "教会", "明朝", "总长", "重重", "朝阳", "供养", "播种", "外传", "倾倒", "散落", "调配",
 ];

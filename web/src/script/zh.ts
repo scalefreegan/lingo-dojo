@@ -25,7 +25,7 @@ import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 import { COMMON_WORDS } from "./zh-words.ts";
-import { STANDARD_READINGS } from "./zh-standard.ts";
+import { STANDARD_READINGS, UNSETTLED_WORDS } from "./zh-standard.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
@@ -233,6 +233,8 @@ const common = new Map<string, CommonWord>(
       return [w, { readings: r.split("/").map((x) => x.split(" ")), trad: t ? t.split(",").map((x) => [...x]) : null }];
     }),
 );
+/** Words CC-CEDICT reads two ways with no standard reading: always marked. */
+const unsettledWords = new Set(UNSETTLED_WORDS);
 // The words CC-CEDICT reads two ways, by their standard reading (PR #67).
 for (const s of STANDARD_READINGS) {
   common.set(s.word, {
@@ -274,7 +276,7 @@ export function useCommonWords(on: boolean): void {
  * still outranks it (applyCorrections), and Taiwan's readings are laid
  * over it after (taiwanize).
  */
-function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[], tw: boolean): void {
+function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[], tw: boolean, doubt: boolean[]): void {
   const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
   const bare = (r: string) => r === toneless(r);
   /** The reading at k for CC-CEDICT's `x`: the reader's, x, or undefined (a
@@ -296,6 +298,16 @@ function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: b
     let hit = 0;
     for (let e = Math.min(cps.length, i + COMMON_MAX); e >= i + 2 && !hit; e--) {
       if (!edge(e) || !cps.slice(i, e).every(isHan)) continue;
+      if (unsettledWords.has(simp.slice(i, e).join(""))) {
+        // Read two ways and no standard one (zh-standard.ts): the reader's
+        // reading stands, marked, even where its dictionary had the word
+        // (同行: tóng háng, a colleague, or tóng xíng, to travel together).
+        // The doubt sits on the first character, so the mark is the word.
+        for (let k = i; k < e; k++) settled[k] = false;
+        doubt[i] = true;
+        hit = e - i;
+        break;
+      }
       const c = common.get(simp.slice(i, e).join(""));
       if (!c || c.readings[0].length !== e - i) continue;
       // Written in traditional characters: one of the word's spellings
@@ -452,7 +464,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     // (looseStarts: 我还|书 lets 还书 apply).
     const edges = looseStarts(cps, simp, starts, joined);
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
-    if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw);
+    if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw, doubt);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);

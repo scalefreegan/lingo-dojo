@@ -262,7 +262,7 @@ test("words CC-CEDICT reads two ways take the learner's standard reading (zh-sta
   const { STANDARD_READINGS } = zh_standard;
   assert.ok(STANDARD_READINGS.length >= 30);
   for (const s of STANDARD_READINGS) {
-    assert.ok(/^HSK 3\.0 level|^judgement: /.test(s.note), s.word);
+    assert.ok(/^HSK 3\.0 level|^judgement: |^CC-CEDICT: a longer word holding /.test(s.note), s.word);
     const first = s.reading.split("/")[0];
     // Alone, in a sentence: the standard reading (or another standard one), settled.
     for (const t of [s.word, `${s.word}，我知道。`]) {
@@ -280,11 +280,39 @@ test("words CC-CEDICT reads two ways take the learner's standard reading (zh-sta
   assert.equal(line("琢磨", "zh-TW"), "zhuó mó");
   // A longer word the segmenter splits keeps its own reading.
   assert.equal(line("好事者"), "hào shì zhě");
-  assert.equal(line("便宜行事"), "biàn yi xíng shì");
+  assert.equal(line("便宜行事"), "biàn yí xíng shì");
   // 盡量 (jìn) is not 儘量 (jǐn): the traditional spelling decides.
   assert.equal(line("儘量"), "jǐn liàng");
   assert.equal(line("盡量"), "jìn liàng");
   // Listed both ways, or the other sense as common: still the reader's, marked.
   assert.deepEqual(marked("正当"), ["正当"]);
   assert.deepEqual(marked("所长"), ["所长"]);
+});
+
+test("the two-way words with no standard reading are marked in both scripts, alone and in a sentence, even where the library's dictionary has them (PR #67)", () => {
+  const { UNSETTLED_WORDS } = zh_standard;
+  assert.equal(UNSETTLED_WORDS.length, 19);
+  // OpenCC writes Taiwan's 揹著 (bēi only, so not doubtful): 背著 here.
+  const tw = (t) => toTw(t).replace("揹", "背");
+  for (const w of UNSETTLED_WORDS) {
+    for (const [t, loc] of [[w, "zh-CN"], [tw(w), "zh-TW"], [`${w}，我知道。`, "zh-CN"], [tw(`${w}，我知道。`), "zh-TW"]]) {
+      const got = zh.uncertainWords(t, loc, { cache: false }).map((u) => u.word);
+      assert.ok(got.includes(loc === "zh-TW" ? tw(w) : w), `${t} ${loc}: ${JSON.stringify(got)}`);
+    }
+  }
+  assert.deepEqual(marked("我们一起同行"), ["同行"]);
+  assert.deepEqual(marked("他是我的同行"), ["同行"]);
+  // A person's reading settles it.
+  const fix = zh.makeCorrections({ mine: [{ word: "同行", reading: "tóng xíng" }] });
+  assert.deepEqual(zh.uncertainWords("我们一起同行", "zh-CN", { cache: false, corrections: fix }), []);
+  // Inside a dictionary word, not: 受不了.
+  assert.deepEqual(marked("我受不了"), []);
+});
+
+test("a longer word holding a table word reads as CC-CEDICT reads it (zh-standard.ts, over the prior's table): 便宜行事 biàn yí (PR #67)", () => {
+  assert.equal(line("便宜行事"), "biàn yí xíng shì");
+  assert.equal(line("便宜行事", "zh-TW"), "biàn yí xíng shì");
+  assert.equal(line("面恶心善"), "miàn è xīn shàn");
+  assert.equal(line("京片子"), "jīng piàn zi");
+  assert.equal(line("日较差"), "rì jiào chā");
 });
