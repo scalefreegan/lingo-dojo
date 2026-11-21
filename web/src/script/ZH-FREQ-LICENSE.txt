@@ -3,7 +3,14 @@ built by scripts/gen-zh-freq.mjs. It holds, for characters with more than
 one reading, their readings in order of use, and for some two thousand
 common words a reading. It holds no definitions and no frequencies.
 
-It is derived from, and licensed like, these sources:
+zh-words.ts (the common words the uncertain-reading mark treats as
+settled) is a derived table too, built by scripts/gen-zh-words.mjs. It
+holds some four thousand CC-CEDICT words of two to four characters, each
+with its reading, chosen by wordfreq's frequency. It holds no definitions
+and no frequencies.
+
+They are derived from, and licensed like, these sources (zh-words.ts
+from the first two; it picks its words with zh-freq.ts's readings):
 
   CC-CEDICT
     https://www.mdbg.net/chinese/dictionary?page=cc-cedict
@@ -24,9 +31,9 @@ It is derived from, and licensed like, these sources:
     (c) Unicode, Inc. Unicode License v3 (UNICODE-LICENSE.txt, beside
     this file).
 
-zh-freq.ts is therefore made available under the Creative Commons
+zh-freq.ts and zh-words.ts are therefore made available under the Creative Commons
 Attribution-ShareAlike 4.0 International licence:
 https://creativecommons.org/licenses/by-sa/4.0/legalcode
 If you change it and pass it on, do so under the same licence and keep
 this notice. The rest of this repository is under its own licence
-(LICENSE at the root); only this one data file is share-alike.
+(LICENSE at the root); only these two data files are share-alike.
