@@ -622,8 +622,9 @@ function useFlag() {
 
 /** A flashcard's phrase in a sentence, quiet under the meaning: its words
  *  marked as a filled gap is, readings as the Readings switch says, and
- *  where it came from when it is one of the learner's own session lines.
- *  Flagged, it goes (and isn't shown again anywhere). */
+ *  where it came from when it is one of the learner's own session lines,
+ *  then what it means, quieter still, when there is a translation (only
+ *  ever on the answer side, like the sentence). Flagged, it goes (and isn't shown again anywhere). */
 function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: PracticeSentence; locale: string | null; lang?: string; flag: ReturnType<typeof useFlag>; busy: boolean }) {
   if (flag.state === "done") {
     return (
@@ -646,6 +647,11 @@ function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: Practi
       <p className="text-base leading-relaxed break-words text-fg" lang={lang} dir="auto" data-testid="practice-sentence-text">
         <MarkedText before={sentence.before} marked={sentence.blank} after={sentence.after} locale={locale} markClassName="rounded bg-accent-soft px-1 text-accent" />
       </p>
+      {sentence.translation && (
+        <p className={`${fine} break-words text-fg-3`} dir="auto" data-testid="practice-sentence-translation">
+          {sentence.translation}
+        </p>
+      )}
       {flag.error && (
         <p className="text-sm text-err" role="alert">
           {flag.error}

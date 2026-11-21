@@ -80,7 +80,7 @@ async function add(who, pairs) {
  *  words, unless `segments` says otherwise), and that line kept as an
  *  example of `phrase`. `role`/`fromClient` make it the learner's line or a
  *  browser copy instead. */
-async function example(phrase, sentence, { role = "master", fromClient = false, segments = [{ lang: "target", text: sentence }] } = {}) {
+async function example(phrase, sentence, { role = "master", fromClient = false, segments = [{ lang: "target", text: sentence }], glosses = null } = {}) {
   const [p] = await q("select learner_id, language_profile_id from phrases where id = $1", [phrase.id]);
   const [conv] = await q(
     `insert into conversations (learner_id, language_profile_id, pack_snapshot, title, mode, target_language) values ($1, $2, '{}', 'Market', 'adult', 'Spanish') returning id`,
@@ -88,8 +88,8 @@ async function example(phrase, sentence, { role = "master", fromClient = false, 
   );
   const lines = JSON.stringify([{ speaker: "character", gender: "female", text: sentence, segments }]);
   const [turn] = await q(
-    `insert into turns (conversation_id, learner_id, language_profile_id, idx, role, text, lines, from_client) values ($1, $2, $3, 0, $4, $5, $6, $7) returning id`,
-    [conv.id, p.learner_id, p.language_profile_id, role, role === "learner" ? sentence : null, role === "learner" ? null : lines, fromClient],
+    `insert into turns (conversation_id, learner_id, language_profile_id, idx, role, text, lines, from_client, glosses) values ($1, $2, $3, 0, $4, $5, $6, $7, $8) returning id`,
+    [conv.id, p.learner_id, p.language_profile_id, role, role === "learner" ? sentence : null, role === "learner" ? null : lines, fromClient, glosses && JSON.stringify(glosses)],
   );
   const [ex] = await q(
     `insert into phrase_examples (phrase_id, learner_id, language_profile_id, conversation_id, turn_id, sentence, speaker) values ($1, $2, $3, $4, $5, $6, 'character') returning id`,
@@ -639,7 +639,7 @@ test("flashcards: the answer side's sentence rides on the card (own line first),
   const own = r.body.items.find((i) => i.phraseId === p["la vuelta"].id);
   assert.ok(own, r.text);
   assert.deepEqual([own.skill, own.drill, own.text], ["recognize", "flashcard", "la vuelta"]);
-  assert.deepEqual(own.sentence, { id: own.sentence.id, before: "Aquí tiene ", blank: "la vuelta", after: ", señora.", origin: "example" });
+  assert.deepEqual(own.sentence, { id: own.sentence.id, before: "Aquí tiene ", blank: "la vuelta", after: ", señora.", origin: "example", translation: null });
   const sessionBare = r.body.items.filter((i) => !i.sentence).map((i) => i.phraseId);
   assert.equal(sessionBare.length, 4);
   await settleClozeFills();
@@ -661,6 +661,30 @@ test("flashcards: the answer side's sentence rides on the card (own line first),
   // Kids: the same 403 as every practice route.
   const pip = await someone([KID]);
   assert.equal((await flashQueue(pip)).status, 403);
+});
+
+test("flashcards: the sentence's translation rides with it (the call's own, or the session's gloss of the line); a gap card never carries one", async () => {
+  const sam = await someone();
+  const p = await add(sam, [["la vuelta", "the change"], ["la cuenta", "the bill"]]);
+  await example(p["la vuelta"], "Aquí tiene la vuelta, señora.", {
+    glosses: [{ term: "la vuelta", meaning: "the change" }, { term: "Aquí tiene la vuelta, señora.", meaning: "Here's your change, ma'am." }],
+  });
+  fake.cloze(JSON.stringify({ items: [{ n: 1, sentences: [{ sentence: "¿Me trae la cuenta, por favor?", translation: "Could you bring me the bill, please?" }] }] }));
+  const first = await flashQueue(sam);
+  assert.equal(first.status, 200, first.text);
+  await settleClozeFills();
+  assert.match(fake.clozeArgs().join("\n"), /"translation": a natural translation of the whole sentence into English/);
+  assert.deepEqual((await itemsOf(p["la cuenta"].id)).map((x) => [x.sentence, x.translation]), [["¿Me trae la cuenta, por favor?", "Could you bring me the bill, please?"]]);
+  assert.deepEqual((await itemsOf(p["la vuelta"].id)).map((x) => [x.origin, x.translation]), [["example", "Here's your change, ma'am."]]);
+  const items = (await flashQueue(sam)).body.items;
+  const by = Object.fromEntries(items.map((i) => [i.phraseId, i]));
+  assert.equal(by[p["la cuenta"].id].sentence.translation, "Could you bring me the bill, please?");
+  assert.equal(by[p["la vuelta"].id].sentence.translation, "Here's your change, ma'am.");
+  // A gap card: the sentence around the gap only (its translation would give the gap away).
+  const gap = await queue(sam);
+  assert.equal(gap.status, 200, gap.text);
+  assert.ok(gap.body.items.length > 0 && gap.body.items.every((i) => i.cloze && !("translation" in i.cloze) && i.sentence === null));
+  assert.doesNotMatch(gap.text, /ma.am|bring me/i);
 });
 
 test("flashcards: a written sentence shows on the next session; flagged, it is no longer attached and nothing is paid again", async () => {

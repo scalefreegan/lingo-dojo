@@ -705,6 +705,12 @@ export const clozeItems = pgTable(
     blankEnd: integer("blank_end"),
     /** Unused as built (null): the hint shown is the phrase's meaning now. */
     hint: text("hint"),
+    /** What the sentence means, in the learner's native language (migration
+     *  0010, bead ld-r2x), shown quietly under it on a flashcard's answer
+     *  side. A generated sentence's came from the same call (cloze.mjs
+     *  checkTranslation); a session line's is the turn's own gloss of that
+     *  sentence, when it had one. Null: none (and every row from before 0010). */
+    translation: text("translation"),
     origin: text("origin").$type<"example" | "generated">().notNull(),
     /** practice.mjs clozeKey of the phrase as the item was made for it. */
     phraseKey: text("phrase_key").notNull(),
@@ -724,6 +730,8 @@ export const clozeItems = pgTable(
       "cloze_items_sentence",
       sql`(${t.sentence} is null) = (${t.blankStart} is null) and (${t.sentence} is null) = (${t.blankEnd} is null) and (${t.sentence} is not null or ${t.origin} = 'generated') and (${t.exampleId} is not null) = (${t.origin} = 'example')`,
     ),
+    // A translation is a sentence's: the tried mark has none.
+    check("cloze_items_translation", sql`${t.translation} is null or ${t.sentence} is not null`),
     foreignKey({ columns: [t.phraseId, t.learnerId], foreignColumns: [phrases.id, phrases.learnerId] }).onDelete("cascade"),
     foreignKey({ name: "cloze_items_phrase_profile_fk", columns: [t.phraseId, t.languageProfileId], foreignColumns: [phrases.id, phrases.languageProfileId] }).onDelete("cascade"),
     foreignKey({ name: "cloze_items_example_fk", columns: [t.exampleId, t.phraseId], foreignColumns: [phraseExamples.id, phraseExamples.phraseId] }).onDelete("cascade"),

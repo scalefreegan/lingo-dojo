@@ -1,0 +1,2 @@
+ALTER TABLE "cloze_items" ADD COLUMN "translation" text;--> statement-breakpoint
+ALTER TABLE "cloze_items" ADD CONSTRAINT "cloze_items_translation" CHECK ("cloze_items"."translation" is null or "cloze_items"."sentence" is not null);
