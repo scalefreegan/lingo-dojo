@@ -19,6 +19,7 @@ import { onOpenBank } from "./bankLink";
 import KidsGameView from "./components/KidsGameView";
 import PracticeView from "./components/PracticeView";
 import PictureLibraryView from "./components/PictureLibraryView";
+import SharedReadingsView from "./components/SharedReadingsView";
 import AgentDrawer from "./components/AgentDrawer";
 import ScriptProvider from "./components/ScriptProvider";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
@@ -31,7 +32,7 @@ const ASSEMBLE_DELAY_MS = 200;
 const TAB_KEY = "lingo-dojo.tab.v1";
 
 function isTab(v: string | null): v is Tab {
-  return v === "scene" || v === "customize" || v === "go" || v === "library" || v === "practice" || v === "pictures";
+  return v === "scene" || v === "customize" || v === "go" || v === "library" || v === "practice" || v === "pictures" || v === "readings";
 }
 
 /** The last tab this language profile was on in this browser — "Scene" the
@@ -633,6 +634,15 @@ export default function App({
               </p>
             ) : (
               <PictureLibraryView key={language.id} />
+            ))}
+            {/* The shared readings list (ld-4i2): admins only (its routes are
+                admin-only too); anyone else on it by a stale tab is sent on. */}
+            {tab === "readings" && (user.isAdmin ? (
+              <SharedReadingsView />
+            ) : (
+              <p className="text-sm text-fg-3">
+                The shared readings list is for an admin. <button type="button" className="underline" onClick={() => setTab("library")}>Open the Library</button>
+              </p>
             ))}
             {tab === "library" && (
               <LibraryTab

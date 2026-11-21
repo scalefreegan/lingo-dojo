@@ -118,7 +118,8 @@ export default function TopBar({
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <ThemeToggle />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")}
-          practiceActive={tab === "practice"} onPractice={() => onTab("practice")} picturesActive={mode === "kids" ? null : tab === "pictures"} onPictures={() => onTab("pictures")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
+          practiceActive={tab === "practice"} onPractice={() => onTab("practice")} picturesActive={mode === "kids" ? null : tab === "pictures"} onPictures={() => onTab("pictures")}
+          readingsActive={user.isAdmin ? tab === "readings" : null} onReadings={() => onTab("readings")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
     </header>
   );
@@ -224,6 +225,8 @@ function OverflowMenu({
   practiceActive,
   picturesActive,
   onPictures,
+  readingsActive,
+  onReadings,
   onPractice,
   username,
   onManageLearners,
@@ -240,6 +243,9 @@ function OverflowMenu({
   /** Whether the picture library is open; null when the learner has none (kids: a grown-up page, ld-318). */
   picturesActive: boolean | null;
   onPictures: () => void;
+  /** Whether the shared readings page is open; null for anyone but an admin (ld-4i2). */
+  readingsActive: boolean | null;
+  onReadings: () => void;
   onPractice: () => void;
   username: string;
   onManageLearners: () => void;
@@ -296,6 +302,21 @@ function OverflowMenu({
                 data-testid="menu-pictures"
               >
                 Picture library
+              </button>
+            )}
+            {readingsActive !== null && (
+              <button
+                type="button"
+                role="menuitem"
+                aria-current={readingsActive ? "page" : undefined}
+                className={`${menuItemClass} border-b border-line ${readingsActive ? "font-medium text-fg" : ""}`}
+                onClick={() => {
+                  onReadings();
+                  setOpen(false);
+                }}
+                data-testid="menu-readings"
+              >
+                Shared readings
               </button>
             )}
             <button
