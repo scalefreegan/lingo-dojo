@@ -949,11 +949,18 @@ phrase audio and `/api/voice/sound`):
 - **Every provider: a native speaker first.** A word in a voice of another
   language is said wrong (a German "rot" in an English voice), so a voice
   whose primary language is the locale's comes before any other; the voice
-  is the first of its tier in the list's fixed order (rank, name, then id),
-  so a locale keeps one voice and its cached clips stay valid.
-- **ElevenLabs:** a native premade voice, then any native voice of your
-  account (of the narrator's gender when the line names one; a native one
-  before the gender, as pronunciation comes first), and only with no
+  is the best of its tier (`bestFirst`): the locale's own region (a voice
+  verified or accented for that region, `region` 2: cmn-CN for zh-CN,
+  cmn-TW for zh-TW; then an unspecified or standard accent, 1; another
+  region's, 0), then a plain name (never "[Suspense] ...", ads, ASMR,
+  characters while another exists), then a use case fit for words
+  (explainer, conversational, narration), then premade; ties keep the
+  list's order (rank, name, id). A locale keeps one voice and its cached
+  clips stay valid. A voice whose own `labels.language` is not the
+  locale's never outranks one that is, however many languages it lists.
+- **ElevenLabs:** a native voice of your account (of the narrator's gender
+  when the line names one; a native one before another gender, as
+  pronunciation comes first), and only with no
   native voice at all a premade one (any plan can speak with them). A
   native voice added from the library may be refused on a plan without
   library access (400, 402, 403, 404 or 422, the statuses `retryInOtherVoice`

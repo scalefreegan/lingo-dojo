@@ -1332,6 +1332,27 @@ export function azureTranscribeRequest({ key, region: r, audio, locales, mime = 
 
 /* ----------------------------- reply parsing ------------------------------- */
 
+/** How well a native voice's region fits `locale` (es-MX, zh-TW): 2 when
+ *  its verified languages or its accent label name that very region, 1 when
+ *  the accent is unspecified or "standard" (nothing says it is another
+ *  region's), 0 when it is another region's (a Taiwan-Mandarin voice for
+ *  zh-CN). ElevenLabs writes Mandarin as cmn-CN / cmn-TW. */
+const ACCENT_REGION = [["taiwan", "TW"], ["mexican", "MX"], ["saudi", "SA"], ["parisian", "FR"]];
+function regionTier(locale, labels, verified) {
+  const lang = languageOf(locale);
+  const want = locale.slice(lang.length + 1).toUpperCase();
+  const norm = (l) => String(l ?? "").replace(/^cmn-/i, "zh-");
+  const regionOf = (l) => norm(l).split("-")[1]?.toUpperCase() ?? "";
+  if (verified.some((x) => norm(x?.locale).toLowerCase() === locale.toLowerCase())) return 2;
+  const accent = String(labels.accent ?? "").toLowerCase();
+  const named = ACCENT_REGION.find(([w]) => accent.includes(w))?.[1];
+  if (named) return named === want ? 2 : 0;
+  // Verified only in other regions of the language, and an accent that says nothing: another region's voice.
+  const others = verified.filter((x) => norm(x?.locale).toLowerCase().startsWith(`${lang}-`));
+  if (others.length && others.every((x) => regionOf(x.locale) !== want)) return 0;
+  return !accent || /standard|neutral/.test(accent) ? 1 : 0;
+}
+
 /** ElevenLabs /v2/voices → the picker's shape. Nearly every voice is
  *  "verified" in a dozen languages (the multilingual models can speak them),
  *  so that list says nothing about accent; a voice counts as a native speaker
@@ -1350,7 +1371,8 @@ export function elevenVoices(json, locale, nativeLocale = "") {
       const labels = v.labels ?? {};
       const verified = Array.isArray(v.verified_languages) ? v.verified_languages : [];
       const native = String(labels.language ?? "").toLowerCase() === lang;
-      const exact = native && verified.some((x) => x?.locale === locale);
+      const region = native ? regionTier(locale, labels, verified) : 0;
+      const exact = region === 2;
       return {
         row: {
           id: v.voice_id,
@@ -1361,6 +1383,8 @@ export function elevenVoices(json, locale, nativeLocale = "") {
           ...(homeLang ? { home: !native && String(labels.language ?? "").toLowerCase() === homeLang } : {}),
           age: ageOf(labels.age),
           premade: v.category === "premade",
+          region,
+          use: String(labels.use_case ?? ""),
         },
         rank: (native ? 1 : 0) + (exact ? 1 : 0),
       };
@@ -1584,8 +1608,9 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
  * session. `voices` is the provider's own list for the locale (elevenVoices,
  * azureVoices, systemVoices: natives first, in a fixed order); `gender` the
  * narrator's, when known. → an id, or "" when the list has nothing usable.
- * Always the first of its tier, so a locale keeps one voice (its clips
- * cache and sound the same every time).
+ * Always the best of its tier (bestFirst: the locale's own region, a plain
+ * name, a use case fit for words, premade; then the list's order), so a
+ * locale keeps one voice (its clips cache and sound the same every time).
  *
  *  - Every provider: a native speaker of the locale's language before any
  *    other voice (a German word in an English voice is said wrong, which is
@@ -1607,18 +1632,32 @@ export function defaultVoice(provider, voices, gender = null) {
  *  language's voice: the status should say so) and `fallback` (ElevenLabs:
  *  a premade voice, "" when the voice is itself premade or there is none; a
  *  premade voice speaks on any plan, a library voice may be refused). */
+// Names that mark a style, not a plain voice: never the default while a plain
+// one exists ("[Suspense] Eduardo", ads, ASMR, characters, sales closers).
+const STYLE_NAME_RE = /\[[^\]]*\]|\(sig\)|asmr|whisper|suspense|\bads?\b|advert|commercial|comercial|locutora|sales|character|cartoon|anime|villain|monster|horror|novelty/i;
+const USE_SCORE = { informative_educational: 3, conversational: 2, narrative_story: 2, narration: 2 };
+/** Better first: the locale's own region, then a plain name, then a use case
+ *  fit for saying words (explainer, conversation, narration), then a
+ *  premade voice. A stable sort: equal voices keep the list's order. */
+function bestFirst(pool) {
+  const key = (v) => [-(v.region ?? 0), STYLE_NAME_RE.test(String(v.name ?? "")) ? 1 : 0, -(USE_SCORE[String(v.use ?? "").toLowerCase()] ?? 0), v.premade ? 0 : 1];
+  return pool.slice().sort((a, b) => {
+    const x = key(a);
+    const y = key(b);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  });
+}
+
 export function defaultVoicePlan(provider, voices, gender = null) {
   const g = gender === "female" || gender === "male" ? gender : null;
   const list = (Array.isArray(voices) ? voices : []).filter((v) => v && typeof v.id === "string" && v.id && String(v.gender).toLowerCase() !== "novelty");
   const ofGender = (v) => String(v.gender).toLowerCase() === g;
   // Each tier gendered first: an unknown gender just skips that half.
   const tiers = (pools) => pools.flatMap((p) => (g ? [p.filter(ofGender), p] : [p]));
-  const native = list.filter((v) => v.match);
-  const premade = list.filter((v) => v.premade);
-  const pools =
-    provider === "elevenlabs"
-      ? tiers([premade.filter((v) => v.match), native, premade])
-      : tiers([native, list]);
+  const native = bestFirst(list.filter((v) => v.match));
+  const premade = bestFirst(list.filter((v) => v.premade));
+  const pools = provider === "elevenlabs" ? tiers([native, premade]) : tiers([native, list]);
   const pick = pools.find((p) => p.length)?.[0];
   if (!pick) return { voice: "", native: false, fallback: "" };
   const fallback = provider === "elevenlabs" && !pick.premade ? tiers([premade]).find((p) => p.length)?.[0]?.id ?? "" : "";

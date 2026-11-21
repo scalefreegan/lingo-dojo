@@ -753,7 +753,7 @@ test("defaultVoice (ld-zxn, ld-pqy): a native voice first on every provider (Ele
   assert.equal(defaultVoice("elevenlabs", eleven, "male"), "cloned_zh_f", "native before gender (pronunciation first)");
   assert.equal(defaultVoice("elevenlabs", eleven.slice(1), "male"), "pre_en_m", "no native voice at all: the old premade fallback, of the gender");
   assert.equal(defaultVoice("elevenlabs", eleven.slice(1), null), "pre_en_m", "no gender: the first premade");
-  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_m", gender: "male", match: true, premade: true }, ...eleven], "female"), "pre_zh_m", "a native premade voice before the gender (pronunciation first)");
+  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_m", gender: "male", match: true, premade: true }, ...eleven], "female"), "cloned_zh_f", "the gender's native voice before another gender's native premade one");
   assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_f", gender: "female", match: true, premade: true }, ...eleven], "female"), "pre_zh_f");
   // No premade voice at all: a native one; none native either: nothing (a 400 upstream).
   assert.equal(defaultVoice("elevenlabs", [eleven[0], { id: "de_m", gender: "male", match: false }], "male"), "cloned_zh_f");
@@ -764,8 +764,8 @@ test("defaultVoice (ld-zxn, ld-pqy): a native voice first on every provider (Ele
     { id: "np_f", gender: "female", match: true, premade: true },
   ];
   assert.equal(defaultVoice("elevenlabs", natives.slice(0, 2), "male"), "n_m");
-  assert.equal(defaultVoice("elevenlabs", natives, "male"), "np_f", "a native premade voice before the gender, as before");
-  assert.equal(defaultVoice("elevenlabs", natives, null), "np_f", "native premade first");
+  assert.equal(defaultVoice("elevenlabs", natives, "male"), "n_m");
+  assert.equal(defaultVoice("elevenlabs", natives, null), "np_f", "equal voices: a premade one first");
   // The same list gives the same voice every time (a clip's cache key).
   assert.equal(defaultVoice("elevenlabs", natives, "female"), defaultVoice("elevenlabs", [...natives], "female"));
   assert.equal(defaultVoice("elevenlabs", [{ id: "de_m", gender: "male", match: false }], "male"), "");
@@ -1487,4 +1487,41 @@ test("elevenVoices (ld-pqy): equal names keep one order by id, so the default vo
   const b = elevenVoices({ voices: [v("c"), v("b"), v("a")] }, "de-DE").map((x) => x.id);
   assert.deepEqual(a, ["a", "b", "c"]);
   assert.deepEqual(b, a);
+});
+
+test("elevenVoices + defaultVoice (ld-pqy): region first (cmn-TW never wins zh-CN), plain names over style ones, primary-language over multilingual", async () => {
+  const { elevenVoices, defaultVoice } = await import("../voice.mjs");
+  const ver = (language, locale, accent) => Array.from({ length: 3 }, () => ({ language, locale, accent }));
+  const zh = (id, name, accent, locale, use, gender = "male", n = 3) => ({
+    voice_id: id, name, category: "generated", labels: { language: "zh", gender, accent, use_case: use },
+    verified_languages: ver("zh", locale, accent).slice(0, n),
+  });
+  const list = {
+    voices: [
+      zh("tw_info", "Andrew Lo", "taiwan mandarin", "cmn-TW", "informative_educational"),
+      zh("cn_social", "Anna", "standard", "cmn-CN", "social_media"),
+      zh("cn_story", "James", "standard", "cmn-CN", "narrative_story"),
+      zh("cn_edu", "Newzhen", "standard", "cmn-CN", "informative_educational"),
+    ],
+  };
+  const pick = (json, loc, g = null) => defaultVoice("elevenlabs", elevenVoices(json, loc), g);
+  assert.equal(pick(list, "zh-CN"), "cn_edu", "Mainland: a cmn-CN voice, explainer use first, never the Taiwan one");
+  assert.equal(pick(list, "zh-TW"), "tw_info", "Taiwan: the cmn-TW voice");
+  // Region 1: same language, accent unspecified, no verified region, beats another region's voice.
+  const bare = { voice_id: "bare", name: "Bare", labels: { language: "zh", gender: "male" }, verified_languages: [] };
+  assert.equal(pick({ voices: [list.voices[0], bare] }, "zh-CN"), "bare");
+  // With only another region's voices, still a native one (same language beats any non-native).
+  assert.equal(pick({ voices: [list.voices[0]] }, "zh-CN"), "tw_info");
+  // Style names lose to a plain one even when they rank first by name.
+  const es = (id, name, use) => ({ voice_id: id, name, labels: { language: "es", gender: "male", accent: "mexican", use_case: use }, verified_languages: ver("es", "es-MX", "mexican") });
+  assert.equal(pick({ voices: [es("sus", "[Suspense] Eduardo", "narrative_story"), es("plain", "Zed", "narrative_story"), es("ad", "Angelica - Locutora Comercial", "advertisement")] }, "es-MX"), "plain");
+  assert.equal(pick({ voices: [es("sus", "[Suspense] Eduardo", "narrative_story")] }, "es-MX"), "sus", "a style voice only when there is no other");
+  // A use case fit for words wins within a region.
+  assert.equal(pick({ voices: [es("soc", "Aaa", "social_media"), es("edu", "Zzz", "informative_educational")] }, "es-MX"), "edu");
+  // A multilingual voice that merely lists the language loses to a primary-language one.
+  const fr = { voices: [
+    { voice_id: "multi", name: "Aaron", labels: { language: "en", gender: "male", accent: "american" }, verified_languages: ver("fr", "fr-FR", "standard") },
+    { voice_id: "native", name: "Olivier", labels: { language: "fr", gender: "male", accent: "standard" }, verified_languages: ver("fr", "fr-FR", "standard") },
+  ] };
+  assert.equal(pick(fr, "fr-FR"), "native");
 });
