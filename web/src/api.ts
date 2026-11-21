@@ -21,7 +21,7 @@ import type {
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
   HiddenSceneReply, HiddenScenesReply, UnhideSceneReply,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
@@ -131,8 +131,9 @@ function check401(res: Response): void {
   if (res.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
 }
 
-export async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await send(url, init);
+/** `res`: a response already fetched (voiceTurn's, when it isn't a stream). */
+export async function req<T>(url: string, init?: RequestInit, got?: Response): Promise<T> {
+  const res = got ?? (await send(url, init));
   check401(res);
   const text = await res.text();
   let body: unknown = null;
@@ -398,10 +399,24 @@ async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signa
     const detail = typeof reply?.error === "string" ? reply.error : "";
     throw new ApiError(detail || `${res.status} ${res.statusText}`, res.status, reply?.code);
   }
-  const reader = res.body.getReader();
+  let sawDone = false;
+  await readSse(res.body, (event, parsed) => {
+    if (event === "done") sawDone = true;
+    try {
+      (handlers as Record<string, ((d: unknown) => void) | undefined>)[event]?.(parsed);
+    } catch {
+      /* a handler's slip doesn't end the chat's stream (as before readSse) */
+    }
+  });
+  if (!sawDone) throw new Error("stream ended unexpectedly — the server may have restarted; try again");
+}
+
+/** An SSE body's events, each `data` parsed as JSON, until the body ends.
+ *  A handler's throw ends the read and rejects with it. */
+async function readSse(body: ReadableStream<Uint8Array>, onEvent: (event: string, data: unknown) => void): Promise<void> {
+  const reader = body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  let sawDone = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -417,16 +432,20 @@ async function ssePost(url: string, body: unknown, handlers: ChatHandlers, signa
         else if (line.startsWith("data:")) data += line.slice(5).trim();
       }
       if (!data) continue;
-      if (event === "done") sawDone = true;
+      let parsed: unknown;
       try {
-        const parsed: unknown = JSON.parse(data);
-        (handlers as Record<string, ((d: unknown) => void) | undefined>)[event]?.(parsed);
+        parsed = JSON.parse(data);
       } catch {
-        /* malformed frame */
+        continue; // malformed frame
+      }
+      try {
+        onEvent(event, parsed);
+      } catch (e) {
+        await reader.cancel().catch(() => {});
+        throw e;
       }
     }
   }
-  if (!sawDone) throw new Error("stream ended unexpectedly — the server may have restarted; try again");
 }
 
 /** The agent is told which library the user is looking at. */
@@ -496,8 +515,36 @@ export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal,
   return whenFree(() => req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal }), signal);
 }
 
-export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise<VoiceTurnReply> {
-  return req<VoiceTurnReply>("/api/voice/turn", { ...json(body), signal });
+/**
+ * One turn of the dojo master. With `onLine`, the reply streams (docs/
+ * VOICE.md §Streaming the reply): each spoken line comes to `onLine` as soon
+ * as it is final, in order, while the rest is still being written, and the
+ * promise resolves with the whole reply (whose `lines` begin with them).
+ * The server answers plain JSON when no line was ready before the end, so
+ * `onLine` may never be called. Aborting `signal` (Stop, leaving the page)
+ * closes the request, and the server kills the run.
+ */
+export async function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal, onLine?: (e: VoiceTurnLineEvent) => void): Promise<VoiceTurnReply> {
+  if (!onLine) return req<VoiceTurnReply>("/api/voice/turn", { ...json(body), signal });
+  const init = json(body);
+  const res = await send("/api/voice/turn", { ...init, headers: { ...(init.headers as Record<string, string>), Accept: "text/event-stream, application/json" }, signal });
+  if (!(res.headers.get("Content-Type") ?? "").startsWith("text/event-stream") || !res.body) {
+    // Not streamed: an error, or a reply that was whole before any line was
+    // final. req()'s handling, on the response already in hand.
+    return req<VoiceTurnReply>("/api/voice/turn", { ...init, signal }, res);
+  }
+  let reply: VoiceTurnReply | null = null;
+  await readSse(res.body, (event, data) => {
+    if (event === "line") onLine(data as VoiceTurnLineEvent);
+    else if (event === "reply") reply = data as VoiceTurnReply;
+    else if (event === "error") {
+      const e = data as VoiceTurnErrorEvent;
+      if (e.status === 409 && e.code === STALE_LEARNER) window.dispatchEvent(new Event(STALE_LEARNER_EVENT));
+      throw new ApiError(e.error, e.status, e.code);
+    }
+  });
+  if (!reply) throw new Error("the reply stopped part-way — the server may have restarted; try again");
+  return reply;
 }
 
 /* -------------------------------- phrase bank ------------------------------- */

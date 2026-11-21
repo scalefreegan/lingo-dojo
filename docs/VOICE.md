@@ -283,6 +283,68 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `scripts/tests/script.test.mjs` and an entry in the tables in
   `web/src/script/script.ts`.
 
+### Streaming the reply (ld-erp)
+
+A whole reply takes about 4 s to write; the Go tab no longer waits for it.
+The turn runs `claude -p --output-format stream-json --verbose
+--include-partial-messages` (still `--tools ""`: no tools; `-p` refuses
+stream-json without `--verbose`, and text arrives in pieces only with the
+partial messages). `scripts/claude.mjs` `streamJsonReader` reads the text
+deltas as they come (thinking and anything a subagent says are left out);
+the last line is the same result envelope `--output-format json` prints,
+so a run succeeds and fails exactly as before, and the stored reply is
+still the envelope's whole text.
+
+- **Which lines go out early** (`scripts/voice.mjs` `replyStream`, pure):
+  only complete text lines are read, through `parseVoiceReply` itself. A
+  line is final once a later one has started (a tag or a timing mark: only
+  an untagged line continues the line before it), and the last spoken line
+  once a `GLOSS:`, `CHOICES:` or `STAGE:` label appears after it (those come
+  after the speech; the label counts while the rest of its line is still
+  being written). So the first line goes out as the second begins, not
+  when the reply ends. A one-line reply with no GLOSS is final only at the
+  end (it could still be continued) and goes out as JSON, as before. Each
+  line goes out with the CAST notes so far, so a new person's voice is
+  drawn before their line plays.
+- **Transport**: SSE on the same `POST /api/voice/turn` (through `wrap()`
+  as ever), asked for with `Accept: text/event-stream`. The stream opens
+  with the first final line, so everything that fails before it (a stale
+  learner, an ended conversation, a failed run, the lock) is the usual JSON
+  error with its status. Then: `line` events `{index, line, castNotes}`, and
+  one `reply` (the whole `VoiceTurnReply`, stored first, as before, under
+  the lock) or one `error` `{error, status, code?}`. A request without the
+  header gets plain JSON (the tests, any other caller). Should a malformed
+  reply make the streamed lines differ from the whole reply's (a spoken line
+  after GLOSS), the reply's lines stand and the server logs it; the browser
+  plays on from where it is. Known gap: unlabelled spoken text after a
+  GLOSS line continues the last line in the whole parse, after that line
+  was already spoken, so the transcript can show words the learner never
+  heard.
+- **Voice draws**: each line's CAST notes can start a draw mid-reply; they
+  go out one at a time (§Paid calls at once), and a line waits for its
+  person's draw, queued or out.
+- **LOOKUP**: a LOOKUP before any line went out holds the run's lines back
+  and reruns as before; the rerun's lines stream. A LOOKUP after lines went
+  out can't take them back: the reply stands, the lookup isn't run (as one
+  in a rerun isn't), and the turn row records `lookup: {query, late: true}`.
+  A rerun that fails after its first lines went out fails the turn (an
+  `error` event) instead of falling back to the first reply.
+- **Stop** (or a reload, or leaving the page) closes the request; the
+  server kills the run's process group, as it always did, and the lock is
+  free at once. Lines heard from a stopped or failed turn leave the
+  transcript: nothing of it was stored.
+- **The Go tab** (`VoicePanel` `runTurn`, `playLines` with a `LineFeed`):
+  the first line shows and starts speaking at once; later lines join the
+  queue as they come (each line's audio is still fetched one part at a time
+  under the paid slot of 2, and the next one ahead). When the reply lands
+  it replaces the streamed entry (glosses, choices, stage) and playback goes
+  on to its last line. Leaving Go mid-stream silences the lines but not the
+  turn: it lands and is offered as "▶ Play the reply", as a reply still
+  being thought is.
+- **Not done**: ElevenLabs' streaming speech endpoint. A line's audio is
+  still fetched whole; the gain here is not waiting for the rest of the
+  reply.
+
 ## Saved conversations
 
 Every session is saved for the active learner's current language, turn by turn, and listed in
@@ -1500,10 +1562,17 @@ pronunciation scoring. A third call while two run is a **429** at once,
 before any provider call, never a queue on the server. The upload of a
 recording is read before the slot is taken.
 
-The Go tab itself needs one at a time for speech: it fetches the next part
-of a line only once the current one has arrived, while that one plays. A
-voice draw (a recast mid-session) can run beside it, so two leaves room for
-that plus one more. A draw the browser gives up on (its 10 s timeout, Stop)
+The Go tab itself takes at most both: one speech fetch at a time (it
+fetches the next part of a line only once the current one has arrived,
+while that one plays) plus one voice draw (a recast mid-session). Draws go
+out one at a time per session (`web/src/drawQueue.ts`): a streamed reply
+asks for one each time its CAST notes change, and what is asked while a
+draw is out waits, merged into one next draw (first draws before retries).
+A person whose draw is queued is already marked as being drawn for, so
+their lines wait for it as for one that is out. A first draw (it holds its
+person's lines) never waits out a retry (which holds nothing): the retry
+is aborted, which frees its slot, the first draw goes out, and the retry
+is asked again after it. A draw the browser gives up on (its 10 s timeout, Stop)
 has its provider calls aborted and frees its slot at once, as a line's do.
 At the edge (a fetch just aborted and not yet released, a card's sound in
 another window) the Go tab retries a 429 three times, 0.4, 1 and 2 s later

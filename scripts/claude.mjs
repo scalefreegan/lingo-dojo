@@ -141,7 +141,7 @@ const MCP_TOOL_RE = /^mcp__[a-z][a-z0-9_-]*__[a-z][a-z0-9_]*$/;
  *                          nothing to resume, so nothing written under
  *                          ~/.claude/projects per run.
  */
-export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content", mcpTools = [] }) {
+export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurns = 25, mcpConfigPath, contentDir, repoRoot, tools = "content", mcpTools = [], stream = false }) {
   if (!isKnownModel(model)) throw new Error(`unknown model: ${model}`);
   if (tools !== "content" && tools !== "none") throw new Error(`unknown tool profile: ${tools}`);
   for (const t of mcpTools) if (!MCP_TOOL_RE.test(t)) throw new Error(`not an MCP tool name: ${t}`);
@@ -152,9 +152,15 @@ export function buildArgs({ prompt, systemPrompt, model = DEFAULT_MODEL, maxTurn
   const toolArgs = tools === "none"
     ? ["--tools", ""]
     : ["--tools", TOOLS.join(","), "--allowedTools", "Read", "Glob", "Grep", ...contentGrants(contentDir, repoRoot), ...mcpTools];
+  // `stream`: one JSON event per line as the reply is written (the voice
+  // turn starts speaking before the reply is finished). The CLI refuses
+  // stream-json under -p without --verbose, and sends text deltas only with
+  // --include-partial-messages; its last line is the same result envelope
+  // `json` prints, so classifyExit reads either.
+  const output = stream ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"];
   const args = [
     "-p", prompt,
-    "--output-format", "json",
+    ...output,
     "--max-turns", String(maxTurns),
     "--model", model,
     "--restricted",
@@ -216,6 +222,49 @@ export function classifyExit({ code, stdout, stderr }) {
   return { ok: true, text: wrapper && typeof wrapper.result === "string" ? wrapper.result : stdout, raw: wrapper };
 }
 
+/**
+ * Reads `--output-format stream-json` as it arrives — pure, so the line
+ * splitting and the event shapes are tested without spawning. `push(chunk)`
+ * returns the reply text the chunk's complete lines added (text deltas of
+ * the top-level message; thinking and anything a subagent says are not the
+ * reply); `end()` reads a last line with no newline after it. `stdout()` is
+ * what classifyExit gets: the result envelope line, or whatever on stdout
+ * wasn't JSON when there was none (an error printed raw), so a streamed run
+ * fails and succeeds exactly as a `json` one does.
+ */
+export function streamJsonReader() {
+  let buf = "";
+  let result = null;
+  let other = "";
+  const take = (line) => {
+    const t = line.trim();
+    if (!t) return "";
+    let ev;
+    try { ev = JSON.parse(t); } catch { other += `${line}\n`; return ""; }
+    if (ev?.type === "result") { result = t; return ""; }
+    if (ev?.type !== "stream_event" || ev.parent_tool_use_id) return "";
+    const e = ev.event;
+    return e?.type === "content_block_delta" && e.delta?.type === "text_delta" && typeof e.delta.text === "string" ? e.delta.text : "";
+  };
+  return {
+    push(chunk) {
+      buf += chunk;
+      let out = "";
+      for (let i = buf.indexOf("\n"); i >= 0; i = buf.indexOf("\n")) {
+        out += take(buf.slice(0, i));
+        buf = buf.slice(i + 1);
+      }
+      return out;
+    },
+    end() {
+      const out = take(buf);
+      buf = "";
+      return out;
+    },
+    stdout: () => result ?? other,
+  };
+}
+
 // Agents are spawned detached (own process group), so nothing kills them for
 // free when THIS process dies — a SIGTERM'd server (the Mac app's Quit, a
 // pkill) would orphan an in-flight agent to keep editing content/ with no
@@ -243,9 +292,11 @@ function armReaper() {
  * AbortSignal) does the same when it fires — wire it to request-close.
  * `mcpServers` (the --mcp-config file's `mcpServers`; none by default) and
  * `mcpTools` (their tools the run may call, by full name) are the content
- * agent's bank server (chat.ts).
+ * agent's bank server (chat.ts). `onText(delta)` streams the reply as it is
+ * written (stream-json; the voice turn): called with each piece of text in
+ * order, while `text` in the result is still the envelope's whole reply.
  */
-export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content", mcpServers = {}, mcpTools = [] }) {
+export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, signal, maxTurns = 25, timeoutSec = 600, tools = "content", mcpServers = {}, mcpTools = [], onText }) {
   const chosen = model ?? DEFAULT_MODEL;
   // Say which model actually went out: a setting that silently failed to
   // apply is otherwise invisible until the bill.
@@ -266,7 +317,7 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
 
   let args;
   try {
-    args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools, mcpTools });
+    args = buildArgs({ prompt, systemPrompt, model: chosen, maxTurns, mcpConfigPath, tools, mcpTools, stream: typeof onText === "function" });
   } catch (e) {
     cleanupMcp();
     throw e;
@@ -292,7 +343,20 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
 
   const result = new Promise((resolve, reject) => {
     let stdout = "", stderr = "";
-    proc.stdout.on("data", (d) => { stdout += d; });
+    const reader = onText ? streamJsonReader() : null;
+    // A throw in the caller's handler must not take the run (or the server)
+    // down with it: the reply still arrives whole in the result. Nothing is
+    // delivered after a kill (Stop, the timeout).
+    const deliver = (text) => {
+      if (!text || killed) return;
+      try { onText(text); } catch (e) { console.error("[lingo-dojo] claude: onText threw:", e); }
+    };
+    if (reader) {
+      // Decoded as a stream, so a character split across two chunks (any
+      // non-Latin script) arrives whole.
+      proc.stdout.setEncoding("utf8");
+      proc.stdout.on("data", (d) => deliver(reader.push(d)));
+    } else proc.stdout.on("data", (d) => { stdout += d; });
     proc.stderr.on("data", (d) => { stderr += d; });
 
     const timer = setTimeout(() => {
@@ -313,6 +377,10 @@ export function startClaude({ prompt, systemPrompt, model, cwd = REPO_ROOT, sign
       signal?.removeEventListener("abort", kill);
       // our own kill (client disconnect) — not an auth/limit mystery
       if (killed) return reject(new Error("cancelled"));
+      if (reader) {
+        deliver(reader.end());
+        stdout = reader.stdout();
+      }
       const verdict = classifyExit({ code, stdout, stderr });
       if (!verdict.ok) return reject(new Error(verdict.message));
       const raw = verdict.raw ?? {};

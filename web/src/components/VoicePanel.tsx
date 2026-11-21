@@ -14,12 +14,13 @@ import {
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
-  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, redrawAdopted, turnsSettled } from "../conversationLife";
+import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { deferredVoiceTaken } from "../../shared/voice-cast.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
@@ -40,12 +41,35 @@ const PROVIDER_LABEL: Record<TtsProvider, string> = { elevenlabs: "ElevenLabs", 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
 /** How long a mid-session voice draw may take before it counts as failed. */
 const CAST_TIMEOUT_MS = 10_000;
-/** How long a first draw (it holds its person's lines) waits for someone
- *  else's retry on the same tag, which holds nothing: the wait only helps
- *  the draw avoid the retry's voice, so it is short. */
-const RETRY_AHEAD_WAIT_MS = 1_500;
 const HELD_NOTICE = "Your words to the dojo master are waiting above the box.";
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
+
+/** The lines of a turn as they arrive (a streamed reply: docs/VOICE.md
+ *  §Streaming the reply): playLines speaks what is there and waits at the
+ *  end until `set` brings more, or says there is no more. */
+interface LineFeed {
+  lines: VoiceLine[];
+  done: boolean;
+  /** Resolves at the next `set`. */
+  changed(): Promise<void>;
+  set(lines: VoiceLine[], done: boolean): void;
+}
+function lineFeed(lines: VoiceLine[] = [], done = false): LineFeed {
+  let waiting: (() => void)[] = [];
+  const feed: LineFeed = {
+    lines,
+    done,
+    changed: () => new Promise<void>((resolve) => waiting.push(resolve)),
+    set(next, end) {
+      feed.lines = next;
+      feed.done = end;
+      const wake = waiting;
+      waiting = [];
+      for (const w of wake) w();
+    },
+  };
+  return feed;
+}
 
 /** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
 const EXTEND_MINUTES = 5;
@@ -385,6 +409,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+  // While a streamed turn is speaking its first lines and the rest is still
+  // on its way: silences them without cancelling the turn (leaving Go keeps
+  // a reply on its way, as it does one still being thought).
+  const arrivingRef = useRef<(() => void) | null>(null);
   // Every clip playing right now: usually one, two while lines overlap.
   const audiosRef = useRef(new Set<HTMLAudioElement>());
   const urls = useRef(new Map<string, Promise<string>>());
@@ -495,9 +523,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Draws on their way, by person, and which cast they belong to (Restart
   // or a whole new cast moves it on, and an older draw's answer is dropped).
   const drawing = useRef(new Map<string, Promise<void>>());
-  // The latest draw by slot: a second person's draw for the same tag waits
-  // for the first, so it can steer clear of the voice that one got.
-  const slotDraws = useRef(new Map<string, Promise<void>>());
+  // Every mid-session draw goes through one queue, one /cast at a time
+  // (requestDraw): a second person's draw, for the same tag or another,
+  // waits for the first, so it can steer clear of the voice that one got,
+  // and the draws never take both paid slots from the line playing.
+  // The queue outlives renders; it calls the latest render's runDraw (its
+  // locale and pack), set by the effect below.
+  const runDrawRef = useRef<(b: DrawBatch, signal: AbortSignal) => Promise<void>>(() => Promise.resolve());
+  const drawsRef = useRef<DrawQueue | null>(null);
+  drawsRef.current ??= drawQueue((b, signal) => runDrawRef.current(b, signal));
+  useEffect(() => {
+    runDrawRef.current = runDraw;
+  });
   // A retry after a failed or timed-out draw runs in the background (lines
   // play in the voice in use meanwhile); its voice waits here and is taken
   // up at the next turn (recast), so a voice never changes mid-turn.
@@ -596,7 +633,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     if (p === "recording" || p === "opening") {
       stopAll();
       setNotice("The recording stopped when you left Go — tap the wave to try again.");
-    } else if (p === "speaking") stopAll();
+    } else if (p === "speaking") {
+      if (arrivingRef.current) arrivingRef.current();
+      else stopAll();
+    }
     // stopAll only touches refs and setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
@@ -858,6 +898,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     });
   }
 
+  /** Wait for a streamed turn's next lines; Stop cuts it short. */
+  function untilChanged(feed: LineFeed, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      signal.addEventListener("abort", done, { once: true });
+      void feed.changed().then(done);
+    });
+  }
+
   /** Wait between lines; Stop cuts it short. */
   function pause(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
@@ -894,26 +946,45 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
    *  while the current one plays. A line from before segments existed (or
    *  with none) is spoken whole as the target language. A line whose person
    *  is having a voice drawn waits for it (whichever way it was started: a
-   *  turn, ▶, or "Play the reply"), and isn't fetched ahead in the old one. */
-  async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
-    const notes = latestCast(entriesRef.current.slice(0, entryIdx + 1));
+   *  turn, ▶, or "Play the reply"), and isn't fetched ahead in the old one.
+   *  `source` may be a LineFeed still filling (a streamed turn): the lines
+   *  play as they come, and it ends once the feed is done and all played. */
+  async function playLines(entryIdx: number, source: VoiceLine[] | LineFeed, signal: AbortSignal, from = 0, only = false) {
+    const feed = Array.isArray(source) ? lineFeed(source, true) : source;
+    // Read again for each line: a streamed turn's CAST notes grow with its
+    // lines (each arrives with the notes so far).
+    const notes = () => latestCast(entriesRef.current.slice(0, entryIdx + 1));
     const pending = (line: VoiceLine) => {
-      const person = personFor(notes, line);
+      const person = personFor(notes(), line);
       return person ? drawing.current.get(person) : undefined;
     };
     setPhase("speaking");
-    const last = only ? from : lines.length - 1;
     // `pauseMs` is the gap before a line's first segment (none before the
     // first line played); segments within a line run back to back.
     const queue: { key: string; lineKey: string; line: VoiceLine; seg: VoiceSegment; pauseMs: number }[] = [];
-    for (let i = from; i <= last; i++) {
-      const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
-      segs.forEach((seg, k) =>
-        queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg, pauseMs: k === 0 && i > from ? (lines[i].pauseMs ?? 0) : 0 }),
-      );
-    }
-    for (let q = 0; q < queue.length; q++) {
+    let built = from;
+    const fill = () => {
+      const lines = feed.lines;
+      const last = only ? Math.min(from, lines.length - 1) : lines.length - 1;
+      for (; built <= last; built++) {
+        const i = built;
+        const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
+        segs.forEach((seg, k) =>
+          queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg, pauseMs: k === 0 && i > from ? (lines[i].pauseMs ?? 0) : 0 }),
+        );
+      }
+    };
+    // More may come while the feed is open, unless the one line asked for is in.
+    const open = () => !feed.done && !(only && built > from);
+    for (let q = 0; ; q++) {
+      fill();
+      while (q >= queue.length && open()) {
+        await untilChanged(feed, signal);
+        if (signal.aborted) return;
+        fill();
+      }
       if (signal.aborted) return;
+      if (q >= queue.length) break;
       const cur = queue[q];
       // A draw never rejects (recast catches), and a new one may start
       // while waiting (a second draw for the same person): wait them out.
@@ -921,9 +992,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         await waitForDraw(w, signal);
         if (signal.aborted) return;
       }
-      const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes, cur.line), cur.line));
+      const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes(), cur.line), cur.line));
+      // Lines that came in meanwhile, so the next one is fetched ahead too.
+      fill();
       const next = queue[q + 1];
-      if (next && !pending(next.line)) void audioFor(next.key, next.line, next.seg, signal, speakAs(personFor(notes, next.line), next.line)).catch(() => {});
+      if (next && !pending(next.line)) void audioFor(next.key, next.line, next.seg, signal, speakAs(personFor(notes(), next.line), next.line)).catch(() => {});
       if (signal.aborted) return;
       if (cur.pauseMs > 0) await pause(cur.pauseMs, signal);
       if (signal.aborted) return;
@@ -950,6 +1023,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     setSession(history);
     const ctrl = freshCtrl();
     setPhase("thinking");
+    // A streamed turn's entry while its lines arrive (onLine below), taken
+    // back off the transcript if the turn fails or is stopped: nothing of it
+    // was stored.
+    let provisional: VoiceHistoryItem | null = null;
+    const playCtrl = new AbortController();
     try {
       // The first turn draws the cast; later turns reuse it, unless the voice
       // provider changed mid-session (settings are shared by every open
@@ -964,7 +1042,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         if (ctrl.signal.aborted || gen !== genRef.current) return;
         castEpoch.current += 1;
         drawing.current.clear();
-        slotDraws.current.clear();
+        drawsRef.current?.reset();
         retrying.current.clear();
         deferred.current.clear();
         castRef.current = next;
@@ -994,6 +1072,43 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // there was none (the first turn, or the first after one ended).
       const conv = await conversationFor(turnPack, before.length, life);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // The reply streams (docs/VOICE.md §Streaming the reply): each line
+      // comes as soon as it is final, shown and spoken while the rest is
+      // still being written. That early playback has its own stop, so
+      // leaving Go silences it and the turn still lands (a reply on its way
+      // is kept); Stop and Restart abort `ctrl`, which ends both, and the
+      // server kills the run when the request closes.
+      const feed = lineFeed();
+      ctrl.signal.addEventListener("abort", () => playCtrl.abort(), { once: true });
+      let early: Promise<unknown> | null = null;
+      let castSoFar = "";
+      const onLine = (e: VoiceTurnLineEvent) => {
+        if (ctrl.signal.aborted || gen !== genRef.current) return;
+        const lines = [...feed.lines];
+        lines[e.index] = e.line;
+        provisional = { role: "master", lines, ...(e.castNotes.length ? { castNotes: e.castNotes } : {}) };
+        setSession([...history, provisional]);
+        // Someone new speaks in this turn: their voice is drawn before their
+        // line plays (playLines waits for it), as after a whole reply.
+        const notes = JSON.stringify(e.castNotes);
+        if (notes !== castSoFar) {
+          castSoFar = notes;
+          recast(latestCast(entriesRef.current));
+        }
+        feed.set(lines, false);
+        if (!early && activeRef.current && !playCtrl.signal.aborted) {
+          arrivingRef.current = () => {
+            arrivingRef.current = null;
+            // Stop or Restart got here first: their phase stands.
+            if (playCtrl.signal.aborted) return;
+            playCtrl.abort();
+            setPlaying(null);
+            setPhase("thinking");
+          };
+          // Settles with the playback's error (or null), awaited once the reply is in.
+          early = playLines(history.length, feed, playCtrl.signal).then(() => null, (err: unknown) => err ?? new Error("playback failed"));
+        }
+      };
       // Sent synchronously from here (no await before voiceTurn), and kept
       // in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
@@ -1003,7 +1118,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // session drew, as a picked one; the next conversation keeps it.
         const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
         const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
-        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
+        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal, onLine);
         if (c) {
           inFlight.current.set(c.id, req);
           const done = () => {
@@ -1051,6 +1166,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       }
       const idx = history.length;
       const notes = r.castNotes ?? [];
+      // The whole reply replaces the lines streamed so far (its lines begin
+      // with them), and playback goes on into the rest.
+      arrivingRef.current = null;
+      provisional = null;
+      feed.set(r.lines, true);
       setSession([
         ...history,
         { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}), ...(notes.length ? { castNotes: notes } : {}) },
@@ -1081,11 +1201,25 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         });
         return;
       }
-      await playLines(idx, r.lines, ctrl.signal, 0, false);
+      if (early && !playCtrl.signal.aborted) {
+        // Already speaking: it plays on to the reply's last line.
+        const failed = await early;
+        if (failed) throw failed;
+      } else {
+        // Nothing streamed (a reply whole before any line was final), or
+        // the early playback was silenced by leaving Go: from the top.
+        await playLines(idx, r.lines, ctrl.signal, 0, false);
+      }
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
       listenAgain();
     } catch (e) {
+      // A failed stream: its early lines stop with it.
+      arrivingRef.current = null;
+      playCtrl.abort();
+      // Only if it is still the last entry: Restart may have cleared it.
+      const shown = entriesRef.current;
+      if (provisional && shown[shown.length - 1] === provisional) setSession(shown.slice(0, -1));
       if (ctrl.signal.aborted || isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
       setError(errText(e));
@@ -1180,47 +1314,47 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const isRetry = (x: string) => (drawFails.current.get(keys[x]) ?? 0) > 0;
     const fresh = all.filter((x) => !isRetry(x));
     const again = all.filter(isRetry);
-    const first = fresh.length ? startDraw(fresh, false, draw, keys) : undefined;
-    // The retry goes after the first draw, so its `avoid` holds the voice
-    // the first draw got (two concurrent draws could pick the same voice).
-    // A retry doesn't hold playback, so waiting costs nothing.
-    if (again.length) startDraw(again, true, draw, keys, first);
+    if (fresh.length) requestDraw(fresh, false, draw, keys);
+    if (again.length) requestDraw(again, true, draw, keys);
   }
 
-  /** One /cast for `slotsToDraw` (see recast). */
-  function startDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>, after?: Promise<void>): Promise<void> | undefined {
-    if (!locale) return undefined;
+  /** Ask the session's draw queue (web/src/drawQueue.ts) for a /cast for
+   *  `slotsToDraw`: one draw is out at a time, so with the speech fetch of
+   *  the line playing the Go tab holds at most two paid slots, the user's
+   *  limit (web/server/paid.ts). A streamed reply asks once per change of
+   *  its CAST notes; what is asked while a draw is out waits, merged into
+   *  one next draw (first draws before retries, so a retry's `avoid` holds
+   *  the voice the first draw got). Each person is marked as being drawn
+   *  for at once, out or queued, so their lines wait for their own voice. */
+  function requestDraw(slotsToDraw: string[], retry: boolean, draw: Record<string, VoiceAge>, keys: Record<string, string>) {
+    if (!locale || !drawsRef.current) return;
+    const pick = <T,>(m: Record<string, T>) => Object.fromEntries(slotsToDraw.map((x) => [x, m[x]]));
+    const run = drawsRef.current.request({ slots: slotsToDraw, retry, ages: pick(draw), keys: pick(keys) });
+    const by = retry ? retrying.current : drawing.current;
+    for (const slot of slotsToDraw) by.set(keys[slot], run);
+    void run.then(() => {
+      for (const slot of slotsToDraw) {
+        if (by.get(keys[slot]) === run) by.delete(keys[slot]);
+      }
+    });
+  }
+
+  /** One /cast for a batch the draw queue hands out (see requestDraw); it
+   *  never runs beside another. `cut` aborts a retry that a first draw has
+   *  cut short (drawQueue): no failure, it is asked again after that draw. */
+  function runDraw(batch: DrawBatch, cut: AbortSignal): Promise<void> {
+    const { slots: slotsToDraw, retry, keys } = batch;
+    const draw = batch.ages as Record<string, VoiceAge>;
+    if (!locale) return Promise.resolve();
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-    // One deadline for the whole draw, the wait behind earlier draws for
-    // the same tags included: lines never wait longer than CAST_TIMEOUT_MS.
-    // (A retry queued after a first draw starts its clock once that lands.)
-    let deadline = Date.now() + CAST_TIMEOUT_MS;
+    // The deadline starts when the draw goes out. A first draw never waits
+    // for a retry (it cuts it short), only for another first draw: a line
+    // waits at most CAST_TIMEOUT_MS per first draw ahead of it plus its own.
+    const deadline = Date.now() + CAST_TIMEOUT_MS;
     const left = () => deadline - Date.now();
-    // Draws already out for these tags (someone else's): this one goes after
-    // them, one at a time per tag, so it knows the voices they got.
-    const ahead = slotsToDraw.map((x) => slotDraws.current.get(x)).filter((p): p is Promise<void> => !!p);
     const run = (async () => {
       try {
-        if (after) {
-          await after;
-          deadline = Date.now() + CAST_TIMEOUT_MS;
-        }
-        if (ahead.length) {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const late = new Promise<"late">((res) => (timer = setTimeout(() => res("late"), Math.max(0, left()))));
-          // A first draw doesn't sit behind someone else's slow retry for
-          // the whole deadline: that held its person's line up to 10 s.
-          const retryRuns = new Set(retrying.current.values());
-          const soon = (p: Promise<void>) =>
-            new Promise<void>((res) => {
-              const t = setTimeout(res, RETRY_AHEAD_WAIT_MS);
-              void p.then(() => (clearTimeout(t), res()));
-            });
-          const won = await Promise.race([Promise.all(ahead.map((p) => (!retry && retryRuns.has(p) ? soon(p) : p))), late]);
-          clearTimeout(timer);
-          if (won === "late") throw new DOMException("the draw ahead took too long", "TimeoutError");
-        }
         if (castEpoch.current !== epoch || !castRef.current) return;
         if (left() <= 0) throw new DOMException("no time left for the draw", "TimeoutError");
         const base = castRef.current;
@@ -1240,7 +1374,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
         // in use stays and the next turn retries (within drawFails).
         const ages = Object.fromEntries(slotsToDraw.map((x) => [x, draw[x]]));
-        const r = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
+        const r = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.any([cut, AbortSignal.timeout(Math.max(1, left()))]));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
@@ -1285,17 +1419,6 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         if (!(st?.handsFree && st.turn === "pause")) setNoticeState((was) => was ?? { text: "Couldn't find a better-matched voice; keeping this one." });
       }
     })();
-    const by = retry ? retrying.current : drawing.current;
-    for (const slot of slotsToDraw) {
-      by.set(keys[slot], run);
-      slotDraws.current.set(slot, run);
-    }
-    void run.then(() => {
-      for (const slot of slotsToDraw) {
-        if (by.get(keys[slot]) === run) by.delete(keys[slot]);
-        if (slotDraws.current.get(slot) === run) slotDraws.current.delete(slot);
-      }
-    });
     return run;
   }
 
@@ -1535,7 +1658,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     holder.current.clear();
     drawFails.current.clear();
     drawing.current.clear();
-    slotDraws.current.clear();
+    drawsRef.current?.reset();
     retrying.current.clear();
     deferred.current.clear();
     castEpoch.current += 1;

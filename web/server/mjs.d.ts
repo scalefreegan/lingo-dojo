@@ -132,6 +132,8 @@ declare module "*/scripts/claude.mjs" {
     mcpServers?: Record<string, { type: "stdio"; command: string; args: string[]; env: Record<string, string> }>;
     /** Their tools the run may call, each by its full mcp__server__tool name. */
     mcpTools?: string[];
+    /** Streams the reply (stream-json): each piece of its text, in order. */
+    onText?: (delta: string) => void;
   }): { result: Promise<ClaudeResult>; kill: () => void };
 }
 
@@ -167,6 +169,11 @@ declare module "*/scripts/voice.mjs" {
   /** The time-budget line for a turn's prompt; "" without a budget. */
   export function clockLine(o: { minutes: unknown; elapsedMs: unknown; plan: import("../shared/wire.ts").VoicePlanItem[]; stage: string | null | undefined; mode?: Mode }): string;
   export function parseVoiceReply(text: string, mode: Mode, opts?: { drill?: boolean }): VoiceLine[];
+  /** A reply's spoken lines as each becomes final (the streamed turn). */
+  export function replyStream(mode?: Mode, opts?: { drill?: boolean }): {
+    push(delta: string): { lines: VoiceLine[]; castNotes: import("../shared/wire.ts").VoiceCastNote[] };
+    readonly sent: number;
+  };
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;
   export function parseChoices(text: string): string[];

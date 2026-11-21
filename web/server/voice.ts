@@ -10,14 +10,14 @@ import { REPO_ROOT, isDrill, loadContent, modeRoot } from "../../scripts/content
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
-  VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
+  ErrorCode, VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
   LibraryAddReply, LibraryAddRequest, LibraryReply, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
-  VoiceLine, VoiceSoundRequest, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  VoiceLine, VoiceSoundRequest, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
-import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
+import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath, type SseSend } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
 import { conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
@@ -34,6 +34,7 @@ import { paidSlot } from "./paid.ts";
 //   GET     /api/voice/voices        ?provider=&locale= → the provider's voices
 //   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
 //   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines, review}
+//                                    (Accept: text/event-stream → `line` events as each is final, then `reply`)
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
 //   POST    /api/voice/sound         {text, locale} → a character's or zhuyin symbol's sound (cached)
 //   GET     /api/voice/library       ElevenLabs Voice Library search
@@ -349,6 +350,16 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     if (!res.writableEnded) ctrl.abort();
   };
   res.on("close", onClose);
+  // Streaming (docs/VOICE.md §Streaming the reply): a client that accepts
+  // SSE gets each spoken line as soon as it is final, so the first one is
+  // being synthesized while the rest is still being written. The stream
+  // opens only with the first line: everything that fails before it (a
+  // stale conversation, a failed run) is the same JSON error as ever.
+  const streaming = String(req.headers.accept ?? "").includes("text/event-stream");
+  // Set inside the run's onText, so typed wide: a plain null would stay
+  // narrowed to null for TypeScript after the awaits.
+  let sse = null as SseSend | null;
+  const streamed: VoiceLine[] = [];
   try {
     // A saved conversation must be this learner's and still open (else a 404
     // or 409 whose code sends the Go tab to start a new one), checked before
@@ -396,6 +407,20 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       planDirective(plan, { drill }) +
       (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "");
     const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
+      // Each run reads its own reply; only one run's lines are ever streamed
+      // (a rerun happens only when the first sent none: replyStream).
+      const reader = replyStream(mode, { drill });
+      const onText = streaming
+        ? (delta: string) => {
+            const { lines, castNotes } = reader.push(delta);
+            if (!lines.length || ctrl.signal.aborted) return;
+            sse ??= openSse(res);
+            for (const line of lines) {
+              sse("line", { index: streamed.length, line, castNotes } satisfies VoiceTurnLineEvent);
+              streamed.push(line);
+            }
+          }
+        : undefined;
       const { result } = startClaude({
         prompt: voiceTurnPrompt(history, message, clock, notes),
         systemPrompt,
@@ -407,9 +432,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         tools: "none",
         maxTurns: 1,
         timeoutSec,
+        onText,
       });
       try {
-        return await result;
+        return { ...(await result), streamed: reader.sent };
       } catch (e) {
         const msg = String((e as Error)?.message || e);
         throw new HttpError(msg === "cancelled" ? 499 : 502, failureHint(msg) || msg);
@@ -424,7 +450,13 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // two model calls at most. The turn row keeps what was asked and found.
     let lookup: Record<string, unknown> | null = null;
     const query = parseLookup(run.text);
-    if (query) {
+    if (query && run.streamed) {
+      // Asked for after lines had already been spoken (against the
+      // adapter's "only one line"): they can't be taken back, so the reply
+      // stands as it is and the lookup is not run, as a LOOKUP in a rerun
+      // isn't. Only a streamed turn can get here.
+      lookup = { query, late: true };
+    } else if (query) {
       const found = await runLookup(ctx.language, recall.phrases, query, { now, conversationId: conversation?.id ?? null, inBank: recall.inBank });
       const first = run;
       let failed = false;
@@ -433,14 +465,16 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         // and the turn holds its lock meanwhile.
         run = await ask([...notes, found.block], LOOKUP_TIMEOUT_SEC);
       } catch (e) {
-        // Stop or a reload: the turn is cancelled, as any.
-        if (e instanceof HttpError && e.status === 499) throw e;
+        // Stop or a reload: the turn is cancelled, as any. A rerun that
+        // failed after its first lines went out fails the turn: the learner
+        // has heard part of a reply the first one can't stand in for.
+        if ((e instanceof HttpError && e.status === 499) || streamed.length) throw e;
         // A failed or timed-out rerun doesn't lose the turn: the first
         // reply stands, its LOOKUP line never spoken (parseVoiceReply), or
         // a short line from the narrator when it had nothing else to say.
         console.warn(`[lingo-dojo] voice turn: the rerun after a LOOKUP failed; using the first reply: ${(e as Error)?.message ?? e}`);
         failed = true;
-        run = parseVoiceReply(first.text, mode, { drill }).length ? first : { ...first, text: `${first.text}\n${LOOKUP_FAILED_LINE}` };
+        run = parseVoiceReply(first.text, mode, { drill }).length ? first : { ...first, text: `${first.text}\n${LOOKUP_FAILED_LINE}`, streamed: 0 };
       }
       if (!failed) {
         run = {
@@ -467,7 +501,27 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         return false;
       });
     }
-    sendJson(res, 200, reply);
+    if (!sse) return sendJson(res, 200, reply);
+    // The whole reply's parse is the turn (stored above, shown, replayed);
+    // the streamed lines were read from its prefix the same way, so they
+    // are its first lines. Should a malformed reply ever make them differ
+    // (a spoken line after GLOSS), the browser takes these lines from where
+    // it has got to.
+    if (JSON.stringify(lines.slice(0, streamed.length)) !== JSON.stringify(streamed)) {
+      console.warn(`[lingo-dojo] voice turn: the streamed lines differ from the whole reply's; the reply's stand`);
+    }
+    sse("reply", reply);
+    res.end();
+  } catch (e) {
+    if (!sse) throw e;
+    // Mid-stream: the status line went out with the first line, so the
+    // failure is an event (wrap() could only cut the socket). Logged as
+    // wrap() would; only an HttpError's sentence reaches the browser.
+    const known = e instanceof HttpError;
+    if (!known) console.error("[lingo-dojo] POST /api/voice/turn (streaming):", e);
+    const ev: VoiceTurnErrorEvent = known ? { error: e.message, status: e.status, ...(e.code ? { code: e.code as ErrorCode } : {}) } : { error: "something went wrong on the server; its log has the details", status: 500 }; // api.ts INTERNAL_ERROR (not imported: api.ts imports this module)
+    sse("error", ev);
+    res.end();
   } finally {
     release();
     res.off("close", onClose);

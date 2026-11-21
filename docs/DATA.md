@@ -1533,7 +1533,9 @@ recap's offered list, LOOKUP), the turn route in `web/server/voice.ts`,
   alone gives the most recent in the window. At most 8 phrases and 3
   sessions. The reply's duration and cost are both calls'. The reply's
   turn row records `lookup` jsonb: `{query, phraseIds, conversationIds,
-  ms, repeated?, failed?, skipped?}`.
+  ms, repeated?, failed?, skipped?}`, or `{query, late: true}` for one that
+  came after a streamed turn's lines had gone out (not run; docs/VOICE.md
+  §Streaming the reply).
 - **Session reviews** stay the recap's alone (§Post-session extraction):
   there is no second review path. The recap's prompt lists the phrases
   the session's review offered (its stored ids, as above) under "PHRASES
