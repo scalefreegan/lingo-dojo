@@ -4,6 +4,7 @@ slot: debrief
 title: Words you can say now
 summary: Close a beginner's drill by replaying the words they learned, one sound to practise, and one win.
 tags: [debrief, drill, beginner-friendly]
+conflicts: [debrief-top-three]   # two different closings: recall + goodbye vs three corrections
 level: [Pre-A1, A1]
 ---
 When the last round ends, say in {{native_language}} that the drill is

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { ContentReply, Schema, Slot, Unit } from "../types";
 import { changedSlots, chooseOne, resetUnitsToDefaults, toggleAny, unitsForSlot, unslottedUnits, type Draft } from "../draft";
+import { issuesByUnit, unitIssues } from "../../shared/unit-rules";
 import { Badge, Button, Card, Chevron } from "./ui";
 
 /* Customize tab: every slot collapsed to one row — title, current choice,
@@ -27,6 +28,9 @@ export default function CustomizeTab({
   // A picked drill (First steps) skips the scene-only slots: say so on
   // their rows rather than flag a required one as missing.
   const drill = draft.scenarioMode === "library" && content.scenarios.find((s) => s.id === draft.scenario)?.format === "drill";
+  // Units that declare a clash or a missing partner (docs/CONTENT.md
+  // "Conflicts and requirements"): a note beside each, never a block.
+  const notes = useMemo(() => issuesByUnit(unitIssues(content, draft.units, { drill: !!drill })), [content, draft.units, drill]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -47,6 +51,7 @@ export default function CustomizeTab({
                   open={openSlot === slot.id}
                   changed={changed.has(slot.id)}
                   skipped={drill && !!slot.scene_only}
+                  notes={notes}
                   onToggle={() => setOpenSlot((cur) => (cur === slot.id ? null : slot.id))}
                   onChange={onChange}
                 />
@@ -112,6 +117,7 @@ function SlotRow({
   open,
   changed,
   skipped = false,
+  notes,
   onToggle,
   onChange,
 }: {
@@ -123,12 +129,15 @@ function SlotRow({
   changed: boolean;
   /** A scene-only slot while the picked scene is a drill: left out of it. */
   skipped?: boolean;
+  /** Clashes and unmet requirements by unit id (unitIssues). */
+  notes: Map<string, string[]>;
   onToggle: () => void;
   onChange: (d: Draft) => void;
 }) {
   const one = slot.pick === "one";
   const selected = draft.units.filter((id) => units.some((u) => u.id === id));
   const missing = !skipped && slot.required && selected.length === 0;
+  const flagged = !skipped && selected.some((id) => notes.has(id));
   const name = `slot-${slot.id}`;
   const summary = selected.length === 0 ? "None" : selected.map((id) => units.find((u) => u.id === id)?.title ?? id).join(", ");
   const rowClass = (on: boolean) =>
@@ -138,7 +147,15 @@ function SlotRow({
     <div className="border-b border-line last:border-b-0" data-slot={slot.id}>
       <button type="button" aria-expanded={open} onClick={onToggle} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-raised">
         {changed && <span className="size-1.5 shrink-0 rounded-full bg-accent" title="Changed from defaults" />}
-        <span className="min-w-0 flex-1 font-medium text-fg">{slot.title}</span>
+        <span className="min-w-0 flex-1 font-medium text-fg">
+          {slot.title}
+          {flagged && " "}
+          {flagged && (
+            <Badge tone="warn" title="A unit here clashes with another pick, or needs one that isn't picked">
+              check
+            </Badge>
+          )}
+        </span>
         <span className={`max-w-[45%] min-w-0 truncate text-sm ${missing ? "text-warn" : "text-fg-3"}`}>{skipped ? "Not used in a drill" : missing ? "Required — none chosen" : summary}</span>
         <Chevron open={open} />
       </button>
@@ -166,6 +183,12 @@ function SlotRow({
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                     <span className="text-sm font-medium text-fg">{u.title}</span>
                     <span className="text-sm text-fg-2">{u.summary}</span>
+                    {on &&
+                      (notes.get(u.id) ?? []).map((m) => (
+                        <span key={m} role="note" data-testid="unit-warning" className="text-sm text-warn sm:text-xs">
+                          {m}
+                        </span>
+                      ))}
                     {(u.tags.length > 0 || u.level.length > 0) && (
                       <span
                         className={`flex flex-wrap gap-1 pt-0.5 transition-opacity ${on ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}

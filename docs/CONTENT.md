@@ -100,11 +100,49 @@ grammar unless the learner asks.
   (`assemble(…, { closing: "separate" })` returns it as `closing`). A revisit's
   briefing is data for the model; the closing governs what is spoken. `intro-target` uses
   it for the session-language rule.
+- `conflicts` and `requires` (optional lists) are the unit's **declared clashes
+  and needs** (below). Written `conflicts: [ending-goodnight]`; a bare string is
+  a one-entry list.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
 - Tags are free-form labels, with one that the app reads: in kids mode, a
   `games` unit tagged `opener` (the echo game) is placed **before** the story
   on the session timeline; other games sit at the story's start, since they
   come back throughout. Dropping the tag moves the game into the story.
+
+### Conflicts and requirements (`conflicts:`, `requires:`)
+
+Two picked units can contradict each other in one prompt (an ending that cheers
+and asks a question beside one that says "no questions, no cheering"). A unit
+that knows of such a clash says so, and every pack that picks both is warned.
+Nothing is ever blocked or dropped: it is a warning in `assemble()`'s
+`warnings` and a note beside the picked units on the Customize tab.
+
+Each entry is one of:
+
+| Entry | Matches |
+|---|---|
+| `unit-id` | that unit |
+| `slot:<slot id>` | any unit in that slot |
+| `tag:<tag>` | any unit with that tag (`conflicts` only) |
+
+- `conflicts: [...]` is **symmetric**: if A lists B (by id, slot or tag), both A
+  and B are warned when both are picked, so declare it on one side only. A unit
+  never conflicts with itself, so `slot:<its own slot>` means "any other unit
+  of my slot".
+- `requires: [...]` (`unit-id` or `slot:<slot>`) is **one-way**: the unit is
+  warned when it is picked and no *other* picked unit matches any entry.
+- Loader (warning, entry skipped, never an error): an entry that is not in the
+  grammar, `tag:` in `requires`, a unit naming itself, an unknown unit id, a slot
+  not in `schema.yaml`, a tag no unit in that library has. Entries refer within
+  one tree (`content/` or `content/kids/`). A non-list value is read as a list.
+- A drill leaves the units of `scene_only` slots out of the prompt, so they
+  neither clash nor satisfy a requirement there.
+- Declare only a clash you can point to in the unit text (the two bodies give
+  the narrator opposite instructions). A rule that one unit must win is a
+  `closing:` (above), not a conflict: `intro-target` and the native-language
+  units are resolved that way and are not declared.
+- The rules are `unitIssues()` in `web/shared/unit-rules.ts`, shared by the
+  loader, the assembler and the Customize tab.
 
 ## `content/scenarios/<id>.md` — a scenario
 
@@ -494,7 +532,9 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
 3. Walk `schema.slots` in order. For each slot, take the pack's units with that
    slot, in pack order. Apply cardinality: `one` with >1 is a warning (keep the
    first); `required` with 0 is a warning and a placeholder line. For a drill
-   scenario, a `scene_only` slot is skipped entirely, silently.
+   scenario, a `scene_only` slot is skipped entirely, silently. Then the
+   picked units' `conflicts` and unmet `requires` are added to `warnings`
+   (every unit still renders).
 4. Render, in this order:
    - `# Lingo Dojo session: <scenario title>`
    - `frame.md` body (placeholders substituted); `frame-drill.md` for a drill

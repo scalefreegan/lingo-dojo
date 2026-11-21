@@ -16,6 +16,7 @@
 import { PLACEHOLDERS, isDrill, normalizePack, packUnits } from "./content.mjs";
 import { MAX_MINUTES, budgetSplit, formatMinutes, readMinutes, sessionPlan } from "./plan.mjs";
 import { renderReview } from "./recall.mjs";
+import { unitIssues } from "../web/shared/unit-rules.ts";
 import { emptyPoolMessage, randomPool, scenesWord } from "../web/shared/scenes.ts";
 
 /** The placeholder the review block fills (docs/CONTENT.md, `recall`
@@ -182,6 +183,10 @@ export function assemble(content, rawPack, options = "adult") {
     }
     picked.push(id);
   }
+
+  // Units that declare a clash or a missing partner (docs/CONTENT.md
+  // "Conflicts and requirements"): said, never acted on; every unit stays.
+  for (const m of unitIssues(content, picked, { drill }).messages) warn(m);
 
   const slotSections = [];
   // Units' `closing` texts, in slot order, for the last section (below).
