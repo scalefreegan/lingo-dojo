@@ -391,6 +391,8 @@ test("Copy draws: assemble with draw:true gives the drawn scene's prompt and say
   assert.equal(plain.body.drawn, undefined);
   // An empty pool is the session's 400.
   assert.equal((await sam.call("POST", "/api/assemble", { pack: randomPack(["Gone"]), draw: true })).status, 400);
+  // A draw that isn't a boolean is a 400, never a quiet sceneless prompt.
+  for (const draw of ["true", 1, null]) assert.equal((await sam.call("POST", "/api/assemble", { pack, draw })).status, 400, `draw ${JSON.stringify(draw)}`);
   // Kids work the same, from the kids library.
   const pip = await someone(KID);
   const kid = await pip.call("POST", "/api/assemble", { mode: "kids", pack: randomPack(), draw: true });

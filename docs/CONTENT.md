@@ -357,7 +357,8 @@ longer in it, the next conversation is recorded under the newly drawn
 scene while holding those turns, as a picked scene changed mid-session
 always has. There is no reroll.
 
-The preview, word counts and `POST /api/assemble` do not draw: the
+The preview, word counts and `POST /api/assemble` do not draw (unless
+`draw: true`, Copy's; any other `draw` is a 400): the
 Scenario section is a placeholder naming the pool's size ("Random scene"
 is the heading's title), with a warning when the pool is empty. Copy draws
 a scene for the copied prompt (`POST /api/assemble` with `draw: true`; the

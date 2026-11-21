@@ -304,6 +304,9 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   // the session starts (conversations.ts).
   // Only Copy asks for a draw (`draw: true`, ld-mdz), as an export does: a
   // pasted prompt needs a scene. Same draw as the export's.
+  // A `draw` that isn't a boolean is refused, not ignored: it would hand
+  // back a sceneless prompt that looks like Copy's.
+  if (body.draw !== undefined && typeof body.draw !== "boolean") throw new HttpError(400, "draw must be true or false");
   const random = randomSceneOf(body.pack);
   const content = learnerContent(mode, ctx);
   let pack: Partial<PackInput> = body.pack;
