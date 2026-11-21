@@ -273,8 +273,12 @@ docs/DATA.md §The game for adults, and the picture library):
   Provider keys live only in the gitignored repo-root `.env.local` and never
   reach the browser. Voice turns spawn `claude -p` with **no tools**.
   With no voice saved, a line outside a session speaks in the provider's
-  default (`defaultVoice`: an ElevenLabs premade voice, else the locale's
-  first), never a "pick a voice" 400. The character card's sounds go through
+  default (`defaultVoice`: a native speaker of the locale's language first on
+  every provider, the account's English premade voice only when it has no
+  native one; ld-pqy), never a "pick a voice" 400. Phrases and sounds said
+  that way go through `outsideClip` (web/server/voice.ts): a refused native
+  library voice (402 etc.) is made in a premade voice instead, and a language
+  with no native voice shows `audioNote` (a warning; it still plays). The character card's sounds go through
   `POST /api/voice/sound` (1–4 Han characters only, disk-cached per user;
   exemplar tables in `web/src/script/sounds.ts`); docs/VOICE.md §Character sounds.
 - Database (docs/DATA.md): Drizzle schema in `scripts/db/schema.ts`, generated

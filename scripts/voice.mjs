@@ -1332,6 +1332,40 @@ export function azureTranscribeRequest({ key, region: r, audio, locales, mime = 
 
 /* ----------------------------- reply parsing ------------------------------- */
 
+/** Mandarin and Cantonese share the zh tag in ElevenLabs' labels; what is
+ *  spoken is in the verified locales (cmn-*, yue-*) and the accent. A zh-HK
+ *  session counts only Cantonese voices as native, zh-CN and zh-TW only
+ *  Mandarin ones (a voice with no sign either way is Mandarin: the default
+ *  and by far the common case). Other languages: always true. */
+function sameSpoken(locale, labels, verified) {
+  if (languageOf(locale) !== "zh") return true;
+  const accent = String(labels.accent ?? "").toLowerCase();
+  const locales = verified.map((x) => String(x?.locale ?? "").toLowerCase());
+  const cantonese = /cantonese|hong ?kong/.test(accent) || (locales.some((l) => l.startsWith("yue")) && !locales.some((l) => l.startsWith("cmn")));
+  return (locale === "zh-HK") === cantonese;
+}
+
+/** How well a native voice's region fits `locale` (es-MX, zh-TW): 2 when
+ *  its verified languages or its accent label name that very region, 1 when
+ *  the accent is unspecified or "standard" (nothing says it is another
+ *  region's), 0 when it is another region's (a Taiwan-Mandarin voice for
+ *  zh-CN). ElevenLabs writes Mandarin as cmn-CN / cmn-TW. */
+const ACCENT_REGION = [["taiwan", "TW"], ["mexican", "MX"], ["saudi", "SA"], ["parisian", "FR"]];
+function regionTier(locale, labels, verified) {
+  const lang = languageOf(locale);
+  const want = locale.slice(lang.length + 1).toUpperCase();
+  const norm = (l) => String(l ?? "").replace(/^cmn-/i, "zh-");
+  const regionOf = (l) => norm(l).split("-")[1]?.toUpperCase() ?? "";
+  if (verified.some((x) => norm(x?.locale).toLowerCase() === locale.toLowerCase())) return 2;
+  const accent = String(labels.accent ?? "").toLowerCase();
+  const named = ACCENT_REGION.find(([w]) => accent.includes(w))?.[1];
+  if (named) return named === want ? 2 : 0;
+  // Verified only in other regions of the language, and an accent that says nothing: another region's voice.
+  const others = verified.filter((x) => norm(x?.locale).toLowerCase().startsWith(`${lang}-`));
+  if (others.length && others.every((x) => regionOf(x.locale) !== want)) return 0;
+  return !accent || /standard|neutral/.test(accent) ? 1 : 0;
+}
+
 /** ElevenLabs /v2/voices → the picker's shape. Nearly every voice is
  *  "verified" in a dozen languages (the multilingual models can speak them),
  *  so that list says nothing about accent; a voice counts as a native speaker
@@ -1349,8 +1383,9 @@ export function elevenVoices(json, locale, nativeLocale = "") {
     .map((v) => {
       const labels = v.labels ?? {};
       const verified = Array.isArray(v.verified_languages) ? v.verified_languages : [];
-      const native = String(labels.language ?? "").toLowerCase() === lang;
-      const exact = native && verified.some((x) => x?.locale === locale);
+      const native = String(labels.language ?? "").toLowerCase() === lang && sameSpoken(locale, labels, verified);
+      const region = native ? regionTier(locale, labels, verified) : 0;
+      const exact = region === 2;
       return {
         row: {
           id: v.voice_id,
@@ -1361,11 +1396,15 @@ export function elevenVoices(json, locale, nativeLocale = "") {
           ...(homeLang ? { home: !native && String(labels.language ?? "").toLowerCase() === homeLang } : {}),
           age: ageOf(labels.age),
           premade: v.category === "premade",
+          region,
+          use: String(labels.use_case ?? ""),
         },
         rank: (native ? 1 : 0) + (exact ? 1 : 0),
       };
     });
-  return rows.sort((a, b) => b.rank - a.rank || a.row.name.localeCompare(b.row.name)).map((r) => r.row);
+  // The id last: two voices with one name keep one order (the default voice
+  // is the first of its tier, and must not change between reads).
+  return rows.sort((a, b) => b.rank - a.rank || a.row.name.localeCompare(b.row.name) || (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0)).map((r) => r.row);
 }
 
 /** Azure voices/list → the picker's shape: voices whose primary or secondary
@@ -1577,32 +1616,65 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
 
 /**
  * The voice to speak in when the learner has saved none for the locale
- * (every slot "Random", which the Go tab says is fine): the character card's
- * sounds and the listening drill, whose lines have no cast to name one.
- * `voices` is the provider's own list for the locale (elevenVoices,
- * azureVoices, systemVoices: natives first); `gender` the narrator's, when
- * known. → an id, or "" when the list has nothing usable.
+ * (every slot "Random", which the Go tab says is fine): the picture game's
+ * and Practice's words, the character card's sounds, a line outside a
+ * session. `voices` is the provider's own list for the locale (elevenVoices,
+ * azureVoices, systemVoices: natives first, in a fixed order); `gender` the
+ * narrator's, when known. → an id, or "" when the list has nothing usable.
+ * Always the best of its tier (bestFirst: the locale's own region, a plain
+ * name, a use case fit for words, premade; then the list's order), so a
+ * locale keeps one voice (its clips cache and sound the same every time).
  *
- *  - ElevenLabs: a premade voice of the account (any plan can speak with
- *    them, unlike voices added from the library), a native one before any
- *    other (pronunciation over gender), each of the gender where there is
- *    one; with no premade voice at all, a native voice of the account.
+ *  - Every provider: a native speaker of the locale's language before any
+ *    other voice (a German word in an English voice is said wrong, which is
+ *    what this order is for), each tier of the gender where there is one.
+ *  - ElevenLabs: native premade, then any native voice of the account, then
+ *    (only with no native voice) a premade voice. A native voice added from
+ *    the library may be refused on a free plan: defaultVoicePlan names the
+ *    premade voice to say the line in then.
  *  - Azure and macOS: the locale's own first voice of the gender, else its
  *    first voice (a secondary-locale voice only when the locale has none;
  *    macOS's novelty voices never).
  */
 export function defaultVoice(provider, voices, gender = null) {
+  return defaultVoicePlan(provider, voices, gender).voice;
+}
+
+/** defaultVoice with what the caller needs around it: `native` (false: no
+ *  voice of the locale's language exists, so the line is said in another
+ *  language's voice: the status should say so) and `fallback` (ElevenLabs:
+ *  a premade voice, "" when the voice is itself premade or there is none; a
+ *  premade voice speaks on any plan, a library voice may be refused). */
+// Names that mark a style, not a plain voice: never the default while a plain
+// one exists ("[Suspense] Eduardo", ads, ASMR, characters, sales closers).
+const STYLE_NAME_RE = /\[[^\]]*\]|\(sig\)|asmr|whisper|suspense|\bads?\b|advert|commercial|comercial|locutora|sales|character|cartoon|anime|villain|monster|horror|novelty/i;
+const USE_SCORE = { informative_educational: 3, conversational: 2, narrative_story: 2, narration: 2 };
+/** Better first: the locale's own region, then a plain name, then a use case
+ *  fit for saying words (explainer, conversation, narration), then a
+ *  premade voice. A stable sort: equal voices keep the list's order. */
+function bestFirst(pool) {
+  const key = (v) => [-(v.region ?? 0), STYLE_NAME_RE.test(String(v.name ?? "")) ? 1 : 0, -(USE_SCORE[String(v.use ?? "").toLowerCase()] ?? 0), v.premade ? 0 : 1];
+  return pool.slice().sort((a, b) => {
+    const x = key(a);
+    const y = key(b);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
+    return 0;
+  });
+}
+
+export function defaultVoicePlan(provider, voices, gender = null) {
   const g = gender === "female" || gender === "male" ? gender : null;
   const list = (Array.isArray(voices) ? voices : []).filter((v) => v && typeof v.id === "string" && v.id && String(v.gender).toLowerCase() !== "novelty");
   const ofGender = (v) => String(v.gender).toLowerCase() === g;
   // Each tier gendered first: an unknown gender just skips that half.
   const tiers = (pools) => pools.flatMap((p) => (g ? [p.filter(ofGender), p] : [p]));
-  const native = list.filter((v) => v.match);
-  const pools =
-    provider === "elevenlabs"
-      ? tiers([list.filter((v) => v.premade && v.match), list.filter((v) => v.premade), native])
-      : tiers([native, list]);
-  return pools.find((p) => p.length)?.[0]?.id ?? "";
+  const native = bestFirst(list.filter((v) => v.match));
+  const premade = bestFirst(list.filter((v) => v.premade));
+  const pools = provider === "elevenlabs" ? tiers([native, premade]) : tiers([native, list]);
+  const pick = pools.find((p) => p.length)?.[0];
+  if (!pick) return { voice: "", native: false, fallback: "" };
+  const fallback = provider === "elevenlabs" && !pick.premade ? tiers([premade]).find((p) => p.length)?.[0]?.id ?? "" : "";
+  return { voice: pick.id, native: !!pick.match, fallback };
 }
 
 /** For ElevenLabs: each slot's fallback, a distinct account voice of its

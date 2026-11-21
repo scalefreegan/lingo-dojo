@@ -299,6 +299,11 @@ export default function PracticeView() {
                   : `${info.cloze.waiting} phrase${info.cloze.waiting === 1 ? " has" : "s have"} no sentence yet: starting a session writes them for its cards.`}
             </p>
           )}
+          {needsAudio && !setup?.audio && setup?.audioNote && (
+            <p className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-voice-note">
+              {setup.audioNote}.
+            </p>
+          )}
           {setupProblems.length > 0 && (
             <div className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="practice-setup">
               {setupProblems.map((p) => (

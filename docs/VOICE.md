@@ -946,16 +946,54 @@ locale (`voiceFor` finds nothing, borrowing included) the server picks one
 (`defaultVoice` in `scripts/voice.mjs`, used by `/api/voice/speak`, the
 phrase audio and `/api/voice/sound`):
 
-- **ElevenLabs:** a premade voice of your account (any plan can speak with
-  them; voices added from the library can be refused), a native speaker of
-  the locale's language first, of the narrator's gender when the line
-  names one. With no premade voice at all, a native voice of the account.
+- **Every provider: a native speaker first.** A word in a voice of another
+  language is said wrong (a German "rot" in an English voice), so a voice
+  whose primary language is the locale's comes before any other; the voice
+  is the best of its tier (`bestFirst`): the locale's own region (a voice
+  verified or accented for that region, `region` 2: cmn-CN for zh-CN,
+  cmn-TW for zh-TW; then an unspecified or standard accent, 1; another
+  region's, 0), then a plain name (never "[Suspense] ...", ads, ASMR,
+  characters while another exists), then a use case fit for words
+  (explainer, conversational, narration), then premade; ties keep the
+  list's order (rank, name, id). A locale keeps one voice and its cached
+  clips stay valid. A voice whose own `labels.language` is not the
+  locale's never outranks one that is, however many languages it lists.
+- **ElevenLabs:** a native voice of your account (of the narrator's gender
+  when the line names one; a native one before another gender, as
+  pronunciation comes first), and only with no
+  native voice at all a premade one (any plan can speak with them). A
+  native voice added from the library may be refused on a plan without
+  library access (400, 402, 403, 404 or 422, the statuses `retryInOtherVoice`
+  names; they surface as "ElevenLabs answered 402: ..."): `outsideClip`
+  (the picture game's and Practice's words, the character card's sounds, the
+  compare clips) then makes the clip in the account's first premade voice
+  of the gender (`defaultVoicePlan`'s `fallback`) and stores it under that
+  voice's key; `/api/voice/speak` does the same for a line with no cast. The
+  refusal is not remembered (a plan that gains access is heard on the
+  next clip) and the log line names the voices and the status, never the
+  text. A voice the learner saved is never swapped. Any other failure is
+  the usual 502.
 - **Azure:** the locale's first voice of that gender, else its first voice
   (a voice that only lists the locale as a secondary one, only when there
   is no other).
 - **macOS:** the locale's first installed voice. With none installed, the
   Go tab still speaks with the Mac's own voice, as before; a phrase or a
   sound is a 400 (that audio would be cached).
+
+No native voice on the account (ElevenLabs), or only a secondary-locale one
+(Azure), is a warning, not a block: the words still play, in the first
+other voice, and the picture game's status (`audioNote`) and Practice's
+(`setup.audioNote`) say "no native <locale> voice on this account ... add
+one in the Go tab's voice settings". macOS with no installed voice for the
+locale stays the refusal it was (`audio`). The warning reads the cached
+voice list (a free call); nothing paid runs for a status.
+
+Since the order changed, a locale's clips are made again in the native
+voice on first play (the cache key includes the voice); old clips of the
+previous default are left on disk, unused. In a Go-tab session the cast
+draws Random slots from native library voices; `castFallbacks` (premade
+first, any language) is used only after a library voice is refused, and a
+line with no cast and nothing saved takes this default.
 
 The provider's voice list is read once per server process (an hour at most
 for the paid ones, keyed by provider and a hash of its key; a failed read

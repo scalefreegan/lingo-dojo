@@ -21,6 +21,9 @@ export interface PictureStatus {
   /** Why words can't be played aloud (no TTS key, no voice for the
    *  locale), for the grown-up; null when they can. */
   audio: string | null;
+  /** A warning, not a block: words play, in a voice that is not native to the
+   *  language (none on the account); null when it is, or one is saved. */
+  audioNote: string | null;
   /** The picture theme in use (scripts/pictures.mjs PICTURE_THEME). */
   theme: string;
   /** Stock pictures drawn in that theme (the check may match words to them). */

@@ -117,11 +117,13 @@ export interface PracticeStatsReply {
   stats: PracticeStats;
   /** The language: the bank's target language and variant, and the native one. */
   language: { targetLanguage: string; targetVariant: string; locale: string | null; nativeLanguage: string };
+  /** `audioNote` is a warning, not a block: phrases play, in a voice that is
+   *  not native to the language (none on the account). */
   /** Why the drills that need a voice can't run here, or null for each when
    *  they can: `audio` (listening: no voice picked for the language, no
    *  key) and `speech` (speak-it: no speech-to-text key). GET /api/practice
    *  checks; the queue reply sends null (not checked). */
-  setup: { audio: string | null; speech: string | null } | null;
+  setup: { audio: string | null; speech: string | null; audioNote: string | null } | null;
   /** The cloze and mixed modes: `waiting`, the cloze mode's phrases left
    *  out because they have no sentence yet; `writing`, whether a call is
    *  writing some now (the counts may be asked again; only starting a

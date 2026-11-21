@@ -37,6 +37,8 @@ const audioDir = path.join(dataDir, "audio");
 const synths = [];
 const voiceLists = [];
 const tts = { delayMs: 0 };
+const noNative = { on: false };
+const refuse = { on: false };
 const stt = { reply: "", status: 200, forms: [] };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -46,6 +48,7 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname.startsWith("/v1/text-to-speech/")) {
     const { text, model_id } = JSON.parse(init.body);
     synths.push({ voice, text, model_id });
+    if (refuse.on && voice === "cloned-es") return new Response(JSON.stringify({ detail: { message: "library voices need a paid plan" } }), { status: 402 });
     if (tts.delayMs) await new Promise((r) => setTimeout(r, tts.delayMs));
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
   }
@@ -54,7 +57,7 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname === "/v2/voices") {
     voiceLists.push(url.pathname);
     const voices = [
-      { voice_id: "cloned-es", name: "Clon", labels: { language: "es", gender: "female" }, category: "cloned" },
+      ...(noNative.on ? [] : [{ voice_id: "cloned-es", name: "Clon", labels: { language: "es", gender: "female" }, category: "cloned" }]),
       { voice_id: "premade-en-m", name: "Adam", labels: { language: "en", gender: "male" }, category: "premade" },
       { voice_id: "premade-en-f", name: "Rachel", labels: { language: "en", gender: "female" }, category: "premade" },
     ];
@@ -267,25 +270,26 @@ test("phrase audio is only for this language's own phrases: another account's id
   // Another of Sam's languages doesn't own it either.
   await sam.addLanguage({ target_language: "French", target_variant: "", level: "A1" });
   assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).status, 404);
-  assert.deepEqual((await robin.call("GET", `/api/practice?tz=${TZ}`)).body.setup, { audio: null, speech: null });
+  assert.deepEqual((await robin.call("GET", `/api/practice?tz=${TZ}`)).body.setup, { audio: null, speech: null, audioNote: null });
 });
 
 test("no voice saved (every slot Random): the listening drill plays in the account's premade voice, and Start isn't blocked (ld-zxn)", async () => {
   clearVoiceLists();
   const fresh = await someone([ADULT], { voices: false });
   await fresh.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs" });
-  // The mode picker has nothing to warn about, and asked no provider for it.
+  // The mode picker has nothing to warn about (a native voice, so no note).
+  // Its voice-list read is the free, per-process cached one.
   const lists = voiceLists.length;
   const stats = await fresh.call("GET", `/api/practice?tz=${TZ}&mode=listening`);
   assert.equal(stats.status, 200);
-  assert.deepEqual(stats.body.setup, { audio: null, speech: null });
-  assert.equal(voiceLists.length, lists, "the counts never fetch a voice list");
+  assert.deepEqual(stats.body.setup, { audio: null, speech: null, audioNote: null });
+  assert.ok(voiceLists.length <= lists + 1, "the counts read the cached voice list at most once");
   const f = await add(fresh, PAIRS.slice(0, 2));
   const one = await fresh.call("GET", `/api/practice/audio/${f["la vuelta"].id}`);
   assert.equal(one.status, 200, one.text);
-  // A premade voice (any plan speaks with them), not the cloned Spanish one;
-  // no gender asked for, so the list's first (by name: Adam).
-  assert.equal(one.text, "MP3:premade-en-m:la vuelta");
+  // A native speaker of Spanish (the account's own), never the English
+  // premade voice: a Spanish word in an English voice is said wrong.
+  assert.equal(one.text, "MP3:cloned-es:la vuelta");
   const two = await fresh.call("GET", `/api/practice/audio/${f["¿Cuánto cuesta?"].id}`);
   assert.equal(two.status, 200, two.text);
   assert.equal(voiceLists.length, lists + 1, "the account's list is fetched once per process, not per line");
@@ -491,5 +495,61 @@ test("kids learners: every practice route, the audio and the transcription inclu
   ]) {
     const r = await pip.call(method, url, body, body ? { "Content-Type": "audio/wav" } : {});
     assert.equal(r.status, 403, `${method} ${url}`);
+  }
+});
+
+test("no native voice on the account (ld-pqy): the status warns and still plays, in the premade voice; with one saved, no warning", async () => {
+  const { clearVoiceLists } = await import("../../web/server/voice.ts");
+  noNative.on = true;
+  clearVoiceLists();
+  try {
+    const sam = await someone([ADULT], { voices: false });
+    await sam.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs" });
+    const stats = await sam.call("GET", `/api/practice?tz=${TZ}&mode=listening`);
+    assert.equal(stats.body.setup.audio, null, "a warning, not a block");
+    assert.match(stats.body.setup.audioNote, /no native es-\w+ voice on this account.*Go tab's voice settings/);
+    const p = await add(sam, PAIRS.slice(0, 1));
+    const one = await sam.call("GET", `/api/practice/audio/${p["la vuelta"].id}`);
+    assert.equal(one.status, 200, "still plays");
+    assert.equal(one.text, "MP3:premade-en-m:la vuelta");
+    // The picture game's status carries the same note.
+    const game = await sam.call("GET", "/api/game");
+    assert.equal(game.body.status.audio, null);
+    assert.match(game.body.status.audioNote, /no native es-\w+ voice/);
+    // A voice the learner saved for the language: nothing to warn about.
+    const kay = await someone([ADULT], { voices: false });
+    const loc = stats.body.language.locale;
+    await kay.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs", voices: { elevenlabs: { [loc]: { "narrator:female": "picked-voice" } } } });
+    assert.equal((await kay.call("GET", `/api/practice?tz=${TZ}&mode=listening`)).body.setup.audioNote, null);
+  } finally {
+    noNative.on = false;
+    clearVoiceLists();
+  }
+});
+
+test("a refused native voice (ld-pqy): replays make no refused call, and the status warns while the refusal is remembered", async () => {
+  const { clearVoiceLists, clearRefusals } = await import("../../web/server/voice.ts");
+  clearVoiceLists();
+  clearRefusals();
+  refuse.on = true;
+  try {
+    const sam = await someone([ADULT], { voices: false });
+    await sam.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs" });
+    const p = await add(sam, PAIRS.slice(0, 1));
+    const id = p["la vuelta"].id;
+    assert.equal((await sam.call("GET", "/api/practice?tz=" + TZ + "&mode=listening")).body.setup.audioNote, null, "nothing refused yet");
+    const n0 = synths.length;
+    assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).text, "MP3:premade-en-m:la vuelta");
+    assert.deepEqual(synths.slice(n0).map((s) => s.voice), ["cloned-es", "premade-en-m"]);
+    const n1 = synths.length;
+    assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).text, "MP3:premade-en-m:la vuelta");
+    assert.equal(synths.length, n1, "the replay made no call");
+    const note = (await sam.call("GET", "/api/practice?tz=" + TZ + "&mode=listening")).body.setup;
+    assert.equal(note.audio, null);
+    assert.match(note.audioNote, /refused the native es-\w+ voice.*library voices.*Go tab's voice settings/);
+  } finally {
+    refuse.on = false;
+    clearRefusals();
+    clearVoiceLists();
   }
 });

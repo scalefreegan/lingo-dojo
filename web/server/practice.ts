@@ -1,6 +1,5 @@
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { clozeKey, gapped } from "../../scripts/cloze.mjs";
 import { clozeItem, flagClozeItem } from "../../scripts/db/cloze.ts";
@@ -19,7 +18,7 @@ import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
-import { SPEECH_FORMATS, practiceVoice, readAudio, sttReady, synthesize, transcribeAudio, voiceReady } from "./voice.ts";
+import { outsideClip, readAudio, sttReady, transcribeAudio, voiceNote, voiceReady } from "./voice.ts";
 
 // The Practice tab's routes (docs/DATA.md §Practice modes, §Grading):
 // flashcards both ways, the listening drill, speak-it and fill the gap
@@ -264,6 +263,13 @@ export async function audioProblem(ctx: LearnerCtx): Promise<string | null> {
   }
 }
 
+/** A warning (not a block) about the voice phrases are played in: no native
+ *  voice for the language, so another's is used. null when there is none. */
+export async function audioNote(ctx: LearnerCtx): Promise<string | null> {
+  const locale = targetLocale(ctx);
+  return locale ? voiceNote(await readVoiceSettings(ctx.user.id), locale) : null;
+}
+
 /** Why answers can't be transcribed, or null (no key for the provider). */
 async function speechProblem(ctx: LearnerCtx): Promise<string | null> {
   try {
@@ -314,11 +320,9 @@ export async function phraseClip(ctx: LearnerCtx, phraseId: string, signal: Abor
   const locale = targetLocale(ctx);
   if (!locale) throw new HttpError(400, "this language has no voice locale, so its phrases can't be played");
   const settings = await readVoiceSettings(ctx.user.id);
-  const { provider, voice, model } = await practiceVoice(settings, locale);
-  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
-  const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, signal)));
-  console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
-  return { key, text, locale, ...out };
+  const out = await outsideClip(ctx.user.id, settings, locale, text, signal);
+  console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${out.key.slice(0, 12)}`);
+  return { text, locale, ...out };
 }
 
 /** What the recorder sends (recorder.ts toWav): a WAV, by whichever name. */
@@ -354,7 +358,8 @@ export async function handlePractice(req: IncomingMessage, res: ServerResponse, 
     // never start a generation call.
     const { stats, cloze } = await queue(req, ctx, false);
     const [audio, speech] = await Promise.all([audioProblem(ctx), speechProblem(ctx)]);
-    return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech }, cloze } satisfies PracticeStatsReply);
+    const audioNoteText = audio ? null : await audioNote(ctx);
+    return sendJson(res, 200, { stats, language: languageOf(ctx), setup: { audio, speech, audioNote: audioNoteText }, cloze } satisfies PracticeStatsReply);
   }
   if (parts.length === 1 && parts[0] === "queue") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");

@@ -742,20 +742,32 @@ test("speechVoices: a refused cast voice falls back to the exact saved slot, the
   assert.deepEqual(speechVoices({ set: {}, speaker: "character", gender: "male", cast: null, fallback: "ACC_M", refused }), { first: "ACC_M", retry: "" });
 });
 
-test("defaultVoice (ld-zxn): ElevenLabs a premade voice, native and of the gender first; Azure and macOS the locale's first of the gender", async () => {
+test("defaultVoice (ld-zxn, ld-pqy): a native voice first on every provider (ElevenLabs: native premade, then any native, then a premade); Azure and macOS the locale's first of the gender", async () => {
   const { defaultVoice } = await import("../voice.mjs");
   const eleven = [
     { id: "cloned_zh_f", gender: "female", match: true, premade: false },
     { id: "pre_en_m", gender: "male", match: false, premade: true },
     { id: "pre_en_f", gender: "female", match: false, premade: true },
   ];
-  assert.equal(defaultVoice("elevenlabs", eleven, "female"), "pre_en_f", "premade (any plan) before a native added voice");
-  assert.equal(defaultVoice("elevenlabs", eleven, "male"), "pre_en_m");
-  assert.equal(defaultVoice("elevenlabs", eleven, null), "pre_en_m", "no gender: the first premade");
-  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_m", gender: "male", match: true, premade: true }, ...eleven], "female"), "pre_zh_m", "a native premade voice before the gender (pronunciation first)");
+  assert.equal(defaultVoice("elevenlabs", eleven, "female"), "cloned_zh_f", "a native added voice before any English premade one");
+  assert.equal(defaultVoice("elevenlabs", eleven, "male"), "cloned_zh_f", "native before gender (pronunciation first)");
+  assert.equal(defaultVoice("elevenlabs", eleven.slice(1), "male"), "pre_en_m", "no native voice at all: the old premade fallback, of the gender");
+  assert.equal(defaultVoice("elevenlabs", eleven.slice(1), null), "pre_en_m", "no gender: the first premade");
+  assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_m", gender: "male", match: true, premade: true }, ...eleven], "female"), "cloned_zh_f", "the gender's native voice before another gender's native premade one");
   assert.equal(defaultVoice("elevenlabs", [{ id: "pre_zh_f", gender: "female", match: true, premade: true }, ...eleven], "female"), "pre_zh_f");
   // No premade voice at all: a native one; none native either: nothing (a 400 upstream).
   assert.equal(defaultVoice("elevenlabs", [eleven[0], { id: "de_m", gender: "male", match: false }], "male"), "cloned_zh_f");
+  // Native of the gender before native of the other; native premade before native added.
+  const natives = [
+    { id: "n_f", gender: "female", match: true },
+    { id: "n_m", gender: "male", match: true },
+    { id: "np_f", gender: "female", match: true, premade: true },
+  ];
+  assert.equal(defaultVoice("elevenlabs", natives.slice(0, 2), "male"), "n_m");
+  assert.equal(defaultVoice("elevenlabs", natives, "male"), "n_m");
+  assert.equal(defaultVoice("elevenlabs", natives, null), "np_f", "equal voices: a premade one first");
+  // The same list gives the same voice every time (a clip's cache key).
+  assert.equal(defaultVoice("elevenlabs", natives, "female"), defaultVoice("elevenlabs", [...natives], "female"));
   assert.equal(defaultVoice("elevenlabs", [{ id: "de_m", gender: "male", match: false }], "male"), "");
   const azure = [
     { id: "zh-TW-HsiaoChenNeural", gender: "Female", match: true },
@@ -1444,4 +1456,83 @@ test("a retry's voice is not taken up when another person already holds it", asy
   assert.equal(deferredVoiceTaken({ ...o, voiceId: "v1" }), false, "the person's own voice is not a clash");
   assert.equal(deferredVoiceTaken({ ...o, voiceId: "v9" }), false);
   assert.equal(deferredVoiceTaken({ ...o, slot: "character:male", voiceId: "v2" }), false, "another tag's holder is no clash");
+});
+
+test("defaultVoicePlan (ld-pqy): native flag and the premade voice to retry in when a library voice is refused", async () => {
+  const { defaultVoicePlan } = await import("../voice.mjs");
+  const list = [
+    { id: "de_lib_f", gender: "female", match: true, premade: false },
+    { id: "de_lib_m", gender: "male", match: true, premade: false },
+    { id: "en_pre_f", gender: "female", match: false, premade: true },
+    { id: "en_pre_m", gender: "male", match: false, premade: true },
+  ];
+  assert.deepEqual(defaultVoicePlan("elevenlabs", list, "male"), { voice: "de_lib_m", native: true, fallback: "en_pre_m" });
+  assert.deepEqual(defaultVoicePlan("elevenlabs", list, null), { voice: "de_lib_f", native: true, fallback: "en_pre_f" });
+  // A native premade voice needs no fallback.
+  assert.deepEqual(defaultVoicePlan("elevenlabs", [{ id: "p", gender: "female", match: true, premade: true }, ...list], null), { voice: "p", native: true, fallback: "" });
+  // No native voice: the premade one, flagged non-native (the status warns).
+  assert.deepEqual(defaultVoicePlan("elevenlabs", list.slice(2), "female"), { voice: "en_pre_f", native: false, fallback: "" });
+  assert.deepEqual(defaultVoicePlan("elevenlabs", [], null), { voice: "", native: false, fallback: "" });
+  // Azure and macOS: native first, never a fallback; a secondary-locale voice is non-native.
+  const az = [{ id: "de-DE-KatjaNeural", gender: "Female", match: true }, { id: "en-US-JennyMultilingualNeural", gender: "Female", match: false }];
+  assert.deepEqual(defaultVoicePlan("azure", [az[1], az[0]], "female"), { voice: "de-DE-KatjaNeural", native: true, fallback: "" });
+  assert.deepEqual(defaultVoicePlan("azure", [az[1]], null), { voice: "en-US-JennyMultilingualNeural", native: false, fallback: "" });
+  assert.deepEqual(defaultVoicePlan("system", [{ id: "Anna", gender: "female", match: true }], null), { voice: "Anna", native: true, fallback: "" });
+});
+
+test("elevenVoices (ld-pqy): equal names keep one order by id, so the default voice is stable", async () => {
+  const { elevenVoices } = await import("../voice.mjs");
+  const v = (id) => ({ voice_id: id, name: "Same", labels: { language: "de", gender: "female" }, category: "cloned" });
+  const a = elevenVoices({ voices: [v("b"), v("a"), v("c")] }, "de-DE").map((x) => x.id);
+  const b = elevenVoices({ voices: [v("c"), v("b"), v("a")] }, "de-DE").map((x) => x.id);
+  assert.deepEqual(a, ["a", "b", "c"]);
+  assert.deepEqual(b, a);
+});
+
+test("elevenVoices + defaultVoice (ld-pqy): region first (cmn-TW never wins zh-CN), plain names over style ones, primary-language over multilingual", async () => {
+  const { elevenVoices, defaultVoice } = await import("../voice.mjs");
+  const ver = (language, locale, accent) => Array.from({ length: 3 }, () => ({ language, locale, accent }));
+  const zh = (id, name, accent, locale, use, gender = "male", n = 3) => ({
+    voice_id: id, name, category: "generated", labels: { language: "zh", gender, accent, use_case: use },
+    verified_languages: ver("zh", locale, accent).slice(0, n),
+  });
+  const list = {
+    voices: [
+      zh("tw_info", "Andrew Lo", "taiwan mandarin", "cmn-TW", "informative_educational"),
+      zh("cn_social", "Anna", "standard", "cmn-CN", "social_media"),
+      zh("cn_story", "James", "standard", "cmn-CN", "narrative_story"),
+      zh("cn_edu", "Newzhen", "standard", "cmn-CN", "informative_educational"),
+    ],
+  };
+  const pick = (json, loc, g = null) => defaultVoice("elevenlabs", elevenVoices(json, loc), g);
+  assert.equal(pick(list, "zh-CN"), "cn_edu", "Mainland: a cmn-CN voice, explainer use first, never the Taiwan one");
+  assert.equal(pick(list, "zh-TW"), "tw_info", "Taiwan: the cmn-TW voice");
+  // Region 1: same language, accent unspecified, no verified region, beats another region's voice.
+  const bare = { voice_id: "bare", name: "Bare", labels: { language: "zh", gender: "male" }, verified_languages: [] };
+  assert.equal(pick({ voices: [list.voices[0], bare] }, "zh-CN"), "bare");
+  // With only another region's voices, still a native one (same language beats any non-native).
+  assert.equal(pick({ voices: [list.voices[0]] }, "zh-CN"), "tw_info");
+  // Style names lose to a plain one even when they rank first by name.
+  const es = (id, name, use) => ({ voice_id: id, name, labels: { language: "es", gender: "male", accent: "mexican", use_case: use }, verified_languages: ver("es", "es-MX", "mexican") });
+  assert.equal(pick({ voices: [es("sus", "[Suspense] Eduardo", "narrative_story"), es("plain", "Zed", "narrative_story"), es("ad", "Angelica - Locutora Comercial", "advertisement")] }, "es-MX"), "plain");
+  assert.equal(pick({ voices: [es("sus", "[Suspense] Eduardo", "narrative_story")] }, "es-MX"), "sus", "a style voice only when there is no other");
+  // A use case fit for words wins within a region.
+  assert.equal(pick({ voices: [es("soc", "Aaa", "social_media"), es("edu", "Zzz", "informative_educational")] }, "es-MX"), "edu");
+  // A multilingual voice that merely lists the language loses to a primary-language one.
+  const fr = { voices: [
+    { voice_id: "multi", name: "Aaron", labels: { language: "en", gender: "male", accent: "american" }, verified_languages: ver("fr", "fr-FR", "standard") },
+    { voice_id: "native", name: "Olivier", labels: { language: "fr", gender: "male", accent: "standard" }, verified_languages: ver("fr", "fr-FR", "standard") },
+  ] };
+  assert.equal(pick(fr, "fr-FR"), "native");
+});
+
+test("elevenVoices (ld-pqy): Cantonese and Mandarin voices don't count for each other (zh macro tag)", async () => {
+  const { elevenVoices } = await import("../voice.mjs");
+  const v = (id, accent, locale) => ({ voice_id: id, name: id, labels: { language: "zh", accent, gender: "male" }, verified_languages: [{ language: "zh", locale, accent }] });
+  const json = { voices: [v("man", "standard", "cmn-CN"), v("tw", "taiwan mandarin", "cmn-TW"), v("yue", "hong kong", "yue-HK"), v("yue2", "", "yue-HK")] };
+  const natives = (loc) => elevenVoices(json, loc).filter((x) => x.match).map((x) => x.id).sort();
+  assert.deepEqual(natives("zh-HK"), ["yue", "yue2"], "Cantonese: no Mandarin voice");
+  assert.deepEqual(natives("zh-CN"), ["man", "tw"], "Mandarin: no Cantonese voice");
+  assert.deepEqual(natives("zh-TW"), ["man", "tw"]);
+  assert.deepEqual(natives("zh-HK").length && elevenVoices({ voices: [json.voices[0]] }, "zh-HK").filter((x) => x.match), [], "no Cantonese voice: none native");
 });
