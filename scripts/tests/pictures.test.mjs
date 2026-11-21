@@ -483,7 +483,7 @@ test("stock concepts: an optional look-alike group and an adults flag; adults-on
   assert.deepEqual(stockForMode(concepts, "adult").map((c) => c.id), ["boy", "brother", "beer", "milk"]);
 });
 
-test("the shared stock list: numbers are counted things with no digits or colours; look-alikes grouped; drinks and pills for adults only", () => {
+test("the shared stock list: numbers are counted things with no digits or colours; look-alikes grouped; no built-in concept is adults-only (owner, 2026-11-21)", () => {
   const { concepts } = loadPictureStock(path.join(REPO_ROOT, "content"));
   const by = Object.fromEntries(concepts.map((c) => [c.id, c]));
   const nums = ["one", "two", "three", "four", "five"].map((n) => by[n]);
@@ -496,9 +496,10 @@ test("the shared stock list: numbers are counted things with no digits or colour
     assert.ok(by[a].group && by[a].group === by[b].group, `${a} and ${b} share a group`);
   }
   for (const id of ["head", "eyes", "ears", "nose", "mouth"]) assert.doesNotMatch(by[id].description, /pointing/, id);
-  for (const id of ["beer", "wine", "pills"]) assert.equal(by[id].adults, true, id);
+  // The owner lifted Adults only from beer, wine and pills (2026-11-21); the
+  // flag itself is still covered by the synthetic lists above.
+  for (const id of ["beer", "wine", "pills"]) assert.equal(by[id].adults, undefined, id);
   assert.doesNotMatch(by.medicine.description, /pill/);
   const kids = new Set(stockForMode(concepts, "kids").map((c) => c.id));
-  for (const id of ["beer", "wine", "pills"]) assert.ok(!kids.has(id), id);
-  assert.ok(kids.has("milk") && kids.has("medicine"));
+  for (const id of ["beer", "wine", "pills", "milk", "medicine"]) assert.ok(kids.has(id), id);
 });

@@ -3329,7 +3329,7 @@ adults? }`: the id (also the file's name), the short description the
 theme's prompt gets, and the English words it stands for; `group` names
 look-alike concepts (a boy and a brother, a ball and catching one, a tree
 and a forest), and a round never offers two of one group (two right
-answers); `adults: true` (beer, wine, pills) keeps a concept from kids
+answers); `adults: true` (none of the file's since 2026-11-21) keeps a concept from kids
 learners: it is never offered to their check, so never matched, and a kids
 word pointing at one (matched before the flag) leaves the game
 (`stockForMode` in `scripts/pictures.mjs`, `playable` in
