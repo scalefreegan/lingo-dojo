@@ -8,6 +8,7 @@ import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
 import { handleHiddenScenes } from "./hidden.ts";
 import { handlePhrases } from "./phrases.ts";
+import { handleGame, handlePictures } from "./pictures.ts";
 import { handlePractice } from "./practice.ts";
 import { handlePronunciation } from "./pronunciation.ts";
 import { handleAssemble, handleContent, handleExport, handleFolders, handlePackRevisions, handlePacks, handleProfile } from "./content.ts";
@@ -229,6 +230,12 @@ function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
   middlewares.use("/api/phrases", wrap(handlePhrases, { learner: true }));
   // Practice (practice.ts): flashcards over that same bank.
   middlewares.use("/api/practice", wrap(handlePractice, { learner: true }));
+  // The kids word game and its pictures (pictures.ts): kids learners only
+  // (a 403 for an adult, whose Practice above is unchanged; a kids
+  // learner's Practice routes are the 403). /api/pictures is the
+  // grown-up's side, from the Phrase bank: remove, redraw, draw the backlog.
+  middlewares.use("/api/game", wrap(handleGame, { learner: true }));
+  middlewares.use("/api/pictures", wrap(handlePictures, { learner: true }));
   // Pronunciation checks (pronunciation.ts): a recording scored against
   // known text for the active learner's language, Mandarin only; Azure
   // with keys for any learner, local otherwise. Nothing is stored.

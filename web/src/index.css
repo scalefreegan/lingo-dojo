@@ -208,6 +208,24 @@ h3 {
   .mochi-bob, .mochi-talk, .mochi-dot { animation: none; }
 }
 
+/* The kids word game (KidsGameView.tsx): a star pops in, Mochi hops on a
+   right answer. Short, once each; none at all with reduced motion. */
+@keyframes ld-pop {
+  0% { transform: scale(0.2); opacity: 0; }
+  60% { transform: scale(1.25); opacity: 1; }
+  100% { transform: scale(1); }
+}
+@keyframes ld-cheer {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-14px) rotate(-4deg); }
+  70% { transform: translateY(0) rotate(3deg); }
+}
+.ld-pop { display: inline-block; animation: ld-pop 0.45s ease-out both; }
+.ld-cheer { animation: ld-cheer 0.7s ease-in-out 2; }
+@media (prefers-reduced-motion: reduce) {
+  .ld-pop, .ld-cheer { animation: none; }
+}
+
 /* Reading aids over Chinese characters (script/ruby.tsx): pinyin or zhuyin
    in each <rt>, drawn from its data-rt by ::before. Generated text is never
    selected or copied, so copying a line copies its characters only, and

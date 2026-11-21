@@ -47,6 +47,10 @@ export function fakeClaude() {
     clozeDelay: path.join(bin, "cloze-delay.txt"),
     clozeRan: path.join(bin, "cloze-ran"),
     clozeArgs: path.join(bin, "cloze-args.json"),
+    picture: path.join(bin, "picture.txt"),
+    pictureDelay: path.join(bin, "picture-delay.txt"),
+    pictureRan: path.join(bin, "picture-ran"),
+    pictureArgs: path.join(bin, "picture-args.json"),
     replies: path.join(bin, "replies.json"),
     argsLog: path.join(bin, "args.jsonl"),
     mcp: path.join(bin, "mcp.json"),
@@ -64,13 +68,28 @@ const side = args.some((a) => a.startsWith("You review one finished practice ses
     ? "cloze"
     : args.some((a) => a.startsWith("You write a short weekly progress note"))
       ? "digest"
-      : null;
+      : args.some((a) => a.startsWith("You decide which words a young child can be shown as a picture"))
+        ? "picture"
+        : null;
 fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
 fs.writeFileSync(side ? files[side + "Args"] : files.args, JSON.stringify(args));
 if (!side) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
 const mcpAt = args.indexOf("--mcp-config");
 if (!side && mcpAt >= 0) fs.copyFileSync(args[mcpAt + 1], files.mcp);
 let text = fs.readFileSync(side ? files[side] : files.reply, "utf8");
+// The word game's picturable check, "!auto": every numbered word in the
+// prompt is picturable ("a picture of <meaning>") unless its meaning says
+// hello, thanks or please.
+if (side === "picture" && text === "!auto") {
+  const words = (args.find((a) => a.startsWith("Words:")) || "").split("\\n").slice(1);
+  text = JSON.stringify({
+    items: words.map((line, i) => {
+      const meaning = line.split(" — ")[1] || "";
+      const no = /hello|thank|please/i.test(meaning);
+      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning };
+    }),
+  });
+}
 // A sequence (answers()): the nth run since it was set takes the nth reply.
 if (!side && fs.existsSync(files.replies)) {
   const list = JSON.parse(fs.readFileSync(files.replies, "utf8"));
@@ -117,6 +136,16 @@ setTimeout(() => {
       fs.writeFileSync(files.clozeDelay, String(delay));
     },
     clozeRuns: () => count(files.clozeRan),
+    /** The next picturable checks' reply (the kids word game): a JSON
+     *  string, "!fail", or "!auto" (the default: each word picturable but
+     *  hello, thanks and please). */
+    picture(text, delay = 0) {
+      fs.writeFileSync(files.picture, text);
+      fs.writeFileSync(files.pictureDelay, String(delay));
+    },
+    pictureRuns: () => count(files.pictureRan),
+    /** The argv of the last picturable check. */
+    pictureArgs: () => (fs.existsSync(files.pictureArgs) ? JSON.parse(fs.readFileSync(files.pictureArgs, "utf8")) : null),
     /** The next digest calls' reply (History's weekly note), or "!fail". */
     digest(text, delay = 0) {
       fs.writeFileSync(files.digest, text);
@@ -144,6 +173,7 @@ setTimeout(() => {
   self.answer("NARRATOR-F: Hola.");
   self.recap(EMPTY_RECAP);
   self.cloze(JSON.stringify({ items: [] }));
+  self.picture("!auto");
   self.digest(JSON.stringify({ digest: "You practised a lot this week." }));
   return self;
 }

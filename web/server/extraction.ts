@@ -18,6 +18,7 @@ import { profileRows, rawDb, schema } from "./db.ts";
 import { HttpError, methodNotAllowed, sendJson } from "./sse.ts";
 import { getModel } from "./store.ts";
 import { loadContent, modeRoot } from "../../scripts/content.mjs";
+import { picturesAfterSession } from "./pictures.ts";
 import { offeredReview } from "./recall.ts";
 
 // The post-session extraction (docs/DATA.md §Post-session extraction): when
@@ -86,7 +87,20 @@ async function start(profile: LanguageProfileRef, conversationId: string, from: 
       live.delete(claim);
       return false;
     }
-    track(run(profile, claimed.conversation, claim).finally(() => live.delete(claim)));
+    track(
+      run(profile, claimed.conversation, claim)
+        .finally(() => live.delete(claim))
+        // A session's words are in the bank now (its glosses, and the
+        // recap's kept words): for a kids learner, pictures for the word
+        // game are drawn ahead of play, in the background (pictures.ts
+        // picturesAfterSession checks the learner; an adult's starts
+        // nothing). Resolves once the drawing run is started (or not), not
+        // when it ends.
+        .then(() => picturesAfterSession(profile).then(
+          () => {},
+          (e) => console.error("[lingo-dojo] pictures after a session:", e),
+        )),
+    );
     return true;
   } catch (e) {
     live.delete(claim);

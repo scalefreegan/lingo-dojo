@@ -16,6 +16,7 @@ import CustomizeTab from "./components/CustomizeTab";
 import GoTab from "./components/GoTab";
 import LibraryTab from "./components/LibraryTab";
 import { onOpenBank } from "./bankLink";
+import KidsGameView from "./components/KidsGameView";
 import PracticeView from "./components/PracticeView";
 import AgentDrawer from "./components/AgentDrawer";
 import ScriptProvider from "./components/ScriptProvider";
@@ -34,11 +35,11 @@ function isTab(v: string | null): v is Tab {
 
 /** The last tab this language profile was on in this browser — "Scene" the
  *  first time, or if storage is blocked or holds something unrecognized.
- *  Practice isn't a kids tab (docs/DATA.md §Kids learners). */
-function loadRememberedTab(languageId: string, mode: Mode): Tab {
+ *  A kids learner's Practice is the word game (docs/DATA.md §Kids word game). */
+function loadRememberedTab(languageId: string): Tab {
   try {
     const raw = localStorage.getItem(languageKey(TAB_KEY, languageId));
-    return isTab(raw) && !(raw === "practice" && mode === "kids") ? raw : "scene";
+    return isTab(raw) ? raw : "scene";
   } catch {
     return "scene";
   }
@@ -103,7 +104,7 @@ export default function App({
   // The sticky bar's Practice: go to the Go tab with the voice session open.
   // Cleared once the panel has opened, so a later visit to Go doesn't reopen it.
   const [practiceRequest, setPracticeRequest] = useState(false);
-  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(language.id, learner.mode));
+  const [tab, setTabState] = useState<Tab>(() => loadRememberedTab(language.id));
 
   const setTab = useCallback(
     (t: Tab) => {
@@ -621,7 +622,7 @@ export default function App({
                 onRevisitUsed={revisitUsed}
               />
             </div>
-            {tab === "practice" && mode === "adult" && <PracticeView />}
+            {tab === "practice" && (mode === "kids" ? <KidsGameView key={language.id} /> : <PracticeView />)}
             {tab === "library" && (
               <LibraryTab
                 key={mode}

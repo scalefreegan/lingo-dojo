@@ -4,3 +4,4 @@
  * exists to stop. */
 export type * from "../shared/wire";
 export type * from "../shared/practice";
+export type * from "../shared/game";
