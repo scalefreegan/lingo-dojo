@@ -1365,7 +1365,9 @@ export function elevenVoices(json, locale, nativeLocale = "") {
         rank: (native ? 1 : 0) + (exact ? 1 : 0),
       };
     });
-  return rows.sort((a, b) => b.rank - a.rank || a.row.name.localeCompare(b.row.name)).map((r) => r.row);
+  // The id last: two voices with one name keep one order (the default voice
+  // is the first of its tier, and must not change between reads).
+  return rows.sort((a, b) => b.rank - a.rank || a.row.name.localeCompare(b.row.name) || (a.row.id < b.row.id ? -1 : a.row.id > b.row.id ? 1 : 0)).map((r) => r.row);
 }
 
 /** Azure voices/list → the picker's shape: voices whose primary or secondary
@@ -1577,32 +1579,50 @@ export function speechVoices({ set = {}, speaker, gender, cast, fallback = "", r
 
 /**
  * The voice to speak in when the learner has saved none for the locale
- * (every slot "Random", which the Go tab says is fine): the character card's
- * sounds and the listening drill, whose lines have no cast to name one.
- * `voices` is the provider's own list for the locale (elevenVoices,
- * azureVoices, systemVoices: natives first); `gender` the narrator's, when
- * known. → an id, or "" when the list has nothing usable.
+ * (every slot "Random", which the Go tab says is fine): the picture game's
+ * and Practice's words, the character card's sounds, a line outside a
+ * session. `voices` is the provider's own list for the locale (elevenVoices,
+ * azureVoices, systemVoices: natives first, in a fixed order); `gender` the
+ * narrator's, when known. → an id, or "" when the list has nothing usable.
+ * Always the first of its tier, so a locale keeps one voice (its clips
+ * cache and sound the same every time).
  *
- *  - ElevenLabs: a premade voice of the account (any plan can speak with
- *    them, unlike voices added from the library), a native one before any
- *    other (pronunciation over gender), each of the gender where there is
- *    one; with no premade voice at all, a native voice of the account.
+ *  - Every provider: a native speaker of the locale's language before any
+ *    other voice (a German word in an English voice is said wrong, which is
+ *    what this order is for), each tier of the gender where there is one.
+ *  - ElevenLabs: native premade, then any native voice of the account, then
+ *    (only with no native voice) a premade voice. A native voice added from
+ *    the library may be refused on a free plan: defaultVoicePlan names the
+ *    premade voice to say the line in then.
  *  - Azure and macOS: the locale's own first voice of the gender, else its
  *    first voice (a secondary-locale voice only when the locale has none;
  *    macOS's novelty voices never).
  */
 export function defaultVoice(provider, voices, gender = null) {
+  return defaultVoicePlan(provider, voices, gender).voice;
+}
+
+/** defaultVoice with what the caller needs around it: `native` (false: no
+ *  voice of the locale's language exists, so the line is said in another
+ *  language's voice: the status should say so) and `fallback` (ElevenLabs:
+ *  a premade voice, "" when the voice is itself premade or there is none; a
+ *  premade voice speaks on any plan, a library voice may be refused). */
+export function defaultVoicePlan(provider, voices, gender = null) {
   const g = gender === "female" || gender === "male" ? gender : null;
   const list = (Array.isArray(voices) ? voices : []).filter((v) => v && typeof v.id === "string" && v.id && String(v.gender).toLowerCase() !== "novelty");
   const ofGender = (v) => String(v.gender).toLowerCase() === g;
   // Each tier gendered first: an unknown gender just skips that half.
   const tiers = (pools) => pools.flatMap((p) => (g ? [p.filter(ofGender), p] : [p]));
   const native = list.filter((v) => v.match);
+  const premade = list.filter((v) => v.premade);
   const pools =
     provider === "elevenlabs"
-      ? tiers([list.filter((v) => v.premade && v.match), list.filter((v) => v.premade), native])
+      ? tiers([premade.filter((v) => v.match), native, premade])
       : tiers([native, list]);
-  return pools.find((p) => p.length)?.[0]?.id ?? "";
+  const pick = pools.find((p) => p.length)?.[0];
+  if (!pick) return { voice: "", native: false, fallback: "" };
+  const fallback = provider === "elevenlabs" && !pick.premade ? tiers([premade]).find((p) => p.length)?.[0]?.id ?? "" : "";
+  return { voice: pick.id, native: !!pick.match, fallback };
 }
 
 /** For ElevenLabs: each slot's fallback, a distinct account voice of its

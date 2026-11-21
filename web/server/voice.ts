@@ -10,7 +10,7 @@ import { REPO_ROOT, isDrill, loadContent, modeRoot } from "../../scripts/content
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, replayReading, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, defaultVoicePlan, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, replayReading, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   SAY_SLOW_WPM, paceOf, speechPace, elevenStoredSettings, elevenVoiceSettingsRequest,
 } from "../../scripts/voice.mjs";
 import type {
@@ -686,7 +686,12 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   // from outside a session: the character card's Hear it): the provider's
   // default for the locale rather than a 400. macOS still says it in the
   // Mac's own voice when the locale has none installed, as before.
-  const first = chosen || (await defaultVoiceFor(provider, locale, gender, provider === "system"));
+  // A native voice of the account first (an added library voice may be
+  // refused on a free plan: defaultFallback is the premade voice to say the
+  // line in then, as practiceVoice's clips do).
+  const plan = chosen ? null : await defaultPlanFor(provider, locale, gender, provider === "system");
+  const first = chosen || plan?.voice || "";
+  const defaultFallback = plan?.fallback ?? "";
   const voice = first;
 
   const ctrl = new AbortController();
@@ -713,11 +718,18 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
           // not a bad key, spent credits or a rate limit. Say the line in the
           // retry voice (speechVoices) rather than lose it.
           const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
-          if (!cast || !retry || !retryInOtherVoice(status)) throw e;
-          const said = await synthesize({ ...line, voice: retry }, ctrl.signal);
-          // The other voice worked, so it was the cast voice: skip it from now on.
-          if (refusedVoices.size >= 200) refusedVoices.clear();
-          refusedVoices.add(cast);
+          const other = cast ? retry : defaultFallback;
+          if (!other || !retryInOtherVoice(status)) throw e;
+          const said = await synthesize({ ...line, voice: other }, ctrl.signal);
+          if (cast) {
+            // The other voice worked, so it was the cast voice: skip it from now on.
+            if (refusedVoices.size >= 200) refusedVoices.clear();
+            refusedVoices.add(cast);
+          } else {
+            // The default is asked again next time (a plan upgrade should be
+            // heard), so no refusal is remembered.
+            console.warn(`[lingo-dojo] ElevenLabs refused the default voice ${first} for ${locale} (${status}): spoke in the premade voice ${other}`);
+          }
           return said;
         }
       }
@@ -887,9 +899,16 @@ async function providerVoices(provider: TtsProvider, locale: string): Promise<Vo
  * never "no provider".
  */
 async function defaultVoiceFor(provider: TtsProvider, locale: string, gender: VoiceGender | null, optional = false): Promise<string> {
+  return (await defaultPlanFor(provider, locale, gender, optional)).voice;
+}
+
+/** defaultVoiceFor with the premade voice to retry in after a refusal, and
+ *  whether the voice is native to the locale (defaultVoicePlan). */
+async function defaultPlanFor(provider: TtsProvider, locale: string, gender: VoiceGender | null, optional = false): Promise<{ voice: string; fallback: string; native: boolean }> {
   const voices = provider === "system" ? await systemVoicesFor(locale).catch(() => []) : await providerVoices(provider, locale);
-  const voice = defaultVoice(provider, voices, gender);
-  if (voice || optional) return voice;
+  const plan = defaultVoicePlan(provider, voices, gender);
+  const voice = plan.voice;
+  if (voice || optional) return plan;
   // Without one, `say` would read the words in the Mac's own language, and
   // that audio would be cached: refuse instead.
   if (provider === "system") {
@@ -900,16 +919,63 @@ async function defaultVoiceFor(provider: TtsProvider, locale: string, gender: Vo
 
 /**
  * The narrator's voice for `locale` outside a session (a practice drill's
- * phrase, the character card's sounds): the user's own voice setting, the
- * narrator's first (as voiceFor borrows: the Go tab's dojo master), else
- * the provider's default (defaultVoiceFor), so a learner whose slots are
- * all Random still hears it. → { provider, voice, model }.
+ * phrase, the picture game's word, the character card's sounds): the user's
+ * own voice setting, the narrator's first (as voiceFor borrows: the Go tab's
+ * dojo master), else a native speaker of the locale's language (defaultVoice),
+ * so a learner whose slots are all Random still hears the language in its
+ * own accent. `fallback` is the premade voice to use if ElevenLabs refuses
+ * that native library voice (outsideClip); "" for a saved voice (the learner
+ * chose it) and when there is none. -> { provider, voice, model, fallback }.
  */
-export async function practiceVoice(settings: VoiceSettings, locale: string, gender: VoiceGender | null = null): Promise<{ provider: TtsProvider; voice: string; model: string }> {
+export async function practiceVoice(settings: VoiceSettings, locale: string, gender: VoiceGender | null = null): Promise<{ provider: TtsProvider; voice: string; model: string; fallback: string }> {
   const provider = settings.tts;
   keysFor(provider);
-  const voice = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", gender) || (await defaultVoiceFor(provider, locale, gender));
-  return { provider, voice, model: provider === "elevenlabs" ? settings.elevenModel : "" };
+  const saved = voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", gender);
+  const plan = saved ? null : await defaultPlanFor(provider, locale, gender);
+  return { provider, voice: saved || plan?.voice || "", model: provider === "elevenlabs" ? settings.elevenModel : "", fallback: plan?.fallback ?? "" };
+}
+
+/**
+ * One phrase or sound said outside a session, through the per-user audio
+ * cache (Practice's phrases, the picture game's words, the character card's
+ * sounds, both compare clips). The first play pays the provider, every
+ * later one is read from disk. If ElevenLabs refuses the native library
+ * voice (retryInOtherVoice's statuses: a plan without library access), the
+ * clip is made in the premade voice instead and stored under that voice's
+ * key; the refusal is not remembered, so a plan that gains access is heard
+ * on the next uncached clip. Logged with no text.
+ */
+export async function outsideClip(userId: string, settings: VoiceSettings, locale: string, text: string, signal: AbortSignal): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
+  const { provider, voice, model, fallback } = await practiceVoice(settings, locale);
+  const keyFor = (v: string) => audioKey({ owner: userId, provider, voice: v, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
+  const say = (v: string) => paidSlot(userId, () => synthesize({ provider, voice: v, text, locale, model }, signal));
+  try {
+    const key = keyFor(voice);
+    return { key, ...(await cachedAudio(key, () => say(voice))) };
+  } catch (e) {
+    const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
+    if (!fallback || !retryInOtherVoice(status)) throw e;
+    console.warn(`[lingo-dojo] ElevenLabs refused the native voice ${voice} for ${locale} (${status}): using the premade voice ${fallback}`);
+    const key = keyFor(fallback);
+    return { key, ...(await cachedAudio(key, () => say(fallback))) };
+  }
+}
+
+/**
+ * A sentence for the status when `locale` would be said in a voice that is
+ * not a native speaker's: no voice saved for it and none native on the
+ * account, so the default voice is another language's. A warning only: the
+ * words still play. null with a saved voice, a native default, macOS (no
+ * installed voice is voiceReady's own refusal) or a voice list that can't be
+ * read (the audio route says why when it is played). Reads the provider's
+ * list through its per-process cache, a free call.
+ */
+export async function voiceNote(settings: VoiceSettings, locale: string): Promise<string | null> {
+  const provider = settings.tts;
+  if (provider === "system" || voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", null)) return null;
+  const plan = await defaultPlanFor(provider, locale, null, true).catch(() => null);
+  if (!plan || plan.native) return null;
+  return `${NAMES[provider]} has no native ${locale} voice on this account, so words are said in another language's voice: add one in the Go tab's voice settings`;
 }
 
 /**
@@ -983,11 +1049,9 @@ export function isSoundText(text: string): boolean {
  */
 export async function soundClip(ctx: LearnerCtx, text: string, locale: string, signal: AbortSignal): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
   const settings = await readVoiceSettings(ctx.user.id);
-  const { provider, voice, model } = await practiceVoice(settings, locale);
-  const key = audioKey({ owner: ctx.user.id, provider, voice, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
-  const out = await cachedAudio(key, () => paidSlot(ctx.user.id, () => synthesize({ provider, voice, text, locale, model }, signal)));
-  console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${key.slice(0, 12)}`);
-  return { key, ...out };
+  const out = await outsideClip(ctx.user.id, settings, locale, text, signal);
+  console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${out.key.slice(0, 12)}`);
+  return out;
 }
 
 /* --------------------------------- library -------------------------------- */

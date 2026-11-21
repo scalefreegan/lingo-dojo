@@ -36,6 +36,7 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
  * finds nothing (and, with `hold.searches`, waits for `hold.open()` or the
  * request's abort, as a real fetch does). */
 const synths = [];
+const plan = { refuse: false, fail: false };
 let lists = 0;
 let stts = 0;
 let searches = 0;
@@ -65,7 +66,9 @@ globalThis.fetch = async (input, init) => {
     const voice = decodeURIComponent(url.pathname.split("/").pop() ?? "");
     const { text } = JSON.parse(init.body);
     synths.push({ voice, text });
-    if (text.startsWith("FAIL")) return new Response(JSON.stringify({ detail: { message: "server error" } }), { status: 500 });
+    // A library voice the plan refuses (ld-pqy): 402, like ElevenLabs' answer.
+    if (voice === "cloned-zh-f" && plan.refuse) return new Response(JSON.stringify({ detail: { message: "library voices need a paid plan" } }), { status: 402 });
+    if (plan.fail || text.startsWith("FAIL")) return new Response(JSON.stringify({ detail: { message: "server error" } }), { status: 500 });
     if (text.startsWith("HOLD")) {
       hold.entered++;
       await hold.gate;
@@ -180,17 +183,17 @@ test("the same text, voice and locale is said once: later plays come from the ca
   assert.ok(files.length >= 4 && files.every((f) => /^[0-9a-f]{64}\.mp3$/.test(f)));
 });
 
-test("no voice saved (ld-zxn): the sound and Hear it's /speak use a premade account voice, of the narrator's gender when /speak names one; the list is fetched once", async () => {
+test("no voice saved (ld-zxn): the sound and Hear it's /speak use the account's native voice for the language (bug ld-pqy), before any premade one; the list is fetched once", async () => {
   clearVoiceLists();
   const before = lists;
   const pip = await someone([KID]);
   // A kids learner's card plays too.
   const r = await sound(pip, "玻");
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.text, "MP3:premade-m:玻", "a premade voice (any plan), never the cloned one; no gender: the first");
+  assert.equal(r.text, "MP3:cloned-zh-f:玻", "the native Mandarin voice, never the English premade ones");
   const speak = await pip.call("POST", "/api/voice/speak", { speaker: "narrator", gender: "female", text: "你好", locale: "zh-TW" });
   assert.equal(speak.status, 200, speak.text);
-  assert.equal(speak.text, "MP3:premade-f:你好");
+  assert.equal(speak.text, "MP3:cloned-zh-f:你好", "native before gender");
   // A saved voice still wins.
   await pip.call("PUT", "/api/voice/settings", { voices: { elevenlabs: { "zh-TW": { "narrator:male": "picked" } } } });
   assert.equal((await sound(pip, "坡")).text, "MP3:picked:坡");
@@ -290,4 +293,59 @@ test("a voice draw the browser gives up on frees its slot at once: its provider 
     hold.searches = false;
     hold.open();
   }
+});
+
+test("a native voice the plan refuses (ld-pqy): the clip is made in the premade voice, kept under that voice's key, the refusal is not remembered, a real failure still fails", async () => {
+  clearVoiceLists();
+  const kim = await someone();
+  const warn = [];
+  plan.refuse = true;
+  const realWarn = console.warn;
+  console.warn = (...a) => warn.push(a.join(" "));
+  try {
+    const n0 = synths.length;
+    const r = await sound(kim, "一");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.text, "MP3:premade-m:一", "said in the premade voice rather than lost");
+    assert.deepEqual(synths.slice(n0).map((s) => s.voice), ["cloned-zh-f", "premade-m"], "the native voice was tried first");
+    assert.ok(warn.some((w) => /refused the native voice cloned-zh-f for zh-TW \(402\)/.test(w) && !w.includes("一")), "logged, with no text");
+    // Cached under the premade voice: a replay makes no premade call (the
+    // native voice is asked first each time: its refusal is never cached).
+    const n1 = synths.length;
+    assert.equal((await sound(kim, "一")).text, "MP3:premade-m:一");
+    assert.deepEqual(synths.slice(n1).map((s) => s.voice), ["cloned-zh-f"]);
+    const n1b = synths.length;
+    // The refusal isn't remembered: the next clip tries the native voice again.
+    await sound(kim, "二");
+    assert.deepEqual(synths.slice(n1b).map((s) => s.voice), ["cloned-zh-f", "premade-m"]);
+    // Anything but a "not this voice" status is not retried (a 500 is a 502).
+    const n2 = synths.length;
+    plan.refuse = false;
+    plan.fail = true;
+    const bad = await sound(kim, "五");
+    assert.equal(bad.status, 502);
+    assert.equal(synths.length, n2 + 1, "one call, no fallback");
+    // /speak's default voice falls back the same way.
+    plan.fail = false;
+    plan.refuse = true;
+    const said = await kim.call("POST", "/api/voice/speak", { speaker: "narrator", text: "你好", locale: "zh-TW" });
+    assert.equal(said.text, "MP3:premade-m:你好");
+    // A saved voice is the learner's choice: no silent swap.
+    const lee = await someone([ADULT], { "zh-TW": { "narrator:female": "cloned-zh-f" } });
+    const n3 = synths.length;
+    assert.equal((await sound(lee, "四")).status, 502);
+    assert.equal(synths.length, n3 + 1);
+  } finally {
+    console.warn = realWarn;
+    plan.refuse = false;
+    plan.fail = false;
+  }
+});
+
+test("the default voice is the same one every time for a locale (ld-pqy)", async () => {
+  clearVoiceLists();
+  const ivy = await someone();
+  const used = new Set();
+  for (const t of ["一", "二", "三"]) used.add((await sound(ivy, t)).text.split(":")[1]);
+  assert.deepEqual([...used], ["cloned-zh-f"]);
 });

@@ -192,6 +192,11 @@ declare module "*/scripts/voice.mjs" {
   export function ageOf(label: unknown): import("../shared/wire.ts").VoiceAge | "";
   export function parseCast(text: string, mode?: Mode, opts?: { drill?: boolean }): import("../shared/wire.ts").VoiceCastNote[];
   export function speechVoices(o: { set?: Record<string, string | undefined>; speaker: string; gender: string | null; cast: string | null; fallback?: string; refused?: Set<string> }): { first: string; retry: string };
+  export function defaultVoicePlan(
+    provider: "elevenlabs" | "azure" | "system",
+    voices: { id: string; gender: string; match: boolean; premade?: boolean }[],
+    gender?: "female" | "male" | null,
+  ): { voice: string; native: boolean; fallback: string };
   export function defaultVoice(
     provider: "elevenlabs" | "azure" | "system",
     voices: { id: string; gender: string; match: boolean; premade?: boolean }[],

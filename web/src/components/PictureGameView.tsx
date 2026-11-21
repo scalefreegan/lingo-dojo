@@ -370,6 +370,11 @@ export default function PictureGameView({
             Words can't be played aloud: {status.audio} The voice provider is chosen in the Go tab's voice settings.
           </p>
         )}
+        {status?.ready && !status.audio && status.audioNote && (
+          <p className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status" data-testid="picture-game-voice-note">
+            {status.audioNote}.
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-3">
           <Button variant="primary" onClick={() => void play()} disabled={!status?.ready || busy} data-testid="picture-game-start">
             Start

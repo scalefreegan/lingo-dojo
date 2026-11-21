@@ -24,7 +24,7 @@ import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider, type DrawnImage } from "./imageProvider.ts";
 import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts";
-import { audioProblem, phraseClip } from "./practice.ts";
+import { audioNote, audioProblem, phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The word game and its pictures (docs/DATA.md §Kids word game). A learner
@@ -532,6 +532,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
+  const note = audio ? null : await audioNote(ctx);
   const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
@@ -547,6 +548,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     limited: images >= PICTURE_DAILY_IMAGES,
     problem: needsDraw ? provider.problem() : null,
     audio,
+    audioNote: note,
     theme: PICTURE_THEME.id,
     stock,
     outOfTheme,
