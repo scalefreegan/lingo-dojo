@@ -1427,7 +1427,17 @@ the tone check take.
 in `scripts/tests/wav16k.test.mjs`): decode at the browser context's own
 rate, average the channels, then low-pass and resample to 16 kHz in JS with
 a Kaiser-windowed sinc (flat to 7.2 kHz, over 80 dB down from 8.5 kHz;
-about 10 ms of work per second of audio). Until 2026-11 it played the
+about 10 ms of work per second of audio). That work runs in a Worker
+(`web/src/wav16k.worker.ts`, started on the first recording and kept for
+the page; `web/src/wavConverter.ts`, tested in
+`scripts/tests/wav-converter.test.mjs`): the samples are transferred, not
+copied, and the page stays responsive (headless Chromium, the built
+bundle: 10 s of 48 kHz audio in 102 ms, the page's 10 ms timer still
+firing throughout). When no Worker starts (no module Workers, a blocked
+script) or one fails, the same code runs on the page's thread, as it did
+before: slower, never a lost recording. Safari's Worker was not run
+(ld-lvk). A NaN or ±Infinity sample (decoders don't produce them) is
+read as 0, so it can't become about 6 ms of full-scale output. Until 2026-11 it played the
 decoded buffer through a 16 kHz OfflineAudioContext, which interpolates
 with no low-pass. Measured in headless Chromium 153 (ld-axq), a 48 kHz
 sine at −9 dBFS, output level against input:
@@ -1479,9 +1489,9 @@ word the same.
 | use | echo cancellation | noise suppression | auto gain |
 |---|---|---|---|
 | voice turn (`conversation`) | on | on | on |
-| speak-it in a language with a tone check (Mandarin; `pitch`) | on | off | off |
+| speak-it of a phrase the tone check scores (Mandarin, 1–24 Han characters; `pitch`) | on | off | off |
 | character card's tone check (`pitch`) | on | off | off |
-| speak-it elsewhere, a said cloze (`conversation`) | on | on | on |
+| speak-it elsewhere (a Mandarin phrase too long or with Latin letters too), a said cloze (`conversation`) | on | on | on |
 
 Measured with Chromium's fake capture device
 (`--use-file-for-fake-audio-capture`), which, unlike a stubbed
@@ -1536,11 +1546,42 @@ a room louder than about −58 dBFS, and speech must then be about 9.5 dB above
 the room: −45 dBFS speech arms it in a room quieter than about −54.5 dBFS
 (a quiet room at −60 dBFS gives the 0.004 minimum), but not at −50 dBFS
 (threshold 0.0095). Not measured on a real microphone or room. Known
-limits: a quiet voice in a noisier room still ends only on Stop or the idle
-cap; and the threshold is fixed after calibration, so a noise that starts
-later (a fan, typing, the model clip's echo on loud speakers) and stays above
-it keeps the take from ending on a pause, and if it lasts 200 ms counts as
-speech, which also skips the idle cap, leaving the 60 s maximum.
+limit: a quiet voice in a noisier room still ends only on Stop or the idle
+cap.
+
+**The floor follows a steady room** (ld-efi; `createPauseDetector` in the
+same file, tested on synthetic level sequences). Until 2026-11 the
+threshold was fixed after calibration, so a noise that started later (a
+fan, the model clip's echo on loud speakers) and stayed above it kept the
+take from ending on a pause, and after 200 ms counted as speech, which also
+skips the idle cap: the take ran to its maximum (20 s for Practice
+speak-it, 8 s for the character card, 60 s by default). Now, after each
+tick, the floor:
+
+- drops at once to any tick quieter than it (each pause between words
+  resets it);
+- rises only while the last 1 s of ticks all sit within 3 dB of each other,
+  at 1 dB/s, never above the quietest of them, starting from the floor the
+  minimum implies (minimum ÷ 3) rather than a very quiet room's own.
+
+Why those numbers, chosen without a real microphone: a 21 ms RMS of
+broadband noise varies by about ±0.2 dB, speech by 10–30 dB between
+syllables, so only steady noise or one held vowel passes the gate. The
+tightest margin is a quiet speaker at −45 dBFS against the −48 dBFS pitch
+minimum (3 dB): at 1 dB/s a vowel held perfectly steady for 3 s is not cut
+(tested), 4 s would be the first. On the synthetic sequences: a steady
+−38 dBFS fan that starts after 3 s of speech in a −60 dBFS room is under
+the threshold about 11 s after it starts and the take ends 1.5 s later on
+the pause, against the 20 s cap before; 15 s of −45 dBFS speech with normal
+pauses, connected −45 dBFS speech whose gaps only reach −50 (a live room),
+and speech that starts inside calibration all end only after the speech.
+Limits: on the character card's 8 s cap a fan that starts mid-take still
+mostly ends on the cap; bursty noise (typing) never passes the gate, so it
+still keeps a take going to its cap; a take ended by noise alone has
+`spoke` set and goes to the server like any other; the model clip's echo
+can still set `spoke` and then end the take on the pause after it.
+**Owed: a check on a real microphone and room** (the noise's real tick
+spread, a held tone's), before trusting these constants.
 
 ## Cost (rough, Nov 2026)
 

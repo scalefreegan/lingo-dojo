@@ -73,15 +73,31 @@ function kernelFor(fromRate: number) {
   return k;
 }
 
+/** `pcm` with any NaN or ±Infinity as 0 (a copy only when there is one).
+ *  Decoders do not produce them, but one would otherwise reach every tap
+ *  it touches: about 6 ms of output at full scale (or NaN, written as
+ *  silence) around a single bad sample, a click the scorer would hear. */
+function finite(pcm: Float32Array): Float32Array {
+  for (let i = 0; i < pcm.length; i++) {
+    if (Number.isFinite(pcm[i])) continue;
+    const out = pcm.slice();
+    for (let j = i; j < out.length; j++) if (!Number.isFinite(out[j])) out[j] = 0;
+    return out;
+  }
+  return pcm;
+}
+
 /** Mono samples at `fromRate` → 16 kHz, low-passed first. Output length is
  *  ceil(duration × 16 kHz), as the recorder has always written. */
 export function resampleTo16k(pcm: Float32Array, fromRate: number): Float32Array {
   if (!(fromRate > 0)) throw new Error(`bad sample rate ${fromRate}`);
+  pcm = finite(pcm);
   if (fromRate === WAV_RATE) return pcm;
   const length = Math.max(1, Math.ceil((pcm.length / fromRate) * WAV_RATE));
   const out = new Float32Array(length);
-  // Upsampling (a 8 kHz source) needs no low-pass below 8 kHz but the same
-  // interpolating kernel does no harm: its passband is wider than the input.
+  // Upsampling (an 8 kHz source) needs no low-pass at 8 kHz; the 16 kHz
+  // kernel is read on the input's own grid, so it interpolates with a
+  // passband to 0.45 of the input rate (3.6 kHz of an 8 kHz source's 4).
   const { half, table } = kernelFor(Math.max(fromRate, WAV_RATE));
   const step = fromRate / WAV_RATE;
   for (let n = 0; n < length; n++) {
@@ -120,9 +136,30 @@ export function encodeWav16k(pcm: Float32Array): ArrayBuffer {
   ascii(36, "data");
   out.setUint32(40, pcm.length * 2, true);
   for (let i = 0; i < pcm.length; i++) {
-    // NaN (a broken decode) is written as silence, not as -32768.
-    const s = Number.isNaN(pcm[i]) ? 0 : Math.max(-1, Math.min(1, pcm[i]));
+    // NaN or ±Infinity (a broken decode) is written as silence, not as
+    // -32768 or a full-scale sample.
+    const s = Number.isFinite(pcm[i]) ? Math.max(-1, Math.min(1, pcm[i])) : 0;
     out.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return out.buffer;
+}
+
+/** One conversion request, as the recorder's Worker takes it
+ *  (wav16k.worker.ts) and as the main thread runs it when no Worker can
+ *  start (wavConverter.ts). */
+export interface WavRequest {
+  id: number;
+  pcm: Float32Array;
+  rate: number;
+}
+export type WavReply = { id: number; wav: ArrayBuffer } | { id: number; error: string };
+
+/** The Worker's whole job: mono samples at `rate` → a 16 kHz WAV file. A
+ *  failure is a reply, so the page can fall back, not an uncaught error. */
+export function answerWavRequest({ id, pcm, rate }: WavRequest): WavReply {
+  try {
+    return { id, wav: encodeWav16k(resampleTo16k(pcm, rate)) };
+  } catch (e) {
+    return { id, error: e instanceof Error ? e.message : String(e) };
+  }
 }

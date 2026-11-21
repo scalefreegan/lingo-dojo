@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { WAV_RATE, downmix, encodeWav16k, resampleTo16k } from "../../web/src/wav16k.ts";
+import { WAV_RATE, answerWavRequest, downmix, encodeWav16k, resampleTo16k } from "../../web/src/wav16k.ts";
 import { parseWav } from "../pronunciation.mjs";
 import { readScoreAudio } from "../pronunciation-app.mjs";
 
@@ -102,4 +102,108 @@ test("encodeWav16k writes the format the server takes: 16 kHz mono 16-bit PCM, c
   assert.equal(back.samples.length, pcm.length);
   // A second of it is a recording the tone check accepts.
   assert.deepEqual(readScoreAudio(new Uint8Array(encodeWav16k(new Float32Array(16_000)))), { seconds: 1 });
+});
+
+// ---- ld-lvk: bad samples, timing between samples, upsampling, odd rates ----
+
+test("±Infinity and NaN samples become silence, not a burst of full-scale noise", () => {
+  for (const bad of [Infinity, -Infinity, Number.NaN]) {
+    const x = new Float32Array(48_000);
+    x[24_000] = bad;
+    const y = resampleTo16k(x, 48_000);
+    assert.ok(y.every((v) => v === 0), `${bad}: ${y.filter((v) => v !== 0).length} samples not silent`);
+    assert.equal(x[24_000], bad, "the caller's samples are not changed");
+  }
+  // Next to a real signal, the signal is all that is left.
+  const tone = sine(1_000, 44_100);
+  const spoiled = tone.slice();
+  spoiled[22_050] = Infinity;
+  spoiled[22_051] = -Infinity;
+  const clean = tone.slice();
+  clean[22_050] = 0;
+  clean[22_051] = 0;
+  assert.deepEqual(resampleTo16k(spoiled, 44_100), resampleTo16k(clean, 44_100));
+  // A 16 kHz recording is not resampled, but is cleaned the same way.
+  assert.deepEqual(Array.from(resampleTo16k(Float32Array.from([0, Infinity, -Infinity, Number.NaN, 0.5]), 16_000)), [0, 0, 0, 0, 0.5]);
+  // And the encoder alone writes them as silence.
+  const view = new DataView(encodeWav16k(Float32Array.from([Infinity, -Infinity])));
+  assert.deepEqual([view.getInt16(44, true), view.getInt16(46, true)], [0, 0]);
+});
+
+/** Largest difference, over the middle, between the resampled tone and the
+ *  same tone computed at 16 kHz directly, `delay` seconds late. */
+function toneError(hz, rate, delaySamples) {
+  const x = new Float32Array(rate);
+  for (let i = 0; i < x.length; i++) x[i] = 0.5 * Math.sin((2 * Math.PI * hz * (i - delaySamples)) / rate);
+  const y = resampleTo16k(x, rate);
+  let worst = 0;
+  for (let n = 1_600; n < y.length - 1_600; n++) {
+    const want = 0.5 * Math.sin(2 * Math.PI * hz * (n / WAV_RATE - delaySamples / rate));
+    worst = Math.max(worst, Math.abs(y[n] - want));
+  }
+  return worst;
+}
+
+test("a one-input-sample shift moves the output by exactly that much (a fraction of an output sample)", () => {
+  // At 48 kHz one input sample is a third of an output sample; at 44.1 kHz
+  // every output sample falls between input samples. Both must come out on
+  // time to within the filter's own error (-60 dB of the tone and better).
+  for (const rate of [48_000, 44_100]) {
+    for (const hz of [440, 1_000, 5_000]) {
+      for (const shift of [0, 1]) {
+        const err = toneError(hz, rate, shift);
+        assert.ok(err < 5e-4, `${rate} Hz, ${hz} Hz tone, shift ${shift}: off by ${err.toExponential(2)}`);
+      }
+    }
+  }
+  // And a shift is not lost: the delayed tone is not the undelayed one.
+  const x = sine(1_000, 48_000);
+  const late = new Float32Array(x.length);
+  late.set(x.subarray(0, x.length - 1), 1);
+  const a = resampleTo16k(x, 48_000);
+  const b = resampleTo16k(late, 48_000);
+  assert.ok(Math.abs(a[8_000] - b[8_000]) > 0.05);
+});
+
+test("upsampling (8 and 11.025 kHz sources): length, timing, and the tone kept with no image", () => {
+  assert.equal(resampleTo16k(new Float32Array(8_000), 8_000).length, 16_000);
+  assert.equal(resampleTo16k(new Float32Array(11_025), 11_025).length, 16_000);
+  assert.equal(resampleTo16k(new Float32Array(8_001), 8_000).length, 16_002);
+  // An impulse at 0.5 s comes out at 0.5 s.
+  const x = new Float32Array(8_000);
+  x[4_000] = 1;
+  const y = resampleTo16k(x, 8_000);
+  let at = 0;
+  for (let i = 1; i < y.length; i++) if (Math.abs(y[i]) > Math.abs(y[at])) at = i;
+  assert.equal(at, 8_000);
+  // A tone up to 0.45 of the source rate is the same tone at 16 kHz: no
+  // image at rate − f (5 kHz for a 3 kHz tone from 8 kHz) and no droop.
+  for (const [rate, hz] of [[8_000, 1_000], [8_000, 3_000], [11_025, 4_000]]) {
+    for (const shift of [0, 1]) {
+      const err = toneError(hz, rate, shift);
+      assert.ok(err < 5e-4, `${rate} Hz, ${hz} Hz tone, shift ${shift}: off by ${err.toExponential(2)}`);
+    }
+  }
+});
+
+test("odd input rates (22.05, 32, 37.8, 96 kHz): flat below 7 kHz, over 80 dB down from 8.5 kHz, on time", () => {
+  for (const rate of [22_050, 32_000, 37_800, 96_000]) {
+    for (const hz of [100, 1_000, 4_000, 7_000]) {
+      const g = gainDb(hz, rate);
+      assert.ok(Math.abs(g) < 0.1, `${rate}: ${hz} Hz changed by ${g.toFixed(2)} dB`);
+    }
+    for (const hz of [8_500, 9_000, 10_000].filter((f) => f < rate / 2)) {
+      const g = gainDb(hz, rate);
+      assert.ok(g < -80, `${rate}: ${hz} Hz came through at ${g.toFixed(1)} dB`);
+    }
+    for (const shift of [0, 1]) assert.ok(toneError(1_000, rate, shift) < 5e-4, `${rate} Hz shift ${shift}`);
+    assert.equal(resampleTo16k(new Float32Array(rate), rate).length, 16_000);
+  }
+});
+
+test("answerWavRequest (the Worker's job): a WAV for a good request, an error reply, not a throw, for a bad one", () => {
+  const ok = answerWavRequest({ id: 7, pcm: new Float32Array(48_000), rate: 48_000 });
+  assert.equal(ok.id, 7);
+  assert.equal(ok.wav.byteLength, 44 + 16_000 * 2);
+  assert.deepEqual(answerWavRequest({ id: 8, pcm: new Float32Array(10), rate: 0 }), { id: 8, error: "bad sample rate 0" });
 });
