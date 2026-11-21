@@ -522,7 +522,7 @@ async function main() {
     // 一 / 不 (their own tone is the app's convention), and enough behind it.
     if (!cur || !marked(r) || split(r)[0] === split(cur)[0] && (split(r)[1] === 5 || split(cur)[1] === 5)) continue;
     // 地 得 兒 著 了 are read by rules of their own (script.ts particleDe, t2s.ts).
-    if ("一不地得兒儿著着了瞭".includes(c) || syllableAgrees(cur, r, c, opts)) continue;
+    if ("一不地得兒儿著着了瞭".includes(c) || FALLBACK_SKIP.has(c) || syllableAgrees(cur, r, c, opts)) continue;
     if (!(w >= FLIP_MARGIN * have && w >= FALLBACK_FREQ && !(TAIWAN_READINGS[c] && numbered(TAIWAN_READINGS[c].to) === cur))) continue;
     const total = [...m.values()].reduce((a, x) => a + x, 0);
     const share = w / total;
@@ -571,13 +571,19 @@ async function main() {
     // mainland's reading, and a zh-TW text takes Taiwan's over it after.
     const chars = [...w[form]];
     const cur = zh.readCodePoints(w[form], "zh-CN", { cache: false });
+    if (WORD_SKIP.has(w.simp) || [...w.simp].some((c) => FALLBACK_SKIP.has(c) && c === "拚")) return null;
+    const kept = [];
     const out = w.readings[0].map((c, k) => {
       const a = cur[k] == null ? null : numbered(cur[k]);
+      kept[k] = Boolean(a && a !== c && syllableAgrees(a, c, chars[k], opts) && split(c)[1] === 5);
       if (a && syllableAgrees(a, c, chars[k], opts)) return cur[k];
       if ("一不".includes(chars[k])) return chars[k] === "一" ? "yī" : "bù";
       return marked(c);
     });
     if (out.includes(null) || out.join(" ") === cur.join(" ")) return null;
+    // A repeated character read two ways only because one of them is
+    // neutral in CC-CEDICT: neither reading of the word, so no entry.
+    if (mixesTones(chars, out, kept)) return null;
     // A two-character word that ends in a particle is, far more often than
     // the headword, a word and the particle (穿着 is 穿 + 着 zhe before it is
     // 穿着 chuān zhuó, attire; 端的 is 端 + 的): the list that counts words
@@ -656,6 +662,13 @@ async function main() {
   const blockOf = () => {
     const block = new Map();
     for (const a of accepted) for (const [k, list] of a.block) block.set(k, new Set([...(block.get(k) ?? []), ...list]));
+    // By hand, only for a part some accepted entry has.
+    const parts = new Set();
+    for (const a of accepted) {
+      const [chars, r] = [[...a.word], a.r.split(" ")];
+      for (let cut = 1; cut < chars.length; cut++) parts.add(`<${chars.slice(0, cut).join("")}=${r.slice(0, cut).join(" ")}`).add(`>${chars.slice(cut).join("")}=${r.slice(cut).join(" ")}`);
+    }
+    for (const [k, list] of HAND_BLOCK) if (parts.has(k)) block.set(k, new Set([...(block.get(k) ?? []), ...list]));
     return block;
   };
   // Then the reader itself, with all of them given to the library at
@@ -872,6 +885,38 @@ const harm = (item, at, want) => item.readings.reduce((a, r, n) => a + (want.som
 /** A neighbour this frequent is listed (BLOCK) and vetoes the entry where
  *  it stands; a rarer one is left to chance. */
 const BLOCK_FREQ = 1e-6;
+/** Characters that take no fallback, checked by hand (PR #63 second
+ *  review): 疋 is pǐ in 一疋布 (shū is rare), 拚 pīn in 拚命 and 打拚 as
+ *  often as pàn, 摑 is guó by Taiwan's standard (guāi the mainland's),
+ *  and 輾 is zhǎn in 輾轉 but niǎn in 輾過, 輾斃. */
+export const FALLBACK_SKIP = new Set([..."疋拚摑掴輾辗"]);
+/** Words CC-CEDICT reads in a way everyday use doesn't, by simplified
+ *  spelling: no entry is made, so the reader's own reading stands. 狗狗
+ *  [gou3 gou1] and 宏碁 [Hong2 ji1] (Acer says qí); 喳喳 is the whisper
+ *  chā cha there, the chirping zhā zhā everywhere else; 懒洋洋 is yáng
+ *  yáng in the current standard; 柏柏尔 is a transliteration. (No word
+ *  with 拚 gets an entry either: 拚命 is said pīn as readily as pàn.) */
+export const WORD_SKIP = new Set(["狗狗", "宏碁", "喳喳", "懒洋洋", "柏柏尔"]);
+/** Block words the audit's own rule doesn't find, because the word
+ *  across the edge is not itself misread: 不小心 + 脏 (zāng, dirty) is not
+ *  小 + 心脏, 葡萄干 + 嘛 is not 葡萄 + 干嘛. */
+export const HAND_BLOCK = new Map([
+  ["<心=xīn", ["小心"]],
+  ["<干=gàn", ["葡萄干"]],
+]);
+/** `--overlap`: also block an in-sentence entry wherever a more frequent
+ *  word runs across its edge, misread or not. Measured and not kept (see
+ *  docs/VOICE.md): it gives up more right readings than it saves. */
+const OVERLAP = process.argv.includes("--overlap");
+
+/** Whether a generated reading mixes CC-CEDICT's syllable with the
+ *  reader's tone for one and the same character: `kept` marks the
+ *  positions where the reader's syllable stands for a neutral tone of
+ *  CC-CEDICT's (转转 [zhuan4 zhuan5] would come out zhuàn zhuǎn, 吵吵
+ *  chāo chǎo). */
+export function mixesTones(chars, out, kept) {
+  return chars.some((c, k) => kept[k] && chars.some((d, j) => j !== k && d === c && out[j] !== out[k]));
+}
 /** How many times more frequent the word must be than all the misfires
  *  left to chance, each estimated as its two words meeting by chance
  *  (which undercounts words that go together, hence the size of it). */
@@ -919,6 +964,10 @@ function audit(word, reading, fw, index) {
     const side = (list, other, at, wantPart, key) => {
       for (const it of list) {
         const share = harm(it, at(it), wantPart);
+        if (!share && OVERLAP && it.chars.length > wantPart.length && it.f > fw && it.simp) {
+          block.set(key, [...(block.get(key) ?? []), it.word]);
+          continue;
+        }
         if (!share) continue;
         // A block word runs across the entry's edge: one that lies wholly
         // inside the entry (分子 in 知识分子) would veto it everywhere.

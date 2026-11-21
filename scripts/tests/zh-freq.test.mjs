@@ -11,6 +11,7 @@ import fs from "node:fs";
 import zlib from "node:zlib";
 import os from "node:os";
 import path from "node:path";
+import { FALLBACK_SKIP, HAND_BLOCK, WORD_SKIP, mixesTones } from "../gen-zh-freq.mjs";
 import { FALLBACK_SHARE, UNIHAN_READINGS_SHA256, UNIHAN_URL, UNIHAN_ZIP_SHA256, WORDFREQ_SHA256, WORDFREQ_URL, cedictEntries, checkSha256, decodeCBpack, frequencyTiers, marked, ranksFrom, readingMass, tokenShares } from "../gen-zh-freq.mjs";
 import { EVERYDAY_SENTENCES, EVERYDAY_WORDS } from "./zh-everyday.mjs";
 import { commonChars } from "../../web/src/script/sounds.ts";
@@ -318,8 +319,16 @@ test("on words and sentences that are not CC-CEDICT's headwords the prior is nev
   // the segmenter took the word (小心 + 脏 as 心脏, 船 + 长 as 船长).
   const sWorse = EVERYDAY_SENTENCES.filter((_, n) => none.sentences[n] && !full.sentences[n]).map((s) => s[0]);
   const sFixed = EVERYDAY_SENTENCES.filter((_, n) => !none.sentences[n] && full.sentences[n]).map((s) => s[0]);
-  assert.deepEqual(sWorse, ["衣服不小心脏了", "我想吃葡萄干嘛", "这只不过河的猫", "这条船长十米"]);
-  assert.ok(sFixed.length >= 24, `${sFixed.length} fixed`);
+  // No exact list: where a string can be cut both ways the platform's
+  // segmenter decides, and ICU versions differ. Only the strings that are
+  // truly ambiguous may read worse, whichever way this ICU cuts them.
+  const ambiguous = ["这只不过河的猫", "这条船长十米", "这只得奖的猫"];
+  for (const t of sWorse) assert.ok(ambiguous.includes(t), `${t} reads worse than with no prior`);
+  assert.ok(sFixed.length >= 15, `${sFixed.length} fixed`);
+  // Readings that hinge on no contested boundary: the word between
+  // particles or at an edge, and the traps a block word settles.
+  const at = (t, k) => readCodePoints(t, "zh-CN", { cache: false })[k];
+  for (const [t, k, r] of [["局长来了", 1, "zhǎng"], ["他是船长", 3, "zhǎng"], ["他去朝鲜旅游", 3, "xiǎn"], ["排行榜第一名", 1, "háng"], ["衣服不小心脏了", 5, "zāng"], ["不小心脏了衣服", 3, "zāng"], ["我想吃葡萄干嘛", 5, "gān"], ["他把葡萄干吃了", 4, "gān"], ["中情局长期以来", 3, "cháng"]]) assert.equal(at(t, k), r, t);
   assert.deepEqual(EVERYDAY_SENTENCES.filter((_, n) => none.sentences[n] && !fallback.sentences[n]), []);
 });
 
@@ -404,4 +413,66 @@ test("ambiguousChars: several readings in use and no word settled it", () => {
   assert.equal(amb("音樂", "zh-TW"), "");
   assert.equal(amb("行"), "行", "alone: read by the prior, still not settled");
   assert.equal(amb("hello 你好"), "");
+});
+
+test("a block word settles the word-splitting traps the segmenter gets wrong: 不小心 + 脏, 葡萄干 + 嘛 (PR #63 second review)", () => {
+  assert.deepEqual([...HAND_BLOCK], [["<心=xīn", ["小心"]], ["<干=gàn", ["葡萄干"]]]);
+  for (const [k, list] of HAND_BLOCK) for (const w of list) assert.ok([...(shipped.block.get(k) ?? [])].includes(w), `${k} ${w}`);
+  assert.equal(line("衣服不小心脏了"), "yī fu bù xiǎo xīn zāng le");
+  assert.equal(line("我想吃葡萄干嘛"), "wǒ xiǎng chī pú táo gān ma");
+  // The block is the word itself across the edge: with a synthetic prior
+  // the entry is held back there and still read elsewhere.
+  const only = (BLOCK) => parsePrior({ RANKS: "", FALLBACK: "", WORDS: "", ANYWHERE: "心脏=xīn zàng|干嘛=gàn má", BLOCK });
+  try {
+    setPrior(only("<心=xīn:小心|<干=gàn:葡萄干"));
+    assert.equal(line("不小心脏了"), "bù xiǎo xīn zāng le");
+    assert.equal(line("吃葡萄干嘛"), "chī pú táo gān ma");
+    assert.equal(line("我的心脏很好"), "wǒ de xīn zàng hěn hǎo");
+    assert.equal(line("你干嘛去"), "nǐ gàn má qù");
+  } finally {
+    setPrior(shipped);
+  }
+});
+
+test("reduplicated words and CC-CEDICT quirks: no entry mixes its syllable with the reader's tone (PR #63 second review)", () => {
+  // The rule: a repeated character read two ways only because CC-CEDICT
+  // has one of them neutral (转转 [zhuan4 zhuan5] came out zhuàn zhuǎn).
+  assert.equal(mixesTones([..."转转"], ["zhuàn", "zhuǎn"], [false, true]), true);
+  assert.equal(mixesTones([..."数数"], ["shǔ", "shù"], [false, false]), false, "two readings CC-CEDICT gives");
+  assert.equal(mixesTones([..."东西"], ["dōng", "xī"], [false, true]), false, "no repeated character");
+  assert.equal(mixesTones([..."看看"], ["kàn", "kàn"], [false, true]), false, "the same either way");
+  // The words read as they did with no prior.
+  for (const w of ["狗狗", "吵吵", "转转", "轉轉", "宏碁", "喳喳", "懒洋洋", "柏柏尔"]) {
+    assert.equal(line(w), without(() => line(w)), w);
+    assert.equal(shipped.words.has(w) || shipped.anywhere.has(w), false, w);
+  }
+  assert.equal(line("狗狗"), "gǒu gǒu");
+  assert.equal(line("我的狗狗很可爱").split(" ").slice(2, 4).join(" "), "gǒu gǒu");
+  assert.equal(line("宏碁"), "hóng qí");
+  assert.equal(line("宏碁", "zh-TW"), "hóng qí");
+  for (const w of WORD_SKIP) assert.equal(shipped.words.has(w) || shipped.anywhere.has(w), false, w);
+  // Every entry left with a repeated character: it reads the same each
+  // time, or is one of the few checked by hand (数数 shǔ shù, to count
+  // numbers; 糊糊 hú hu).
+  const twoWays = new Set(["数数", "數數", "糊糊"]);
+  let repeated = 0;
+  for (const [k, r] of [...shipped.words, ...shipped.anywhere]) {
+    const c = [...k];
+    const mixed = c.some((x, i) => c.some((y, j) => j > i && x === y && r[i] !== r[j]));
+    if (c.some((x, i) => c.indexOf(x) !== i)) repeated++;
+    if (mixed) assert.ok(twoWays.has(k), `${k} ${r.join(" ")}`);
+  }
+  assert.ok(repeated > 10 && repeated < 60, `${repeated} entries with a repeated character`);
+});
+
+test("fallbacks checked by hand: 疋 拚 摑 輾 take none, and the list is the 18 that remain (PR #63 second review)", () => {
+  for (const c of FALLBACK_SKIP) assert.equal(shipped.fallback.has(c), false, c);
+  assert.deepEqual([...FALLBACK_SKIP].sort(), [..."疋拚摑掴輾辗"].sort());
+  assert.equal([...shipped.fallback.keys()].sort().join(""), [..."傖嗨妳崁暍歙猓琿簿籲糝菟蚵誰谁鏜雋鱖"].sort().join(""));
+  for (const [t, r, l] of [["一疋布", "yī pǐ bù", "zh-TW"], ["拚命", "pīn mìng", "zh-TW"], ["打拚", "dǎ pīn", "zh-TW"], ["摑耳光", "guó ěr guāng", "zh-TW"], ["輾過", "niǎn guò", "zh-TW"], ["辗过", "niǎn guò", "zh-CN"]]) {
+    assert.equal(line(t, l), r, t);
+    assert.equal(line(t, l), without(() => line(t, l)), `${t}: as with no prior`);
+  }
+  // 輾轉 keeps its word's reading.
+  assert.equal(line("輾轉", "zh-TW"), "zhǎn zhuǎn");
 });

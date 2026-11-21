@@ -309,7 +309,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   no word settles takes its `FALLBACK` only where the default is
   ultra-rare: one other reading has at least 90% of the character's use
   (`FALLBACK_SHARE`) and the default is no word by itself in CC-CEDICT.
-  23 characters qualify (妳 nǐ, 誰/谁 shéi, 簿 bù, 嗨 hāi); 61 that a
+  18 characters remain (傖 嗨 妳 崁 暍 歙 猓 琿 簿 籲 糝 菟 蚵 誰 谁 鏜 雋
+  鱖; five that qualified are refused by hand, `FALLBACK_SKIP`: 疋, pǐ in
+  一疋布; 拚, pīn in 拚命 and 打拚 as readily as pàn; 摑, guó by Taiwan's
+  standard; 輾/辗, niǎn in 輾過); 61 that a
   plain majority would take do not, among them 粘 (82%), 逮, 剥, 豁, 倔,
   拧, 咀, whose defaults are everyday words the dictionary lacks (粘土,
   逮住, 剥皮, 豁口, 很倔, 拧紧), and never 地 得 兒 著 了, which have rules.
@@ -337,6 +340,28 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   着 zhe far more often than chuān zhuó, attire), nor one starting with a
   numeral (一行字 yī háng beside 一行 yī xíng, a party), and a spelling
   several headwords share takes a correction only if none reads worse.
+  No entry mixes CC-CEDICT's syllable with the reader's tone for one
+  repeated character (`mixesTones`: 转转 [zhuan4 zhuan5] came out zhuàn
+  zhuǎn, 吵吵 chāo chǎo; such a word gets no entry and reads as before),
+  and a few words CC-CEDICT reads as everyday use doesn't get none
+  (`WORD_SKIP`: 狗狗 [gou3 gou1], 宏碁 [Hong2 ji1], 喳喳, 懒洋洋, 柏柏尔);
+  a test lists every entry left with a repeated character (32, read the
+  same each time except 数数 shǔ shù and 糊糊 hú hu). Two block words are
+  added by hand (`HAND_BLOCK`), where the word across the edge is not
+  itself misread so the audit can't find it: 小心 before 心脏 (衣服不小心脏了
+  zāng) and 葡萄干 before 干嘛 (我想吃葡萄干嘛 gān). The general form of
+  that rule, blocking an entry wherever a more frequent word runs across
+  its edge (`--overlap`), was measured and not kept: the table grows from
+  72 KB to 198 KB (94 KB gzipped), the sweep gets 3 or 4 headwords worse,
+  and on the sentences below it trades two fixes (这最为重要, 他不当回事)
+  for one (这只得奖的猫). **The segmenter is the platform's**: the server
+  (Node's ICU) checks hints and the browser (its own ICU) draws the
+  readings, so on a string that can be cut two ways an in-sentence entry
+  may apply on one and not the other; the difference is one syllable of
+  such a string, never an error. With no `Intl.Segmenter` at all (4)
+  does not apply and a hint is laid only over a whole run of characters:
+  the readings are then main's plus (1) to (3). The tests assert readings
+  that hinge on no contested boundary, and no exact list of misreads.
   Sources: CC-CEDICT's readings weighted by wordfreq's Chinese word list,
   with Unihan's kHanyuPinlu to split a one-character word's count between
   its readings; wordfreq is pinned at a commit and Unihan at 18.0.0, each
@@ -346,30 +371,31 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   in the reader's on-demand chunk). **Measured** (2026-11-21, `npm run
   pinyin:freq -- --report`, and `--holdout`):
   - Sweep, headwords disagreeing with CC-CEDICT before → after (110,382):
-    zh-TW 3,704 → 2,577, traditional read as zh-CN 3,763 → 2,609,
-    simplified 3,919 → 2,717; no headword reads worse in any of the three
+    zh-TW 3,704 → 2,597, traditional read as zh-CN 3,763 → 2,629,
+    simplified 3,919 → 2,735; no headword reads worse in any of the three
     (the builder drops whatever would make one).
   - By frequency (wordfreq's top N words with a CC-CEDICT entry, the word
     alone; share of running text frequency-weighted), simplified: top
     1,000 1 → 0; 2,000 5 → 0; 5,000 28 (0.56%, 0.224% of text) → 3 (0.06%,
-    0.018%); 10,000 80 → 4; 20,000 213 (1.06%, 0.361%) → 14 (0.07%,
-    0.023%). Traditional zh-TW: 0 → 0; 3 → 0; 24 → 3; 70 → 4; 196 → 17.
+    0.018%); 10,000 80 → 5; 20,000 213 (1.06%, 0.361%) → 17 (0.09%,
+    0.026%). Traditional zh-TW: 0 → 0; 3 → 0; 24 → 3; 70 → 5; 196 → 20.
     Inside a sentence frame (他们…吗), simplified: 1 → 0; 5 → 0; 29 → 6;
-    82 → 20; 215 (0.369% of text) → 52 (0.073%). Left in the top 5,000:
+    82 → 21; 215 (0.369% of text) → 55 (0.077%); traditional 0 → 0; 3 → 0;
+    25 → 6; 72 → 21; 199 → 58. Left in the top 5,000:
     穿着 (zhuó or 穿 + 着), 一行 (xíng or háng), 美的 (the brand Midea),
     and in the frame 不当, 还给 and 若干 (the frame's 吗 makes 干吗): all
     read both ways in real text, so none is corrected by hand.
   - Held out (the tables built from a seeded 80% of the headwords, read on
-    the other 21,853): the fallback alone fixes 10 and worsens 1 (zh-TW),
-    13 and 1 (traditional zh-CN), 12 and 0 (simplified); the one is 雋譽.
+    the other 21,853): the fallback alone fixes 7 and worsens 1 (zh-TW),
+    10 and 1 (traditional zh-CN), 9 and 0 (simplified); the one is 雋譽.
   - Not CC-CEDICT's headwords (`scripts/tests/zh-everyday.mjs`, written by
-    hand: 276 everyday words with a many-reading character, 71 sentences
+    hand: 276 everyday words with a many-reading character, 87 sentences
     aimed at `ANYWHERE` words, half with the word's characters meeting
     across two words): the fallback alone changes none; the whole prior
-    fixes 9 words (6 in a sentence frame) and worsens none; it fixes 24
-    sentences and worsens 4, strings that can be cut both ways where the
-    segmenter takes the word: 衣服不小心脏了, 我想吃葡萄干嘛, 这只不过河的猫,
-    这条船长十米. A test holds exactly that list.
+    fixes 9 words (6 in a sentence frame) and worsens none; it fixes 26
+    sentences and worsens 3, each truly ambiguous as written, where the
+    segmenter takes the word: 这只不过河的猫 (只不过), 这条船长十米 (船长),
+    这只得奖的猫 (只得). They are left as they are.
   - A seeded sample of 100 of the simplified disagreements left: 43 truly
     wrong (mostly uncommon or technical words: 切点, 跳弹, 销冠, 卒中; 卷 juǎn
     and 斗 dǒu recur), 20 proper names, 29 classical, idiom or rare
