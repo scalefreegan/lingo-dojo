@@ -62,7 +62,6 @@ import { and, asc, desc, eq, inArray, isNotNull, sql, type SQL } from "drizzle-o
 // Spelled from the repo root so they match the typed declarations in
 // web/server/mjs-memory.d.ts (an ambient module is matched by pattern).
 import { normKey } from "../../scripts/match.mjs";
-import { pictureKey } from "../../scripts/pictures.mjs";
 import { MAX_EXAMPLES, TROUBLE_DAYS, clean, isUuid, phraseMetrics, type Capture, type Example } from "../../scripts/phrases.mjs";
 import type { PhraseDetail, PhraseInput, PhraseSummary } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
@@ -479,19 +478,6 @@ async function lapsesByPhrase(db: Db, profile: LanguageProfileRef, ids?: string[
   return new Map(rows.map((r) => [r.phraseId, Number(r.n)]));
 }
 
-/** Phrase ids with a ready picture (drawn or a shared stock one) for the
- *  words as they are now (an edit leaves the row stale, and the app shows
- *  none: pictures.mjs pictureKey), one scoped query for the whole list;
- *  pending, none, failed and removed rows don't count. */
-async function readyPictures(db: Db, profile: LanguageProfileRef, rows0: PhraseRow[], ids?: string[]): Promise<Set<string>> {
-  const rows = await db
-    .select({ phraseId: phrasePictures.phraseId, phraseKey: phrasePictures.phraseKey })
-    .from(phrasePictures)
-    .where(forLanguageProfile(db, profile).where(phrasePictures, and(eq(phrasePictures.status, "ready"), ids ? inArray(phrasePictures.phraseId, ids) : undefined) as SQL));
-  const byId = new Map(rows0.map((r) => [r.id, r]));
-  return new Set(rows.filter((r) => r.phraseKey === pictureKey(byId.get(r.phraseId) ?? { text: null, meaning: null })).map((r) => r.phraseId));
-}
-
 async function examplesByPhrase(db: Db, profile: LanguageProfileRef, ids?: string[]): Promise<Map<string, number>> {
   const rows = await db
     .select({ phraseId: phraseExamples.phraseId, n: sql<number>`count(*)::int` })
@@ -501,7 +487,7 @@ async function examplesByPhrase(db: Db, profile: LanguageProfileRef, ids?: strin
   return new Map(rows.map((r) => [r.phraseId, Number(r.n)]));
 }
 
-function summary(row: PhraseRow, cardRows: CardRow[], lapses: number, examples: number, hasPicture?: boolean): PhraseSummary {
+function summary(row: PhraseRow, cardRows: CardRow[], lapses: number, examples: number): PhraseSummary {
   return {
     id: row.id,
     text: row.text,
@@ -520,13 +506,12 @@ function summary(row: PhraseRow, cardRows: CardRow[], lapses: number, examples: 
     createdAt: iso(row.createdAt)!,
     ...phraseMetrics(cardRows, lapses),
     exampleCount: examples,
-    ...(hasPicture === undefined ? {} : { hasPicture }),
   };
 }
 
 /** `rows` with their metrics: cards, lapses and example counts read for
  *  just those phrases (all of the bank's when `all`). */
-async function withMetrics(db: Db, profile: LanguageProfileRef, rows: PhraseRow[], all = false, withExamples = true, withPictures = false): Promise<PhraseSummary[]> {
+async function withMetrics(db: Db, profile: LanguageProfileRef, rows: PhraseRow[], all = false, withExamples = true): Promise<PhraseSummary[]> {
   if (!rows.length) return [];
   const ids = all ? undefined : rows.map((r) => r.id);
   const mine = forLanguageProfile(db, profile);
@@ -539,8 +524,7 @@ async function withMetrics(db: Db, profile: LanguageProfileRef, rows: PhraseRow[
   }
   const lapses = await lapsesByPhrase(db, profile, ids);
   const examples = withExamples ? await examplesByPhrase(db, profile, ids) : new Map<string, number>();
-  const pictured = withPictures ? await readyPictures(db, profile, rows, ids) : null;
-  return rows.map((r) => summary(r, byPhrase.get(r.id) ?? [], lapses.get(r.id) ?? 0, examples.get(r.id) ?? 0, pictured ? pictured.has(r.id) : undefined));
+  return rows.map((r) => summary(r, byPhrase.get(r.id) ?? [], lapses.get(r.id) ?? 0, examples.get(r.id) ?? 0));
 }
 
 /** The whole bank with the metrics recall chooses a review by
@@ -586,7 +570,7 @@ export async function recallDetails(db: Db, profile: LanguageProfileRef, ids: st
  *  mastery band fsrs.mjs's alone rather than a copy of it in SQL. */
 export async function listPhrases(db: Db, profile: LanguageProfileRef): Promise<PhraseSummary[]> {
   const rows = await forLanguageProfile(db, profile).list(phrases);
-  return withMetrics(db, profile, rows, true, true, true);
+  return withMetrics(db, profile, rows, true);
 }
 
 async function detail(db: Db, profile: LanguageProfileRef, row: PhraseRow): Promise<PhraseDetail> {

@@ -5,7 +5,7 @@ import { localeFor } from "../../scripts/voice.mjs";
 import type { PhraseInput, PhraseLookupReply, PhraseReply, PhrasesReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
-import { dropPictureFile } from "./pictures.ts";
+import { dropPictureFile, pictureWordIds } from "./pictures.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The phrase bank's routes (docs/DATA.md §Phrase bank): the active
@@ -51,7 +51,10 @@ const localeOf = (ctx: LearnerCtx) => localeFor(ctx.language.targetLanguage, ctx
 
 async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
-  const all = await listPhrases(rawDb(), ctx.language);
+  // hasPicture is the word game's own rule (not a row's status alone), so
+  // the chip's count is the pictures line's.
+  const [rows, pictured] = await Promise.all([listPhrases(rawDb(), ctx.language), pictureWordIds(ctx.language, ctx.learner.mode)]);
+  const all = rows.map((p) => ({ ...p, hasPicture: pictured.has(p.id) }));
   const page = bankPage(all, {
     q: (q.get("q") ?? "").slice(0, 200),
     show: q.get("show") ?? "all",

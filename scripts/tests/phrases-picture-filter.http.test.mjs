@@ -21,7 +21,17 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
 process.env.LINGO_CONTENT_DIR = root;
 process.env.LINGO_DATA_DIR = dataDir;
 process.env.LINGO_ENV_FILE = path.join(dataDir, "no-such.env");
+delete process.env.LINGO_IMAGES_DIR;
+const imagesDir = path.join(dataDir, "images");
 const { apiPlugins } = await import("../../web/server/api.ts");
+const { PICTURE_THEME, stockKey } = await import("../pictures.mjs");
+const { writeStockPicture } = await import("../picture-store.mjs");
+// An adults-only concept of our own, a plain one, and one whose file is never drawn.
+fs.writeFileSync(
+  path.join(root, "pictures.yaml"),
+  ["categories:", "  Animals:", "    - { id: dog, description: a friendly brown dog, words: [dog] }", "    - { id: ghost, description: a pale ghost, words: [ghost] }", "  Drinks:", "    - { id: stout, description: a pint of stout, words: [stout], adults: true }", ""].join("\n"),
+);
+for (const id of ["dog", "stout"]) writeStockPicture(PICTURE_THEME.id, id, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2]), "image/jpeg", { dir: imagesDir });
 
 const testDb = await freshDb();
 const q = testDb.query;
@@ -56,7 +66,7 @@ async function bankWith(who, rows) {
     await q(
       `insert into phrase_pictures (phrase_id, learner_id, language_profile_id, phrase_key, status, description, file, content_type, theme, stock_id)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [ids[text], lp.learner_id, lp.id, stale ? "old-key" : pictureKey({ text, meaning: `m-${text}` }), status, ["pending", "ready"].includes(status) ? "a picture" : null, ready ? (stock ? "b".repeat(64) : HEX) : null, ready ? "image/png" : null, ready ? "t1" : null, stock ? "dog" : null],
+      [ids[text], lp.learner_id, lp.id, stale ? "old-key" : pictureKey({ text, meaning: `m-${text}` }), status, ["pending", "ready"].includes(status) ? "a picture" : null, ready ? (stock ? stockKey(PICTURE_THEME.id, "dog") : HEX) : null, ready ? "image/png" : null, ready ? (stock ? PICTURE_THEME.id : "t1") : null, stock ? "dog" : null],
     );
   }
   return ids;
@@ -99,4 +109,38 @@ test("another learner's pictures never count or mark", async () => {
   assert.equal(r.total, 0);
   assert.equal(r.counts.pictures, 0);
   assert.ok((await b.call("GET", "/api/phrases")).body.phrases.every((p) => p.hasPicture === false));
+});
+
+/** A word with a ready stock picture of concept `stockId`. */
+async function stockWord(who, text, stockId) {
+  const r = await who.call("POST", "/api/phrases", { text, meaning: `m-${text}`, starred: false });
+  const [lp] = await q("select id, learner_id from language_profiles where id = $1", [who.languageId]);
+  await q(
+    `insert into phrase_pictures (phrase_id, learner_id, language_profile_id, phrase_key, status, description, file, content_type, theme, stock_id)
+     values ($1, $2, $3, $4, 'ready', 'a picture', $5, 'image/jpeg', $6, $7)`,
+    [r.body.phrase.id, lp.learner_id, lp.id, pictureKey({ text, meaning: `m-${text}` }), stockKey(PICTURE_THEME.id, stockId), PICTURE_THEME.id, stockId],
+  );
+}
+
+test("the chip counts what the pictures line counts: a kids learner's adults-only or missing-file stock picture is left out, an adult's adults-only one is not", async () => {
+  const stockRows = [["perro", "dog"], ["cerveza", "stout"], ["fantasma", "ghost"]];
+  const pip = await someone(KID);
+  for (const [w, id] of stockRows) await stockWord(pip, w, id);
+  const sam = await someone(ADULT);
+  for (const [w, id] of stockRows) await stockWord(sam, w, id);
+  for (const [who, want] of [[pip, ["perro"]], [sam, ["cerveza", "perro"]]]) {
+    const r = (await who.call("GET", "/api/phrases?show=pictures")).body;
+    assert.deepEqual(r.phrases.map((p) => p.text).sort(), want);
+    assert.equal(r.counts.pictures, want.length);
+    assert.equal((await who.call("GET", "/api/game")).body.status.pictured, want.length, "the chip and the pictures line agree");
+  }
+});
+
+test("a suspended word, or one with no meaning, has no game picture and no chip", async () => {
+  const sam = await someone(ADULT);
+  await stockWord(sam, "perro", "dog");
+  const id = (await sam.call("GET", "/api/phrases?show=pictures")).body.phrases[0].id;
+  assert.equal((await sam.call("PATCH", `/api/phrases/${id}`, { suspended: true })).status, 200);
+  assert.equal((await sam.call("GET", "/api/phrases?show=pictures")).body.counts.pictures, 0);
+  assert.equal((await sam.call("GET", "/api/game")).body.status.pictured, 0);
 });

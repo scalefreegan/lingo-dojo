@@ -521,6 +521,16 @@ export async function picturesAfterSession(profile: LanguageProfileRef): Promise
   return fillPictures({ mode: owner.mode, profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English" });
 }
 
+/** Ids of the words the game has a picture for, for a learner of `mode`:
+ *  exactly what the status line counts (`pictured`), so the Phrase bank's
+ *  With picture chip and the line always agree. Reads the rows once and
+ *  stats one stock file per stock-picture row (playable), the same as the
+ *  status line does on every poll. */
+export async function pictureWordIds(profile: LanguageProfileRef, mode: string): Promise<Set<string>> {
+  const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+  return new Set(pictureBank(phrases, await playable(rows, mode)).map((x: { phrase: { id: string } }) => x.phrase.id));
+}
+
 /** The status: counts from the rows and the ledger; starts nothing. The
  *  key problem is shown only when a word needs a real drawing (one to
  *  draw, or words to judge with no stock picture to match them to). */
