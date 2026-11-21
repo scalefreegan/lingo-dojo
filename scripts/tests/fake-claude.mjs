@@ -68,7 +68,7 @@ const side = args.some((a) => a.startsWith("You review one finished practice ses
     ? "cloze"
     : args.some((a) => a.startsWith("You write a short weekly progress note"))
       ? "digest"
-      : args.some((a) => a.startsWith("You decide which words a young child can be shown as a picture"))
+      : args.some((a) => a.startsWith("You decide which words can be shown as a picture"))
         ? "picture"
         : null;
 fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
@@ -79,14 +79,26 @@ if (!side && mcpAt >= 0) fs.copyFileSync(args[mcpAt + 1], files.mcp);
 let text = fs.readFileSync(side ? files[side] : files.reply, "utf8");
 // The word game's picturable check, "!auto": every numbered word in the
 // prompt is picturable ("a picture of <meaning>") unless its meaning says
-// hello, thanks or please.
-if (side === "picture" && text === "!auto") {
-  const words = (args.find((a) => a.startsWith("Words:")) || "").split("\\n").slice(1);
+// hello, thanks or please; one whose meaning is a word of an offered stock
+// picture ("Stock pictures:" lines, "<id>: <words>") also names that id.
+// "!auto-stock=<id>": the same, but every picturable word names <id> (a
+// made-up one, say).
+if (side === "picture" && text.startsWith("!auto")) {
+  const forced = text.startsWith("!auto-stock=") ? text.slice("!auto-stock=".length) : null;
+  const prompt = args.find((a) => a.startsWith("Words:")) || "";
+  const [wordPart, stockPart = ""] = prompt.split("\\n\\nStock pictures:\\n");
+  const stock = new Map();
+  for (const line of stockPart.split("\\n").filter(Boolean)) {
+    const [id, words] = line.split(": ");
+    for (const w of (words || "").split(", ")) stock.set(w, id);
+  }
+  const words = wordPart.split("\\n").slice(1);
   text = JSON.stringify({
     items: words.map((line, i) => {
       const meaning = line.split(" — ")[1] || "";
       const no = /hello|thank|please/i.test(meaning);
-      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning };
+      const id = forced ?? stock.get(meaning.toLowerCase().replace(/^the /, ""));
+      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning, ...(!no && id ? { stock: id } : {}) };
     }),
   });
 }

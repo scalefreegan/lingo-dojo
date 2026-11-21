@@ -21,6 +21,22 @@ export interface PictureStatus {
   /** Why words can't be played aloud (no TTS key, no voice for the
    *  locale), for the grown-up; null when they can. */
   audio: string | null;
+  /** The picture theme in use (scripts/pictures.mjs PICTURE_THEME). */
+  theme: string;
+  /** Stock pictures drawn in that theme (the check may match words to them). */
+  stock: number;
+  /** Ready pictures not in the theme: what Redraw all in the current style
+   *  would bring into it. */
+  outOfTheme: number;
+  /** Pictures waiting for a Redraw all already asked for. */
+  restyling: number;
+}
+
+/** POST /api/pictures/restyle: how many pictures were taken up (moved to
+ *  a stock picture at once, or waiting for the background run). */
+export interface RestyleReply {
+  restyled: number;
+  status: PictureStatus;
 }
 
 /** GET /api/game, GET /api/pictures. */
@@ -81,6 +97,12 @@ export interface PhrasePicture {
   description: string | null;
   /** Set while ready. */
   file: string | null;
+  /** It is one of the shared stock pictures, not one drawn for this word. */
+  stock: boolean;
+  /** Ready and drawn in the current picture theme. */
+  inTheme: boolean;
+  /** Waiting to be brought into the theme (Redraw all). */
+  restyling: boolean;
 }
 
 /** POST /api/pictures/phrase/:id/draw: a grown-up has a word judged "no

@@ -11,12 +11,29 @@
 //
 // Erasable TypeScript only, like practice.ts: the tests import it as is.
 
-import { and, eq, gt, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { phrasePictures, pictureCalls } from "./schema.ts";
 
 export type PictureRow = typeof phrasePictures.$inferSelect;
 type Status = PictureRow["status"];
+
+/** A word pointing at a shared stock picture (pictures.mjs stockKey). */
+export interface StockPointer {
+  stockId: string;
+  theme: string;
+  file: string;
+  contentType: string;
+}
+
+/** The file a row holds of its own, for the caller to delete once no row
+ *  names it: never a stock picture's key (that file is shared, and lives
+ *  apart: picture-store.mjs). */
+const ownFile = (row: PictureRow | undefined): string | null => (row && !row.stockId ? row.file : null);
+
+/** What every change that takes a picture away sets: no file, no theme,
+ *  no stock, nothing waiting. */
+const NO_FILE = { file: null, contentType: null, theme: null, stockId: null, restyle: null } as const;
 
 /** This language's picture rows, by phrase id. */
 export async function pictureRows(db: Db, profile: LanguageProfileRef): Promise<Map<string, PictureRow>> {
@@ -36,32 +53,36 @@ export async function pictureOf(db: Db, profile: LanguageProfileRef, phraseId: s
 
 /**
  * Store a picturable verdict for a phrase's words and meaning (`phraseKey`):
- * `pending` with what to draw, or `none`. Only over no row or a stale one
- * (another key): a verdict for the words as they are is never replaced, so
- * a word is judged once. Returns the row written (undefined when a current
- * one was already there, or the phrase is gone) and the file the stale row
- * held, for the caller to delete.
+ * `pending` with what to draw, `none`, or `ready` pointing at a stock
+ * picture (`stock`: the check matched the word to a drawn stock concept;
+ * no image call, no ledger row). Only over no row or a stale one (another
+ * key): a verdict for the words as they are is never replaced, so a word
+ * is judged once. Returns the row written (undefined when a current one
+ * was already there, or the phrase is gone) and the file of its own the
+ * stale row held, for the caller to delete.
  */
 export async function storeVerdict(
   db: Db,
   profile: LanguageProfileRef,
-  v: { phraseId: string; phraseKey: string; status: "pending" | "none"; description: string | null },
+  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer },
 ): Promise<{ row?: PictureRow; oldFile: string | null }> {
+  if ((v.status === "ready") !== !!v.stock) throw new Error("a ready verdict is a stock picture's, and only it");
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, v.phraseId));
   if (before?.phraseKey === v.phraseKey) return { oldFile: null };
+  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, ...NO_FILE, ...(v.stock ?? {}) };
   try {
     if (!before) {
-      const [row] = await mine.insertOrIgnore(phrasePictures, { phraseId: v.phraseId, phraseKey: v.phraseKey, status: v.status, description: v.description }, { target: [phrasePictures.phraseId] });
+      const [row] = await mine.insertOrIgnore(phrasePictures, { phraseId: v.phraseId, ...values }, { target: [phrasePictures.phraseId] });
       return { row, oldFile: null };
     }
     // Only the stale row this call read: a verdict stored meanwhile stays.
     const [row] = await mine.update(
       phrasePictures,
-      { phraseKey: v.phraseKey, status: v.status, description: v.description, file: null, contentType: null, updatedAt: sql`now()` },
+      { ...values, updatedAt: sql`now()` },
       and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, before.phraseKey)) as SQL,
     );
-    return { row, oldFile: row ? before.file : null };
+    return { row, oldFile: row ? ownFile(before) : null };
   } catch (err) {
     // The phrase went while it was judged (its foreign key): nothing to keep.
     console.warn(`[lingo-dojo] pictures: a verdict for phrase ${v.phraseId} wasn't kept:`, String((err as Error)?.message || err));
@@ -70,12 +91,13 @@ export async function storeVerdict(
 }
 
 /** A drawn picture: the pending row for these words and meaning becomes
- *  ready with `file`. Undefined when it is no longer pending for them (an
- *  edit, a removal meanwhile): the caller deletes the file. */
-export async function markReady(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, file: string, contentType: string): Promise<PictureRow | undefined> {
+ *  ready with `file`, drawn in `theme` (pictures.mjs drawnTheme).
+ *  Undefined when it is no longer pending for them (an edit, a removal
+ *  meanwhile): the caller deletes the file. */
+export async function markReady(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, file: string, contentType: string, theme: string): Promise<PictureRow | undefined> {
   const [row] = await forLanguageProfile(db, profile).update(
     phrasePictures,
-    { status: "ready", file, contentType, updatedAt: sql`now()` },
+    { status: "ready", file, contentType, theme, stockId: null, restyle: null, updatedAt: sql`now()` },
     and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "pending")) as SQL,
   );
   return row;
@@ -113,11 +135,78 @@ export async function changePicture(
   if (!from.includes(before.status) || (action === "redraw" && !before.description)) return { problem: "state" };
   const [row] = await mine.update(
     phrasePictures,
-    { status: action === "remove" ? "removed" : "pending", file: null, contentType: null, updatedAt: sql`now()` },
+    { status: action === "remove" ? "removed" : "pending", ...NO_FILE, updatedAt: sql`now()` },
     and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, phraseKey), inArray(phrasePictures.status, from)) as SQL,
   );
   if (!row) return { problem: "state" };
-  return { row, oldFile: before.file };
+  // A stock picture's file is shared: only the pointer goes.
+  return { row, oldFile: ownFile(before) };
+}
+
+/* ------------------------------ in the theme ------------------------------ */
+
+/**
+ * A grown-up's Redraw all in the current style: these ready rows (ids, from
+ * pictures.mjs restyleTargets) wait for it, `check` (ask the check whether
+ * a stock picture fits first) or `draw`. Only rows still ready with nothing
+ * waiting. Their picture stays in place meanwhile. Returns how many.
+ */
+export async function requestRestyle(db: Db, profile: LanguageProfileRef, ids: string[], restyle: "check" | "draw"): Promise<number> {
+  if (!ids.length) return 0;
+  const rows = await forLanguageProfile(db, profile).update(
+    phrasePictures,
+    { restyle, updatedAt: sql`now()` },
+    and(inArray(phrasePictures.id, ids), eq(phrasePictures.status, "ready"), isNull(phrasePictures.restyle)) as SQL,
+  );
+  return rows.length;
+}
+
+/** The ready row waiting for its restyle (`from`), for these words. */
+const waiting = (phraseId: string, phraseKey: string, from: "check" | "draw") =>
+  and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "ready"), eq(phrasePictures.restyle, from)) as SQL;
+
+/** The check found a stock picture for a word waiting to be restyled: it
+ *  points there now (no image call). Returns the row and the file of its
+ *  own it no longer holds, or undefined when it isn't waiting any more. */
+export async function restyleToStock(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, stock: StockPointer): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
+  const mine = forLanguageProfile(db, profile);
+  const before = await mine.get(phrasePictures, waiting(phraseId, phraseKey, "check"));
+  if (!before) return undefined;
+  const [row] = await mine.update(phrasePictures, { ...stock, restyle: null, updatedAt: sql`now()` }, and(eq(phrasePictures.id, before.id), waiting(phraseId, phraseKey, "check")) as SQL);
+  return row ? { row, oldFile: before.file === row.file ? null : ownFile(before) } : undefined;
+}
+
+/** No stock picture fits a word waiting to be restyled: it is drawn again. */
+export async function restyleToDraw(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
+  await forLanguageProfile(db, profile).update(phrasePictures, { restyle: "draw", updatedAt: sql`now()` }, waiting(phraseId, phraseKey, "check"));
+}
+
+/** A restyled picture is drawn: the row takes the new file and theme, and
+ *  gives back the old one (its own, else null) for the caller to delete.
+ *  Undefined when it isn't waiting any more (an edit, a removal): the
+ *  caller deletes the new file. */
+export async function restyleDone(
+  db: Db,
+  profile: LanguageProfileRef,
+  phraseId: string,
+  phraseKey: string,
+  pic: { file: string; contentType: string; theme: string },
+): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
+  const mine = forLanguageProfile(db, profile);
+  const before = await mine.get(phrasePictures, waiting(phraseId, phraseKey, "draw"));
+  if (!before) return undefined;
+  const [row] = await mine.update(
+    phrasePictures,
+    { ...pic, stockId: null, restyle: null, updatedAt: sql`now()` },
+    and(eq(phrasePictures.id, before.id), eq(phrasePictures.file, before.file!), waiting(phraseId, phraseKey, "draw")) as SQL,
+  );
+  return row ? { row, oldFile: ownFile(before) } : undefined;
+}
+
+/** The provider refused to restyle a word: it keeps its picture as it was,
+ *  and nothing tries again by itself. */
+export async function restyleDropped(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
+  await forLanguageProfile(db, profile).update(phrasePictures, { restyle: null, updatedAt: sql`now()` }, waiting(phraseId, phraseKey, "draw"));
 }
 
 /**

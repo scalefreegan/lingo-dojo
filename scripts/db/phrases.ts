@@ -709,7 +709,8 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
  *  ENOENT for none of this language's. Its word game picture row goes too
  *  (cascade); the file that row named is returned, for the caller to
  *  delete from disk once this has committed (web/server/pictures.ts
- *  dropPictureFile). */
+ *  dropPictureFile). A row pointing at a shared stock picture names no
+ *  file of its own: null, so the stock file is never touched. */
 export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unknown): Promise<{ pictureFile: string | null }> {
   const pid = phraseId(id);
   return db.transaction(async (tx) => {
@@ -722,7 +723,7 @@ export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     const meaningKey = gone.meaningNorm ?? (gone.meaning ? normKey(gone.meaning) : "");
     if (meaningKey) keys.push({ kind: "meaning", key: meaningKey });
     if (keys.length) await mine.insertOrIgnore(phraseDismissals, keys);
-    return { pictureFile: picture?.file ?? null };
+    return { pictureFile: picture?.stockId ? null : (picture?.file ?? null) };
   });
 }
 

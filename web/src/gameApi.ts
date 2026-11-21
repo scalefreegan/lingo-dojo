@@ -6,7 +6,7 @@
 // immutable, keyed by the picture's file in the URL).
 
 import { json, req, reqBlob } from "./api";
-import type { DrawAnywayRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply } from "./types";
+import type { DrawAnywayRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply } from "./types";
 import { utcOffset } from "./practiceApi";
 
 /** GET /api/game: the pictures' status. Starts nothing (safe to poll). */
@@ -35,6 +35,9 @@ export const pictureStatus = (signal?: AbortSignal) => req<GameStatusReply>("/ap
 
 /** POST /api/pictures/fill: draw pictures for the words waiting. */
 export const fillPictures = () => req<GameStatusReply>("/api/pictures/fill", json({}));
+
+/** POST /api/pictures/restyle: Redraw all in the current style. */
+export const restylePictures = () => req<RestyleReply>("/api/pictures/restyle", json({}));
 
 /** GET /api/pictures/phrase/:id: a word's picture. */
 export const phrasePicture = (phraseId: string, signal?: AbortSignal) => req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}`, { signal });

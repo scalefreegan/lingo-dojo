@@ -28,12 +28,16 @@ import { clean, isUuid, modelText } from "./phrases.mjs";
 import { cardVersion, isVersion, phraseRevision, practisable, seededRand } from "./practice.mjs";
 
 /** Images drawn per language profile in any 24 hours, counted from the
- *  ledger (picture_calls) as each call starts. The one knob for spend. */
-export const PICTURE_DAILY_IMAGES = 50;
+ *  ledger (picture_calls) as each call starts. The one knob for spend: at
+ *  Black Forest Labs' measured $0.008 a picture, at most about $1.60 per
+ *  language a day. A stock match is no image and isn't counted. */
+export const PICTURE_DAILY_IMAGES = 200;
 /** Picturable checks (claude calls) per language profile in any 24 hours.
- *  Each judges up to JUDGE_BATCH words, so this covers the image cap with
- *  room for the words that get no picture. */
-export const PICTURE_DAILY_JUDGES = 10;
+ *  Each judges up to JUDGE_BATCH words: 20 checks are 400 words, so the
+ *  image cap can be reached in a day with room for the words that get no
+ *  picture and for Redraw all's stock checks (10 would be exactly 200
+ *  words, too few once any word is "no picture"). */
+export const PICTURE_DAILY_JUDGES = 20;
 /** Words one picturable check judges at most. */
 export const JUDGE_BATCH = 20;
 /** Rounds a game asks at most. */
