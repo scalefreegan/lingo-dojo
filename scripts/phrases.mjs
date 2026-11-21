@@ -324,7 +324,7 @@ export function phraseMetrics(cards = [], lapses = 0) {
 
 /* ------------------------------ the bank's list ----------------------------- */
 
-export const SHOWS = ["all", "starred", "new", "due", "trouble", "pending", "suspended"];
+export const SHOWS = ["all", "starred", "new", "due", "trouble", "pending", "suspended", "pictures"];
 export const SORTS = ["recent", "due", "weakest", "alpha", "added"];
 
 /** Lowercased, accent-folded text for the bank's search box: "cafe" finds
@@ -351,6 +351,8 @@ const SHOW = {
   trouble: (p) => p.trouble,
   pending: (p) => p.pending,
   suspended: (p) => p.suspended,
+  // A ready picture, drawn or shared stock (hasPicture is set by the list query).
+  pictures: (p) => p.hasPicture === true,
 };
 
 const byLabel = (a, b) => (a.text ?? a.meaning ?? "").localeCompare(b.text ?? b.meaning ?? "", undefined, { sensitivity: "base" });
@@ -375,7 +377,7 @@ const SORT = {
  * default.
  */
 export function bankPage(items, { q = "", show = "all", band = "", sort = "recent", offset = 0, limit = 50 } = {}, now = new Date()) {
-  const counts = { all: items.length, starred: 0, new: 0, due: 0, trouble: 0, pending: 0, suspended: 0, bands: Object.fromEntries(BANDS.map((b) => [b, 0])) };
+  const counts = { all: items.length, starred: 0, new: 0, due: 0, trouble: 0, pending: 0, suspended: 0, pictures: 0, bands: Object.fromEntries(BANDS.map((b) => [b, 0])) };
   for (const p of items) {
     for (const k of SHOWS.slice(1)) if (SHOW[k](p, now)) counts[k]++;
     if (banded(p)) counts.bands[p.mastery]++;

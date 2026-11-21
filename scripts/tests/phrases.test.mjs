@@ -178,7 +178,7 @@ test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   ];
   const all = bankPage(items, {}, now);
   assert.equal(all.total, 5);
-  assert.deepEqual(all.counts, { all: 5, starred: 1, new: 0, due: 2, trouble: 1, pending: 1, suspended: 1, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 0 } }, "the bands leave out pending and suspended, like new and due");
+  assert.deepEqual(all.counts, { all: 5, starred: 1, new: 0, due: 2, trouble: 1, pending: 1, suspended: 1, pictures: 0, bands: { New: 0, Learning: 2, Familiar: 1, Mastered: 0 } }, "the bands leave out pending and suspended, like new and due");
   assert.deepEqual(all.phrases.map((x) => x.id), ["la vuelta", "café", "ojo", "taxi", "zzz"], "last seen first, else added; ties by words");
   // Never practised is new, not due, whether its card is unreviewed or it
   // has none yet (a scene's list); a suspended or pending one is neither.
@@ -196,6 +196,12 @@ test("bankPage: search, filters, sorts, paging and the chip counts", () => {
   assert.deepEqual(bankPage(items, { q: "CAFE" }, now).phrases.map((x) => x.id), ["café", "zzz"], "accent- and case-blind, in note too");
   assert.deepEqual(bankPage(items, { show: "due" }, now).phrases.map((x) => x.id).sort(), ["café", "ojo"], "suspended isn't due");
   assert.deepEqual(bankPage(items, { show: "pending" }, now).phrases.map((x) => x.id), ["taxi"]);
+  // With picture: only what the list query marked (ld-p1e), counted over the whole bank.
+  const pictured = items.map((x, i) => ({ ...x, hasPicture: i === 0 || i === 2 || i === 4 }));
+  const withPic = bankPage(pictured, { show: "pictures" }, now);
+  assert.deepEqual(withPic.phrases.map((x) => x.id).sort(), ["café", "ojo", "zzz"]);
+  assert.equal(withPic.counts.pictures, 3);
+  assert.equal(bankPage(pictured, { show: "pictures", q: "ojo" }, now).total, 1);
   assert.deepEqual(bankPage(items, { band: "Learning", sort: "weakest" }, now).phrases.map((x) => x.id), ["ojo", "café"], "most lapses first in a band");
   assert.deepEqual(bankPage(items, { sort: "due" }, now).phrases.map((x) => x.id), ["ojo", "zzz", "café", "la vuelta", "taxi"]);
   assert.deepEqual(bankPage(items, { sort: "alpha" }, now).phrases.map((x) => x.id), ["café", "la vuelta", "ojo", "taxi", "zzz"]);

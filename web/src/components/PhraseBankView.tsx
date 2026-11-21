@@ -28,6 +28,7 @@ const SHOWS: [PhraseShow, string][] = [
   ["trouble", "Trouble"],
   ["pending", "No words yet"],
   ["suspended", "Suspended"],
+  ["pictures", "With picture"],
 ];
 const SORTS: [PhraseSort, string][] = [
   ["recent", "Recently seen"],
@@ -124,7 +125,7 @@ export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: s
       },
     );
     return () => ctrl.abort();
-  }, [query, reload]);
+  }, [query, reload, pictureChanges, picturesDrawn]); // a picture drawn, redrawn or removed moves the "With picture" count
 
   function setFilter(patch: Partial<typeof query>) {
     shown.current = PAGE;
