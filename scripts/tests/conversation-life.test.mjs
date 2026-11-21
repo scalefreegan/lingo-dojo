@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conversationFate, turnsSettled } from "../../web/src/conversationLife.ts";
+import { conversationFate, redrawAdopted, turnsSettled } from "../../web/src/conversationLife.ts";
 
 test("conversationFate: adopted only while the session is live; ended after its turn when Go was left; dropped when the session is gone", () => {
   assert.equal(conversationFate({ madeInEpoch: 3, epochNow: 3, live: true }), "adopt");
@@ -48,4 +48,12 @@ test("turnsSettled waits for the turn on its way, and for one that replaced it; 
   // Another conversation's turn is no reason to wait.
   track(new Promise(() => {}));
   await turnsSettled(inFlight, "other");
+});
+
+test("redrawAdopted: only a Draw another answered in the same live session is adopted", () => {
+  assert.equal(redrawAdopted({ madeInEpoch: 3, epochNow: 3, live: true }), true);
+  // Left Go, or switched learner or language, while the request was out.
+  assert.equal(redrawAdopted({ madeInEpoch: 3, epochNow: 3, live: false }), false);
+  // Restart or End came first.
+  assert.equal(redrawAdopted({ madeInEpoch: 3, epochNow: 4, live: true }), false);
 });

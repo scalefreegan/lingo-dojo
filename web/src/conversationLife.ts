@@ -26,6 +26,15 @@ export function conversationFate(o: { madeInEpoch: number; epochNow: number; liv
   return o.live ? "adopt" : "end-after-turn";
 }
 
+/** Whether a Draw another's new conversation is the live session's: the
+ *  session it was asked from is still the current one (no Restart, End or
+ *  close since) and Go is showing. Otherwise it is ended at once, since no
+ *  turn will use it (conversationFate's "drop" and "end-after-turn" both
+ *  mean that here: the redraw carried no turn). */
+export function redrawAdopted(o: { madeInEpoch: number; epochNow: number; live: boolean }): boolean {
+  return conversationFate(o) === "adopt";
+}
+
 /** Resolves once no turn request is on its way for `id` in `inFlight` (each
  *  one is kept there until it answers or fails; a newer one replacing it is
  *  waited for too). Never rejects. */

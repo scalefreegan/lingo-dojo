@@ -1569,7 +1569,10 @@ out one at a time per session (`web/src/drawQueue.ts`): a streamed reply
 asks for one each time its CAST notes change, and what is asked while a
 draw is out waits, merged into one next draw (first draws before retries).
 A person whose draw is queued is already marked as being drawn for, so
-their lines wait for it as for one that is out. A draw the browser gives up on (its 10 s timeout, Stop)
+their lines wait for it as for one that is out. A first draw (it holds its
+person's lines) never waits out a retry (which holds nothing): the retry
+is aborted, which frees its slot, the first draw goes out, and the retry
+is asked again after it. A draw the browser gives up on (its 10 s timeout, Stop)
 has its provider calls aborted and frees its slot at once, as a line's do.
 At the edge (a fetch just aborted and not yet released, a card's sound in
 another window) the Go tab retries a 429 three times, 0.4, 1 and 2 s later

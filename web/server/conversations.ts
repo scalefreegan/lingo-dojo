@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 import { localeFor, sessionPlan } from "../../scripts/voice.mjs";
 import type {
   ConversationCreateRequest, ConversationReply, ConversationSummary, ConversationTurn, ConversationTurnsReply, ConversationsReply, ErrorCode,
-  PackInput, ScenesReply, VoiceHistoryItem, VoicePlanItem,
+  Mode, PackInput, ScenesReply, VoiceHistoryItem, VoicePlanItem,
 } from "../shared/wire.ts";
 import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
 import { withDrawnScene } from "../shared/scenes.ts";
@@ -35,6 +35,7 @@ import { readVoiceSettings } from "./store.ts";
 //
 //   POST   /api/conversations             {mode, pack, title?, drawn?} → {conversation}  (201); a random scene is drawn here
 //   GET    /api/conversations             ?offset=&limit=&scene= → {conversations, nextOffset}, newest first (one scene's with `scene`)
+//   POST   /api/conversations/:id/redraw  → Draw another: replaces a random scene's unspoken conversation
 //   GET    /api/conversations/scenes      ?offset=&limit= → {scenes, nextOffset}: History by scene (revisit)
 //   GET    /api/conversations/overview    → {stats, digest}: the 7-day card and the daily digest (revisit.ts)
 //   GET    /api/conversations/:id         ?from=&limit= → {conversation, turns, nextFrom, plan, locale}
@@ -71,6 +72,8 @@ export type Conversation = typeof conversations.$inferSelect;
 
 const NO_CONVERSATION: ErrorCode = "no_conversation";
 const CONVERSATION_ENDED: ErrorCode = "conversation_ended";
+const ALREADY_SPOKEN: ErrorCode = "already_spoken";
+const NO_OTHER_SCENE: ErrorCode = "no_other_scene";
 
 /* --------------------------------- the hook -------------------------------- */
 
@@ -425,9 +428,12 @@ export function playedPack(pack: PackInput, conv: Pick<Conversation, "packSnapsh
   return withDrawnScene(pack, drawn);
 }
 
-async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
-  const mode = learnerMode(req, ctx, body?.mode ?? undefined);
+/** Make the conversation a session's first turn saves into: the draw of a
+ *  random scene, revisit's link, the review, the insert and the scene's
+ *  lists into the bank. The one place a conversation is made: create and
+ *  redraw (Draw another) both come through here. `avoid` is the scenario
+ *  the learner was just shown and didn't want: never drawn again. */
+async function makeConversation(body: Partial<ConversationCreateRequest>, mode: Mode, ctx: LearnerCtx, opts: { avoid?: string } = {}): Promise<Conversation> {
   if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
   // `review`, `random_draw` and `revisit` in a snapshot are the server's
   // (below), never the client's: Practice again sends a snapshot back.
@@ -447,7 +453,11 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     // Recent scenes always go in: a kept scene ignores them, but one no
     // longer in the pool falls through to a fresh draw that must avoid them.
     // The language's hidden scenes and collections are never drawn.
-    const draw = drawOrRefuse(library, target, random, { recent: await recentScenes(ctx.language), keep, hidden: await hiddenSet(rawDb(), ctx.language) });
+    // `avoid` (Draw another) goes first among the recent, so it is steered
+    // clear of whatever the pool's size; a redraw keeps nothing.
+    const recent = [...(opts.avoid ? [opts.avoid] : []), ...(await recentScenes(ctx.language))];
+    const draw = drawOrRefuse(library, target, random, { recent, keep: opts.avoid ? null : keep, hidden: await hiddenSet(rawDb(), ctx.language) });
+    if (opts.avoid && draw.scene.id === opts.avoid) throw new HttpError(409, "There is no other scene in this pool to draw.", NO_OTHER_SCENE);
     pack = withDrawnScene(sent, draw.scene.id);
     randomDraw = { collections: random.collections, pool: draw.pool.map((s) => s.id), drawn: draw.scene.id, ...(draw.kept ? { kept: true } : {}) };
   }
@@ -525,7 +535,59 @@ async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
       console.error(`[lingo-dojo] phrase bank: scenario ${scenarioId}'s lists weren't added:`, e);
     });
   }
+  return row;
+}
+
+async function create(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
+  const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
+  const mode = learnerMode(req, ctx, body?.mode ?? undefined);
+  const row = await makeConversation(body ?? {}, mode, ctx);
   sendJson(res, 201, { conversation: summary(row, null) } satisfies ConversationReply);
+}
+
+/**
+ * Draw another (POST /api/conversations/:id/redraw, ld-k23): a random
+ * scene's session the learner hasn't spoken in yet (the dojo master's
+ * opening may be stored; no learner turn) swaps its conversation for a new
+ * one, drawn afresh and never the scene it had. Replaced, not edited: the
+ * scene key, the revisit link, the review and the snapshot are all made by
+ * makeConversation for the new scene, and the old conversation (with its
+ * opening) is deleted as Delete would, with no recap and no History row.
+ * Held under End's lock, so no turn runs while the old one is checked and
+ * deleted; once a learner turn exists it is a 409 and nothing changes. A
+ * refused draw (empty pool, no other scene) leaves the old one as it was.
+ * The replacement is made before the old one goes, with the old scenario
+ * passed as `avoid` since the recent scenes still count it. Not one
+ * transaction: makeConversation's insert may retry without its revisit link
+ * (lostPrevious), which a transaction aborted by that error could not, and
+ * its reads and the bank write go through the shared pool. If the delete
+ * fails after the insert, the old row is an unspoken open conversation that
+ * the idle end closes, and the client is told it failed (nothing adopted).
+ */
+async function redraw(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
+  const body = await readJsonBody<Partial<ConversationCreateRequest>>(req);
+  const mode = learnerMode(req, ctx, body?.mode ?? undefined);
+  if (!isPack(body?.pack)) throw new HttpError(400, "body must carry the pack");
+  if (!randomSceneOf(body.pack)) throw new HttpError(400, "only a random scene can draw another");
+  await endIdle(ctx.user.id);
+  const mine = profileRows(ctx.language);
+  if (!(await mine.get(conversations, eq(conversations.id, id)))) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
+  const release = await holdForEnd(ctx.learner.id, id);
+  try {
+    // Read again under the lock: a turn that was running has stored by now.
+    const cur = await mine.get(conversations, eq(conversations.id, id));
+    if (!cur) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
+    if (cur.endedAt) throw new HttpError(409, "that conversation has ended", CONVERSATION_ENDED);
+    const drawn = drawnScenario(cur);
+    if (!drawn) throw new HttpError(409, "that conversation has no random scene to replace");
+    const spoken = await mine.list(turns, and(eq(turns.conversationId, id), eq(turns.role, "learner")) as SQL, { limit: 1 });
+    if (spoken.length) throw new HttpError(409, "You have already spoken in this session; Restart to draw another scene.", ALREADY_SPOKEN);
+    const row = await makeConversation(body, mode, ctx, { avoid: drawn });
+    await mine.remove(conversations, eq(conversations.id, id));
+    sendJson(res, 201, { conversation: summary(row, null) } satisfies ConversationReply);
+  } finally {
+    release();
+  }
 }
 
 async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
@@ -664,13 +726,17 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
     return parts[0] === "scenes" ? scenes(req, res, ctx) : handleOverview(res, ctx);
   }
   const [id, action, ...rest] = parts;
-  if (rest.length || (action !== undefined && action !== "end" && action !== "recap")) return sendJson(res, 404, { error: "no such route" });
+  if (rest.length || (action !== undefined && action !== "end" && action !== "recap" && action !== "redraw")) return sendJson(res, 404, { error: "no such route" });
   // A malformed id is no conversation of anyone's (and never reaches
   // Postgres, which would answer it with an error).
   if (!CONVERSATION_ID_RE.test(id)) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
   if (action === "end") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     return end(res, ctx, id.toLowerCase());
+  }
+  if (action === "redraw") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    return redraw(req, res, ctx, id.toLowerCase());
   }
   if (action === "recap") {
     await endIdle(ctx.user.id);

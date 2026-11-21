@@ -469,7 +469,7 @@ export interface ErrorReply {
   error: string;
   code?: ErrorCode;
 }
-export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation" | "not_available";
+export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation" | "not_available" | "already_spoken" | "no_other_scene";
 /** The request header naming the learner the page is rendering. */
 export type LearnerHeader = "X-Learner-Id";
 /** The request header naming the language (profile) the page is rendering. */

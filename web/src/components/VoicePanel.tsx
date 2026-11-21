@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
-  ApiError, addLibraryVoice, createConversation, endConversation, getCast, getPageLearner, onBeforeSwitch, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
+  ApiError, addLibraryVoice, createConversation, endConversation, redrawConversation, getCast, getPageLearner, onBeforeSwitch, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
   transcribe, voiceTurn, type PageLearner, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
@@ -19,7 +19,7 @@ import type {
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
-import { conversationFate, turnsSettled } from "../conversationLife";
+import { conversationFate, redrawAdopted, turnsSettled } from "../conversationLife";
 import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { deferredVoiceTaken } from "../../shared/voice-cast.ts";
@@ -529,9 +529,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // and the draws never take both paid slots from the line playing.
   // The queue outlives renders; it calls the latest render's runDraw (its
   // locale and pack), set by the effect below.
-  const runDrawRef = useRef<(b: DrawBatch) => Promise<void>>(() => Promise.resolve());
+  const runDrawRef = useRef<(b: DrawBatch, signal: AbortSignal) => Promise<void>>(() => Promise.resolve());
   const drawsRef = useRef<DrawQueue | null>(null);
-  drawsRef.current ??= drawQueue((b) => runDrawRef.current(b));
+  drawsRef.current ??= drawQueue((b, signal) => runDrawRef.current(b, signal));
   useEffect(() => {
     runDrawRef.current = runDraw;
   });
@@ -1340,16 +1340,17 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   }
 
   /** One /cast for a batch the draw queue hands out (see requestDraw); it
-   *  never runs beside another. */
-  function runDraw(batch: DrawBatch): Promise<void> {
+   *  never runs beside another. `cut` aborts a retry that a first draw has
+   *  cut short (drawQueue): no failure, it is asked again after that draw. */
+  function runDraw(batch: DrawBatch, cut: AbortSignal): Promise<void> {
     const { slots: slotsToDraw, retry, keys } = batch;
     const draw = batch.ages as Record<string, VoiceAge>;
     if (!locale) return Promise.resolve();
     const epoch = castEpoch.current;
     const failed = (slot: string) => drawFails.current.set(keys[slot], (drawFails.current.get(keys[slot]) ?? 0) + 1);
-    // The deadline starts when the draw goes out: one queued behind another
-    // waited for it (as a retry behind a first draw always did), so a line
-    // waits at most CAST_TIMEOUT_MS per draw ahead of it plus its own.
+    // The deadline starts when the draw goes out. A first draw never waits
+    // for a retry (it cuts it short), only for another first draw: a line
+    // waits at most CAST_TIMEOUT_MS per first draw ahead of it plus its own.
     const deadline = Date.now() + CAST_TIMEOUT_MS;
     const left = () => deadline - Date.now();
     const run = (async () => {
@@ -1373,7 +1374,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // A draw that hangs counts as failed after CAST_TIMEOUT_MS: the voice
         // in use stays and the next turn retries (within drawFails).
         const ages = Object.fromEntries(slotsToDraw.map((x) => [x, draw[x]]));
-        const r = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.timeout(Math.max(1, left())));
+        const r = await getCast({ mode, locale, nativeLocale: nativeLocale ?? undefined, units: pack.units, ages, slots: slotsToDraw, avoid }, AbortSignal.any([cut, AbortSignal.timeout(Math.max(1, left()))]));
         if (castEpoch.current !== epoch || !castRef.current) return;
         const live = castRef.current;
         const nextCast = { ...live.cast };
@@ -1677,6 +1678,45 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     setNotice(null);
   }
 
+  // Draw another (ld-k23): a random scene's session whose learner hasn't
+  // spoken yet. The server swaps the conversation for one drawn afresh (never
+  // the scene shown) and deletes this one, opening included; the screen is
+  // reset as Restart does and the new scene's opening is asked for.
+  const [redrawing, setRedrawing] = useState(false);
+  const [openAgain, setOpenAgain] = useState(false);
+  async function drawAnother() {
+    const c = convRef.current;
+    if (!c || redrawing) return;
+    setRedrawing(true);
+    stopAll();
+    // The session as it is now, as conversationFor reads it: the answer is
+    // adopted only if it is still this session and Go is still showing.
+    const epoch = sessionEpoch.current;
+    const life = closes.current;
+    try {
+      const { conversation } = await redrawConversation(c.id, { mode, pack, title: titleRef.current });
+      if (!redrawAdopted({ madeInEpoch: epoch, epochNow: sessionEpoch.current, live: activeRef.current && closes.current === life })) {
+        // Left Go, switched learner or language, Restart or End came first:
+        // the old conversation is already gone and nothing will use the new.
+        void endOnce({ id: conversation.id, start: 0, page: c.page });
+        return;
+      }
+      // The old conversation is gone on the server: nothing to end.
+      convRef.current = null;
+      restart();
+      convRef.current = { id: conversation.id, start: 0, page: c.page };
+      drawnRef.current = conversation.scenarioId;
+      onDrawn?.(conversation.scenarioId);
+      onBuildsOn?.(conversation.buildsOn, true);
+      setSaving({ on: true });
+      setOpenAgain(true);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setRedrawing(false);
+    }
+  }
+
   /** End: the session is over. The conversation is ended (and so listed in
    *  History as finished); the transcript stays on screen to read and copy
    *  until Restart starts the next session. */
@@ -1703,7 +1743,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       if (!active || e.code !== "Space" || e.repeat) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.closest("input, textarea, select, button, [contenteditable]") || t.isContentEditable)) return;
-      if (!entriesRef.current.length || !sttReady || ended) return;
+      if (!entriesRef.current.length || !sttReady || ended || redrawing) return;
       e.preventDefault();
       if (phase === "recording") void finishListening("tap");
       else if (phase === "idle" || phase === "speaking") void startListening();
@@ -1716,10 +1756,20 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Start.
   const canStart = !!settings && !!locale && ttsReady;
   const started = entries.length > 0;
-  const busy = phase === "thinking" || phase === "transcribing" || phase === "opening";
+  const busy = phase === "thinking" || phase === "transcribing" || phase === "opening" || redrawing;
+  // Draw another's reset has landed: ask for the new scene's opening, once.
+  useEffect(() => {
+    if (!openAgain || entries.length > 0 || busy) return;
+    setOpenAgain(false);
+    void runTurn("");
+    // runTurn is this render's; the flag makes it run once, after the reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openAgain, entries.length, busy]);
   // Quick requests may cut off speech or a recording, like Talk does, but
   // not a turn already on its way.
-  const canAct = phase === "idle" || phase === "speaking" || phase === "recording";
+  // Not while Draw another is swapping the conversation: a line spoken then
+  // would go to the id being deleted.
+  const canAct = (phase === "idle" || phase === "speaking" || phase === "recording") && !redrawing;
   // Check-in answers belong to the latest turn only: once anything else is
   // said, they are stale.
   const lastEntry = entries[entries.length - 1];
@@ -1969,6 +2019,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
                 </span>
               )}
             </Button>
+            {pack.random_scene && saving?.on && !redrawing && !busy && !entries.some((e) => e.role === "learner") && (
+              <Button variant="ghost" className="px-2 py-1" onClick={() => void drawAnother()} title="Swap this scene for another one from the pool, before you speak" data-testid="voice-draw-another">
+                Draw another
+              </Button>
+            )}
             <Button variant="ghost" className="px-2 py-1" onClick={restart} title="Start over: this session ends and is kept in History">
               Restart
             </Button>

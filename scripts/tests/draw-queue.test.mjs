@@ -78,6 +78,47 @@ test("first draws go before retries, and the two never merge", async () => {
   assert.equal(f.most(), 1);
 });
 
+test("a first draw asked while a retry is out cuts the retry short (never two out), goes first, and the retry is asked again after", async () => {
+  const calls = [];
+  let out = 0;
+  let most = 0;
+  const q = drawQueue((batch, signal) => {
+    out++;
+    most = Math.max(most, out);
+    let finish;
+    // As runDraw: the /cast is aborted with the signal, and returns quietly.
+    const p = new Promise((r) => {
+      finish = r;
+      signal.addEventListener("abort", () => r(), { once: true });
+    }).then(() => {
+      out--;
+    });
+    calls.push({ batch, signal, finish });
+    return p;
+  });
+  let retryDone = false;
+  let firstDone = false;
+  void q.request(ask("character:male", "c|pepe", "old", true)).then(() => (retryDone = true));
+  await tick();
+  assert.equal(calls.length, 1);
+  void q.request(ask("character:female", "c|carmen", "young")).then(() => (firstDone = true));
+  assert.equal(calls[0].signal.aborted, true, "the retry is cut short at once, not waited out");
+  await tick();
+  assert.equal(calls.length, 2, "the first draw went out once the retry stopped");
+  assert.equal(calls[1].batch.retry, false);
+  assert.ok(!retryDone, "the cut retry isn't done: its person's retry is still owed");
+  calls[1].finish();
+  await tick();
+  assert.ok(firstDone);
+  assert.equal(calls.length, 3, "the retry went out again after the first draw");
+  assert.equal(calls[2].batch.retry, true);
+  assert.deepEqual(calls[2].batch.slots, ["character:male"]);
+  calls[2].finish();
+  await tick();
+  assert.ok(retryDone);
+  assert.equal(most, 1, "never two draws out at once");
+});
+
 test("a later ask for the same tag names its new person; a failed draw still lets the next go; reset settles the waiting", async () => {
   assert.deepEqual(mergeBatch(ask("character:male", "a"), ask("character:male", "b", "young")), {
     slots: ["character:male"], retry: false, ages: { "character:male": "young" }, keys: { "character:male": "b" },

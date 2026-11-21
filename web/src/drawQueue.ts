@@ -14,7 +14,8 @@
  * turn someone's first draw into a retry, docs/VOICE.md §The cast), rather
  * than one draw per change. Each ask gets a promise at once, settled when
  * the draw that covers it ends, so the person's lines wait for their draw
- * whether it is out or still queued. */
+ * whether it is out or still queued. A first draw never waits out a retry
+ * (drawQueue below). */
 
 export interface DrawBatch {
   /** The tags (cast slots) to draw for, in order. */
@@ -26,6 +27,7 @@ export interface DrawBatch {
   /** Per slot: who it is for (VoicePanel's whoKey). */
   keys: Record<string, string>;
 }
+
 
 /** Two asks as one draw: every slot of both, the later ask's person and age
  *  for a slot both name (the tag is someone else's now). */
@@ -40,10 +42,11 @@ export function mergeBatch(a: DrawBatch, b: DrawBatch): DrawBatch {
 
 export interface DrawQueue {
   /** Draw for `batch` as soon as no other draw is out; settles when the draw
-   *  that covers it ends (it never rejects: `start`'s failures are its own). */
+   *  that covers it ends (it never rejects: `start`'s failures are its own).
+   *  A first draw asked while a retry is out cuts that retry short (below). */
   request(batch: DrawBatch): Promise<void>;
-  /** Forget the waiting asks (Restart, a new cast): their promises settle at
-   *  once, and the draw out, if any, finishes on its own. */
+  /** Forget the waiting asks (Restart, Draw another, a new cast): their
+   *  promises settle at once, and the draw out, if any, finishes on its own. */
   reset(): void;
   /** Whether a draw is out. */
   busy(): boolean;
@@ -61,22 +64,46 @@ function waiting(batch: DrawBatch): Waiting {
   return { batch, done, resolve };
 }
 
-export function drawQueue(start: (batch: DrawBatch) => Promise<void>): DrawQueue {
-  let out = false;
+/** Two waiting asks as one: one draw, and everyone who asked hears when it ends. */
+function join(a: Waiting, b: Waiting): Waiting {
+  return { batch: mergeBatch(a.batch, b.batch), done: a.done, resolve: () => (a.resolve(), b.resolve()) };
+}
+
+/**
+ * `start(batch, signal)` makes the draw; `signal` aborts when the queue cuts
+ * it short. That happens to a retry only: a first draw holds its person's
+ * lines, a retry holds nothing (the person speaks in the voice in use), so a
+ * first draw asked while a retry is out doesn't wait out the retry's 10 s.
+ * The retry is aborted (its /cast frees its paid slot as the request
+ * closes, web/server/paid.ts), the first draw goes out once it has stopped
+ * (still one at a time), and the retry is asked again after it, its
+ * promise still open. An aborted draw is no failure: `start` returns
+ * quietly on its signal (VoicePanel's runDraw treats it as Stop).
+ */
+export function drawQueue(start: (batch: DrawBatch, signal: AbortSignal) => Promise<void>): DrawQueue {
+  let current: { w: Waiting; ctrl: AbortController; cut: boolean } | null = null;
   let fresh: Waiting | null = null;
   let again: Waiting | null = null;
+  // Bumped by reset: a retry cut short before it doesn't come back.
+  let epoch = 0;
 
   const launch = (w: Waiting) => {
-    out = true;
+    const ctrl = new AbortController();
+    const me = { w, ctrl, cut: false };
+    const at = epoch;
+    current = me;
     let run: Promise<void>;
     try {
-      run = Promise.resolve(start(w.batch)).catch(() => {});
+      run = Promise.resolve(start(w.batch, ctrl.signal)).catch(() => {});
     } catch {
       run = Promise.resolve();
     }
     void run.then(() => {
-      out = false;
-      w.resolve();
+      current = null;
+      if (me.cut && at === epoch) {
+        // Asked again, behind the first draw that cut it short.
+        again = again ? join(w, again) : w;
+      } else w.resolve();
       // First draws before retries: a first draw holds someone's lines.
       const next = fresh ?? again;
       if (!next) return;
@@ -89,26 +116,29 @@ export function drawQueue(start: (batch: DrawBatch) => Promise<void>): DrawQueue
   return {
     request(batch) {
       if (!batch.slots.length) return Promise.resolve();
-      if (!out) {
-        const w = waiting(batch);
+      const w = waiting(batch);
+      if (!current) {
         launch(w);
         return w.done;
       }
-      // Merged into the one waiting ask of its kind; every asker gets the
-      // same promise.
+      if (!batch.retry && current.w.batch.retry && !current.cut) {
+        current.cut = true;
+        current.ctrl.abort();
+      }
+      // Merged into the one waiting ask of its kind.
       const kind = batch.retry ? again : fresh;
-      const w = kind ? { ...kind, batch: mergeBatch(kind.batch, batch) } : waiting(batch);
-      if (batch.retry) again = w;
-      else fresh = w;
+      const merged = kind ? join(kind, w) : w;
+      if (batch.retry) again = merged;
+      else fresh = merged;
       return w.done;
     },
     reset() {
+      epoch++;
       fresh?.resolve();
       again?.resolve();
       fresh = null;
       again = null;
     },
-    busy: () => out,
+    busy: () => current != null,
   };
 }
-
