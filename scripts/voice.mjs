@@ -297,7 +297,11 @@ const TAG_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(NARRATOR|CHARACTER|SIDEKICK|HELP
 // character or one whole tag (the two can't start on the same character, and
 // a scan stops at a < that opens no tag),
 // so matching stays linear with no length cap.
-const TIMING_RE = /<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:[^<>\n]|<\/?\s*[a-z][^<>\n]*>)*)>/gi;
+// A note never runs across a speaker tag ("<pause 1.5 <x> CHARACTER-F: Hola
+// <b>>" is an unclosed mark, not one that swallows the line): that
+// lookahead guards each plain character.
+const SPEAKER_AHEAD = String.raw`(?!(?:narrator|character|sidekick|helper)(?:\s{0,3}[-/(]\s{0,3}\w{1,6}\s{0,3}\)?)?\s{0,3}\*{0,2}\s{0,3}:)`;
+const TIMING_RE = new RegExp(String.raw`<\s{0,3}(pause|pausa|overlap)(?![a-z])((?:${SPEAKER_AHEAD}[^<>\n]|<\/?\s*[a-z][^<>\n]*>)*)>`, "gi");
 // A mark with any italics or bold hugging it, for taking marks out of a
 // line before it's matched as a hidden line. The lookbehind starts a match
 // only at the start of a run of * or _, so a long run of them (a
@@ -592,8 +596,9 @@ const ageForYears = (n) => (n < 13 ? "child" : n < 30 ? "young" : n < 60 ? "midd
 // "old, Doña Carmen", "old; …", "old — …", "old (70s), …", "young.". Not
 // before a plain space or a hyphen, so "old man's daughter", "kid brother",
 // "middle schooler" and "old-fashioned" are never ages.
-// A spaced hyphen or an ASCII double dash ("old -- Don Pedro") ends it too.
-const SEP = String.raw`(?=\s*(?:$|[,;:|—–(.])|\s+-\s|\s*-{2,})`;
+// A spaced hyphen or an ASCII double dash with a blank on at least one side
+// ("old -- Don Pedro") ends it too; "old--fashioned" is a word.
+const SEP = String.raw`(?=\s*(?:$|[,;:|—–(.])|\s+-\s|\s+-{2,}|-{2,}\s)`;
 const CAST_AGE_WORD = new RegExp(String.raw`^(child|kid|young|teen|teenage|teenager|middle[\s-]aged?|middle|old|elderly|senior)${SEP}`, "i");
 const CAST_AGED = new RegExp(String.raw`^aged\s+(?:about\s+|around\s+|~\s*)?([a-z]+(?:-[a-z]+)?|\d{1,3})\+?${SEP}`, "i");
 const CAST_YEARS = new RegExp(String.raw`^([a-z]+(?:-[a-z]+)?|\d{1,3})[\s-]years?[\s-]old${SEP}`, "i");
