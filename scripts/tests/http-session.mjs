@@ -50,9 +50,10 @@ export function client(base, jar = { cookie: "" }) {
     languageId: null,
     /** The last Set-Cookie headers seen, raw. */
     setCookies: [],
-    async call(method, url, body, headers = {}) {
+    async call(method, url, body, headers = {}, { signal } = {}) {
       const res = await fetch(base + url, {
         method,
+        signal,
         headers: {
           "Content-Type": "application/json",
           ...(jar.cookie ? { Cookie: jar.cookie } : {}),

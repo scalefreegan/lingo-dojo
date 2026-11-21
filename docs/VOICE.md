@@ -478,7 +478,8 @@ The Practice tab's listening and speak-it drills (docs/DATA.md §As built
   time another account's phrases. Hit or miss is logged, never sent. A
   macOS voice setup with no voice installed for the locale is a 400, not
   the Mac's own-language voice. Paid calls from these routes (an audio
-  miss, a transcription) run at most two at once per user (429 beyond).
+  miss, a transcription) share the user's two paid slots with the Go tab
+  (§Paid calls at once; 429 beyond).
 - **Speak-it.** `POST /api/practice/transcribe` takes the recording (the
   same 16 kHz WAV as a turn) and answers `{text}` with your STT provider
   in the language's locale. Unlike a turn it sends **no keyterms**: the
@@ -1485,6 +1486,32 @@ The header shows characters spoken this session. ElevenLabs Eleven v4 runs about
 $0.10 per 1,000 characters (Flash about half); Azure neural voices about $15 per
 million. A 20-minute session is roughly 9,000 characters. Claude turns run on
 your Claude Code login.
+
+## Paid calls at once
+
+Every provider call a learner waits on takes one of the user's **two paid
+slots** (`paidSlot`, `web/server/paid.ts`, bead ld-e6q), shared by every
+route, tab and window of one login: the Go tab's `/api/voice/speak` (a
+line, a refused cast voice's retry included), `/transcribe` and `/cast` (the
+account list and library searches of one draw count as one), the character
+card's `/sound` and the compare view's model clip (on a cache miss), the
+Practice tab's phrase audio (a miss) and speak-it transcription, and Azure
+pronunciation scoring. A third call while two run is a **429** at once,
+before any provider call, never a queue on the server. The upload of a
+recording is read before the slot is taken.
+
+The Go tab itself needs one at a time for speech: it fetches the next part
+of a line only once the current one has arrived, while that one plays. A
+voice draw (a recast mid-session) can run beside it, so two leaves room for
+that plus one more. A draw the browser gives up on (its 10 s timeout, Stop)
+has its provider calls aborted and frees its slot at once, as a line's do.
+At the edge (a fetch just aborted and not yet released, a card's sound in
+another window) the Go tab retries a 429 three times, 0.4, 1 and 2 s later
+(`whenFree` in `web/src/api.ts`), so it costs a short wait, not a lost line. Pronunciation scoring that finds the
+slots taken scores locally instead. Not counted: the voice turn itself
+(`claude -p` on your login, one at a time per conversation), and the free
+listing calls (`/voices`, the library search in Settings). Cloze writing
+has its own background slot.
 
 ## Limits
 

@@ -229,7 +229,9 @@ async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: 
   const audio = await readAudio(req);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
-  const text = await transcribeAudio(res, { provider, audio, mime, locales, keyterms });
+  // In one of the user's paid slots (paid.ts), taken after the upload so a
+  // slow one holds nothing.
+  const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime, locales, keyterms }), "transcriptions");
   sendJson(res, 200, { text, provider } satisfies TranscribeReply);
 }
 
@@ -553,29 +555,34 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   };
   res.on("close", onClose);
   try {
-    let out: Speech;
     const line = { provider, text, locale: textLocale, model: settings.elevenModel };
-    if (provider === "elevenlabs") {
-      // A cast voice refused once goes straight to the retry voice after
-      // that (speechVoices), so a free plan doesn't pay two calls a line.
-      try {
-        out = await synthesize({ ...line, voice: first }, ctrl.signal);
-      } catch (e) {
-        // A library voice drawn for the cast can be refused: a plan without
-        // library access, or a voice since removed. retryInOtherVoice takes
-        // the statuses that mean "not this voice" (400, 402, 403, 404, 422),
-        // not a bad key, spent credits or a rate limit. Say the line in the
-        // retry voice (speechVoices) rather than lose it.
-        const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
-        if (!cast || !retry || !retryInOtherVoice(status)) throw e;
-        out = await synthesize({ ...line, voice: retry }, ctrl.signal);
-        // The other voice worked, so it was the cast voice: skip it from now on.
-        if (refusedVoices.size >= 200) refusedVoices.clear();
-        refusedVoices.add(cast);
+    // The line's calls (a refused cast voice's retry included, one after the
+    // other) hold one of the user's paid slots (paid.ts). The Go tab asks for
+    // one part at a time (the next once the current one has arrived), so the
+    // other slot is left for a voice draw.
+    const out = await paidSlot(ctx.user.id, async (): Promise<Speech> => {
+      if (provider === "elevenlabs") {
+        // A cast voice refused once goes straight to the retry voice after
+        // that (speechVoices), so a free plan doesn't pay two calls a line.
+        try {
+          return await synthesize({ ...line, voice: first }, ctrl.signal);
+        } catch (e) {
+          // A library voice drawn for the cast can be refused: a plan without
+          // library access, or a voice since removed. retryInOtherVoice takes
+          // the statuses that mean "not this voice" (400, 402, 403, 404, 422),
+          // not a bad key, spent credits or a rate limit. Say the line in the
+          // retry voice (speechVoices) rather than lose it.
+          const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
+          if (!cast || !retry || !retryInOtherVoice(status)) throw e;
+          const said = await synthesize({ ...line, voice: retry }, ctrl.signal);
+          // The other voice worked, so it was the cast voice: skip it from now on.
+          if (refusedVoices.size >= 200) refusedVoices.clear();
+          refusedVoices.add(cast);
+          return said;
+        }
       }
-    } else {
-      out = await synthesize({ ...line, voice }, ctrl.signal);
-    }
+      return synthesize({ ...line, voice }, ctrl.signal);
+    });
     res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "no-store" });
     res.end(out.audio);
   } finally {
@@ -867,16 +874,6 @@ export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse,
   const set: Record<string, string | undefined> = settings.voices[provider]?.[locale] ?? {};
   const names: Record<string, string> = {};
   const voiceAges: Record<string, string> = {};
-  // The provider's own list names the voices the learner chose, and is the
-  // pool for Azure and macOS (and for ElevenLabs when the library fails).
-  let own: VoiceChoice[] = [];
-  if (provider === "elevenlabs") own = elevenVoices(await (await call(provider, elevenVoicesRequest({ key: keys.elevenlabs }))).json(), locale, nativeLocale);
-  else if (provider === "azure") own = azureVoices(await (await call(provider, azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion }))).json(), locale);
-  else own = systemVoices(await sayList(), locale);
-  for (const v of own) {
-    names[v.id] = v.name;
-    if (v.age) voiceAges[v.id] = v.age;
-  }
   const random = slots.filter((x) => !set[x]);
   const recast = Array.isArray(body?.slots);
   // ElevenLabs draws from the Voice Library: one search per gender in play,
@@ -884,46 +881,79 @@ export async function handleVoiceCast(req: IncomingMessage, res: ServerResponse,
   // (castPools tells it from one that found nothing).
   const library: Record<string, LibVoice[] | null> = {};
   const aged: Record<string, LibVoice[] | null> = {};
-  if (provider === "elevenlabs") {
-    // The locale's own speakers first (`exact`: pickCast draws them before
-    // any other). A thin search, or a locale the library refuses (400/422),
-    // is topped up with every voice of the language (another Mandarin for
-    // Taiwanese Mandarin). Never another language: a search that finds
-    // nothing leaves the slot to the account's voices. A timeout, a rate
-    // limit or a bad key is not retried wider: it would only fail twice.
-    const page = async (gender: string, age: VoiceAge | undefined, anyLocale: boolean): Promise<{ voices: LibVoice[] | null; refused: boolean }> => {
-      try {
-        const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender, age, sort: "usage_character_count_1y", pageSize: CAST_POOL, anyLocale });
-        const voices = elevenLibrary(await (await call(provider, r)).json())
-          .voices.filter((v) => !refusedVoices.has(v.id))
-          .map((v) => ({ id: v.id, name: v.name, age: ageOf(v.age) }));
-        return { voices, refused: false };
-      } catch (e) {
-        const message = String((e as Error)?.message ?? e);
-        console.warn(`[voice] library search for ${locale}${anyLocale ? " (any locale)" : ""} failed: ${message}`);
-        return { voices: null, refused: /answered (400|422)\b/.test(message) };
-      }
-    };
-    const narrowed = !!elevenLibraryLocale(locale);
-    const search = async (gender: string, age?: VoiceAge): Promise<LibVoice[] | null> => {
-      // Cantonese: the library has no way to ask for it (elevenLibrarySearchable).
-      if (!elevenLibrarySearchable(locale)) return [];
-      const first = await page(gender, age, false);
-      // Not narrowed to a locale: this already was the whole language.
-      if (!narrowed) return first.voices;
-      const exact = (first.voices ?? []).map((v) => ({ ...v, exact: true }));
-      if (first.voices ? exact.length >= CAST_MIN_NATIVE : !first.refused) return first.voices ? exact : null;
-      const wide = (await page(gender, age, true)).voices;
-      if (!wide) return first.voices ? exact : null;
-      const seen = new Set(exact.map((v) => v.id));
-      return [...exact, ...wide.filter((v) => !seen.has(v.id))];
-    };
-    const genders = [...new Set(random.map((x) => x.split(":")[1]))];
-    const wantAge = random.filter((x) => ages[x]);
-    await Promise.all([
-      ...genders.map(async (g) => (library[g] = await search(g))),
-      ...wantAge.map(async (slot) => (aged[slot] = await search(slot.split(":")[1], ages[slot]))),
-    ]);
+  let own: VoiceChoice[] = [];
+  // The draw's provider calls (the account's list, the library searches,
+  // run side by side) count as one of the user's paid slots (paid.ts): a
+  // draw ahead mid-session runs beside the next line's speech. They stop
+  // when the browser gives up (the Go tab's 10 s draw timeout, Stop), as
+  // /speak's do: otherwise a slow search would keep the slot for up to three
+  // provider timeouts in a row, and the next turn's lines would find it taken.
+  const ctrl = new AbortController();
+  const onClose = () => {
+    if (!res.writableEnded) ctrl.abort();
+  };
+  res.on("close", onClose);
+  try {
+    await paidSlot(
+      ctx.user.id,
+      async () => {
+        // The provider's own list names the voices the learner chose, and is the
+        // pool for Azure and macOS (and for ElevenLabs when the library fails).
+        if (provider === "elevenlabs") own = elevenVoices(await (await call(provider, elevenVoicesRequest({ key: keys.elevenlabs }), ctrl.signal)).json(), locale, nativeLocale);
+        else if (provider === "azure") own = azureVoices(await (await call(provider, azureVoicesRequest({ key: keys.azureKey, region: keys.azureRegion }), ctrl.signal)).json(), locale);
+        else own = systemVoices(await sayList(), locale);
+        for (const v of own) {
+          names[v.id] = v.name;
+          if (v.age) voiceAges[v.id] = v.age;
+        }
+        if (provider === "elevenlabs") {
+          // The locale's own speakers first (`exact`: pickCast draws them before
+          // any other). A thin search, or a locale the library refuses (400/422),
+          // is topped up with every voice of the language (another Mandarin for
+          // Taiwanese Mandarin). Never another language: a search that finds
+          // nothing leaves the slot to the account's voices. A timeout, a rate
+          // limit or a bad key is not retried wider: it would only fail twice.
+          const page = async (gender: string, age: VoiceAge | undefined, anyLocale: boolean): Promise<{ voices: LibVoice[] | null; refused: boolean }> => {
+            try {
+              const r = elevenLibraryRequest({ key: keys.elevenlabs, locale, gender, age, sort: "usage_character_count_1y", pageSize: CAST_POOL, anyLocale });
+              const voices = elevenLibrary(await (await call(provider, r, ctrl.signal)).json())
+                .voices.filter((v) => !refusedVoices.has(v.id))
+                .map((v) => ({ id: v.id, name: v.name, age: ageOf(v.age) }));
+              return { voices, refused: false };
+            } catch (e) {
+              // Given up on: no wider search, no draw (the slot frees now).
+              if (ctrl.signal.aborted) throw new HttpError(499, "cancelled");
+              const message = String((e as Error)?.message ?? e);
+              console.warn(`[voice] library search for ${locale}${anyLocale ? " (any locale)" : ""} failed: ${message}`);
+              return { voices: null, refused: /answered (400|422)\b/.test(message) };
+            }
+          };
+          const narrowed = !!elevenLibraryLocale(locale);
+          const search = async (gender: string, age?: VoiceAge): Promise<LibVoice[] | null> => {
+            // Cantonese: the library has no way to ask for it (elevenLibrarySearchable).
+            if (!elevenLibrarySearchable(locale)) return [];
+            const first = await page(gender, age, false);
+            // Not narrowed to a locale: this already was the whole language.
+            if (!narrowed) return first.voices;
+            const exact = (first.voices ?? []).map((v) => ({ ...v, exact: true }));
+            if (first.voices ? exact.length >= CAST_MIN_NATIVE : !first.refused) return first.voices ? exact : null;
+            const wide = (await page(gender, age, true)).voices;
+            if (!wide) return first.voices ? exact : null;
+            const seen = new Set(exact.map((v) => v.id));
+            return [...exact, ...wide.filter((v) => !seen.has(v.id))];
+          };
+          const genders = [...new Set(random.map((x) => x.split(":")[1]))];
+          const wantAge = random.filter((x) => ages[x]);
+          await Promise.all([
+            ...genders.map(async (g) => (library[g] = await search(g))),
+            ...wantAge.map(async (slot) => (aged[slot] = await search(slot.split(":")[1], ages[slot]))),
+          ]);
+        }
+      },
+      "voice draws",
+    );
+  } finally {
+    res.off("close", onClose);
   }
   const { pools, omitted } = castPools({ slots, set, ages, library, aged, own, recast, avoid });
   for (const list of Object.values(pools)) for (const v of list) names[v.id] ??= v.name;

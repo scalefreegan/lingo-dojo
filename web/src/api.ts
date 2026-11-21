@@ -172,6 +172,39 @@ export async function reqBlob(url: string, init?: RequestInit): Promise<{ blob: 
   return { blob: await res.blob(), headers: res.headers };
 }
 
+/** How long the Go tab waits before each retry of a 429 from a paid route. */
+const BUSY_RETRY_MS = [400, 1000, 2000];
+
+/**
+ * `call` again after a 429, a few times, a little later each time: the
+ * user's paid calls share a small per-user limit on the server
+ * (web/server/paid.ts), and the Go tab can meet its edge without doing
+ * anything wrong (a fetch it just aborted not yet released, a voice draw
+ * beside the next line, a card's sound in another window). A short wait
+ * there beats a lost line or a failed turn. Stops at once on an abort.
+ */
+async function whenFree<T>(call: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await call();
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 429 || i >= BUSY_RETRY_MS.length || signal?.aborted) throw e;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const t = window.setTimeout(done, BUSY_RETRY_MS[i]);
+      function done() {
+        signal?.removeEventListener("abort", stop);
+        resolve();
+      }
+      function stop() {
+        window.clearTimeout(t);
+        reject(new DOMException("aborted", "AbortError"));
+      }
+      signal?.addEventListener("abort", stop, { once: true });
+    });
+  }
+}
+
 export function json(body: unknown, method = "POST"): RequestInit {
   return { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
@@ -434,7 +467,7 @@ function voiceSettingsUrl(langs?: VoiceLanguages): string {
 
 /** This session's voices, drawn fresh: Random slots get a new voice each time. */
 export function getCast(body: VoiceCastRequest, signal?: AbortSignal): Promise<VoiceCastReply> {
-  return req<VoiceCastReply>("/api/voice/cast", { ...json(body), signal });
+  return whenFree(() => req<VoiceCastReply>("/api/voice/cast", { ...json(body), signal }), signal);
 }
 
 export function getVoiceSettings(langs?: VoiceLanguages): Promise<VoiceSettingsReply> {
@@ -460,7 +493,7 @@ export function listVoices(provider: TtsProvider, locale: string, signal?: Abort
 export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal, terms: string[] = []): Promise<TranscribeReply> {
   const q = new URLSearchParams({ locales: locales.join(",") });
   for (const t of terms) q.append("term", t);
-  return req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal });
+  return whenFree(() => req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal }), signal);
 }
 
 export function voiceTurn(body: VoiceTurnRequest, signal?: AbortSignal): Promise<VoiceTurnReply> {
@@ -594,9 +627,10 @@ export function endConversation(id: string, page: PageLearner): Promise<void> {
   );
 }
 
-/** One line → playable audio. Errors come back as the usual {error}. */
+/** One line → playable audio. Errors come back as the usual {error}; a
+ *  429 (the user's paid calls all busy) is retried a moment later. */
 export function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
-  return audioFrom("/api/voice/speak", body, signal);
+  return whenFree(() => audioFrom("/api/voice/speak", body, signal), signal);
 }
 
 /** The character card's sounds: 1–4 example characters said by the

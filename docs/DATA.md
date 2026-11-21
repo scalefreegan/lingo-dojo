@@ -2077,8 +2077,9 @@ holds; this adds two drills and a mode picker.
   - The reply is `Cache-Control: private, no-store`. Hit or miss is logged
     on the server, never sent.
   - **Paid calls** (an audio miss, a transcription) run at most two at
-    once per user; a third is a 429. The Go tab's routes don't share the
-    bound yet (bead ld-e6q).
+    once per user; a third is a 429. The bound is shared with the Go tab's
+    speech, transcription and voice draws, the character card's sounds and
+    pronunciation scoring (bead ld-e6q; docs/VOICE.md §Paid calls at once).
   - **No voice picked:** the provider's default voice (docs/VOICE.md
     §Default voice: an ElevenLabs premade voice, Azure's or macOS's first
     for the locale); with no macOS voice installed for the locale, a 400
