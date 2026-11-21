@@ -633,7 +633,10 @@ uncertain words in context.
   check"). It works on the word holding the tapped character (`wordAt`).
   - **This reading is wrong** offers each character's real readings
     (`charReadings`), one syllable at a time.
-  - **This is right** confirms the reader's reading.
+  - **This is right** confirms the reading shown. When that is the
+    reader's own reading, nothing else changes. When it is not (it is a
+    recap's suggestion), it goes to the shared list like a correction, so
+    the learner and the recap agree.
   - The choice is saved through `POST /api/readings` (`learner: true`;
     kids 403; a language other than Mandarin 400; the word and reading
     checked by `validateCorrection`: 2–8 Chinese characters, one real
@@ -643,7 +646,10 @@ uncertain words in context.
     word that is not in the bank is handled the same way: no bank phrase is
     made for it.
   - Every bank phrase holding the word is read again with it, and
-    `phrases.reading` is set where the reading changed.
+    `phrases.reading` is set where the reading changed. A word a person
+    settled takes their reading over what the phrase stored (a hint, or a
+    recap's reading). A phrase that reads as the reader's own again stores
+    none.
   - The browser lays the learner's list over every text at once
     (`setCorrections`). A corrected or confirmed word loses its mark.
 - **Ranks** (`applyCorrections`, after the reader's own rules):

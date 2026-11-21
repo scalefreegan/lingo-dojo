@@ -294,17 +294,23 @@ function ReadingsToCheck({ items, locale }: { items: { word: string; sentence: s
   void version;
   const open = items.map((it) => ({ it, unit: zh.wordAt(it.sentence, locale, it.at) })).filter((x) => x.unit?.unsure);
   if (!open.length) return null;
+  // One entry per line, with each of its words: a line with three words to
+  // check is shown once, not three times.
+  const byLine = new Map<string, typeof open>();
+  for (const x of open) byLine.set(x.it.sentence, [...(byLine.get(x.it.sentence) ?? []), x]);
   return (
     <div data-testid="recap-readings">
       <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">Readings to check</h4>
       <p className="mt-0.5 text-xs text-fg-3">The program wasn't sure how these were read. Check each one: your choice is kept, and helps everyone's readings.</p>
       <ul className="mt-1 flex flex-col gap-2">
-        {open.map(({ it, unit }) => (
-          <li key={`${it.word}:${it.at}`} className="rounded-lg border border-line p-2">
-            <p className="mb-1 text-sm text-fg-2" lang={locale}>
-              <RubyText text={it.sentence} locale={locale} check />
+        {[...byLine].map(([sentence, words]) => (
+          <li key={sentence} className="flex flex-col gap-2 rounded-lg border border-line p-2">
+            <p className="text-sm text-fg-2" lang={locale}>
+              <RubyText text={sentence} locale={locale} check />
             </p>
-            <ReadingFix word={unit!.word} reading={unit!.reading} locale={locale} unsure suggested={unit!.suggested} />
+            {words.map(({ it, unit }) => (
+              <ReadingFix key={`${it.word}:${it.at}`} word={unit!.word} reading={unit!.reading} locale={locale} unsure suggested={unit!.suggested} />
+            ))}
           </li>
         ))}
       </ul>

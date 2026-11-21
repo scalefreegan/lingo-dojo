@@ -122,6 +122,30 @@ test("a Mandarin recap reads the uncertain words; a checked answer that differs 
   assert.deepEqual((await q(`select changed from shared_reading_uses where conversation_id = $1`, [c.id])), [{ changed: 2 }], "its two lines");
 });
 
+test("'This is right' on a recap's suggestion is the learner agreeing: active for everyone; a correction back to the reader's own reading clears the bank phrase's", async () => {
+  await q(`delete from shared_readings`);
+  const yu = await someone({ ...TW, name: "Yu" });
+  fake.recap(recapWith([{ word: "倒車", pinyin: "dào chē" }], [{ text: "倒車", meaning: "to reverse", example: "", why: "" }]));
+  await session(yu);
+  assert.deepEqual(await q(`select status from shared_readings where key = '倒车'`), [{ status: "suggested" }]);
+  // The bank phrase took the recap's reading.
+  const phrase = async () => (await q(`select p.reading from phrases p join conversations c on c.language_profile_id = p.language_profile_id join learners l on l.id = c.learner_id where l.name = 'Yu' and p.text = '倒車'`))[0].reading;
+  assert.equal(await phrase(), "dào chē");
+  const r = await yu.call("POST", "/api/readings", { word: "倒車", reading: "dào chē", kind: "confirmed" });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.shared, "active");
+  // Confirming the reader's own reading (得去 dé qù) proposes nothing.
+  const own = await yu.call("POST", "/api/readings", { word: "得去", reading: "dé qù", kind: "confirmed" });
+  assert.equal(own.body.shared, null);
+  assert.equal((await q(`select count(*)::int as n from shared_readings where key = '得去' and reading = 'dé qù'`))[0].n, 0);
+  // Yu changes her mind: the reader's dǎo chē. The phrase's stored reading
+  // never outranks her choice: it goes (the reader's own again).
+  const back = await yu.call("POST", "/api/readings", { word: "倒車", reading: "dǎo chē", kind: "corrected" });
+  assert.equal(back.status, 200, back.text);
+  assert.equal(back.body.phrases, 1);
+  assert.equal(await phrase(), null);
+});
+
 test("an answer that fails a check is dropped: nothing written, the word still to check", async () => {
   const lin = await someone({ ...TW, name: "Lin" });
   await q(`delete from shared_readings`);

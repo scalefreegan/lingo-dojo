@@ -74,13 +74,18 @@ export async function rereadPhrases(profile: LanguageProfileRef, locale: string,
   let changed = 0;
   for (const p of found) {
     const base = readCodePoints(p.text, locale, { cache: false, corrections: null });
-    const now = readCodePoints(p.text, locale, { cache: false, corrections: fixes });
+    const now = readDetail(p.text, locale, { cache: false, corrections: fixes });
     const han = [...p.text].map((c, k) => (isHan(c) ? k : -1)).filter((k) => k >= 0);
-    const differs = han.some((k) => now[k] !== base[k]);
-    const reading = differs && han.length >= 2 && han.every((k) => now[k]) ? han.map((k) => now[k]).join(" ") : null;
-    // A stored reading that no longer differs is the reader's own again:
-    // left as it is (a dojo master's hint may still be what it holds).
-    if (reading && reading !== p.reading && (await setPhraseReading(db, profile, p.id, p.text, reading))) changed++;
+    if (han.length < 2) continue;
+    // Start from what the phrase holds (a dojo master's hint, a recap's
+    // reading), else the reader's; a word a person settled (theirs, or the
+    // shared list's) takes their reading over it, so a stored reading never
+    // outranks a person's choice. The reader's own reading again: none.
+    const stored = p.reading?.split(" ") ?? [];
+    const out = han.map((k, i) => (now.fixed[k] === "mine" || now.fixed[k] === "shared" ? now.readings[k] : stored.length === han.length ? stored[i] : now.readings[k]));
+    if (out.some((r) => !r)) continue;
+    const reading = han.every((k, i) => out[i] === base[k]) ? null : out.join(" ");
+    if (reading !== (p.reading ?? null) && (await setPhraseReading(db, profile, p.id, p.text, reading))) changed++;
   }
   return changed;
 }
@@ -293,10 +298,13 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   const key = correctionKey(v.word);
   const row = await saveCorrection(rawDb(), ctx.language, { key, word: v.word, reading, kind });
   // A correction goes to the shared list too (words and readings only):
-  // active for an admin, a suggestion otherwise. A confirmation of the
+  // active for an admin, a suggestion otherwise. So does a confirmation of
+  // a reading that isn't the reader's own (a recap's suggestion the learner
+  // says is right: the learner and the recap agree). A confirmation of the
   // reader's own reading changes nothing for anyone else.
+  const own = readCodePoints(v.word, locale, { cache: false, corrections: null }).filter(Boolean).join(" ");
   let shared: ReadingSaveReply["shared"] = null;
-  if (kind === "corrected") {
+  if (kind === "corrected" || reading !== own) {
     const entry: SharedEntry = { word: v.word, key, reading, scope: correctionScope(v.word, v.reading, locale) };
     shared = await propose(rawDb(), entry, ctx.user.isAdmin ? "admin" : "user", ctx.user.id).catch((e) => {
       if (e instanceof SharedFullError) return null;
