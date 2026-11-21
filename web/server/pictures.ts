@@ -4,13 +4,14 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { languageProfileOwner, listLearners } from "../../scripts/db/accounts.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import {
-  changePicture, markFailed, markNone, markReady, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureOf, pictureRows, storeVerdict, type PictureRow,
+  changePicture, drawAnyway, markFailed, markNone, markReady, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureFileInUse, pictureOf, pictureRows, storeVerdict,
+  type PictureRow,
 } from "../../scripts/db/pictures.ts";
 import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer } from "../../scripts/db/practice.ts";
 import { isUuid } from "../../scripts/phrases.mjs";
 import { deletePicture, newPictureKey, readPicture, writePicture } from "../../scripts/picture-store.mjs";
 import {
-  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, gameRounds, isCurrent, judgePrompt, parseJudgeReply, pictureBank, pictureKey, picturePrompt,
+  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, gameRounds, grownUpDescription, isCurrent, judgePrompt, parseJudgeReply, pictureBank, pictureKey, picturePrompt,
   pictureWork, readGameAnswer, roundChoices,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
@@ -18,7 +19,7 @@ import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, P
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider } from "./imageProvider.ts";
-import { BackgroundBusy, backgroundSlot } from "./paid.ts";
+import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts";
 import { audioProblem, phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
@@ -42,6 +43,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET  /api/pictures/phrase/:id           a word's picture
 //   POST /api/pictures/phrase/:id/remove    out of the game, file deleted
 //   POST /api/pictures/phrase/:id/redraw    drawn again (same description)
+//   POST /api/pictures/phrase/:id/draw      {description?}: a word judged "no clear picture" drawn anyway
 //
 // All mounted with wrap's `learner: true`, and for kids learners only: an
 // adult learner's Practice is unchanged and has no game (a 403 here), and
@@ -62,8 +64,10 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //    description as cleaned data; kept on disk (picture-store.mjs) and
 //    never drawn again unless a grown-up asks;
 //  - each call in the user's background paid slot (paid.ts, apart from
-//    audio and transcription), entered in the ledger (picture_calls) as it
-//    starts; at most PICTURE_DAILY_IMAGES images and PICTURE_DAILY_JUDGES
+//    audio and transcription), waited for while something else has it
+//    (SLOT_WAIT, holding nothing meanwhile; past that the run stops and the
+//    next trigger carries on), entered in the ledger (picture_calls) as it
+//    starts, the cap counted again just before; at most PICTURE_DAILY_IMAGES images and PICTURE_DAILY_JUDGES
 //    checks per language in any 24 hours, counted from the ledger (a
 //    failure counts, a restart doesn't reset it). Words past the cap wait
 //    for the next trigger after the window frees up;
@@ -76,6 +80,10 @@ const JUDGE_MODEL = "claude-haiku-5-5";
 const JUDGE_TIMEOUT_SEC = 90;
 export const RETRY_AFTER_MS = 10 * 60_000;
 const DAY_MS = 86_400_000;
+/** How long a call waits for the user's background slot (cloze writing has
+ *  it, or another language's pictures) before the run stops: a couple of
+ *  cloze calls' worth. Mutable for the tests. */
+export const SLOT_WAIT: SlotWait = { maxMs: 120_000, everyMs: 2_000 };
 
 /** The run going on per language profile. */
 const filling = new Map<string, Promise<void>>();
@@ -154,27 +162,55 @@ export function fillPictures(t: FillTarget): boolean {
   return true;
 }
 
-/** One picturable check for `words`; false when the background slot was
- *  busy (the run stops; nothing was paid). Throws on a failed call. */
+/** Told apart from a call's own reply: the day's cap was reached while the
+ *  call waited for its slot, so it wasn't made (nothing paid, no ledger
+ *  row). The run's next pass sees the cap and ends. */
+const CAPPED = Symbol("capped");
+
+/**
+ * Delete a picture's file from disk once no row names it (ld-0dl): after a
+ * removal, a redraw, a new verdict for edited words, or its phrase's
+ * delete. Kept while any row still uses the key, or when that can't be
+ * asked (a file left behind is a small leak; a picture deleted under a
+ * live row is a paid image lost). Never throws: no caller should fail over
+ * a file. A missing file is fine, and nothing outside the pictures
+ * directory is ever touched (picture-store.mjs deletePicture).
+ */
+export async function dropPictureFile(file: string | null | undefined): Promise<void> {
+  if (!file) return;
+  try {
+    if (await pictureFileInUse(rawDb(), file)) return;
+    deletePicture(file);
+  } catch (e) {
+    console.warn("[lingo-dojo] pictures: a picture file wasn't deleted:", String((e as Error)?.message || e));
+  }
+}
+
+/** One picturable check for `words`; false when the background slot stayed
+ *  busy past SLOT_WAIT (the run stops; nothing was paid). Throws on a
+ *  failed call. */
 async function judge(t: FillTarget, words: { id: string; text: string | null; meaning: string | null }[], names: string[]): Promise<boolean> {
   const sent = words.map((w) => ({ id: w.id, text: w.text ?? "", meaning: w.meaning, key: pictureKey(w) }));
   const { system, user } = judgePrompt({ words: sent, targetLanguage: t.targetLanguage, nativeLanguage: t.nativeLanguage });
   let callId = "";
-  let text: string;
+  let text: string | typeof CAPPED;
   try {
-    text = await backgroundSlot(t.userId, async () => {
+    text = await backgroundSlotWhenFree(t.userId, async () => {
+      // Counted again here: the wait for the slot may have been long.
+      if ((await pictureCallsSince(rawDb(), t.profile, "judge", since())) >= PICTURE_DAILY_JUDGES) return CAPPED;
       // In the ledger before the model is asked: a call that then fails
       // was (or may have been) paid all the same.
       callId = await pictureCallStarted(rawDb(), t.profile, "judge", sent.length, since());
       const { result } = startClaude({ prompt: user, systemPrompt: system, model: JUDGE_MODEL, cwd: os.tmpdir(), tools: "none", maxTurns: 1, timeoutSec: JUDGE_TIMEOUT_SEC });
       return (await result).text;
-    });
+    }, SLOT_WAIT);
   } catch (e) {
     if (e instanceof BackgroundBusy) return false;
     if (callId) await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
     const msg = String((e as Error)?.message || e);
     throw new Error(`the picturable check failed: ${failureHint(msg) || msg}`);
   }
+  if (text === CAPPED) return true;
   const parsed = parseJudgeReply(text, sent.length, names);
   if (!parsed.ok) {
     await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
@@ -187,7 +223,7 @@ async function judge(t: FillTarget, words: { id: string; text: string | null; me
     const { oldFile } = await storeVerdict(rawDb(), t.profile, {
       phraseId: sent[i].id, phraseKey: sent[i].key, status: v.picturable ? "pending" : "none", description: v.description,
     });
-    if (oldFile) deletePicture(oldFile);
+    await dropPictureFile(oldFile);
     judged++;
   }
   await pictureCallDone(rawDb(), t.profile, callId, "ok").catch(() => {});
@@ -197,7 +233,7 @@ async function judge(t: FillTarget, words: { id: string; text: string | null; me
   return judged > 0;
 }
 
-/** One picture for a pending word; false when the slot was busy. A
+/** One picture for a pending word; false when the slot stayed busy. A
  *  refusal marks the word failed and the run goes on; any other failure
  *  throws (the run stops and waits). */
 async function draw(t: FillTarget, phraseId: string, phraseKey: string, description: string, names: string[]): Promise<boolean> {
@@ -211,12 +247,15 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
     return true;
   }
   let callId = "";
-  let got: { bytes: Buffer; type: string };
+  let got: { bytes: Buffer; type: string } | typeof CAPPED;
   try {
-    got = await backgroundSlot(t.userId, async () => {
+    got = await backgroundSlotWhenFree(t.userId, async () => {
+      // Counted again here: the wait for the slot may have been long, and
+      // the cap is never passed.
+      if ((await pictureCallsSince(rawDb(), t.profile, "image", since())) >= PICTURE_DAILY_IMAGES) return CAPPED;
       callId = await pictureCallStarted(rawDb(), t.profile, "image", 1, since());
       return provider.draw(prompt);
-    });
+    }, SLOT_WAIT);
   } catch (e) {
     if (e instanceof BackgroundBusy) return false;
     if (e instanceof ImageRefused) {
@@ -228,11 +267,12 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
     if (callId) await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
     throw e instanceof ImageFailed ? e : new Error(String((e as Error)?.message || e));
   }
+  if (got === CAPPED) return true;
   const file = newPictureKey();
   writePicture(file, got.bytes, got.type);
   const row = await markReady(rawDb(), t.profile, phraseId, phraseKey, file, got.type);
   // Edited or removed while it was drawn: the picture is for nothing now.
-  if (!row) deletePicture(file);
+  if (!row) await dropPictureFile(file);
   await pictureCallDone(rawDb(), t.profile, callId, "ok").catch(() => {});
   return true;
 }
@@ -443,17 +483,47 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
       return sendJson(res, 200, { picture: row && isCurrent(row, phrase) ? pictureView(row) : null, status: await statusOf(ctx) } satisfies PhrasePictureReply);
     }
     const action = parts[2];
-    if (action !== "remove" && action !== "redraw") return sendJson(res, 404, { error: "no such route" });
+    if (action !== "remove" && action !== "redraw" && action !== "draw") return sendJson(res, 404, { error: "no such route" });
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
-    if (action === "redraw") {
+    if (action !== "remove") {
       const problem = imageProvider().problem();
       if (problem) throw new HttpError(400, problem);
+    }
+    if (action === "draw") {
+      // A grown-up's override of "no clear picture" (ld-of0): what they
+      // typed, else the word's meaning, by the check's own rules; a name
+      // or nothing to draw is said plainly and nothing is stored or sent.
+      const body = (await readJsonBody(req)) as { description?: unknown } | null;
+      const typed = body?.description;
+      if (typed != null && typeof typed !== "string") throw new HttpError(400, "description must be text");
+      const own = typeof typed === "string" && typed.trim() !== "";
+      const names = (await listLearners(rawDb(), ctx.user.id, { archived: true })).map((l) => l.name);
+      const d = grownUpDescription(own ? typed : (phrase.meaning ?? ""), names);
+      if (d.error !== undefined) {
+        throw new HttpError(
+          400,
+          d.error === "name"
+            ? own
+              ? "A picture's description can't have a learner's name in it. Say what to draw without the name."
+              : "This word's meaning has a learner's name in it. Type what the picture should show, without the name."
+            : own
+              ? "That description doesn't say what to draw. Use a few plain words, like \"a waving hand\"."
+              : "Type what the picture should show, in a few plain words, like \"a waving hand\".",
+        );
+      }
+      const drawn = await drawAnyway(rawDb(), profile, phraseId, pictureKey(phrase), d.description);
+      if ("problem" in drawn) {
+        throw new HttpError(409, drawn.problem === "state" ? "this word isn't one left out for having no clear picture now" : "this word hasn't been judged for a picture yet");
+      }
+      // A trigger like Draw again: the same run, slot, ledger and caps.
+      fillPictures(targetOf(ctx));
+      return sendJson(res, 200, { picture: pictureView(drawn.row), status: await statusOf(ctx) } satisfies PhrasePictureReply);
     }
     const changed = await changePicture(rawDb(), profile, phraseId, pictureKey(phrase), action);
     if ("problem" in changed) {
       throw new HttpError(409, changed.problem === "state" ? `this picture can't be ${action === "remove" ? "removed" : "drawn again"} now` : "this word hasn't been judged for a picture yet");
     }
-    if (changed.oldFile) deletePicture(changed.oldFile);
+    await dropPictureFile(changed.oldFile);
     // A grown-up's explicit redraw is a trigger (the same caps and ledger).
     if (action === "redraw") fillPictures(targetOf(ctx));
     return sendJson(res, 200, { picture: pictureView(changed.row), status: await statusOf(ctx) } satisfies PhrasePictureReply);

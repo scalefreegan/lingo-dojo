@@ -83,7 +83,15 @@ export interface PhrasePicture {
   file: string | null;
 }
 
-/** GET /api/pictures/phrase/:id and the remove/redraw replies: the
+/** POST /api/pictures/phrase/:id/draw: a grown-up has a word judged "no
+ *  clear picture" drawn anyway. `description` is what the picture should
+ *  show (cleaned by the server like the check's own; a learner's name in
+ *  it is a 400); left out or blank, the word's meaning is drawn. */
+export interface DrawAnywayRequest {
+  description?: string;
+}
+
+/** GET /api/pictures/phrase/:id and the remove/redraw/draw replies: the
  *  phrase's picture for its words as they are (null: not judged yet). */
 export interface PhrasePictureReply {
   picture: PhrasePicture | null;

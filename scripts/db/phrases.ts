@@ -65,7 +65,7 @@ import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, TROUBLE_DAYS, clean, isUuid, phraseMetrics, type Capture, type Example } from "../../scripts/phrases.mjs";
 import type { PhraseDetail, PhraseInput, PhraseSummary } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { cards, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
+import { cards, phraseDismissals, phraseExamples, phrasePictures, phraseSightings, phrases, reviews } from "./schema.ts";
 
 type PhraseRow = typeof phrases.$inferSelect;
 type CardRow = typeof cards.$inferSelect;
@@ -706,11 +706,15 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
  *  go with it (cascade), and its words and meaning are remembered as
  *  dismissed, so a scene's list doesn't add it back at the scene's next
  *  start (a session that glosses it again does: that is meeting it again).
- *  ENOENT for none of this language's. */
-export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unknown): Promise<void> {
+ *  ENOENT for none of this language's. Its word game picture row goes too
+ *  (cascade); the file that row named is returned, for the caller to
+ *  delete from disk once this has committed (web/server/pictures.ts
+ *  dropPictureFile). */
+export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unknown): Promise<{ pictureFile: string | null }> {
   const pid = phraseId(id);
-  await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
     const mine = forLanguageProfile(tx, profile);
+    const picture = await mine.get(phrasePictures, eq(phrasePictures.phraseId, pid));
     const [gone] = await mine.remove(phrases, eq(phrases.id, pid));
     if (!gone) throw new PhraseError("ENOENT", "no such phrase");
     const keys: { kind: "text" | "meaning"; key: string }[] = [];
@@ -718,6 +722,7 @@ export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     const meaningKey = gone.meaningNorm ?? (gone.meaning ? normKey(gone.meaning) : "");
     if (meaningKey) keys.push({ kind: "meaning", key: meaningKey });
     if (keys.length) await mine.insertOrIgnore(phraseDismissals, keys);
+    return { pictureFile: picture?.file ?? null };
   });
 }
 

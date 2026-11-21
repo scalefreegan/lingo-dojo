@@ -80,8 +80,20 @@ export function readPicture(key, type, { dir = imagesDir() } = {}) {
   }
 }
 
-/** Delete a stored picture (any type it may be under); a missing file is fine. */
+/** Delete a stored picture (any type it may be under); a missing file is
+ *  fine. Only ever a file directly inside the pictures directory: the key
+ *  is checked (64 hex, so no separator or dot can be in it) and so is the
+ *  path made from it, and a name that is a directory there is left alone. */
 export function deletePicture(key, { dir = imagesDir() } = {}) {
   if (!KEY_RE.test(String(key))) return;
-  for (const type of Object.keys(PICTURE_TYPES)) fs.rmSync(fileFor(dir, key, type), { force: true });
+  const root = path.resolve(dir);
+  for (const type of Object.keys(PICTURE_TYPES)) {
+    const file = path.resolve(fileFor(dir, key, type));
+    if (path.dirname(file) !== root) continue;
+    try {
+      fs.unlinkSync(file);
+    } catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+    }
+  }
 }
