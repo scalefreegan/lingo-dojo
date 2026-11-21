@@ -230,7 +230,7 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
         logRecapReadings(conv.id, read.stats);
         // After the recap is stored (its kept phrases are in the bank): a
         // failure here is logged, never the recap's.
-        await settleRecapReadings(profile, conv.id, zhLocale, read.judged, rows).catch((e) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: readings: ${detail(e)}`));
+        await settleRecapReadings(profile, owner.userId, conv.id, zhLocale, read.judged, rows).catch((e) => console.error(`[lingo-dojo] recap of conversation ${conv.id}: readings: ${detail(e)}`));
       }
       return;
     }

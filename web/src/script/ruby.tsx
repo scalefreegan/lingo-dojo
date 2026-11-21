@@ -98,7 +98,10 @@ function applyCorrections(): void {
     const own = mineFor ? mine : [];
     zh.setCorrections(
       zh.makeCorrections(
-        { shared, mine: own.filter((r) => r.kind !== "suggested"), suggested: own.filter((r) => r.kind === "suggested") },
+        // As the server splits them (web/server/readings.ts splitMine): only a
+        // choice made by hand ranks as the learner's own; a recap's agreement
+        // only clears the mark, below the shared list.
+        { shared, mine: own.filter((r) => r.source === "user" && r.kind !== "suggested"), suggested: own.filter((r) => r.kind === "suggested"), checked: own.filter((r) => r.source === "recap" && r.kind === "confirmed") },
         String(correctionsVersion),
       ),
     );

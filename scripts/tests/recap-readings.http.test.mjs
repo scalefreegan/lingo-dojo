@@ -56,11 +56,11 @@ const pack = { title: "", created: "", scenario: "errand", quick_scenario: "", u
 let n = 0;
 async function someone(learner) {
   const name = `user${++n}`;
-  await addUser(testDb.db, name, undefined, { learners: [learner] });
+  const made = await addUser(testDb.db, name, undefined, { learners: [learner] });
   const c = client(base);
   await c.login(name);
   await c.pick(learner.name);
-  return c;
+  return Object.assign(c, { userId: made.user.id });
 }
 async function session(who, mode = "adult") {
   fake.answer(REPLY);
@@ -96,7 +96,8 @@ test("a Mandarin recap reads the uncertain words; a checked answer that differs 
     { word: "得去", reading: "děi qù", kind: "suggested", source: "recap" },
   ]);
   const shared = await q(`select word, reading, status, source, by_recap, suggested_by from shared_readings`);
-  assert.deepEqual(shared, [{ word: "得去", reading: "děi qù", status: "suggested", source: "recap", by_recap: true, suggested_by: null }]);
+  // The recap's suggestion is the session owner's vote.
+  assert.deepEqual(shared, [{ word: "得去", reading: "děi qù", status: "suggested", source: "recap", by_recap: true, suggested_by: mei.userId }]);
   // The kept phrase takes the reading.
   assert.deepEqual(await q(`select text, reading from phrases where text = '你得去'`), [{ text: "你得去", reading: "nǐ děi qù" }]);
   // Mei's readings: the suggestion (still to check) and the confirmation.
@@ -107,22 +108,25 @@ test("a Mandarin recap reads the uncertain words; a checked answer that differs 
   // The count: none of the shared list's yet.
   assert.deepEqual((await q(`select changed from shared_reading_uses where conversation_id = $1`, [c.id])), [{ changed: 0 }]);
 
-  // Mei agrees by hand: active for everyone.
+  // Mei agrees by hand: still one person (her recap, her choice).
   const r = await mei.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "corrected" });
-  assert.equal(r.body.shared, "active");
+  assert.equal(r.body.shared, "suggested");
+  // Another user agrees: active for everyone.
+  const other = await someone({ ...TW, name: "Ann" });
+  assert.equal((await other.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "corrected" })).body.shared, "active");
 
   // A recap made again never replaces her choice, and the shared list's
   // reading now counts as changed in this session.
   fake.recap(recapWith([{ word: "得去", pinyin: "dé qù" }]));
   assert.equal((await mei.call("POST", `/api/conversations/${c.id}/recap`)).status, 202);
   await settleExtractions();
-  assert.deepEqual(await q(`select reading, kind, source from reading_corrections where key = '得去'`), [{ reading: "děi qù", kind: "corrected", source: "user" }]);
+  assert.deepEqual(await q(`select reading, kind, source from reading_corrections where key = '得去' and language_profile_id = $1`, [mei.languageId]), [{ reading: "děi qù", kind: "corrected", source: "user" }]);
   // Settled by people now: not asked again.
   assert.doesNotMatch(promptOf().user, /- 得去 \|/);
   assert.deepEqual((await q(`select changed from shared_reading_uses where conversation_id = $1`, [c.id])), [{ changed: 2 }], "its two lines");
 });
 
-test("'This is right' on a recap's suggestion is the learner agreeing: active for everyone; a correction back to the reader's own reading clears the bank phrase's", async () => {
+test("'This is right' on the recap of one's own session stays a suggestion; a correction back to the reader's own reading clears the bank phrase's", async () => {
   await q(`delete from shared_readings`);
   const yu = await someone({ ...TW, name: "Yu" });
   fake.recap(recapWith([{ word: "倒車", pinyin: "dào chē" }], [{ text: "倒車", meaning: "to reverse", example: "", why: "" }]));
@@ -133,7 +137,8 @@ test("'This is right' on a recap's suggestion is the learner agreeing: active fo
   assert.equal(await phrase(), "dào chē");
   const r = await yu.call("POST", "/api/readings", { word: "倒車", reading: "dào chē", kind: "confirmed" });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.body.shared, "active");
+  assert.equal(r.body.shared, "suggested", "her recap and her click are one source");
+  assert.equal(((await q(`select count(*)::int as n from shared_reading_votes v join shared_readings s on s.id = v.shared_reading_id where s.key = '倒车' and s.reading = 'dào chē'`))[0]).n, 1);
   // Confirming the reader's own reading (得去 dé qù) proposes nothing.
   const own = await yu.call("POST", "/api/readings", { word: "得去", reading: "dé qù", kind: "confirmed" });
   assert.equal(own.body.shared, null);

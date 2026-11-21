@@ -1108,6 +1108,35 @@ export const sharedReadings = pgTable(
  * the admin view sums over the last 30 days. A count, no words; a recap
  * made again replaces its row.
  */
+/**
+ * Who stands behind a shared suggestion (PR #67 review, ld-4i2; migration
+ * 0016): one row per user per entry, a learner's own correction or
+ * confirmation (`user`) or a recap of one of their sessions (`recap`,
+ * counted as the conversation owner's: one person agreeing with a model's
+ * answer to their own transcript is one source, not two). A suggestion is
+ * activated without an admin only by two different users. Also the per-user
+ * daily cap's count. User ids leave scripts/db/sharedReadings.ts only for
+ * the admin view.
+ */
+export const sharedReadingVotes = pgTable(
+  "shared_reading_votes",
+  {
+    sharedReadingId: uuid("shared_reading_id")
+      .notNull()
+      .references(() => sharedReadings.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    source: text("source").$type<"user" | "recap">().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sharedReadingId, t.userId] }),
+    check("shared_reading_votes_source", sql`${t.source} in ('user', 'recap')`),
+    index("shared_reading_votes_user_idx").on(t.userId, t.createdAt),
+  ],
+);
+
 export const sharedReadingUses = pgTable(
   "shared_reading_uses",
   {

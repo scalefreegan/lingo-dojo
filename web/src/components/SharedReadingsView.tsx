@@ -60,7 +60,7 @@ export default function SharedReadingsView() {
       <span className="text-sm text-fg-3">
         from {SOURCE[r.source]}
         {r.suggestedBy ? ` (${r.suggestedBy})` : ""}
-        {r.byUser && r.byRecap ? ", a learner and a recap agree" : r.byRecap && r.source !== "recap" ? ", a recap agrees" : r.byUser && r.source !== "user" ? ", a learner agrees" : ""}
+        {r.status === "suggested" ? ` · ${r.votes} of 2 people` : ""}
         {r.confirmedBy ? `; confirmed by ${r.confirmedBy}` : ""}
       </span>
       <span className="ml-auto flex gap-2">
@@ -81,7 +81,7 @@ export default function SharedReadingsView() {
       <div className="flex flex-col gap-1">
         <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-fg">Shared readings</h2>
         <p className="text-sm text-fg-3">
-          Mandarin words whose reading people settled. Active ones read that way for every learner, over the program's own reading (a learner's own choice still comes first). Words and readings only.
+          Mandarin words whose reading people settled. Active ones read that way for every learner, over the program’s own reading (a learner’s own choice still comes first). A suggestion becomes active when you confirm it, or when two different people stand behind it (a recap counts as the learner whose session it was). Words and readings only.
         </p>
       </div>
       {error && <p className="text-sm text-err" role="alert">{error}</p>}

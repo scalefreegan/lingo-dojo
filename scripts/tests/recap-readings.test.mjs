@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_RECAP_READINGS, extractionPrompt, parseRecapReadings } from "../extraction.mjs";
 
-const { judgeRecapReadings, uncertainInTranscript, sharedChanges } = await import("../../web/server/readings.ts");
+const { judgeRecapReadings, uncertainInTranscript, sharedChanges, splitMine } = await import("../../web/server/readings.ts");
 const zh = await import("../../web/src/script/zh.ts");
 
 const BASE = { transcript: "Learner: 你好\nDojo master: 你得去银行。", nativeLanguage: "English", targetVariant: "Taiwanese Mandarin", duePhrases: ["你好"] };
@@ -74,6 +74,20 @@ test("uncertainInTranscript: the dojo master's lines only, each word once with i
   // The shared list's count: runs it read otherwise.
   assert.equal(sharedChanges(turns, "zh-CN", shared), 1);
   assert.equal(sharedChanges(turns, "zh-CN", zh.makeCorrections({})), 0);
+});
+
+test("a recap that agreed with the reader only clears the mark: a reading people settle later still reaches the learner", () => {
+  const text = "你得去银行。";
+  const rows = [{ word: "得去", reading: "dé qù", kind: "confirmed", source: "recap" }];
+  const agreed = zh.makeCorrections(splitMine(rows, []));
+  assert.equal(zh.readCodePoints(text, "zh-CN", { cache: false, corrections: agreed })[1], "dé");
+  assert.deepEqual(zh.uncertainWords(text, "zh-CN", { cache: false, corrections: agreed }), [], "no mark");
+  // The shared list later says děi: the learner reads děi.
+  const later = zh.makeCorrections(splitMine(rows, [{ word: "得去", reading: "děi qù" }]));
+  assert.equal(zh.readCodePoints(text, "zh-CN", { cache: false, corrections: later })[1], "děi");
+  // The same reading chosen by hand stays the learner's own, over the list.
+  const byHand = zh.makeCorrections(splitMine([{ ...rows[0], source: "user" }], [{ word: "得去", reading: "děi qù" }]));
+  assert.equal(zh.readCodePoints(text, "zh-CN", { cache: false, corrections: byHand })[1], "dé");
 });
 
 test("judgeRecapReadings: each answer checked like a hint; agrees, differs, dropped", () => {

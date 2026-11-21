@@ -25,6 +25,10 @@ export interface MyReading {
   /** corrected / confirmed: the learner's by hand (or the recap agreeing:
    *  confirmed); suggested: the recap's, still to check. */
   kind: "corrected" | "confirmed" | "suggested";
+  /** user: by hand (ranks as the learner's own); recap: the recap's (a
+   *  suggestion, or its agreement with the reader, which only clears the
+   *  mark). */
+  source: "user" | "recap";
 }
 
 /** GET /api/readings */
@@ -58,6 +62,9 @@ export interface SharedReadingAdminRow extends SharedReadingEntry {
   source: "admin" | "user" | "recap";
   byUser: boolean;
   byRecap: boolean;
+  /** How many different users stand behind it (a recap counts as its
+   *  session owner's): two activate a suggestion. */
+  votes: number;
   /** Usernames, for the admin only. */
   suggestedBy: string | null;
   confirmedBy: string | null;

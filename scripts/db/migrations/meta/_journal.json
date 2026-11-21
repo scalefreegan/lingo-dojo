@@ -113,6 +113,13 @@
       "when": 1795291948560,
       "tag": "0015_mandarin_readings",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795294263689,
+      "tag": "0016_shared_reading_votes",
+      "breakpoints": true
     }
   ]
 }

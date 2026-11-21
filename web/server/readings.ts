@@ -2,10 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { localeFor } from "../../scripts/voice.mjs";
 import { MAX_RECAP_READINGS, parseRecapReadings } from "../../scripts/extraction.mjs";
 import { listCorrections, phrasesWith, saveCorrection, saveRecapReading, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
-import { SharedFullError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
+import { SharedFullError, SharedLimitError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
-import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type Corrections } from "../src/script/zh.ts";
+import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type CorrectionEntry, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
 import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -40,7 +40,7 @@ export const mandarinLocale = (lang: { targetLanguage: string; targetVariant: st
   return readsHints(locale) ? locale : null;
 };
 
-const wire = (r: CorrectionRow): MyReading => ({ word: r.word, reading: r.reading, kind: r.kind });
+const wire = (r: CorrectionRow): MyReading => ({ word: r.word, reading: r.reading, kind: r.kind, source: r.source });
 
 /**
  * The corrections a server-side read of this learner's text uses (the
@@ -52,11 +52,23 @@ export async function correctionsFor(profile: LanguageProfileRef | null, opts: {
   const db = rawDb();
   const mine = profile ? await listCorrections(db, profile) : [];
   const shared = opts.shared === false ? [] : (await activeList(db)).entries;
-  return makeCorrections({
-    mine: mine.filter((r) => r.kind !== "suggested"),
+  return makeCorrections(splitMine(mine, shared));
+}
+
+/**
+ * A learner's rows as a corrections set's lists: only what they chose by
+ * hand (source "user") ranks as their own; a recap's agreement with the
+ * reader only clears the mark (`checked`, below the shared list), its
+ * differing answer is a suggestion. The browser splits them the same way
+ * (script/ruby.tsx).
+ */
+export function splitMine<T extends { kind: string; source: string }>(mine: readonly T[], shared: readonly CorrectionEntry[]) {
+  return {
+    mine: mine.filter((r) => r.source === "user" && r.kind !== "suggested"),
     suggested: mine.filter((r) => r.kind === "suggested"),
+    checked: mine.filter((r) => r.source === "recap" && r.kind === "confirmed"),
     shared,
-  });
+  };
 }
 
 /**
@@ -246,12 +258,13 @@ export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, lo
 /**
  * What a recap's judged readings write, once the recap itself is stored:
  * for this learner, a suggestion (differs) or a confirmation (agrees),
- * never over a choice they made by hand; a suggestion to the shared list
- * (the recap's, active once a learner agrees or an admin confirms); the
- * bank phrases with a suggested word reread. Then the session's count of
- * readings the shared list changed.
+ * never over a choice they made by hand; a suggestion to the shared list,
+ * a vote of the conversation's owner (`ownerId`: their recap and their own
+ * confirmation are one source; another user must agree, or an admin
+ * confirm); the bank phrases with a suggested word reread. Then the
+ * session's count of readings the shared list changed.
  */
-export async function settleRecapReadings(profile: LanguageProfileRef, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
+export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: string, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
   const db = rawDb();
   for (const j of judged) {
     if (j.verdict === "dropped" || !j.answer) continue;
@@ -260,8 +273,8 @@ export async function settleRecapReadings(profile: LanguageProfileRef, conversat
     if (j.verdict !== "differs") continue;
     const v = validateCorrection(j.word, j.answer, locale);
     if (v.ok) {
-      await propose(db, { word: v.word, key: j.key, reading: j.answer, scope: correctionScope(v.word, v.reading, locale) }, "recap", null).catch((e) => {
-        if (!(e instanceof SharedFullError)) throw e;
+      await propose(db, { word: v.word, key: j.key, reading: j.answer, scope: correctionScope(v.word, v.reading, locale) }, "recap", ownerId).catch((e) => {
+        if (!(e instanceof SharedFullError || e instanceof SharedLimitError)) throw e;
       });
     }
     if (wrote) await rereadPhrases(profile, locale, j.word);
@@ -298,16 +311,18 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   const key = correctionKey(v.word);
   const row = await saveCorrection(rawDb(), ctx.language, { key, word: v.word, reading, kind });
   // A correction goes to the shared list too (words and readings only):
-  // active for an admin, a suggestion otherwise. So does a confirmation of
-  // a reading that isn't the reader's own (a recap's suggestion the learner
-  // says is right: the learner and the recap agree). A confirmation of the
+  // active for an admin, else this user's vote for it. So does a
+  // confirmation of a reading that isn't the reader's own (a recap's
+  // suggestion the learner says is right); when it was the recap of their
+  // own session, it is the same user's vote, so it stays a suggestion
+  // until another user agrees or an admin confirms. A confirmation of the
   // reader's own reading changes nothing for anyone else.
   const own = readCodePoints(v.word, locale, { cache: false, corrections: null }).filter(Boolean).join(" ");
   let shared: ReadingSaveReply["shared"] = null;
   if (kind === "corrected" || reading !== own) {
     const entry: SharedEntry = { word: v.word, key, reading, scope: correctionScope(v.word, v.reading, locale) };
     shared = await propose(rawDb(), entry, ctx.user.isAdmin ? "admin" : "user", ctx.user.id).catch((e) => {
-      if (e instanceof SharedFullError) return null;
+      if (e instanceof SharedFullError || e instanceof SharedLimitError) return null;
       throw e;
     });
   }
@@ -336,7 +351,7 @@ async function adminReply(): Promise<SharedReadingsAdminReply> {
   const rows = await adminList(db);
   return {
     rows: rows.map((r) => ({
-      id: r.id, word: r.word, key: r.key, reading: r.reading, scope: r.scope, status: r.status, source: r.source, byUser: r.byUser, byRecap: r.byRecap,
+      id: r.id, word: r.word, key: r.key, reading: r.reading, scope: r.scope, status: r.status, source: r.source, byUser: r.byUser, byRecap: r.byRecap, votes: r.votes,
       suggestedBy: r.suggestedByName, confirmedBy: r.confirmedByName, updatedAt: r.updatedAt.toISOString(),
     })),
     changed30d: await usesSince(db, 30),

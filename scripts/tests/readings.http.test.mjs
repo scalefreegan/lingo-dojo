@@ -80,12 +80,12 @@ test("a learner's correction: checked, theirs alone, rereads their bank, and goe
 
   const r = await mei.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "corrected" });
   assert.equal(r.status, 200, r.text);
-  assert.deepEqual(r.body, { reading: { word: "得去", reading: "děi qù", kind: "corrected" }, shared: "suggested", phrases: 1 });
+  assert.deepEqual(r.body, { reading: { word: "得去", reading: "děi qù", kind: "corrected", source: "user" }, shared: "suggested", phrases: 1 });
   // Her bank phrase holds the reading now; Lin's does not.
   assert.deepEqual((await q(`select reading from phrases where id = $1`, [phrase]))[0], { reading: "nǐ děi qù" });
   assert.deepEqual((await q(`select reading from phrases where id = $1`, [other]))[0], { reading: null });
   // Hers to read back; Lin has none.
-  assert.deepEqual((await mei.call("GET", "/api/readings")).body, { readings: [{ word: "得去", reading: "děi qù", kind: "corrected" }] });
+  assert.deepEqual((await mei.call("GET", "/api/readings")).body, { readings: [{ word: "得去", reading: "děi qù", kind: "corrected", source: "user" }] });
   assert.deepEqual((await lin.call("GET", "/api/readings")).body, { readings: [] });
   // The bank's reply carries it.
   const bank = await mei.call("GET", "/api/phrases?q=%E5%BE%97");
@@ -102,7 +102,7 @@ test("a learner's correction: checked, theirs alone, rereads their bank, and goe
   assert.equal((await q(`select count(*)::int as n from shared_readings`))[0].n, 1);
 });
 
-test("the shared list: an admin's correction is active at once, a suggestion is confirmed by an admin or by a learner and the recap agreeing; only an admin writes", async () => {
+test("the shared list: an admin's correction is active at once, a suggestion is confirmed by an admin or by two different users; only an admin writes", async () => {
   const ada = await someone(CN, { admin: true });
   const sam = await someone(TW);
   // Sam's suggestion; not an admin: the admin routes are a 403.
@@ -134,12 +134,26 @@ test("the shared list: an admin's correction is active at once, a suggestion is 
   const rows = await q(`select reading, status from shared_readings where key = '倒车' order by reading`);
   assert.deepEqual(rows, [{ reading: "dào chē", status: "suggested" }, { reading: "dǎo chē", status: "active" }]);
 
-  // A learner and the recap agreeing: active, with no admin.
-  assert.equal(await propose(testDb.db, { word: "一宿", key: "一宿", reading: "yī xiǔ", scope: "all" }, "recap", null), "suggested");
-  assert.equal((await sam.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "active");
-  // Disagreeing: both stay suggestions.
-  assert.equal(await propose(testDb.db, { word: "长着", key: "长着", reading: "zhǎng zhe", scope: "all" }, "recap", null), "suggested");
+  // Sam's own recap and Sam agreeing: one person, one vote: still a suggestion.
+  const yixiu = { word: "一宿", key: "一宿", reading: "yī xiǔ", scope: "all" };
+  assert.equal(await propose(testDb.db, yixiu, "recap", sam.userId), "suggested");
+  assert.equal((await sam.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "suggested");
+  assert.equal((await sam.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "confirmed" })).body.shared, "suggested");
+  // A recap with no owner is no one's vote.
+  assert.equal(await propose(testDb.db, yixiu, "recap", null), "suggested");
+  // A second, different user: active with no admin.
+  const kai = await someone(CN);
+  assert.equal((await kai.call("POST", "/api/readings", { word: "一宿", reading: "yī xiǔ", kind: "corrected" })).body.shared, "active");
+  assert.equal(((await ada.call("GET", "/api/readings/admin")).body.rows.find((r) => r.key === "一宿")).votes, 2);
+  // Disagreeing users: both readings stay suggestions.
+  assert.equal(await propose(testDb.db, { word: "长着", key: "长着", reading: "zhǎng zhe", scope: "all" }, "recap", kai.userId), "suggested");
   assert.equal((await sam.call("POST", "/api/readings", { word: "長著", reading: "cháng zhe", kind: "corrected" })).body.shared, "suggested");
+  // Proposing an active reading again leaves it as it was: the browsers'
+  // cache version does not move.
+  const v1 = (await sam.call("GET", "/api/readings/shared")).body.version;
+  assert.equal(await propose(testDb.db, yixiu, "recap", sam.userId), "active");
+  assert.equal(await propose(testDb.db, { word: "倒车", key: "倒车", reading: "dǎo chē", scope: "all" }, "admin", ada.userId), "active");
+  assert.equal((await sam.call("GET", "/api/readings/shared")).body.version, v1);
 
   // Remove.
   const del = await ada.call("DELETE", `/api/readings/admin/${id}`);
@@ -147,6 +161,28 @@ test("the shared list: an admin's correction is active at once, a suggestion is 
   assert.ok(!del.body.rows.some((r) => r.id === id));
   assert.equal((await ada.call("DELETE", `/api/readings/admin/${id}`)).status, 404);
   assert.equal((await ada.call("POST", "/api/readings/admin/not-an-id/confirm")).status, 404);
+});
+
+test("one user adds at most MAX_DAILY_VOTES votes a day, by hand or by their recaps; a vote they already gave is not counted again", async () => {
+  const sol = await someone(TW);
+  const { MAX_DAILY_VOTES, SharedLimitError } = await import("../db/sharedReadings.ts");
+  // Fill today's votes straight into the table (one entry each).
+  for (let i = 0; i < MAX_DAILY_VOTES; i++) {
+    const [row] = await q(`insert into shared_readings (key, word, reading, status, source, suggested_by) values ($1, $1, 'x y', 'suggested', 'user', $2) returning id`, [`测${String.fromCodePoint(0x4e00 + i)}`, sol.userId]);
+    await q(`insert into shared_reading_votes (shared_reading_id, user_id, source) values ($1, $2, 'user')`, [row.id, sol.userId]);
+  }
+  // Her correction is still hers, but adds nothing to the shared list.
+  const r = await sol.call("POST", "/api/readings", { word: "倒車", reading: "dǎo chē", kind: "corrected" });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.shared, null);
+  assert.equal(r.body.reading.reading, "dǎo chē");
+  await assert.rejects(propose(testDb.db, { word: "一行", key: "一行", reading: "yī háng", scope: "all" }, "recap", sol.userId), SharedLimitError);
+  // Another user is not limited by her.
+  const tom = await someone(TW);
+  assert.equal((await tom.call("POST", "/api/readings", { word: "抽空", reading: "chōu kòng", kind: "corrected" })).body.shared, "suggested");
+  // A vote older than a day doesn't count.
+  await q(`update shared_reading_votes set created_at = now() - interval '25 hours' where user_id = $1`, [sol.userId]);
+  assert.equal((await sol.call("POST", "/api/readings", { word: "抽空", reading: "chōu kòng", kind: "corrected" })).body.shared, "active", "hers and Tom’s");
 });
 
 test("the export: active words and readings only, YAML or JSON, nothing personal; the 30-day count", async () => {

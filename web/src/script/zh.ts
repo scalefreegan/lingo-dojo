@@ -663,7 +663,7 @@ export function inScript(text: string, locale: string): string {
 /* ------------------------------ corrections ------------------------------ */
 
 /** What read a word over the reader (ld-4i2): see Detail.fixed. */
-export type FixKind = "mine" | "shared" | "suggested";
+export type FixKind = "mine" | "shared" | "suggested" | "checked";
 
 /** A whole-word reading from outside the reader: the word as written (two
  *  to MAX_WORD_CHARS Chinese characters) and one tone-marked syllable per
@@ -686,8 +686,11 @@ interface Entry {
 
 /** The corrections a read lays over the reader's readings, by rank: the
  *  learner's own by hand (`mine`: a correction or a confirmation), the
- *  shared list's active entries (`shared`), and the recap's suggestions
- *  for this learner (`suggested`). Each keyed by the word's simplified
+ *  shared list's active entries (`shared`), and last the recap's word for
+ *  this learner: a suggestion (`suggested`, read but still uncertain) or
+ *  its agreement with the reader (`checked`, which only clears the mark:
+ *  it ranks below the shared list, so a reading people settle later still
+ *  reaches the learner). Each keyed by the word's simplified
  *  spelling (correctionKey), so a correction made in one script reads in
  *  the other. `version` names the set (the browser's cache). */
 export interface Corrections {
@@ -695,6 +698,7 @@ export interface Corrections {
   mine: Map<string, Entry>;
   shared: Map<string, Entry>;
   suggested: Map<string, Entry>;
+  checked: Map<string, Entry>;
   longest: number;
 }
 
@@ -705,9 +709,9 @@ export const correctionKey = (word: string): string => simplifyAligned(word.norm
 /** A corrections set from stored entries; one that is malformed (not two
  *  to MAX_WORD_CHARS Chinese characters with a syllable each) is skipped:
  *  a row is checked when it is written, and again here. */
-export function makeCorrections(lists: { mine?: readonly CorrectionEntry[]; shared?: readonly CorrectionEntry[]; suggested?: readonly CorrectionEntry[] }, version = ""): Corrections {
-  const c: Corrections = { version, mine: new Map(), shared: new Map(), suggested: new Map(), longest: 0 };
-  for (const kind of ["mine", "shared", "suggested"] as const) {
+export function makeCorrections(lists: { mine?: readonly CorrectionEntry[]; shared?: readonly CorrectionEntry[]; suggested?: readonly CorrectionEntry[]; checked?: readonly CorrectionEntry[] }, version = ""): Corrections {
+  const c: Corrections = { version, mine: new Map(), shared: new Map(), suggested: new Map(), checked: new Map(), longest: 0 };
+  for (const kind of ["mine", "shared", "suggested", "checked"] as const) {
     for (const e of lists[kind] ?? []) {
       if (!e || typeof e.word !== "string" || typeof e.reading !== "string") continue;
       const word = e.word.normalize("NFC");
@@ -773,7 +777,9 @@ function applyCorrections(cps: string[], simp: string[], { joined, starts }: Pic
           ? ["shared", shared!]
           : fits(c.suggested.get(key))
             ? ["suggested", c.suggested.get(key)!]
-            : null;
+            : fits(c.checked.get(key))
+              ? ["checked", c.checked.get(key)!]
+              : null;
       if (!hit) continue;
       const [kind, e] = hit;
       const reading = tw && kind !== "mine" ? taiwanize(e.word, e.reading.slice()) : e.reading;
