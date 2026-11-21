@@ -123,7 +123,7 @@ const openai: ImageProvider = {
       throw new ImageFailed(timeout.aborted ? `OpenAI gave no answer in ${TIMEOUT_MS / 1000}s` : `OpenAI could not be reached: ${String((e as Error)?.message || e)}`);
     }
     const text = await res.text().catch(() => "");
-    let body: { data?: { b64_json?: string }[]; usage?: { output_tokens?: number }; error?: { code?: string; type?: string; message?: string } } = {};
+    let body: { data?: { b64_json?: string }[]; usage?: { output_tokens?: number }; error?: { code?: string; type?: string; param?: string; message?: string } } = {};
     try {
       body = JSON.parse(text);
     } catch {
