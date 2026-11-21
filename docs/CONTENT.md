@@ -92,7 +92,13 @@ grammar unless the learner asks.
   unit, a unit left out for having no review, and a unit in a `scene_only`
   slot of a drill contribute nothing. Kids and drill frames render it the
   same way. Preview and export show it, as they show everything assembled.
-  A non-text `closing` is a loader warning and ignored. `intro-target` uses
+  A non-text `closing`, or one using `{{phrase_review}}` (a unit is left out
+  without a review by its body alone), is a loader warning and ignored.
+  In a live voice session the section is not in the assembled markdown but
+  appended after every block the server adds (narrator and plan directives, a
+  revisit's briefing), so it is the very last thing in the system prompt, once
+  (`assemble(…, { closing: "separate" })` returns it as `closing`). A revisit's
+  briefing is data for the model; the closing governs what is spoken. `intro-target` uses
   it for the session-language rule.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
 - Tags are free-form labels, with one that the app reads: in kids mode, a

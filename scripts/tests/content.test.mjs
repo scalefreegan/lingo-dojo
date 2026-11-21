@@ -446,5 +446,9 @@ test("a unit's closing is loaded as trimmed text, '' when absent, and a non-text
   assert.equal(c.units.find((u) => u.id === "with-closing").closing, "Last words.");
   assert.equal(c.units.find((u) => u.id === "bad-closing").closing, "");
   assert.equal(c.units.find((u) => u.id === "correct-gently").closing, "");
+  write(root, "units/review-closing.md", "---\nid: review-closing\nslot: intro\ntitle: R\nsummary: s\nclosing: \"{{phrase_review}}\"\n---\nbody\n");
+  const c2 = loadContent(root);
+  assert.equal(c2.units.find((u) => u.id === "review-closing").closing, "");
+  assert.ok(JSON.stringify(c2.problems).includes("closing cannot use"));
   assert.ok(JSON.stringify(c.problems).includes("closing must be text"), JSON.stringify(c.problems));
 });

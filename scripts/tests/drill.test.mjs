@@ -246,3 +246,14 @@ test("assemble: a random pack's preview counts the pool without drills", () => {
   const firstSteps = assemble(c, { ...pack(""), random_scene: { collections: ["First steps"] } });
   assert.ok(firstSteps.markdown.includes("one of the 1 scene in its pool"));
 });
+
+test("a unit's closing renders last under the drill frame, and a scene_only unit's closing is skipped", () => {
+  const root = drillLibrary();
+  write(root, "units/intro-closing.md", "---\nid: intro-closing\nslot: intro\ntitle: Closing intro\nsummary: s\nclosing: Only {{target_language}} for {{learner_name}}.\n---\nOpen.\n");
+  write(root, "units/warmup-closing.md", "---\nid: warmup-closing\nslot: warmup\ntitle: Warm closing\nsummary: s\nclosing: Warm-up rule.\n---\nWarm.\n");
+  const c = loadContent(root);
+  const { markdown } = assemble(c, pack("hello-drill", ["intro-closing", "warmup-closing", "correct-gently", "character-plain"]), "adult");
+  assert.match(markdown, /^You are the narrator of a drill/m, "the drill frame");
+  assert.match(markdown, /## Final rules\n\n[^\n]+\n\n### Closing intro\n\nOnly [^\n]+ for [^\n]+\.\n$/);
+  assert.ok(!markdown.includes("Warm-up rule."), "a scene-only slot's closing goes with its unit");
+});

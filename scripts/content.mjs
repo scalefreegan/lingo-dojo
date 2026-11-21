@@ -475,7 +475,13 @@ function loadUnit(abs, report) {
 
 function closingText(v, abs, report) {
   if (v == null) return "";
-  if (typeof v === "string") return v.trim();
+  if (typeof v === "string") {
+    // A unit is dropped when there is no review by testing its body alone,
+    // so the review block belongs in the body, never here.
+    if (!/\{\{\s*phrase_review\s*\}\}/.test(v)) return v.trim();
+    report(abs, "warning", "closing cannot use {{phrase_review}} (use it in the body); ignored");
+    return "";
+  }
   report(abs, "warning", "closing must be text; ignored");
   return "";
 }

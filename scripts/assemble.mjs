@@ -95,7 +95,9 @@ export function effectiveProfile(baseProfile, overrides = {}) {
  *   mode. `review`: the phrases the review block brings back, chosen by the
  *   server from the learner's bank (scripts/recall.mjs selectReview); none
  *   (the default, and the offline export) leaves out every unit that uses
- *   {{phrase_review}}, so the prompt has no empty heading.
+ *   {{phrase_review}}, so the prompt has no empty heading. `closing`:
+ *   "separate" returns the Final rules section as `closing` instead of
+ *   ending `markdown` with it (the live voice prompt).
  * @returns {{ markdown: string, warnings: string[], stats: { words: number, tokens: number, chars: number } }}
  */
 export function assemble(content, rawPack, options = "adult") {
@@ -244,12 +246,18 @@ export function assemble(content, rawPack, options = "adult") {
   // Last of all (the voice adapter follows in a session): a unit whose rule
   // must beat other units' wording says it here, since a model weighs the
   // later instruction. Only picked, unskipped units get this far.
-  if (closings.length) sections.push([CLOSING_TITLE, CLOSING_LEAD, ...closings].join("\n\n"));
+  // `closing: "separate"` (the live voice session) leaves it out of the
+  // markdown and hands it back, so the caller can put it after the blocks it
+  // appends itself (the directives, a revisit's briefing): it is then the last
+  // thing in the system prompt, and is not in it twice.
+  const closingSection = closings.length ? [CLOSING_TITLE, CLOSING_LEAD, ...closings].join("\n\n") : "";
+  const separate = opts.closing === "separate";
+  if (closingSection && !separate) sections.push(closingSection);
 
   const markdown = `${sections.join("\n\n")}\n`;
 
   // 5. Stats.
-  return { markdown, warnings, stats: countStats(markdown) };
+  return { markdown, warnings, stats: countStats(markdown), ...(separate ? { closing: closingSection } : {}) };
 }
 
 /** Words are whitespace-separated runs; tokens are the contract's words × 1.3
