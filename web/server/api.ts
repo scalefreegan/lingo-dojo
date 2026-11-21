@@ -14,7 +14,7 @@ import { handleAssemble, handleContent, handleExport, handleFolders, handlePackR
 import { checkDatabase, DatabaseNotReady, setDb, type Db } from "./db.ts";
 import { openDatabaseGate, type DatabaseGate, type GateLog } from "./dbGate.ts";
 import { HttpError, sendJson } from "./sse.ts";
-import { handleVoice, handleVoiceCast, handleVoiceLibraryAdd, handleVoiceSound, handleVoiceTurn } from "./voice.ts";
+import { handleVoice, handleVoiceCast, handleVoiceTranscribe, handleVoiceLibraryAdd, handleVoiceSound, handleVoiceTurn } from "./voice.ts";
 
 // The whole "backend": dev-server-only middleware on the Vite server,
 // bound to localhost. Copied from Atlas, plus logins (docs/DATA.md §Auth):
@@ -215,6 +215,8 @@ function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
   middlewares.use("/api/voice/turn", wrap(handleVoiceTurn, { learner: true }));
   middlewares.use("/api/voice/cast", wrap(handleVoiceCast, { learner: true }));
   middlewares.use("/api/voice/sound", wrap(handleVoiceSound, { learner: true }));
+  // Scribe keyterms come from the learner's conversation and phrase bank.
+  middlewares.use("/api/voice/transcribe", wrap(handleVoiceTranscribe, { learner: true }));
   middlewares.use("/api/voice/library/add", wrap(handleVoiceLibraryAdd, { auth: "admin" }));
   middlewares.use("/api/voice", wrap(handleVoice));
   // Saved conversations (conversations.ts): the learner's own, so the

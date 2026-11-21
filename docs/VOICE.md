@@ -67,8 +67,33 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `language_code`), not guessed per clip: accented Spanish was otherwise
   heard as English. English can always be typed. The target phrases from the
   dojo master's last two turns, the thing you were just asked to say, go
-  along as Scribe `keyterms` (at most 100, each up to 5 words), so "¿a
-  cómo?" isn't heard as "ah, ¿cómo?". Azure gets both locales as candidates.
+  along as Scribe `keyterms`, so "¿a cómo?" isn't heard as "ah, ¿cómo?".
+  So do the scene's own `vocab` terms and the learner's most recent bank
+  phrases (ld-7q4): the page sends only the conversation's id
+  (`?conversation=`), and the server reads the scenario that conversation
+  stored (`scenario_id`: for a random scene, the one drawn) from the
+  library, and the bank's phrases (the 20 most recently seen, complete,
+  not suspended) for that language profile. Nothing else a client sends can
+  name a list; the route is a learner route (409 `stale_learner`), an
+  unknown, malformed or other-learner id just adds nothing, and a failed
+  read costs the hints, not the transcription. A scenario written for
+  another language than the session's adds no vocab. Hints never help a
+  recall: no source (including the master's own phrases) sends a phrase of
+  the conversation's frozen review (`pack_snapshot.review.phraseIds`, which
+  holds a revisit's kept phrases too) or a revisit's kept texts, and a
+  First steps drill, where the learner says each word from its meaning and
+  the narrator has just said it, gets no keyterms at all. Only Scribe
+  reads anything: other providers skip the reads. A direct request to
+  the dojo master (native language) sends no id, so no hints. Scribe's
+  limits (ElevenLabs speech-to-text reference, `keyterms`): each term at
+  most 50 characters and 5 words, none containing `< > { } [ ] \`, at most
+  1000 terms, a 20% surcharge, and over 100 terms a 20 s minimum billable
+  duration; we send at most 100 (`scripts/voice.mjs` `keytermsFrom`), shared
+  out as 30 from the master's phrases, 50 from the scene, 20 from the bank,
+  deduplicated (`scripts/keyterms.mjs`). Kids' sessions too: the words are
+  the target-language ones the recording is already being sent to Scribe
+  for. Azure gets both locales as candidates and no keyterms (its
+  equivalent, phrase lists, needs the streaming SDK); macOS has no STT here.
 - **Timing**: lines are separated by a short pause, 0.4 s between people in
   the scene, 0.2 s for the same speaker, and 0.8 s whenever the narrator and
   the scene hand over (never less than 0.6 s there, and never an overlap).

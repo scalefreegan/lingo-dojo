@@ -1,0 +1,45 @@
+// Which words a Go-tab transcription tells Scribe to expect (ld-7q4): the
+// pure half. The server reads the scenario and the phrase bank itself (web/
+// server/voice.ts); nothing here touches either, so node --test covers it.
+// Practice's speak-it never calls this: hinting the expected answer would
+// hear it into the transcript.
+
+import { scenarioEntries } from "./phrases.mjs";
+import { MAX_KEYTERMS, keytermsFrom } from "./voice.mjs";
+
+/** How many of the 100 each source may take, so one can't crowd out the
+ *  rest: what the dojo master just asked for first, then the scene's own
+ *  vocab, then the learner's recent phrases. */
+export const KEYTERM_SHARE = { heard: 30, scenario: 50, bank: 20 };
+
+/** The scenario's `vocab` terms, as Scribe keyterms; none for a scenario
+ *  written for another language than the session's (those words aren't
+ *  what the learner will say). Reuses the bank's own reading of a scenario
+ *  (scenarioEntries) so the two can't disagree on what vocab is. */
+export function scenarioKeyterms(scenario, sessionLocale) {
+  return keytermsFrom(scenarioEntries(scenario, sessionLocale || null).complete.map((e) => e.text));
+}
+
+/** The terms of one transcription: `heard` (the client's target phrases from
+ *  the master's last turns, already bounded), `scenario` (terms) and `bank`
+ *  (phrases), each under its share, deduplicated across, at most 100.
+ *  `exclude` are phrases the learner is asked to recall from their meaning
+ *  (the session's review, a revisit's kept phrases, a drill's words):
+ *  hinting one would hear a near miss into the right answer, so no source
+ *  may send them (matched by term, case-insensitively). */
+export function sessionKeyterms({ heard = [], scenario = [], bank = [], exclude = [] }) {
+  const out = [];
+  const seen = new Set(keytermsFrom(exclude).map((t) => t.toLowerCase()));
+  for (const [list, share] of [[heard, KEYTERM_SHARE.heard], [scenario, KEYTERM_SHARE.scenario], [bank, KEYTERM_SHARE.bank]]) {
+    let taken = 0;
+    for (const t of keytermsFrom(list)) {
+      if (taken >= share || out.length >= MAX_KEYTERMS) break;
+      const k = t.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(t);
+      taken++;
+    }
+  }
+  return out;
+}

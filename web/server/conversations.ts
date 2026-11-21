@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { and, asc, desc, eq, gte, inArray, notInArray, sql, type SQL } from "drizzle-orm";
 import { RANDOM_SCENE_TITLE, effectiveProfile } from "../../scripts/assemble.mjs";
-import { loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs";
+import { isDrill, loadContent, modeRoot, normalizePack } from "../../scripts/content.mjs";
 import {
   CONVERSATION_ID_RE, IDLE_END_MS, MAX_PAGE, MAX_TURN_PAGE, PAGE_SIZE, TURN_PAGE, conversationTitle, itemFromRow, planTurnWrite, readPage,
 } from "../../scripts/conversations.mjs";
@@ -10,6 +10,7 @@ import { hiddenSet } from "../../scripts/db/hidden.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
+import { scenarioKeyterms } from "../../scripts/keyterms.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { storedReviewIds } from "../../scripts/recall.mjs";
 import { carryFrom, linkable, sceneKey, storedRevisit } from "../../scripts/revisit.mjs";
@@ -745,4 +746,33 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
   if (req.method === "GET") return get(req, res, ctx, id.toLowerCase());
   if (req.method === "DELETE") return remove(res, ctx, id.toLowerCase());
   methodNotAllowed(res, "GET, DELETE");
+}
+
+/**
+ * What a listening turn's Scribe hints may draw on for a conversation
+ * (ld-7q4), read from the server's own records, never the client's: the
+ * scene's vocab (the scenario stored in `scenario_id`, for a random scene the
+ * one drawn), whether that scenario is a drill, and what the learner is
+ * asked to recall from its meaning, which no hint may name: the review
+ * frozen into its snapshot (`review.phraseIds`, which includes a revisit's
+ * kept phrases by id) and the revisit's kept texts. A read only: unlike
+ * openConversation it neither ends an idle session nor refuses an ended
+ * one. Null for an unknown id or a conversation in another language than
+ * the profile's: no hints.
+ */
+export async function conversationHints(
+  ctx: LearnerCtx,
+  id: string,
+  mode: Mode,
+): Promise<{ vocab: string[]; drill: boolean; reviewIds: string[]; kept: string[] } | null> {
+  const conv = await profileRows(ctx.language).get(conversations, eq(conversations.id, id));
+  const lang = conv ? bankLocale(ctx.language, conv) : null;
+  if (!conv || lang == null) return null;
+  const scenario = conv.scenarioId ? loadContent(modeRoot(mode)).scenarios.find((s) => s.id === conv.scenarioId) : undefined;
+  return {
+    vocab: scenarioKeyterms(scenario, lang || null),
+    drill: isDrill(scenario),
+    reviewIds: storedReviewIds(conv.packSnapshot) ?? [],
+    kept: (storedRevisit(conv.packSnapshot)?.kept ?? []).map((k: { text: string }) => k.text),
+  };
 }

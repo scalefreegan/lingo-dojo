@@ -1501,7 +1501,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // Practice speech is taken as the target language with the expected
       // phrases as hints; a direct request is the native language, no hints.
       const locales = (toMaster ? [nativeLocale] : [locale, nativeLocale]).filter((l): l is string => !!l);
-      const { text } = await transcribe(wav, locales, ctrl.signal, toMaster ? [] : expectedPhrases(entriesRef.current));
+      const { text } = await transcribe(wav, locales, ctrl.signal, toMaster ? [] : expectedPhrases(entriesRef.current), toMaster ? undefined : convRef.current?.id);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       if (!text) {
         setPhase("idle");

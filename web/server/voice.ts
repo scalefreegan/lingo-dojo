@@ -9,7 +9,7 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { REPO_ROOT, isDrill, loadContent, modeRoot } from "../../scripts/content.mjs";
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
-  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, keytermsFrom, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
+  azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
   ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
 } from "../../scripts/voice.mjs";
 import type {
@@ -20,7 +20,11 @@ import type {
 import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath, type SseSend } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
-import { conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
+import { hintPhrases } from "../../scripts/db/phrases.ts";
+import { CONVERSATION_ID_RE } from "../../scripts/conversations.mjs";
+import { KEYTERM_SHARE, sessionKeyterms } from "../../scripts/keyterms.mjs";
+import { rawDb } from "./db.ts";
+import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
@@ -32,7 +36,8 @@ import { paidSlot } from "./paid.ts";
 //
 //   GET/PUT /api/voice/settings      provider, voices per speaker, turn-taking
 //   GET     /api/voice/voices        ?provider=&locale= → the provider's voices
-//   POST    /api/voice/transcribe    ?locales=a,b  WAV body → {text}
+//   POST    /api/voice/transcribe    ?locales=a,b&conversation=<id>&term=…  WAV body → {text}
+//                                    (a learner route, mounted on its own path in api.ts)
 //   POST    /api/voice/turn          {mode, pack, history, message, conversationId?} → {lines, review}
 //                                    (Accept: text/event-stream → `line` events as each is final, then `reply`)
 //   POST    /api/voice/speak         {speaker, gender, text, lang, locale} → audio bytes
@@ -216,19 +221,70 @@ export async function readAudio(req: IncomingMessage): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks));
 }
 
-async function handleTranscribe(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
+/**
+ * The keyterms of one Go-tab transcription: `heard` (from the page), the
+ * conversation's scene vocab and the learner's recent phrases. Only a
+ * request that names a conversation (the page sends one with a listening
+ * turn, never with a direct request to the dojo master, which is in the
+ * native language) gets the last two. Hints must never help a recall: no
+ * source may send a phrase of the conversation's frozen review or a
+ * revisit's kept phrases, and a drill (the learner says each word from its
+ * meaning) gets no keyterms at all, `heard` included. The conversation read is the gate: if it fails, only `heard`
+ * goes. A failed bank read costs only the bank's hints. Nothing here costs
+ * the transcription (failures are logged). Practice's speak-it doesn't come
+ * here.
+ */
+async function sessionTerms(req: IncomingMessage, ctx: LearnerCtx, heard: string[], conversation: string | null): Promise<string[]> {
+  let scene: Awaited<ReturnType<typeof conversationHints>> = null;
+  if (conversation && CONVERSATION_ID_RE.test(conversation)) {
+    try {
+      scene = await conversationHints(ctx, conversation.toLowerCase(), learnerMode(req, ctx));
+    } catch (e) {
+      console.error("[lingo-dojo] transcribe: reading the scene failed; going on without its keyterms:", e);
+    }
+  }
+  if (!scene) return sessionKeyterms({ heard });
+  // A drill has the narrator say each word (so `heard` names the word being
+  // recalled a turn later) and asks for it from its meaning: no hints.
+  if (scene.drill) return [];
+  let bank: string[] = [];
+  let review: string[] = [];
+  try {
+    const read = await hintPhrases(rawDb(), ctx.language, { recent: KEYTERM_SHARE.bank, ids: scene.reviewIds });
+    bank = read.recent;
+    review = read.review;
+  } catch (e) {
+    console.error("[lingo-dojo] transcribe: reading the phrase bank failed; going on without its keyterms:", e);
+    // The review's texts are unknown, so any source could be naming one.
+    return [];
+  }
+  return sessionKeyterms({
+    heard,
+    scenario: scene.vocab,
+    bank,
+    exclude: [...review, ...scene.kept],
+  });
+}
+
+export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const params = new URL(req.url ?? "/", "http://localhost").searchParams;
   // The first locale is the target: speech goes in as that language (English
-  // can always be typed). Terms are the target phrases the dojo master just
-  // used; keytermsFrom trims them to what Scribe accepts.
-  const keyterms = keytermsFrom(params.getAll("term").slice(0, 200));
+  // can always be typed). Terms Scribe is told to expect (docs/VOICE.md
+  // §Listen), from three sources, each trimmed to what Scribe accepts:
+  // the target phrases the dojo master just used (the page sends these, they
+  // are only hints), the scene's own vocab and the learner's recent phrases
+  // (both read here, the scene from the conversation's id alone: a client
+  // can't name a list).
+  const heard = params.getAll("term").slice(0, 200);
   const locales = (params.get("locales") ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => LOCALE_RE.test(s));
-  const audio = await readAudio(req);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
+  // Only Scribe takes keyterms: no reads for the other providers.
+  const keyterms = provider === "elevenlabs" && (heard.length || params.has("conversation")) ? await sessionTerms(req, ctx, heard, params.get("conversation")) : [];
+  const audio = await readAudio(req);
   const mime = String(req.headers["content-type"] || "audio/wav").split(";")[0];
   // In one of the user's paid slots (paid.ts), taken after the upload so a
   // slow one holds nothing.
@@ -1047,7 +1103,6 @@ export async function handleVoice(req: IncomingMessage, res: ServerResponse, ctx
   const seg = subPath(req);
   if (seg === "settings") return handleSettings(req, res, ctx);
   if (seg === "voices") return handleVoices(req, res);
-  if (seg === "transcribe") return handleTranscribe(req, res, ctx);
   if (seg === "speak") return handleSpeak(req, res, ctx);
   if (seg === "library") return handleLibrary(req, res);
   // turn, cast and library/add are mounted on their own paths (api.ts), for

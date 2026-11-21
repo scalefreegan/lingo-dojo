@@ -720,3 +720,26 @@ export async function deletePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     if (keys.length) await mine.insertOrIgnore(phraseDismissals, keys);
   });
 }
+
+/**
+ * What a listening turn's Scribe hints read from the bank (ld-7q4): the
+ * `recent` most recently seen complete, unsuspended phrases (a sorted LIMIT,
+ * not the whole bank), and the texts of `ids` (the conversation's frozen
+ * review), which are never hinted. Another language's or learner's id is
+ * simply not found. Plain reads: no row lock.
+ */
+export async function hintPhrases(db: Db, profile: LanguageProfileRef, opts: { recent: number; ids: string[] }): Promise<{ recent: string[]; review: string[] }> {
+  const mine = forLanguageProfile(db, profile);
+  const recent = await db
+    .select({ text: phrases.text })
+    .from(phrases)
+    .where(mine.where(phrases, and(isNotNull(phrases.text), eq(phrases.suspended, false))))
+    .orderBy(desc(sql`coalesce(${phrases.lastSeenAt}, ${phrases.createdAt})`))
+    .limit(opts.recent);
+  const ids = opts.ids.filter(isUuid);
+  const review = ids.length
+    ? await db.select({ text: phrases.text }).from(phrases).where(mine.where(phrases, inArray(phrases.id, ids)))
+    : [];
+  const texts = (rows: { text: string | null }[]) => rows.flatMap((r) => (r.text ? [r.text] : []));
+  return { recent: texts(recent), review: texts(review) };
+}
