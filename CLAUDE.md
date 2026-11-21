@@ -61,7 +61,7 @@ validated `{ collections }` pool; pure rules in `web/shared/scenes.ts`,
 the draw in `web/server/randomScene.ts`): the server draws the scenario
 only when a conversation is made, avoiding the language's recent scenes,
 records it in `pack_snapshot.random_draw`, and every turn plays that one
-(`playedPack`); preview and assemble never draw, an export draws its own.
+(`playedPack`); preview and assemble never draw, an export draws its own, and Copy asks assemble for `draw: true` (the export's draw: nothing recorded, no recent-scene avoidance; ld-mdz).
 Revisit (migration 0008, docs/DATA.md §Revisit; pure rules in
 `scripts/revisit.mjs`, server `web/server/revisit.ts`): `conversations.scene_key`
 groups History by scene; a new session of a scene played before links to its

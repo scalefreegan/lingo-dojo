@@ -3026,7 +3026,7 @@ server and the Scene tab alike:
   undone. The selected scene stays listed even when hidden, marked so, so a
   draft never points at something the tab doesn't show.
 - **Nothing else.** A pack, a revisit or Practice again that names a hidden
-  scene plays it; preview and assemble never draw. Hides are not part of a
+  scene plays it; preview and assemble never draw unless asked (`draw: true`, Copy: the export's draw, no recent avoidance, nothing stored, reply `drawn`). Hides are not part of a
   pack or its snapshot.
 
 Tests: `hidden.test.mjs` (pure rules, rows, isolation, the table's checks),

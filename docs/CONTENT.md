@@ -359,8 +359,12 @@ always has. There is no reroll.
 
 The preview, word counts and `POST /api/assemble` do not draw: the
 Scenario section is a placeholder naming the pool's size ("Random scene"
-is the heading's title), with a warning when the pool is empty. Copy is
-disabled for a random scene (a copied prompt would have no scene). The
+is the heading's title), with a warning when the pool is empty. Copy draws
+a scene for the copied prompt (`POST /api/assemble` with `draw: true`; the
+reply's `drawn` names it and the UI says which): the same draw as an export,
+hides honoured, but not steering clear of recent scenes and recording
+nothing (no conversation, no scene history), so it is not the scene Start
+will draw. The
 export (`npm run export`, the Go tab's Export file) draws its own scene at
 export time and says which (the CLI's first line; the route's `drawn`).
 

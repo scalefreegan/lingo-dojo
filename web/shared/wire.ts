@@ -336,6 +336,9 @@ export type PackRestoreReply = PackReply;
 
 export interface AssembleRequest {
   pack: Partial<PackInput>;
+  /** Copy's (ld-mdz): draw a random scene for this one prompt, as an export
+   *  does, recording nothing. Without it a random scene is a placeholder. */
+  draw?: boolean;
 }
 
 export interface Stats {
@@ -357,6 +360,9 @@ export interface AssembleResult {
    *  the pack has no recall unit, the bank has nothing due, or the session
    *  is in another language than the bank's. */
   review?: RecallReview;
+  /** Only when the request had `draw: true` for a random scene: the scene
+   *  drawn for this prompt, from a pool of `pool` scenes. */
+  drawn?: { id: string; title: string; pool: number };
 }
 
 /** One phrase the review block brings back from the learner's bank. */

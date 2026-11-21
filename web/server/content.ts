@@ -4,7 +4,7 @@ import { DEFAULT_LEVEL_BY_MODE, ID_RE, LEVELS_BY_MODE, MODES, exportsDirFor, isM
 import { withDrawnScene } from "../shared/scenes.ts";
 import type {
   AssembleRequest, AssembleResult, ContentReply, DeletedPacksReply, ExportRequest, ExportResult, FolderDeleteReply, FolderReply, Mode,
-  PackDeleteReply, PackReply, PackRestoreReply, PackRevisionsReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
+  PackDeleteReply, PackInput, PackReply, RandomScene, PackRestoreReply, PackRevisionsReply, PackWriteReply, PacksReply, PickerKey, ProfileReply,
 } from "../shared/wire.ts";
 import {
   updateLanguageProfile, updateLearner, type LanguageProfile, type LanguageProfilePatch, type Learner, type LearnerPatch,
@@ -61,7 +61,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET    /api/pack-revisions?id=<pack id>          → {revisions}, newest first
 //   GET    /api/pack-revisions/deleted               → {packs}, the deleted packs
 //   POST   /api/pack-revisions/:revision/restore     → {pack}
-//   POST   /api/assemble           {pack} → {markdown, warnings, stats}; a random scene is a placeholder, never drawn
+//   POST   /api/assemble           {pack, draw?} → {markdown, warnings, stats, drawn?}; a random scene is a placeholder unless draw:true (Copy)
 //   POST   /api/export             {pack, id} → writes <exports>/<id>.md, {path, stats, warnings, drawn?}; a random scene is drawn here
 //
 // Ids come from the request, so each is checked (a 400 the user can read)
@@ -302,10 +302,29 @@ export async function handleAssemble(req: IncomingMessage, res: ServerResponse, 
   // A random scene is checked here, not drawn: the preview shows a marked
   // placeholder for the scene (assemble.mjs), and the scene is drawn when
   // the session starts (conversations.ts).
-  randomSceneOf(body.pack);
+  // Only Copy asks for a draw (`draw: true`, ld-mdz), as an export does: a
+  // pasted prompt needs a scene. Same draw as the export's.
+  const random = randomSceneOf(body.pack);
   const content = learnerContent(mode, ctx);
-  const review = await reviewFor(ctx.language, content, body.pack, mode);
-  sendJson(res, 200, { ...assemble(content, body.pack, { mode, review: review.items }), review } satisfies AssembleResult);
+  let pack: Partial<PackInput> = body.pack;
+  let drawn: AssembleResult["drawn"];
+  if (random && body.draw === true) ({ pack, drawn } = await drawForPaste(content, ctx, random, body.pack));
+  const review = await reviewFor(ctx.language, content, pack, mode);
+  sendJson(res, 200, { ...assemble(content, pack, { mode, review: review.items }), review, ...(drawn ? { drawn } : {}) } satisfies AssembleResult);
+}
+
+/** A random scene's pack with a scene drawn for a prompt that leaves the
+ *  app (an export, Copy): from the pool a session would use, hides honoured,
+ *  but not steering clear of recent scenes (nothing is practised, so the
+ *  scene history is neither read nor moved) and nothing stored. An empty
+ *  pool is the 400 a session's start gives. */
+async function drawForPaste(content: ReturnType<typeof learnerContent>, ctx: LearnerCtx, random: RandomScene, sent: Partial<PackInput>) {
+  const target = String(effectiveProfile(content.profile, normalizePack(sent).overrides).target_language ?? "").trim();
+  const draw = drawOrRefuse(content, target, random, { hidden: await hiddenSet(rawDb(), ctx.language) });
+  return {
+    pack: withDrawnScene(normalizePack(sent), draw.scene.id) as Partial<PackInput>,
+    drawn: { id: draw.scene.id, title: draw.scene.title, pool: draw.pool.length },
+  };
 }
 
 export async function handleExport(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
@@ -319,14 +338,9 @@ export async function handleExport(req: IncomingMessage, res: ServerResponse, ct
   // drawn for it now (from the same pool a session would use) and the reply
   // says which; an empty pool is a 400 and nothing is written.
   const random = randomSceneOf(body.pack);
-  let pack = body.pack;
+  let pack: Partial<PackInput> = body.pack;
   let drawn: ExportResult["drawn"];
-  if (random) {
-    const target = String(effectiveProfile(content.profile, normalizePack(pack).overrides).target_language ?? "").trim();
-    const draw = drawOrRefuse(content, target, random, { hidden: await hiddenSet(rawDb(), ctx.language) });
-    pack = withDrawnScene(normalizePack(pack), draw.scene.id);
-    drawn = { id: draw.scene.id, title: draw.scene.title, pool: draw.pool.length };
-  }
+  if (random) ({ pack, drawn } = await drawForPaste(content, ctx, random, body.pack));
   const review = await reviewFor(ctx.language, content, pack, mode);
   const { markdown, stats, warnings } = assemble(content, pack, { mode, review: review.items });
   const path = writeExport(id, markdown, exportsDirFor(mode));
