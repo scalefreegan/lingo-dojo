@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
-import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus } from "../gameApi";
+import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus, restylePictures } from "../gameApi";
 import type { PhrasePicture, PictureStatus } from "../types";
 import { Button, inputClass } from "./ui";
 
@@ -10,7 +10,9 @@ import { Button, inputClass } from "./ui";
  * words met before pictures existed, or past a day's cap), and per word
  * its picture with Remove and Draw again, or, for a word left out as
  * having no clear picture, Draw it anyway with the grown-up's own words
- * for what to show. Pictures are otherwise drawn by
+ * for what to show; and Redraw all in the current style, which brings
+ * every picture not in the picture theme into it (a shared stock picture
+ * where one fits, else a new drawing; the old picture stays until then). Pictures are otherwise drawn by
  * themselves after each kids session; nothing here is a child's. */
 
 const small = "px-2 py-1 text-sm sm:text-xs";
@@ -63,22 +65,51 @@ export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; re
     }
   }
 
+  async function restyle(count: number) {
+    const ask = `Bring ${count} picture${count === 1 ? "" : "s"} into the current style? A shared picture is used where one fits; the rest are drawn again, counting toward today's pictures. Each old picture stays in the game until its new one is ready.`;
+    if (!window.confirm(ask)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus((await restylePictures()).status);
+      setTick((n) => n + 1);
+      onDrawn?.();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!status) return error ? <p className={`${fine} text-err`}>{error}</p> : null;
   const parts = [`${status.pictured} word${status.pictured === 1 ? "" : "s"} with pictures for the word game`];
   if (status.drawing) parts.push("drawing now…");
   else if (status.waiting) parts.push(`${status.waiting} waiting`);
+  if (status.restyling) parts.push(`${status.restyling} being brought into the current style`);
   if (status.limited) parts.push("today's pictures are used up (more tomorrow)");
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-line bg-raised/40 px-3 py-2" data-testid="pictures-bar">
       <div className="flex flex-wrap items-center gap-2">
         <span className={`${fine} text-fg-2`}>{parts.join(" · ")}</span>
-        {status.waiting > 0 && !status.drawing && !status.problem && !status.limited && (
-          <Button variant="ghost" className={`${small} ml-auto`} onClick={() => void draw()} disabled={busy} data-testid="pictures-fill">
-            Draw pictures
-          </Button>
-        )}
+        <span className="ml-auto flex flex-wrap gap-1">
+          {status.waiting > 0 && !status.drawing && !status.problem && !status.limited && (
+            <Button variant="ghost" className={small} onClick={() => void draw()} disabled={busy} data-testid="pictures-fill">
+              Draw pictures
+            </Button>
+          )}
+          {status.outOfTheme > 0 && !status.restyling && (
+            <Button variant="ghost" className={small} onClick={() => void restyle(status.outOfTheme)} disabled={busy} data-testid="pictures-restyle" title={`${status.outOfTheme} picture(s) are in an older style`}>
+              Redraw all in the current style
+            </Button>
+          )}
+        </span>
       </div>
       {status.problem && <p className={`${fine} text-warn`}>{status.problem}</p>}
+      {status.needKey > 0 && (
+        <p className={`${fine} text-warn`} data-testid="pictures-need-key">
+          {status.needKey} picture{status.needKey === 1 ? " is" : "s are"} in an older style with no shared picture to fit: add an image key (BFL_API_KEY or OPENAI_API_KEY) to redraw {status.needKey === 1 ? "it" : "them"}.
+        </p>
+      )}
       {error && <p className={`${fine} text-err`}>{error}</p>}
     </div>
   );
@@ -98,7 +129,9 @@ const REDRAW_POLLS = 20;
 /** pictures.mjs DESCRIPTION_MAX: the server cuts a longer one at a word. */
 const DESCRIPTION_MAX = 80;
 
-export function PictureSection({ phraseId, onChanged }: { phraseId: string; onChanged?: () => void }) {
+/** `reload`: a counter the bank bumps when a drawing run ends (Draw
+ *  pictures, Redraw all), so the picture is read again. */
+export function PictureSection({ phraseId, onChanged, reload = 0 }: { phraseId: string; onChanged?: () => void; reload?: number }) {
   const [picture, setPicture] = useState<PhrasePicture | null | undefined>(undefined);
   // The blob URL with the file it was made for: a removed or redrawn
   // picture's old one is never shown.
@@ -115,13 +148,18 @@ export function PictureSection({ phraseId, onChanged }: { phraseId: string; onCh
   useEffect(() => {
     const ctrl = new AbortController();
     phrasePicture(phraseId, ctrl.signal).then(
-      (r) => setPicture(r.picture),
+      (r) => {
+        setPicture(r.picture);
+        // A read after a drawing run starts clean: an earlier failure to
+        // load the picture it replaced is no longer true.
+        setError(null);
+      },
       (e) => {
         if (!ctrl.signal.aborted) setError(errText(e));
       },
     );
     return () => ctrl.abort();
-  }, [phraseId]);
+  }, [phraseId, reload]);
 
   const pending = picture?.status === "pending";
   useEffect(() => {
@@ -155,6 +193,7 @@ export function PictureSection({ phraseId, onChanged }: { phraseId: string; onCh
         if (ctrl.signal.aborted) return;
         made = URL.createObjectURL(b);
         setShown({ file, url: made });
+        setError(null);
       },
       (e) => {
         if (!ctrl.signal.aborted) setError(errText(e));
@@ -208,7 +247,14 @@ export function PictureSection({ phraseId, onChanged }: { phraseId: string; onCh
         <div className="flex flex-wrap items-start gap-3">
           {shown && shown.file === picture.file && <img src={shown.url} alt={picture.description ?? ""} className="size-28 rounded-xl border border-line object-cover" />}
           <div className="flex min-w-0 flex-1 flex-col gap-1">
-            {picture.description && <p className={`${fine} text-fg-3`}>Drawn as: {picture.description}</p>}
+            {picture.description && (
+              <p className={`${fine} text-fg-3`}>
+                {picture.stock ? "A shared picture: " : "Drawn as: "}
+                {picture.description}
+              </p>
+            )}
+            {picture.restyling && <p className={`${fine} text-fg-3`}>Being brought into the current style; this picture stays until then.</p>}
+            {picture.status === "ready" && !picture.inTheme && !picture.restyling && <p className={`${fine} text-fg-3`}>In an older style (Redraw all in the current style, above, updates it).</p>}
             {STATE_TEXT[picture.status] && <p className={`${fine} text-fg-3`}>{pending && watch ? "Being drawn…" : STATE_TEXT[picture.status]}</p>}
             <div className="-ml-2 flex flex-wrap gap-1">
               {(picture.status === "ready" || picture.status === "pending" || picture.status === "failed") && (

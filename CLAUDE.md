@@ -126,7 +126,7 @@ by Practice), is judged against every reading the card shows; nothing is stored,
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
 Practice's speak-it (grading unchanged) and the character card; First steps
 drills are not wired (no reliable target text per turn).
-Kids word game (ld-8zu, migration 0011, docs/DATA.md §Kids word game): a
+Kids word game (ld-8zu, migrations 0011 and 0012, docs/DATA.md §Kids word game): a
 kids learner's Practice tab is a by-ear game, where the child hears a word
 and taps its picture.
 - Each tap is a quiet review of the word's `listen` card (drill `picture`,
@@ -137,10 +137,35 @@ and taps its picture.
   recap), the grown-up's Draw pictures or Draw again in the Phrase bank, and
   a top-up at game start. Never a poll, a count or a page load.
 - Each run does one tool-less Haiku picturable check per 20 words (the
-  verdict is stored once), then one OpenAI image per picturable word
-  (`web/server/imageProvider.ts`, `OPENAI_API_KEY`, `IMAGE_MODEL` `gpt-image-2.6-flare` at
-  low quality).
-- The check's description goes to OpenAI only through `cleanDescription`: a
+  verdict is stored once), then one image per picturable word
+  (`web/server/imageProvider.ts`): Black Forest Labs FLUX 3 Image Klein
+  when `BFL_API_KEY` is set (768 px JPEG, `safety_tolerance` 0, about
+  $0.008 a picture), else OpenAI `gpt-image-2.6-flare` when only
+  `OPENAI_API_KEY` is. Both keys only in `.env.local`, never logged or sent
+  to the browser; BFL's key only to an https `*.bfl.ai` URL, and every BFL
+  request (`bflFetch`) refuses redirects (fetch keeps `x-key` across one);
+  the picture is downloaded only from https `*.bfl.ai`. A word whose own
+  draw fails twice in a row (`ImageFailed.perWord`) is marked `failed`.
+- One picture theme (ld-6k7, `PICTURE_THEME` in `scripts/pictures.mjs`: an
+  id, the style lines, BFL's seed 7; no reference image, the subject leaks).
+  Every picture records the theme it was drawn in (`phrase_pictures.theme`;
+  `<id>+openai` for OpenAI's). A new theme id means `npm run
+  pictures:stock` again and the Phrase bank's **Redraw all in the current
+  style** (`POST /api/pictures/restyle`: a stock picture where one fits,
+  else a new drawing; the old picture stays in the game until replaced).
+- The shared stock set (`content/pictures.yaml`, about 200 concepts, both
+  libraries) is drawn once per install by `npm run pictures:stock [--
+  --limit N] [--dry-run]` into `<images dir>/stock/<theme>/`, outside any
+  learner's ledger. The check is offered the drawn ones and may answer a
+  stock id: the word is ready at once (`stock_id`, `file` = `stockKey`), no
+  image call, no ledger row. No per-word removal, redraw or phrase delete
+  ever touches a stock file. A concept may have a look-alike `group` (never
+  two in one round) and `adults: true` (never offered or shown to a kids
+  learner: `stockForMode`). A stock picture's URL carries its file's
+  version (`pictureRef`), so a redraw isn't hidden by the year-long cache.
+  Stock access is small functions in
+  `scripts/picture-stock.mjs` (list, draw one, remove one, add a concept).
+- The check's description goes to the provider only through `cleanDescription`: a
   noun phrase of at most 12 words and 80 characters. If any word names a
   learner on the account, the word gets no picture. The match is
   accent-folded (NFKD) and case-insensitive, and it catches any part of a
@@ -148,7 +173,8 @@ and taps its picture.
   after the fixed style.
 - Each call is in the background paid slot, with a ledger row
   (`picture_calls`) written as it starts. The cap is `PICTURE_DAILY_IMAGES`
-  (50) images per language profile a day, redraws included.
+  (200) images per language profile a day, redraws included (at most about
+  $1.60 a language a day with BFL), and `PICTURE_DAILY_JUDGES` (20) checks.
 - `phrase_pictures` holds one row per phrase: pending, ready, none, failed
   or removed. Queries are in `scripts/db/pictures.ts`, and the pure rules in
   `scripts/pictures.mjs`.

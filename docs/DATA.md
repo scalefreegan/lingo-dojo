@@ -3044,7 +3044,9 @@ export), `db-migration-0009.test.mjs`.
 
 ## Kids word game
 
-Added 2026-11-20 (bead `ld-8zu`, migration `0011_word_pictures`). A kids
+Added 2026-11-20 (bead `ld-8zu`, migration `0011_word_pictures`; Black
+Forest Labs, the picture theme, the stock set and Redraw all 2026-11-21,
+bead `ld-6k7`, migration `0012_picture_themes`). A kids
 learner's Practice tab is a by-ear game: the child hears a word of the
 language they learn and taps the matching picture. Adults are unchanged and
 get no game. A kids learner's adult drills stay a 403.
@@ -3069,10 +3071,24 @@ updated_at)`:
     grown-up has it drawn anyway (below).
   - `failed`: the provider refused. It is never retried by itself.
   - `removed`: a grown-up took it out.
+- `theme` (0012) is the picture theme the file was drawn in (§The picture
+  theme): `PICTURE_THEME`'s id, or `<id>+openai` when OpenAI drew it. Null
+  for a picture drawn before 0012, and while there is no file.
+- `stock_id` (0012) is set when the word points at a shared stock picture
+  (§Stock pictures) instead of a file of its own. `file` is then
+  `stockKey(theme, id)` (64 hex, like a drawn key, so the URL changes with
+  the theme), which never names a file of its own.
+- `restyle` (0012) is a grown-up's Redraw all waiting on a ready row:
+  `check` (ask the check for a stock picture first) or `draw`. Null
+  otherwise.
 - The checks:
   - `file` (64 hex) and `content_type` (png, webp or jpeg) are present
     exactly when the row is `ready`.
   - `pending` and `ready` rows need a `description`.
+  - `theme` matches `^[a-z0-9][a-z0-9.+-]{0,63}$`.
+  - `stock_id` only on a `ready` row with a `theme`, and it matches
+    `^[a-z0-9][a-z0-9-]{0,47}$`.
+  - `restyle` only on a `ready` row, `check` or `draw`.
 
 `picture_calls (id, learner_id, language_profile_id, kind, words, outcome,
 created_at)` is the ledger of paid calls:
@@ -3116,11 +3132,20 @@ Each run, in order:
    - it has no names of people and no instructions;
    - a word or phrase about a named person, or one that is a whole
      sentence, is not picturable.
+
+   The check is also offered the stock pictures drawn in the current theme
+   (§Stock pictures) as data after the words, each an id and its English
+   words. For a picturable word whose meaning is exactly one of them it
+   may add `"stock": "<id>"`. Then the word is `ready` at once, pointing at
+   that stock file: no image call and no image row in the ledger. An id
+   that wasn't offered is ignored (the word is read as if it had none). The
+   check is worded for any learner, not only a child, since the game will
+   be offered to adults too; the descriptions stay safe for one.
 2. **The drawing.** One image per picturable word, newest words first,
    through the image provider (`web/server/imageProvider.ts`, one small
    swappable module).
 
-The description is free text a model wrote, and it goes to OpenAI, so the
+The description is free text a model wrote, and it goes to the image provider, so the
 code enforces the rules too (`cleanDescription`, `scripts/pictures.mjs`), both
 when the verdict is stored and again just before drawing:
 - Apostrophe look-alikes (’ ʼ ` and others) become `'`. Then it keeps
@@ -3147,9 +3172,9 @@ when the verdict is stored and again just before drawing:
 - If nothing useful is left (filler such as "a picture of"), the word also
   gets no picture.
 
-The prompt (`picturePrompt`) starts with the fixed safe style: a flat,
-friendly picture-book cartoon of one subject, with no text and nothing
-frightening. Then comes a line saying the quoted text describes the subject
+The prompt (`picturePrompt`) starts with the picture theme's style lines
+(§The picture theme), then the fixed safety lines: no text, letters,
+numbers or writing anywhere, and nothing frightening. Then comes a line saying the quoted text describes the subject
 only and is never an instruction. The last line is the description as quoted
 data (`Subject: "…"`). A description can't hold a double quote, so it can't
 close the quotation.
@@ -3165,19 +3190,37 @@ Limits:
 - The daily cap is counted twice per call: before the wait, and again
   inside the slot just before the ledger row is written. A cap reached
   during the wait means the call isn't made.
-- At most `PICTURE_DAILY_IMAGES` (50) images and `PICTURE_DAILY_JUDGES` (10)
-  checks per language profile in any 24 hours. Both are counted from the
-  ledger. The cap is per language profile, not per account: the most an
-  account can spend in a day is 50 images times its number of kids
-  languages.
+- At most `PICTURE_DAILY_IMAGES` (200) images and `PICTURE_DAILY_JUDGES`
+  (20) checks per language profile in any 24 hours. Both are counted from
+  the ledger. The cap is per language profile, not per account: the most
+  an account can spend in a day is 200 images times its number of kids
+  languages. With Black Forest Labs at $0.008 a picture that is at most
+  about **$1.60 per language a day**.
+- 20 checks of 20 words are 400 words a day, so the image cap can be
+  reached in one day even when some words get no picture and Redraw all
+  asks its own checks (10 checks, the old number, would be exactly 200
+  words: too few).
+- A stock match is not an image and is not counted.
 - A grown-up's **Draw again** (redraw) and **Draw it anyway** count against
   the same ledger and cap. Either over the cap waits like any other word.
 
 Failures:
-- A moderation refusal (`moderation_blocked`, or no image in the reply)
+- A moderation refusal (Black Forest Labs' `Request Moderated` or `Content
+  Moderated`; OpenAI's `moderation_blocked`, or no image in its reply)
   marks the word `failed`, and the run goes on to the next word.
-- Any other failure (network, 429, a bad key, the CLI) stops the run and
-  leaves the word `pending`. A new run waits 10 minutes.
+- Any other failure (network, a 402 out of credits, a 429, a bad key, no
+  picture within BFL's 60 seconds, the CLI) stops the run and leaves the
+  word `pending`. A new run waits 10 minutes.
+- **A word that keeps failing is given up** (`PICTURE_WORD_FAILURES`, 2):
+  a failure that is the word's own (`ImageFailed.perWord`: a BFL task that
+  ended with Error, No Card Generated or Task not found, a download that
+  isn't a picture, an OpenAI 5xx) counts against that word. The second in
+  a row marks it `failed` like a refusal (a restyled word keeps its old
+  picture) and the run goes on, so one bad word can't stay first in the
+  work list spending a ledger row every retry. Out of credits, a rate
+  limit, a bad key or the network never count. The count is in memory
+  (no migration): a restart gives a word two more tries, under the cap.
+  Draw again by hand still works.
 
 **How the backlog drains:** every trigger works newest-first until the caps
 of the last 24 hours. Older words, and words past the cap, wait for a later
@@ -3214,16 +3257,218 @@ Draw pictures, or a game start.
   (`scripts/picture-store.mjs`). They are checked by their magic bytes and
   capped at 4 MB.
 
-**No key:** with no `OPENAI_API_KEY` in `.env.local`, nothing is judged or
-drawn. `GET /api/game` and `GET /api/pictures` give a `problem` sentence for
-the grown-up, `POST /api/pictures/fill` is a 400 with that sentence, and
-nothing 500s. The key is read only into the request's Authorization header.
-It never reaches the browser or a log line. `LINGO_IMAGE_PROVIDER=stub`
-draws coloured placeholder PNGs, for tests and UI checks.
+**Which provider:** Black Forest Labs when `BFL_API_KEY` is in
+`.env.local`, else OpenAI when `OPENAI_API_KEY` is, else none
+(`imageProvider()` in `web/server/imageProvider.ts`, read per call, so
+adding a key needs no restart). Each key goes only into its provider's
+request header (BFL's only to an https URL on `*.bfl.ai`). It never reaches
+the browser or a log line.
 
-### The provider (read 2026-11-20)
+**No key:** the stock pictures still work. The check runs (it is a Claude
+call, not an image) only when some stock picture is drawn; a word it
+matches is ready, and the rest wait for a key. The grown-up's `problem`
+sentence (naming both keys) shows only when a word needs a real drawing:
+one to draw, or words to judge with no stock picture drawn. With no key
+and no stock, nothing is judged or drawn, and `POST /api/pictures/fill` is
+a 400 with that sentence. Nothing 500s. `LINGO_IMAGE_PROVIDER=stub` draws
+coloured placeholder PNGs, for tests and UI checks.
 
-The OpenAI Images API, `POST https://api.openai.com/v1/images/generations`,
+### The picture theme
+
+Every picture is drawn in one look, so a round's pictures sit together:
+`PICTURE_THEME` in `scripts/pictures.mjs`, the one place it is defined.
+
+- `id`: `cream-outline-1`.
+- The style lines, first in every prompt: a flat vector picture-book
+  illustration of one subject filling about two thirds of the square;
+  thick, even, dark-brown rounded outlines; flat solid fills with no
+  gradients, texture or shading beyond one darker flat tone; a warm,
+  limited palette; a small soft oval ground shadow; a plain flat light
+  cream background (`#FFF4E0`), empty, with no scenery, pattern or border.
+- `seed`: 7, sent to Black Forest Labs with every picture. OpenAI gets the
+  same lines but has no seed, so its pictures are recorded as
+  `cream-outline-1+openai`, not in the theme's own look.
+
+Why (measured 2026-11-21 with real FLUX 3 Image Klein draws): the earlier
+lines ("flat, friendly ... plain soft pastel background") gave visibly
+different looks, one textured and shaded, with peach or blue backgrounds,
+with and without ground. These lines with seed 7 gave a dog, a hand, a bus
+and an apple in one consistent look. **No reference image** (BFL's
+`images`) is sent: with the dog as a style reference, "a cat" came back as
+the same dog with whiskers. The subject leaks.
+
+**To change it:** give `PICTURE_THEME` a new `id` (and new lines or seed).
+Then:
+1. run `npm run pictures:stock` (the stock set is kept per theme, so the
+   new theme starts with none drawn; the old files are left alone and no
+   longer offered);
+2. press **Redraw all in the current style** in each kids learner's Phrase
+   bank (below).
+
+Nothing old is silently mixed in: a picture's `theme` says what it is.
+
+### Stock pictures
+
+A shared set of about 200 concrete, picturable concepts (`content/pictures.yaml`,
+beside `languages.yaml`, so both libraries share it), grouped by category:
+animals, colours, the numbers one to five, family and people, body,
+health, fruit and vegetables, food, drinks, the table, home, clothes,
+toys, school and work, money and shopping, transport and travel, places,
+nature and weather, actions. Each is `{ id, description, words, group?,
+adults? }`: the id (also the file's name), the short description the
+theme's prompt gets, and the English words it stands for; `group` names
+look-alike concepts (a boy and a brother, a ball and catching one, a tree
+and a forest), and a round never offers two of one group (two right
+answers); `adults: true` (beer, wine, pills) keeps a concept from kids
+learners: it is never offered to their check, so never matched, and a kids
+word pointing at one (matched before the flag) leaves the game
+(`stockForMode` in `scripts/pictures.mjs`, `playable` in
+`web/server/pictures.ts`). Adult learners get them. The numbers one to five
+are one object counted ("exactly three smooth round pebbles in a row"): no
+printed digit, no colour of their own. The loader checks it with the rest of
+the library (`loadPictureStock`, `scripts/content.mjs`; the rules are
+`readStockList` in `scripts/pictures.mjs`): unique ids, a description that
+passes `cleanDescription` as written, at least one word, and a warning for
+a word in two concepts.
+
+The files are drawn once per install by the grown-up:
+
+```sh
+npm run pictures:stock                  # every concept with no file yet
+npm run pictures:stock -- --limit 20    # at most 20 this time
+npm run pictures:stock -- --dry-run     # what it would draw, and the cost
+```
+
+- It uses Black Forest Labs (`BFL_API_KEY`) whatever else is set: the
+  theme's own provider. `--dry-run` needs no key.
+- One draw per concept with no file in the current theme, one at a time.
+  Run again, it draws nothing it has.
+- It prints the theme, each picture with the credits its submit billed,
+  and the total. It stops cleanly at a 402 (out of credits) or a 429, and
+  skips a refused concept. The key is never printed.
+- It writes `<images dir>/stock/<theme id>/<concept id>.jpg`. Image files
+  are never committed.
+- It is not in any learner's ledger: it is the grown-up's explicit one-off.
+- The whole set of 212 is about 170 credits, **about $1.70** at $0.008 a
+  picture.
+
+How a word uses one:
+- The check is offered only the concepts drawn in the current theme. A
+  match sets the row `ready` with `stock_id`, `theme` and `file =
+  stockKey(theme, id)`. A concept whose file isn't drawn yet is never
+  offered, so its word gets a drawing of its own as before.
+- `GET /api/game/pictures/:id/:file` serves a stock row's file from
+  `stock/<theme>/` with the same owner check (the row must be this learner's
+  and language's) and the same immutable cache headers. Logged out is a
+  401; another learner, even on the same account, a 404. For a stock
+  picture the URL's `file` is `<stock key>.<version>`, the version being
+  the file's modification time and size (`stockVersion`,
+  `scripts/picture-store.mjs`; `pictureRef` in `web/server/pictures.ts`):
+  a stock picture removed and drawn again in the same theme gets a new URL
+  instead of the browser's year-old cached copy, and the old URL is a 404.
+  The row itself is unchanged.
+- A word pointing at a stock file whose file isn't on disk (removed, or an
+  old theme's never drawn on this install) leaves the game until it is.
+- **Draw again** on a stock-matched word draws a picture of its own (paid,
+  in the ledger). **Remove** removes only that word's picture.
+- No per-word removal, redraw, verdict or phrase delete ever deletes a stock
+  file: the row's `file` is a key no file is named by, the callers pass
+  only a word's own file (`deletePhrase` returns none for a stock row), and
+  `deletePicture` only ever touches `<images dir>/<64 hex>.<ext>`.
+- Two words pointing at one stock picture are never in one round (two right
+  answers): `roundChoices` skips a picture file already offered, and a
+  stock picture of a look-alike group already offered.
+- Words judged before 2026-11-21 keep their verdicts. Matching older
+  `none` words against the stock is bead `ld-30r`.
+
+Stock access is small functions (`scripts/picture-stock.mjs`: `listStock`
+with each concept's file state, `drawStockPicture`, `removeStockPicture`,
+`addStockConcept`), which the CLI uses and a later settings page can call.
+
+### Redraw all in the current style
+
+A grown-up action on the Phrase bank's picture bar (`POST
+/api/pictures/restyle`), shown while any ready picture is out of the theme
+(`status.outOfTheme`). It brings every ready picture of the active
+learner's language that isn't in the current theme into it: drawn before
+themes (`theme` null), by another provider, or in an older theme.
+- A word pointing at a stock concept that is drawn in the current theme is
+  re-pointed at once (no call).
+- The rest wait on the row (`restyle`): `check` when stock pictures are
+  drawn, else `draw`. The background run asks the check about the `check`
+  ones (one call per 20 words, on the judge ledger): a match points the
+  word at the stock picture (no image call), anything else becomes `draw`.
+  Each `draw` one is drawn again with the current provider and theme (in
+  the image ledger, under the cap).
+- **The old picture stays in place and in the game until the new one is
+  stored**, so a child never meets a gap. Then the old file is deleted.
+- A refusal leaves the word with its old picture; nothing retries it.
+- **With no image key** (but some stock drawn), the check still runs: a
+  word a stock picture fits is re-pointed; the rest are *not* marked to
+  draw (they would wait for ever). They keep their pictures, stay counted
+  in `outOfTheme`, and the status's `needKey` says how many only an image
+  key can redraw; the bar says so.
+- A swap during a game can't break a tile on screen: the game loads every
+  round's pictures as blobs before the first round
+  (`web/src/components/KidsGameView.tsx`), so deleting the old file
+  afterwards changes nothing shown. Only a swap in the second or two of
+  loading can make a round's picture fail to load; that round is left out
+  rather than shown half. No delay before the delete was needed.
+- With the fallback provider (OpenAI) in use, its own pictures
+  (`<id>+openai`) count as current, so pressing again never loops over
+  them.
+- With no key and no stock drawn it is a 400 with the key sentence.
+
+### The providers (read 2026-11-20 and 2026-11-21)
+
+**Black Forest Labs, FLUX 3 Image Klein** (the default; `BFL_IMAGE` in
+`web/server/imageProvider.ts`):
+- `POST https://api.bfl.ai/v1/flux-3-image-klein`, key in the `x-key`
+  header, body `{ prompt, resolution: "768sq", output_format: "jpeg",
+  safety_tolerance: 0, seed: 7 }`. The body takes nothing else
+  (`additionalProperties: false`); the other fields are `images`
+  (references, not used), `aspect_ratio`, `width`/`height`, `steps`
+  (1-16) and `user`. `output_format` is jpeg or png (no webp).
+  `safety_tolerance` is 0-7, 0 the strictest, and stays 0: these are for
+  children.
+- The reply is `{ id, polling_url, cost }`, `cost` in credits (1 credit =
+  $0.01). The `polling_url` is used as given (the docs say it must be), but
+  the key is only ever sent to an https URL on `*.bfl.ai`; anything else is
+  refused and nothing is sent there.
+- **No redirect is ever followed** (`bflFetch`: `redirect: "error"` on the
+  submit, every poll and the download). fetch drops `authorization` on a
+  cross-site redirect but keeps a custom header like `x-key`, so following
+  a 3xx from a bfl.ai host could hand the key to another server (PR #60
+  review; a test redirects between two local servers).
+- It is polled every 0.5 s with the key. Statuses: Task not found,
+  Pending, Reasoning, Generating, Request Moderated, Content Moderated, No
+  Card Generated, Ready, Error. Ready carries `result.sample`, a signed URL
+  valid for about 10 minutes with no CORS: the server downloads it at once,
+  without the key, capped at 4 MB and checked by its magic bytes. Only an
+  https URL on `*.bfl.ai` is fetched (BFL's delivery hosts are
+  `delivery.*.bfl.ai`; the host of the 2026-11-21 real draws wasn't
+  recorded); anything else, an internal address included, is a failure
+  with no request made.
+- The whole draw (submit, polls, download) has 60 s (`BFL_TIMING`).
+- 402 is out of credits, 429 is over the account's limit (24 tasks at once
+  on most endpoints). Each gets a plain log line (the status and a fixed
+  reason, never the body, which can quote the prompt) and the usual
+  10-minute backoff. `GET /v1/credits` returns the balance; the app doesn't
+  call it.
+- Each picture logs the model and the credits billed, never the prompt or
+  the key.
+- **Measured 2026-11-21** with real calls: `cost` 0.8 credits, so **$0.008
+  a picture**; Ready in 3-6 s; a 768x768 JPEG of 100-190 KB, a clean flat
+  cartoon. (OpenAI's gpt-image-2.6-flare measured 824 output tokens, about
+  $0.025 a picture.)
+- Sources: https://docs.bfl.ml/api-reference/utility/generate-an-image-with-flux-3-klein,
+  https://docs.bfl.ml/api-reference/utility/get-result,
+  https://docs.bfl.ml/api_integration/integration_guidelines,
+  https://docs.bfl.ml/api_integration/errors,
+  https://docs.bfl.ml/api-reference/get-the-users-credits,
+  https://docs.bfl.ml/quick_start/pricing, https://bfl.ai/pricing.
+
+**OpenAI** (the fallback when only `OPENAI_API_KEY` is set): the OpenAI Images API, `POST https://api.openai.com/v1/images/generations`,
 with these settings (`OPENAI_IMAGE` in `web/server/imageProvider.ts`; the
 model is the one constant `IMAGE_MODEL`):
 
@@ -3271,14 +3516,12 @@ What comes back:
 - The tokens billed for each image (`usage.output_tokens`) are logged, with
   no prompt and no key in the line.
 
-**Cost (an estimate).** OpenAI publishes no per-image price for 2.6 (the
-guide's calculator is interactive). gpt-image-2, at the same $30 per 1M
-output tokens, is listed at $0.006 for a low-quality 1024² image. That gives
-about $0.006 per image, plus under $0.001 of prompt: about **$0.007 per
-word**. At the cap of 50 that is about **$0.35 per kids language per day**,
-or about $10.50 a month if the cap is hit every day. The real figure shows in
-the logged tokens of the first real draw. The Haiku checks run on the Claude
-Code login.
+**OpenAI's cost.** The estimate before the first real draw was about $0.007
+a picture (gpt-image-2's listed $0.006 for a low-quality 1024² image at the
+same $30 per 1M output tokens). The first real draw measured 824 output
+tokens: about **$0.025 a picture**, three times Black Forest Labs'. At the
+cap of 200 that would be about $5 per kids language a day. The Haiku
+checks run on the Claude Code login.
 
 Sources:
 - https://developers.openai.com/api/docs/deprecations
@@ -3330,7 +3573,8 @@ The page (`web/src/components/KidsGameView.tsx`):
 
 The grown-up's side (`web/src/components/WordPictures.tsx`, in the
 Library's Phrase bank, never in the game):
-- a status line with **Draw pictures**. It reads its counts again after
+- a status line with **Draw pictures**, and **Redraw all in the current
+  style** while any picture is out of the theme. It reads its counts again after
   any picture action in a word's detail and after a word is deleted;
 - in each word's detail, its picture, what it was drawn as, **Remove
   picture** and **Draw again**;
@@ -3343,6 +3587,7 @@ Routes for it:
 - `GET /api/pictures/phrase/:id`
 - `POST /api/pictures/phrase/:id/remove|redraw`
 - `POST /api/pictures/phrase/:id/draw` with `{description?}`
+- `POST /api/pictures/restyle` (Redraw all in the current style)
 
 **Draw it anyway** (bead `ld-of0`, no migration: the row goes from `none`
 to `pending` with a description, which the checks already allow):
@@ -3376,24 +3621,30 @@ page can reach the Phrase bank's picture actions (Draw pictures, Remove
 picture, Draw again, Draw it anyway) like the rest of the kids Library. The game itself has
 no such buttons.
 
-Draw again is held to the daily ledger and cap like any other drawing, so
-repeated presses can't spend more than the 50 images a day.
+Draw again and Redraw all are held to the daily ledger and cap like any
+other drawing, so repeated presses can't spend more than the 200 images a
+day.
 
 **No review before showing.** Pictures are shown to the child without a
 grown-up's review first; the user chose this. The controls come after the
 fact:
 - the fixed safe style and the provider's moderation;
 - removal from the Phrase bank, which takes a picture out of the game at
-  once and deletes its file.
+  once and deletes its file (a stock picture's file is shared and stays).
 
 A picture the grown-up asked for with Draw it anyway is shown the same way,
 with the same controls.
 
 Tests:
-- `scripts/tests/pictures.test.mjs`: the pure rules.
+- `scripts/tests/pictures.test.mjs`: the pure rules, the theme, the stock
+  list and the stock files.
 - `scripts/tests/pictures.http.test.mjs`: the HTTP side, with OpenAI and
   claude stubbed.
-- `scripts/tests/db-migration-0011.test.mjs`: the migration.
+- `scripts/tests/pictures-bfl-stock.http.test.mjs`: Black Forest Labs
+  (stubbed), stock matching, Redraw all.
+- `scripts/tests/picture-stock.test.mjs`: the stock CLI and functions.
+- `scripts/tests/db-migration-0011.test.mjs` and
+  `scripts/tests/db-migration-0012.test.mjs`: the migrations.
 
 ## Docs to update as phases land
 

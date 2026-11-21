@@ -18,6 +18,7 @@ import YAML from "yaml";
 // Erasable TypeScript, shared with the Scene tab and the server; Node strips
 // the types (the same as scripts/db/*.ts).
 import { readRandomScene } from "../web/shared/scenes.ts";
+import { readStockList } from "./pictures.mjs";
 import { parseRef } from "../web/shared/unit-rules.ts";
 
 // Paths derive from import.meta.url, never process.cwd(): `npm run dev` runs
@@ -292,7 +293,45 @@ export function loadContent(root = contentRoot()) {
     if (scenario) scenarios.push(scenario);
   }
 
+  // The word game's shared stock pictures (content/pictures.yaml, beside
+  // languages.yaml): checked here so a bad entry shows with the rest of
+  // the library's problems. Only a root that has the file (the adult one;
+  // kids share it).
+  if (fs.existsSync(path.join(root, PICTURE_STOCK_FILE))) for (const p of loadPictureStock(root).problems) problems.push(p);
+
   return { root, schema, frame, frameDrill, profile, languages, units, scenarios, problems };
+}
+
+/** The word game's stock list, at the library root (shared by both modes). */
+export const PICTURE_STOCK_FILE = "pictures.yaml";
+
+/**
+ * content/pictures.yaml → `{ concepts, problems }` (pictures.mjs
+ * readStockList: unique ids, descriptions that pass cleanDescription, the
+ * English words each stands for). Optional: no file is no concepts and no
+ * problem. Always the content root's, whatever the mode: kids and adults
+ * share one set.
+ */
+export function loadPictureStock(root = contentRoot()) {
+  const abs = path.join(root, PICTURE_STOCK_FILE);
+  const problems = [];
+  const report = (level, message) => problems.push({ file: displayPath(abs), level, message });
+  if (!fs.existsSync(abs)) return { concepts: [], problems };
+  const read = readText(abs);
+  if (read.error) {
+    report("error", read.error);
+    return { concepts: [], problems };
+  }
+  let raw;
+  try {
+    raw = YAML.parse(read.text);
+  } catch (e) {
+    report("error", `not valid YAML: ${firstLine(e)}`);
+    return { concepts: [], problems };
+  }
+  const out = readStockList(raw);
+  for (const p of out.problems) report(p.level, p.message);
+  return { concepts: out.concepts, problems };
 }
 
 function loadYamlFile(abs, report) {

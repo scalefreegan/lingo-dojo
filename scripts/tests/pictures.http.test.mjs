@@ -159,7 +159,8 @@ test("Draw pictures: one check for the words, a picture each for the picturable 
   for (const c of openai.calls) {
     assert.equal(c.auth, "Bearer sk-test-not-a-real-key");
     assert.deepEqual([c.body.model, c.body.size, c.body.quality, c.body.complexity, c.body.background, c.body.moderation, c.body.n], ["gpt-image-2.6-flare", "1024x1024", "low", "low", "auto", "auto", 1]);
-    assert.match(c.body.prompt, /^A flat, friendly children's picture-book cartoon illustration of one subject/);
+    assert.match(c.body.prompt, /^A flat vector children's picture-book illustration of one subject/, "the theme's lines, for OpenAI too");
+    assert.equal(c.body.seed, undefined, "OpenAI takes no seed");
     assert.match(c.body.prompt, /\nSubject: "a picture of (dog|cat|ball)"$/);
     assert.match(c.body.prompt, /no text, letters/);
   }
