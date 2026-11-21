@@ -99,7 +99,7 @@ categories:
 
   Health:
     - { id: medicine, description: a small brown medicine bottle and a measuring spoon, words: [medicine, syrup] }
-    - { id: pills, description: two white pills on a small plain dish, words: [pill, pills, tablet, tablets], adults: true }
+    - { id: pills, description: two white pills on a small plain dish, words: [pill, pills, tablet, tablets] }
     - { id: bandage, description: a sticking plaster, words: [bandage, plaster, band-aid] }
     - { id: thermometer, description: a thermometer, words: [thermometer, fever] }
     - { id: hospital, description: a hospital building with a red cross, words: [hospital] }
@@ -145,8 +145,8 @@ categories:
     - { id: tea, description: a cup of tea with a teabag, words: [tea] }
     - { id: milk, description: a glass of milk, words: [milk] }
     - { id: juice, description: a glass of orange juice, words: [juice, orange juice] }
-    - { id: beer, description: a glass of beer, words: [beer], adults: true }
-    - { id: wine, description: a glass of red wine, words: [wine], adults: true }
+    - { id: beer, description: a glass of beer, words: [beer] }
+    - { id: wine, description: a glass of red wine, words: [wine] }
 
   At the table:
     - { id: plate, description: an empty white plate, words: [plate, dish] }
