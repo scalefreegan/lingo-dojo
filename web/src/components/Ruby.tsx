@@ -79,6 +79,7 @@ export function CharTerm({ text, locale, className = "" }: { text: string; local
   let at = 0;
   for (const ch of text) {
     if (isHan(ch)) {
+      const offset = at;
       if (plain) out.push(plain);
       plain = "";
       out.push(
@@ -90,7 +91,7 @@ export function CharTerm({ text, locale, className = "" }: { text: string; local
           title="Character details"
           onClick={(e) => {
             e.stopPropagation();
-            openChar(ch, locale);
+            openChar(ch, locale, { text, at: offset });
           }}
         >
           {rubyPieces(text, at, at + ch.length, ruby)}

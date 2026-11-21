@@ -18,7 +18,8 @@
     "user": "node scripts/user.mjs",
     "pictures:stock": "node scripts/picture-stock.mjs",
     "pron:record": "node scripts/pronunciation-record.mjs",
-    "pron:proof": "node scripts/pronunciation-proof.mjs --recordings"
+    "pron:proof": "node scripts/pronunciation-proof.mjs --recordings",
+    "pinyin:sweep": "node scripts/pinyin-sweep.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

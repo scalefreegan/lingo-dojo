@@ -7,7 +7,8 @@
     "skipLibCheck": true,
     /* The server reads Chinese with the page's own reader
        (server/pronunciation.ts → src/script/zh.ts), whose JSON tables are
-       typed by .d.json.ts files. */
+       typed by .d.json.ts files, and OpenCC's tables by opencc-dicts.d.ts
+       (included below: nothing imports a declaration file). */
     "allowArbitraryExtensions": true,
 
     /* Bundler mode (vite loads this config with esbuild) */
@@ -25,5 +26,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "server", "shared", "../scripts/db/*.ts"]
+  "include": ["vite.config.ts", "server", "shared", "../scripts/db/*.ts", "src/script/opencc-dicts.d.ts"]
 }

@@ -252,11 +252,26 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   The readings come from the browser, not the dojo master or a model:
   `web/src/script/zh.ts` runs pinyin-pro word by word (so 銀行 reads yín
   háng, 長大 zhǎng dà) over the text spelled in simplified characters one
-  for one (its word list is simplified; the table is Unihan's), then
-  applies Taiwan's standard readings for a zh-TW profile (星期 xīng qí,
-  垃圾 lè sè). A traditional character that shares its simplified form
-  with another keeps a reading of its own (髮 fà, never 發's fā; 幹 gàn,
-  not 乾's gān). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  for one (its word list is simplified). The spelling is OpenCC's
+  traditional → simplified tables (`web/src/script/t2s.ts`: TSPhrases then
+  TSCharacters, longest match), which choose by the word where a character
+  has several simplified forms (蘋果 苹果 píng guǒ, 瞭解 了解, 徵求 征求 but
+  宮商角徵羽, 乾淨 干净 but 乾隆); t2s.ts runs them itself so every character
+  keeps its place (a table entry that is not one for one is taken character
+  by character), and decides Taiwan's 著 by its neighbours (看著 zhe, 睡著
+  zháo, 著名 zhù). Then it applies Taiwan's standard readings for a zh-TW
+  profile (星期 xīng qí, 垃圾 lè sè). A traditional character that shares
+  its simplified form with another keeps a reading of its own (髮 fà, never
+  發's fā; 幹 gàn, not 乾's gān); any other reading from the word stands,
+  since the library's lists for traditional characters are short (間 lists
+  only jiàn: 時間 is shí jiān). A short correction list (`READING_FIXES`:
+  睡不著 bù zháo, 處理不當 bù dàng, 倒是 dào, 假日 jià, 挨餓 ái, 囂張 xiāo,
+  種植 zhòng, 炸雞 zhá, …) fixes everyday words the library misreads in
+  either script, found by the CC-CEDICT sweep (`npm run pinyin:sweep`,
+  `scripts/pinyin-sweep.mjs`: every traditional headword of CC-CEDICT read
+  for zh-TW and zh-CN and its simplified one for zh-CN, compared with the
+  dictionary; run by hand, the dictionary downloaded into the gitignored
+  `data/cedict/`, nothing of it shipped). The library reads every 地 dì, 得 dé and 儿 ér, so a few
   narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
   開心地) and never where it starts a word (看看地圖); 得 is de only after
   a listed verb and before a degree word (跑得很快), never after a pronoun
@@ -282,7 +297,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   counterpart, and the phrases in this language's bank that contain it or
   its counterpart (the bank's own search). Transcript lines keep their one
   tap (a glossed word's meaning); characters are reached through the
-  definition, so the two never compete. Kids mode makes the glyph bigger,
+  definition, so the two never compete. A character tapped in a word leads
+  with its reading there (蘋 from 蘋果: píng, ㄆㄧㄥˊ; 行 from 銀行: háng),
+  then the rest; alone, a traditional character that is just the spelling
+  of its simplified form leads with that form's usual reading (蘋 píng, 間
+  jiān, 還 hái). Only the usual reading is played as the character itself;
+  a word's other reading is said by an exemplar. Kids mode makes the glyph bigger,
   plays the strokes first and slower, and words it for a child. Everything
   is served by this app: stroke data from the hanzi-writer-data package at
   `/hanzi-data/<character>.json` (`web/server/hanzi.ts`, one small file per
@@ -290,7 +310,11 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   stroke counts and counterparts from `web/src/script/zh-chars.json`
   (generated from the Unicode Unihan database by
   `scripts/gen-zh-chars.mjs`, its own chunk, fetched on the first tap).
-  Licences: pinyin-pro and Hanzi Writer are MIT; the stroke data is from
+  Licences: pinyin-pro, opencc-js and Hanzi Writer are MIT; OpenCC's
+  dictionary data (TSPhrases, TSCharacters, in the reader's chunk) is
+  Apache-2.0, its notice in `web/src/script/OPENCC-LICENSE.txt`; the
+  CC-CEDICT the sweep downloads is CC BY-SA 4.0 and is never committed or
+  bundled; the stroke data is from
   Make Me a Hanzi under the Arphic Public License (its text ships in the
   package; the card credits it); Unihan is under the Unicode License v3,
   whose notice is in the generated files and

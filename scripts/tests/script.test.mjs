@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
   KANGXI_RADICALS, hanChars, isHan, isTaiwan, parseRadical, particleDe, pinyinToZhuyin, readingIn, resolveMode, rubyStorageKey, scriptFor,
-  readMarked, simplifyForReading, splitHan, taiwanize,
+  readMarked, splitHan, taiwanize,
 } from "../../web/src/script/script.ts";
 import { charReadings, readCodePoints, readOffsets, simplified } from "../../web/src/script/zh.ts";
 import { ARPHIC_LICENSE_PATH, strokeFile } from "../../web/server/hanzi.ts";
@@ -88,20 +88,6 @@ test("splitHan: single characters and runs of everything else, with UTF-16 offse
   assert.equal(isHan("a"), false);
   assert.equal(isHan("你好"), false);
   assert.deepEqual(hanChars("你好，你們好"), ["你", "好", "們"]);
-});
-
-test("simplifyForReading: one for one, with 著 and 乾 by their neighbours", () => {
-  const t = { 們: "们", 銀: "银", 覺: "觉" };
-  assert.equal(simplifyForReading("我們睡覺", t), "我们睡觉");
-  assert.equal(simplifyForReading("看著", t), "看着");
-  assert.equal(simplifyForReading("著名", t), "著名");
-  assert.equal(simplifyForReading("顯著", t), "顯着".replace("着", "著"));
-  assert.equal(simplifyForReading("乾淨", t), "干淨");
-  assert.equal(simplifyForReading("乾隆", t), "乾隆");
-  assert.equal(simplifyForReading("這裡", t), "這里");
-  // A two-character "simplified form" would shift every offset: ignored.
-  assert.equal(simplifyForReading("甲", { 甲: "ab" }), "甲");
-  assert.equal([...simplifyForReading("𠮷們", t)].length, 2);
 });
 
 test("taiwanize: Taiwan's readings, only over the mainland's usual one", () => {
