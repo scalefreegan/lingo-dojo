@@ -1396,3 +1396,52 @@ test("library locales: every app locale maps to a library one or is knowingly se
   assert.equal(elevenLibrarySearchable("zh-HK"), false, "Cantonese is never searched as zh: that returns Mandarin");
   assert.equal(elevenLibrarySearchable("zh-TW"), true);
 });
+
+// ld-teo: parsing leftovers from the fourteenth review.
+test("a tag bolded alone before the colon does not leave the text's bold unpaired", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  const lines = parseVoiceReply("**CHARACTER-F**: **Hola** *waves*");
+  assert.deepEqual(lines.map((l) => l.text), ["Hola"], "the *waves* stage direction is not spoken");
+  assert.equal(parseVoiceReply("**NARRATOR-F:** Hola")[0].text, "Hola");
+  assert.equal(parseVoiceReply("NARRATOR-F: **Hola** *waves*")[0].text, "Hola");
+});
+
+test("an italic GLOSS label is a shown-not-spoken line", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  for (const label of ["*GLOSS:*", "*GLOSS*:", "* GLOSS:"]) {
+    const lines = parseVoiceReply(`NARRATOR: Hi\n${label} hola = hi`);
+    assert.deepEqual(lines.map((l) => l.text), ["Hi"], label);
+    assert.deepEqual(parseGlosses(`${label} hola = hi`), [{ term: "hola", meaning: "hi" }], label);
+  }
+});
+
+test("a CAST age may end at an ASCII double dash", async () => {
+  const { parseCast } = await import("../voice.mjs");
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old -- Don Pedro"), [{ slot: "character:male", age: "old", who: "Don Pedro" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old --Don Pedro"), [{ slot: "character:male", age: "old", who: "Don Pedro" }]);
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old--fashioned"), [], "no blank on either side: a word, not an age");
+  assert.deepEqual(parseCast("CAST: CHARACTER-M old-fashioned man"), [], "a single hyphen inside a word is still no age");
+});
+
+test("a timing note holding other angle tags is still one mark", async () => {
+  const { parseVoiceReply } = await import("../voice.mjs");
+  const [l] = parseVoiceReply("<pause 1.5 while <i>she</i> thinks> CHARACTER-F: Hola");
+  assert.equal(l.text, "Hola");
+  assert.equal(l.gap, 1.5);
+  // An unclosed mark must not swallow a speaker tag up to some later ">".
+  const kept = parseVoiceReply("<pause 1.5 <tag> CHARACTER-F: Hola and <b> then more>");
+  assert.ok(kept.length > 0, "the line is not dropped");
+  assert.ok(kept.some((l) => /Hola/.test(l.text)), "its words are still there");
+  assert.equal(parseVoiceReply("<pause 1> CHARACTER-F: a < b")[0].text, "a < b", "a bare < is no tag");
+});
+
+test("a retry's voice is not taken up when another person already holds it", async () => {
+  const { deferredVoiceTaken } = await import("../../web/shared/voice-cast.ts");
+  const held = [["character:female|ana", "v1"], ["character:female|bea", "v2"]];
+  const o = { key: "character:female|ana", slot: "character:female", held, others: ["n1", undefined] };
+  assert.equal(deferredVoiceTaken({ ...o, voiceId: "v2" }), true, "bea holds v2 on this tag");
+  assert.equal(deferredVoiceTaken({ ...o, voiceId: "n1" }), true, "another slot's voice");
+  assert.equal(deferredVoiceTaken({ ...o, voiceId: "v1" }), false, "the person's own voice is not a clash");
+  assert.equal(deferredVoiceTaken({ ...o, voiceId: "v9" }), false);
+  assert.equal(deferredVoiceTaken({ ...o, slot: "character:male", voiceId: "v2" }), false, "another tag's holder is no clash");
+});

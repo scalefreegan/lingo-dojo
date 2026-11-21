@@ -117,6 +117,24 @@ export const Transcript = memo(function Transcript({
     if (r.top < box.top + pad || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - pad);
     else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
   }, [playing]);
+  // A definition card under the last line opens below the list's fold:
+  // bring it into view ("nearest": no move when it already fits). The
+  // list's own scroll only, like the effect above, never the page's. Not a
+  // scrollIntoView: that moves every ancestor.
+  const pickedKey = picked ? `${picked.at}\u0001${picked.gloss.term}` : null;
+  useLayoutEffect(() => {
+    const el = olRef.current;
+    if (!el || !pickedKey) return;
+    const card = el.querySelector<HTMLElement>('[data-testid="voice-gloss"]');
+    if (!card) return;
+    const box = el.getBoundingClientRect();
+    const r = card.getBoundingClientRect();
+    const pad = 8;
+    if (r.height > box.height || r.top < box.top + pad) scrollTo(el, el.scrollTop + r.top - box.top - pad);
+    else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
+    // Only a different card moves the list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedKey]);
 
   // Asking to hear a line is asking to follow it. Stable, for the rows' memo.
   const replayRef = useRef(onReplay);
@@ -295,13 +313,16 @@ const TranscriptRow = memo(function TranscriptRow({
               from the keyboard closes it and puts focus back on its opener. */}
           {picked?.at === `${i}:${j}` && (
             <div
-              className="mx-2 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg sm:ml-[8.5rem] sm:max-w-[72ch]"
+              className="mx-2 flex items-start gap-2 rounded-lg bg-accent-soft px-2.5 py-1.5 text-sm text-fg sm:ml-36 sm:max-w-[72ch]"
               role="status"
               data-testid="voice-gloss"
             >
               <span className="min-w-0 flex-1 break-words">
                 {/* Its characters each open the character card (Chinese). */}
-                <CharTerm text={picked.gloss.term} locale={locale} className="font-medium text-accent" />
+                {/* accent-hover, not accent: accent on accent-soft is 4.34:1 in
+                    the adult dark theme; hover is 5.47:1 there and no lower
+                    in the others. */}
+                <CharTerm text={picked.gloss.term} locale={locale} className="font-medium text-accent-hover" />
                 <span className="text-fg-3"> — </span>
                 {picked.gloss.meaning}
               </span>
