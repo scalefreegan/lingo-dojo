@@ -1368,7 +1368,7 @@ function Result({
       {result.review.note && <p className="text-sm text-fg-2" data-testid="practice-note">{result.review.note}</p>}
       <div className="rounded-xl bg-raised px-3 py-2" data-testid="practice-answer-shown">
         <p className="text-lg font-medium text-fg" lang={item.lang || undefined}>
-          <RubyText text={result.expected.text} locale={locale} reading={result.expected.reading} />
+          <RubyText text={result.expected.text} locale={locale} reading={result.expected.reading} check />
         </p>
         <p className="text-sm text-fg-2">{result.expected.meaning}</p>
         {play && <PhrasePlay model={play} />}

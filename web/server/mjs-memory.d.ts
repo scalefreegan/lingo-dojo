@@ -109,7 +109,11 @@ declare module "*/scripts/extraction.mjs" {
     kids?: boolean;
     /** revisit.mjs lastTimeSection: last attempt's corrections to judge. */
     lastTime?: string;
+    /** Mandarin words to read (ld-4i2), each with the coach's line. */
+    readings?: { word: string; sentence?: string }[];
   }): { system: string; user: string };
+  export const MAX_RECAP_READINGS: number;
+  export function parseRecapReadings(raw: unknown, asked: readonly string[]): { readings: { word: string; pinyin: string }[]; dropped: number };
   export function parseExtraction(text: unknown): { ok: true; value: Extraction; dropped: number } | { ok: false; error: string };
   /** A stored turn as the extraction helpers read it. */
   export interface StoredTurn {

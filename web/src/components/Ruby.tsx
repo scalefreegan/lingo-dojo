@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { rubyPieces, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
+import { UNSURE_LABEL, rubyPieces, useCheck, useCorrectionsVersion, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
 import { hintFor, isHan, readMarked, scriptFor } from "../script/script.ts";
 
 /* The reading-aid pieces the transcript, History and the phrase bank use:
@@ -7,11 +7,15 @@ import { hintFor, isHan, readMarked, scriptFor } from "../script/script.ts";
  * term whose characters each open the character card. All of them render
  * nothing extra for a language without a reading aid. */
 
-/** Target-language `text` with its readings over it (plain where none). */
-export function RubyText({ text, locale, reading }: { text: string; locale: string | null | undefined; reading?: string | null }) {
+/** Target-language `text` with its readings over it (plain where none).
+ *  `check`: an uncertain reading's characters open the character card
+ *  (only where the text is not inside a button already). */
+export function RubyText({ text, locale, reading, check = false }: { text: string; locale: string | null | undefined; reading?: string | null; check?: boolean }) {
   // `reading`: a bank phrase's stored reading for exactly this text.
-  const ruby = useRuby(text, locale, hintFor(text, reading));
-  return <>{rubyPieces(text, 0, text.length, ruby)}</>;
+  const hints = hintFor(text, reading);
+  const ruby = useRuby(text, locale, hints);
+  const onCheck = useCheck(ruby, hints);
+  return <>{rubyPieces(text, 0, text.length, ruby, check ? onCheck : undefined)}</>;
 }
 
 /** A whole sentence with one stretch marked (`<mark>`): the readings are
@@ -19,18 +23,32 @@ export function RubyText({ text, locale, reading }: { text: string; locale: stri
  *  beside the mark keep their context (了 in 天黑了 is le, not liǎo). */
 export function MarkedText({ before, marked, after, locale, markClassName, reading }: { before: string; marked: string; after: string; locale: string | null | undefined; markClassName: string; reading?: string | null }) {
   const mode = useRubyMode(locale);
+  const { kids } = useScript();
   const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
+  const version = useCorrectionsVersion();
   const [b, m, a] = useMemo(
     // `reading`: the marked phrase's stored reading, laid over it.
-    () => readMarked([before, marked, after], reader && locale && mode !== "off" ? (t) => reader.readOffsets(t, locale, hintFor(marked, reading)) : null),
-    [before, marked, after, reader, locale, mode, reading],
+    // `version`: the learner's corrections changed.
+    () => {
+      void version;
+      return readMarked([before, marked, after], reader && locale && mode !== "off" ? (t) => reader.readOffsets(t, locale, hintFor(marked, reading)) : null);
+    },
+    [before, marked, after, reader, locale, mode, reading, version],
   );
-  const pieces = (p: { text: string; readings: (string | null)[] | null }) => rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings });
+  // The uncertain words over the whole sentence, cut to each part.
+  const unsure = useMemo(() => {
+    void version;
+    return reader && locale && mode !== "off" && !kids ? reader.unsureOffsets(before + marked + after, locale) : null;
+  }, [before, marked, after, reader, locale, mode, kids, version]);
+  const pieces = (p: { text: string; readings: (string | null)[] | null }, from: number) => {
+    const spans = unsure?.filter((u) => u.end > from && u.start < from + p.text.length).map((u) => ({ ...u, start: u.start - from, end: u.end - from })) ?? null;
+    return rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings, unsure: spans });
+  };
   return (
     <>
-      {pieces(b)}
-      <mark className={markClassName}>{pieces(m)}</mark>
-      {pieces(a)}
+      {pieces(b, 0)}
+      <mark className={markClassName}>{pieces(m, before.length)}</mark>
+      {pieces(a, before.length + marked.length)}
     </>
   );
 }
@@ -85,6 +103,7 @@ export function CharTerm({ text, locale, className = "", reading }: { text: stri
   for (const ch of text) {
     if (isHan(ch)) {
       const offset = at;
+      const unsure = ruby.unsure?.some((u) => u.start <= offset && offset < u.end);
       if (plain) out.push(plain);
       plain = "";
       out.push(
@@ -92,8 +111,8 @@ export function CharTerm({ text, locale, className = "", reading }: { text: stri
           key={at}
           type="button"
           className="ld-char"
-          aria-label={`${ch}: character details`}
-          title="Character details"
+          aria-label={unsure ? `${ch}: character details, ${UNSURE_LABEL}` : `${ch}: character details`}
+          title={unsure ? "Character details (reading uncertain)" : "Character details"}
           onClick={(e) => {
             e.stopPropagation();
             openChar(ch, locale, { text, at: offset, ...(hints ? { hints } : {}) });

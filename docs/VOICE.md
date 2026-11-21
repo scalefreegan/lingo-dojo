@@ -580,6 +580,259 @@ keeps, the rule text and its switch),
 languages, kids), `scripts/tests/pronunciation.http.test.mjs` (the tone
 check's `reading`), `scripts/tests/db-migration-0014.test.mjs`.
 
+### Uncertain readings (ld-4i2)
+
+The reader is sometimes guessing. When it is, an adult learner sees a quiet
+mark on the word, can correct it, and the correction makes later readings
+better: for them at once, for everyone once it is confirmed. The recap
+call, which runs once per session already, also reads the session's
+uncertain words in context.
+
+- **The mark's definition** (`uncertainWords` in `web/src/script/zh.ts`).
+  A word is marked when one of its characters meets all of these:
+  - its reading came from the frequency prior or the fallback, not from a
+    dictionary word, a rule or a person;
+  - the character has a second ordinary reading, other than the neutral
+    tone of the same syllable;
+  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
+    simplified form). The reader's context rules settle these characters
+    almost always, and marking them made up most of the noise;
+  - it is not in a common word (PR #67). Every common word reads as
+    CC-CEDICT reads it and is settled (`applyCommon` in zh.ts, after the
+    prior, before Taiwan's readings and a person's correction):
+    - The list is `web/src/script/zh-words.ts` (`npm run pinyin:words
+      [-- --top N] [-- --report]`, `scripts/gen-zh-words.mjs`): wordfreq's
+      top **20,000** Chinese words (94% of Chinese word tokens; the next
+      10,000 add 2 points, the 30,000 after those under 2 more) of 2–6
+      characters with a CC-CEDICT entry, name entries included (长江,
+      华盛顿), an entry that only points to another ("see 長沙市") where it
+      is the word's only one.
+    - A word CC-CEDICT reads two ways stays out of the list: 57 of the
+      20,000. 38 of them have a learner's standard reading instead
+      (`web/src/script/zh-standard.ts`, our own table): 30 checked by hand
+      in the official HSK 3.0 word list (GF 0025—2021; it has no stated
+      licence, so it is a reference only: the PDF stays in the gitignored
+      `data/freq/hsk/`, and nothing from it is kept but each word's reading
+      and the note "HSK 3.0 level N"), and 8 by a stated judgement (结果:
+      HSK lists jiéguǒ and jiē//guǒ, the result sense overwhelming; 好玩,
+      中式, 较差, 小儿, 禁用, 失调, 大王, not in HSK, the other reading rare).
+      Such a word takes its reading over the reader's choice (当天 dàng
+      tiān, 恶心 ě xin, 琢磨 zuó mo), in zh-TW only where Taiwan agrees
+      (not 便宜, 大夫, 尽量, 恶心, 当天, 当晚, 片子, 琢磨: Taiwan's reading,
+      from general knowledge of Taiwan usage, not a checked source), never
+      inside a longer word the segmenter splits (好事|者 hào, 便宜|行事 biàn),
+      and by its traditional spelling where a character has two (儘量 jǐn,
+      盡量 jìn). The other 19 keep the reader's reading and are always
+      marked, even where the library's dictionary has the word
+      (`UNSETTLED_WORDS`; 同行 tóng háng or tóng xíng), until a person
+      settles them; inside a dictionary word (受不了) they are not. Longer
+      words holding a table word that the reader misread are rows too,
+      read as CC-CEDICT reads them (便宜行事 biàn yí, where the prior's table
+      had biàn yi; 京片子, 面恶心善, 空地导弹, 年较差, 日较差, 丫头片子): 转动
+      (HSK lists both), 背着, 看好, 同行, 正当, 所长 (HSK lists one, but the
+      other is as common in running text: 背着书包, 看好孩子, 正当…时,
+      一无所长), and 13 not in HSK (不了, 分子, 教会, 明朝, 总长, 重重, 朝阳,
+      供养, 播种, 外传, 倾倒, 散落, 调配). Readings that differ only
+      by a neutral tone are one word with both (东西 dōng xī / dōng xi: the
+      reader's stands). Not 一行 (a sentence often reads yī háng).
+    - Reduplicated words read alike: a doubled character takes the first
+      one's tone (狗狗, CC-CEDICT gou3 gou1, is gǒu gǒu), or the neutral tone
+      where CC-CEDICT gives the second one (妈妈 mā ma, 谢谢 xiè xie, 星星 xīng
+      xing, 看看 kàn kan), never a mix. `WORD_SKIP`'s words (喳喳, 懒洋洋, 宏碁:
+      CC-CEDICT's reading isn't the everyday one) keep the reader's reading,
+      settled.
+    - Stored only where it does something: 2,827 words (63 KB, 29 KB gzip)
+      that the reader alone reads otherwise in either script or with a
+      character of two readings; the other 12,608 read the same without it.
+      A simplified character written for two traditional ones (发: 發 / 髮)
+      names the word's traditional spellings, so 散髮 is no 散發 sàn fā.
+    - It applies where a word stands between word boundaries of the
+      segmenter (ICU splits the traditional 再|見), cuts no word of the
+      library's dictionary, and the reader agrees: a syllable read as
+      CC-CEDICT reads it (or toned where CC-CEDICT has the neutral tone)
+      stays, a character of one reading that nothing settled takes
+      CC-CEDICT's, and any other difference (a character of two readings
+      the prior or a rule chose: 当 dāng in 我不当老师, 还 hái in
+      我还给你做饭) leaves the word to the reader.
+    - Measured: of wordfreq's top 1,000 / 5,000 / 20,000 words read alone,
+      5 / 23 / 199 are marked in simplified (before: 5 / 38 / 290) and 5 /
+      22 / 207 in traditional (before: 6 / 39 / 300); what is left is
+      mostly words CC-CEDICT reads two ways and phrases it has no entry
+      for (一场, 更好, 很难, 长时间). With the standard readings: 1 / 14 /
+      180 (simplified), 1 / 14 / 191 (traditional). On CC-CEDICT's 110,382 headwords
+      (`pinyin-sweep.mjs`) it changed only neutral tones of doubled
+      characters (谢谢, 星星, 看看, 太太, 娘娘, 泡泡 …), none broken; PR #63's
+      word and sentence sets unchanged (263/276, 70/87).
+
+  The unit marked is the segmenter's word. A single character joins the
+  word after it (得去, 长着, 倒车), or the word before when there is no next
+  word or the next word starts with a function word (有点干; 他量, not
+  量很). A word with no Chinese neighbour, or one longer than 8 characters,
+  is not marked.
+- **Measured** (2026-11-21, `scripts/tests/reading-marks.test.mjs`, about
+  100 hand-written dojo-master lines across 10 scenes,
+  `scripts/tests/zh-session-corpus.mjs`; not the real database).
+  - With every character of two or more usual readings marked: 9.2 marks
+    per 100 words.
+  - With the definition above, before the common words: 1.80 per 100 in
+    simplified (17 in 946 words) and 1.63 in traditional (15 in 921); 教练,
+    当然 were about a third of them. With them: **1.37 per 100 in
+    simplified** (13) and **1.19 in traditional** (11), the same after
+    the 20,000-word list (PR #67). The test holds both under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
+    in 55 words, both 再見) to 0.
+  - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
+    misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
+    得严重 (dé for de), 长着 (cháng for zhǎng).
+  - 还 before 钱 / 书 / 你 (`giveBack`, PR #67 reviews): read huán only
+    where the phrase ends there (the text's end, punctuation, 了吗吧呢啊,
+    给, 的时候, a number: 我还钱, 你还书了吗, 我还你钱, 还钱三百); anywhere
+    else left hái and marked whatever its ranks say (`doubt`: 他还书包里,
+    我还钱不够, 他去还书店, 我还钱包), with the mark on 还 and what follows,
+    never ICU's 我还. Never 还给 (as often 还 hái + the preposition 给:
+    我还给你做饭) and never inside a dictionary word.
+  - Not marked: the dictionary words 银行, 第五行 (in most lines), 一行人
+    and, in simplified, 抽空.
+  - The adversarial `EVERYDAY_SENTENCES` set, written to trip the reader,
+    marks 8.8 per 100 (CN) and 7.8 (TW).
+  - Revert check: emptying `CONTEXT_SETTLED` gives 8.67 per 100 and fails
+    the rate tests.
+- **Where it shows**, adults only (`useRuby` gives no marks when the
+  `ScriptContext` is kids). It shows wherever pinyin or zhuyin is shown: the
+  transcript, the Phrase bank, Practice's answer sides and the recap. The
+  mark is not colour alone: a dotted line under the reading (`ld-ruby-unsure`)
+  and an accessible label ("reading uncertain in 得去, check it"). Where the
+  text is not already a button, the mark is a button (`check`) that opens
+  the character card.
+- **The control** (`web/src/components/ReadingFix.tsx`, on the character
+  card under the character's readings; also in the recap's "Readings to
+  check"). It works on the word holding the tapped character (`wordAt`).
+  - **This reading is wrong** offers each character's real readings
+    (`charReadings`), one syllable at a time.
+  - **This is right** confirms the reading shown. When that is the
+    reader's own reading, nothing else changes. When it is not (it is a
+    recap's suggestion), it goes to the shared list like a correction: the
+    learner's vote, the same one as their recap's.
+  - Only a choice made by hand ranks as the learner's own. A recap that
+    agreed with the reader only clears the mark (`checked`, below the
+    shared list), so a reading people settle later still reaches them.
+  - The choice is saved through `POST /api/readings` (`learner: true`;
+    kids 403; a language other than Mandarin 400; the word and reading
+    checked by `validateCorrection`: 2–8 Chinese characters, one real
+    reading per character).
+  - It is kept per language profile, keyed by the word's simplified
+    spelling (`reading_corrections`, docs/DATA.md §Mandarin readings), so a
+    word that is not in the bank is handled the same way: no bank phrase is
+    made for it.
+  - Every bank phrase holding the word is read again with it, and
+    `phrases.reading` is set where the reading changed. A word a person
+    settled takes their reading over what the phrase stored (a hint, or a
+    recap's reading). A phrase that reads as the reader's own again stores
+    none.
+  - The browser lays the learner's list over every text at once
+    (`setCorrections`). A corrected or confirmed word loses its mark.
+- **Ranks** (`applyCorrections`, after the reader's own rules):
+  1. the learner's own choice;
+  2. the shared list's active entries;
+  3. the library's dictionary words;
+  4. the prior.
+
+  A recap's suggestion for this learner is laid over the prior but stays
+  marked. A correction applies only as a whole word: its edges must be
+  segmenter word boundaries, never inside a longer word; with no segmenter, the edges must be at non-Chinese
+  characters. ICU joins a pronoun to the character after it where no
+  word stands (我還|書, 我还|你|钱), so after a pronoun that begins a piece
+  the reader knows as no word (`looseStarts`: not in the library's
+  dictionary, the prior's tables or the common words), the boundary is
+  opened: a 還書 correction applies in 我還書. Only there: opening every
+  unknown piece let the prior's words fire inside real words (五行 in
+  第五行, 局长 in 公安局长时间). A correction still ends only at a word
+  boundary, so 还书 never applies in 他还书包 (书包 is one word). The
+  CC-CEDICT sweep moved one reading, 还书 / 還書 (hái → huán) in all three
+  readings, and broke none; PR #63's everyday sets went from 261 to 263 of
+  276 words (还书, 还钱) and stayed at 70 of 87 sentences. A reading hint (§Reading hints) never overrides a
+  word settled by a person.
+- **The shared list** (`shared_readings`, `scripts/db/sharedReadings.ts`;
+  docs/DATA.md §Mandarin readings). It is install-wide and holds a word, its
+  reading, a scope (`all`, or `tw` for a Taiwan-only reading), a status and
+  a source.
+  - An admin's correction is active at once.
+  - A learner's or a recap's is a suggestion, each a vote of one user
+    (`shared_reading_votes`): a recap's is its session owner's, so a
+    learner agreeing with the recap of their own session is one vote (their
+    own lines can steer that answer). It becomes active when an admin
+    confirms it, or when two different users have voted for it, at least
+    one of them by hand: two recaps are one model on one prompt, one
+    source. A disabled user's vote doesn't count. A kids session's recap
+    votes for nothing (it settles the child's own marks only).
+  - A user adds at most 50 votes a day (`MAX_DAILY_VOTES`, counted under a
+    lock on the user's row); past it their corrections are still theirs
+    but reach no one else, and the card says so (`shared: "limited"`).
+  - A reading already active is never touched by a vote (its
+    `updated_at` is the browsers' cache version).
+  - The browser fetches the active list once a page
+    (`GET /api/readings/shared`, with an ETag and a 304), never per word.
+  - The admin page is the menu's **Shared readings**
+    (`SharedReadingsView.tsx`, `/api/readings/admin/*`, all
+    `auth: "admin"`). It offers confirm, remove, the count of readings the
+    list changed in the last 30 days (`shared_reading_uses`, counted per
+    session at its recap) and a YAML or JSON export. The export holds only
+    words, readings and scopes, never who suggested them.
+- **The recap reads them** (`web/server/extraction.ts`, pure parts in
+  `scripts/extraction.mjs` and `web/server/readings.ts`).
+  - For a Mandarin session, `uncertainInTranscript` collects the dojo
+    master's uncertain words: never the learner's, and none that a person
+    already settled for this learner. That is at most 12 words
+    (`MAX_RECAP_READINGS`), each with the line it came from.
+  - The recap prompt gains a `readings` field, a rule and a "WORDS TO READ"
+    list. With no words, or in another language, **the prompt is byte for
+    byte what it was** (a test).
+  - Each answer is checked by `validateHint`, or it is dropped. A syllable
+    written without a tone keeps the character's neutral reading where it
+    has one (问得 "wèn de" differs from the reader's wèn dé and never
+    confirms it).
+  - An answer that **differs** from the reader becomes this learner's
+    suggestion: shown, still marked, and never replacing a choice made by
+    hand. It also becomes the shared list's suggestion and updates the
+    reading of the learner's bank phrases that hold the word.
+  - An answer that **agrees** confirms the word for this learner.
+  - The card shows **Readings to check**, the words still uncertain, each in
+    its line with the same control. Adults only: a kids learner's recap may
+    settle readings, but the child is shown none.
+  - Live turns are unchanged.
+  - One log line per recap gives the counts only.
+
+**Measured, the recap** (2026-11-21). The runs used the app's own prompt
+and checks with `claude-sonnet-5-5`, `--tools ""`. There were 10 runs: 8
+with words to read and 2 paired baselines without. The transcripts were
+hand-written and seeded with 还书, 你得去, 倒车, 一宿, 长着, 穿着, 一行, 还钱,
+第五行 and 抽空, in four scenes, each in simplified and traditional.
+- 26 words were offered and 26 answered. All 26 passed the checks; none
+  were dropped.
+- **14 differed from the reader, and all 14 are right** (CC-CEDICT and
+  plain usage): 得去 děi qù ×4, 倒车 dào chē ×2, 一宿 yī xiǔ ×2, 长着 zhǎng
+  zhe ×2, 问得 wèn de ×2 and 得很 de hěn ×2.
+- The 12 that agreed are right too (第五行 háng, 有点干 gān, 停车场, 很长).
+- Before the neutral-tone fix, validateHint had snapped "wèn de" to the
+  reader's dé, which would have confirmed 4 wrong readings. That is fixed
+  and has a test.
+- The seeds that weren't asked about: 还书 and 还钱 (huán is rare, so not
+  marked), 穿着, 一行 and 抽空 (settled by the dictionary).
+- Cost: about +500 to 600 prompt characters and about +250 input tokens
+  (3,284 → 3,552 on average, against the 2 baselines). The runs cost about
+  1.4¢ each, against 1.6¢ for the baselines: output tokens vary more
+  between runs than the readings add.
+- **It earns its place.** In these sessions it corrected the reader's two
+  most common errors (得 as dé, and 长 or 倒 by meaning) without anyone
+  tapping anything.
+
+Tests: `scripts/tests/reading-marks.test.mjs` (the definition, the rate,
+ranks, whole-word application, `validateCorrection`, `wordAt`),
+`scripts/tests/readings.http.test.mjs` (the routes, admin 403s, suggestion
+→ active, export, stale_learner, kids), `scripts/tests/recap-readings.test.mjs`
+(the prompt unchanged, parsing, judging),
+`scripts/tests/recap-readings.http.test.mjs` (the recap end to end, kids,
+other languages), `scripts/tests/db-migration-0015.test.mjs`.
+
 ### Streaming the reply (ld-erp)
 
 A whole reply takes about 4 s to write; the Go tab no longer waits for it.

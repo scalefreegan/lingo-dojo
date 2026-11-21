@@ -109,7 +109,8 @@ test("a hint is accepted only with one known reading per character", () => {
 test("the order of authority: a dictionary word, then the hint, then the prior's tables, then the default (PR #63 review)", () => {
   // Any reading in use passes: the choice between a character's ordinary
   // readings is what a hint is for (the reader has hái for both).
-  assert.equal(read("還錢", "zh-TW"), "hái qián");
+  assert.equal(read("還錢", "zh-TW"), "huán qián", "give back, at the end (giveBack, PR #67 reviews)");
+  assert.equal(read("還有", "zh-TW"), "hái yǒu");
   ok("還錢", "huán qián", "zh-TW", "huán qián");
   ok("還書", "huán shū", "zh-TW", "huán shū");
   ok("曾先生", "zēng xiān sheng", "zh-TW", "zēng xiān shēng");

@@ -4,6 +4,8 @@ import { openBank } from "../bankLink";
 import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from "../types";
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
+import { ReadingFix } from "./ReadingFix";
+import { reloadMyReadings, useCorrectionsVersion, useScript, useZhReader } from "../script/ruby.tsx";
 import { Badge, Button } from "./ui";
 
 /* The session recap (docs/DATA.md §Post-session extraction), under the
@@ -268,6 +270,7 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
             </div>
           )}
           {!kids && recap.vsLast && <SinceLastTime vs={recap.vsLast} locale={locale} />}
+          {!kids && locale && recap.readings?.length > 0 && <ReadingsToCheck items={recap.readings} locale={locale} />}
           {!recap.inBank && <p className="text-xs text-fg-3">This session was in another language than this phrase bank's, so nothing went into it.</p>}
           {recap.inBank && !kids && recap.events.some((e) => e.reviewed) && (
             <p className="text-xs text-fg-3">How you did on these phrases is in your phrase bank's practice schedule.</p>
@@ -275,6 +278,62 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
         </>
       )}
     </section>
+  );
+}
+
+/** "Readings to check" (ld-4i2, docs/VOICE.md §Uncertain readings): the
+ *  words of the session the reader couldn't settle and the recap didn't
+ *  confirm, each in the dojo master's line, read now (with the learner's
+ *  corrections), and only while it is still uncertain: one corrected or
+ *  confirmed since (here, on the card, anywhere) leaves the list. Adults
+ *  only; nothing when every one is settled. */
+function ReadingsToCheck({ items, locale }: { items: { word: string; sentence: string; at: number; suggested: boolean }[]; locale: string }) {
+  const zh = useZhReader(true);
+  const version = useCorrectionsVersion();
+  const { languageId } = useScript();
+  // Words saved here stay on the list, settled, so the note on what became
+  // of the choice (shared, or the day's suggestions used up) is seen.
+  const [saved, setSaved] = useState<ReadonlySet<string>>(new Set());
+  // The recap wrote its suggestions after this page loaded the learner's
+  // readings: fetch them again, so a suggested word shows the recap's
+  // reading (and This is right confirms that one, not the program's).
+  const anySuggested = items.some((it) => it.suggested);
+  useEffect(() => {
+    if (anySuggested) reloadMyReadings(languageId);
+  }, [anySuggested, languageId]);
+  if (!zh) return null;
+  void version;
+  const open = items.map((it) => ({ it, unit: zh.wordAt(it.sentence, locale, it.at) })).filter((x) => x.unit?.unsure || (x.unit && saved.has(`${x.it.word}:${x.it.at}`)));
+  if (!open.length) return null;
+  // One entry per line, with each of its words: a line with three words to
+  // check is shown once, not three times.
+  const byLine = new Map<string, typeof open>();
+  for (const x of open) byLine.set(x.it.sentence, [...(byLine.get(x.it.sentence) ?? []), x]);
+  return (
+    <div data-testid="recap-readings">
+      <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">Readings to check</h4>
+      <p className="mt-0.5 text-xs text-fg-3">The program wasn't sure how these were read. Check each one: your choice is kept, and helps everyone's readings.</p>
+      <ul className="mt-1 flex flex-col gap-2">
+        {[...byLine].map(([sentence, words]) => (
+          <li key={sentence} className="flex flex-col gap-2 rounded-lg border border-line p-2">
+            <p className="text-sm text-fg-2" lang={locale}>
+              <RubyText text={sentence} locale={locale} check />
+            </p>
+            {words.map(({ it, unit }) => (
+              <ReadingFix
+                key={`${it.word}:${it.at}`}
+                word={unit!.word}
+                reading={unit!.reading}
+                locale={locale}
+                unsure={unit!.unsure}
+                suggested={unit!.suggested}
+                onSaved={() => setSaved((s) => new Set(s).add(`${it.word}:${it.at}`))}
+              />
+            ))}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { VoiceGloss } from "../../shared/wire";
 import { isSpan, layout } from "../gloss";
-import { rubyPieces, useRuby } from "../script/ruby.tsx";
+import { rubyPieces, useCheck, useRuby } from "../script/ruby.tsx";
 
 /* Tap-to-see definitions on the dojo master's target-language text.
  *
@@ -17,7 +17,10 @@ import { rubyPieces, useRuby } from "../script/ruby.tsx";
  *
  * Chinese gets its readings (pinyin or zhuyin, script/ruby.tsx) over each
  * character, read from the whole text so a word cut by a gloss boundary
- * still reads as a word; the buttons and spans wrap the ruby unchanged. */
+ * still reads as a word; the buttons and spans wrap the ruby unchanged.
+ * An uncertain reading (ld-4i2) is marked; outside a glossed word its
+ * characters open the character card (with "This reading is wrong"), and
+ * inside one the word's own definition card leads there. */
 
 function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: boolean; onPick: (g: VoiceGloss) => void; children: ReactNode }) {
   return (
@@ -43,7 +46,9 @@ export function Glossed({ text: raw, glosses, hints, picked, onPick, locale }: {
   // `hints`: this turn's own glosses; the ones with a reading (the dojo
   // master's, checked by the server) are laid over this line's readings.
   const ruby = useRuby(text, locale, hints);
-  const piece = (from: number, to: number) => rubyPieces(text, from, to, ruby);
+  const check = useCheck(ruby, hints?.filter((h): h is VoiceGloss & { reading: string } => !!h.reading));
+  // `inButton`: inside a glossed word's button, where no button may go.
+  const piece = (from: number, to: number, inButton = false) => rubyPieces(text, from, to, ruby, inButton ? undefined : check);
   if (!glosses.length) return <>{piece(0, text.length)}</>;
   const out: ReactNode[] = [];
   let at = 0;
@@ -52,7 +57,7 @@ export function Glossed({ text: raw, glosses, hints, picked, onPick, locale }: {
     if (!isSpan(o, locale)) {
       out.push(
         <Word key={o.start} gloss={o.gloss} active={picked === o.gloss} onPick={onPick}>
-          {piece(o.start, o.end)}
+          {piece(o.start, o.end, true)}
         </Word>,
       );
       at = o.end;
@@ -64,7 +69,7 @@ export function Glossed({ text: raw, glosses, hints, picked, onPick, locale }: {
       if (h.start > i) parts.push(...piece(i, h.start));
       parts.push(
         <Word key={h.start} gloss={h.gloss} active={picked === h.gloss} onPick={onPick}>
-          {piece(h.start, h.end)}
+          {piece(h.start, h.end, true)}
         </Word>,
       );
       i = h.end;

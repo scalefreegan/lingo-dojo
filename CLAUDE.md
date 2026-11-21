@@ -224,6 +224,49 @@ docs/DATA.md §The game for adults, and the picture library):
 - An added concept may be **Adults only** (`adults` column): like the file's,
   never offered to, matched for or shown to a kids learner (`stockForMode` and `playable` read the merged list). If `content/pictures.yaml` later takes an added id, the file's wins and the row shows as `shadowed` (one warning), deletable without its picture.
 
+Mandarin readings (ld-4i2, migration 0015, docs/VOICE.md §Uncertain readings,
+docs/DATA.md §Mandarin readings):
+- **The mark.** An adult sees a dotted, labelled mark on a word whose reading
+  the reader only guessed (`uncertainWords` in `web/src/script/zh.ts`:
+  about 1.4 marks per 100 words; wordfreq's top 20,000 words read as
+  CC-CEDICT reads them and are not marked unless CC-CEDICT reads them two
+  ways, `zh-words.ts` from `npm run pinyin:words`, `applyCommon`). Never
+  in kids views.
+- **The correction.** The character card's **This reading is wrong** or
+  **This is right** (`ReadingFix.tsx`) saves the learner's choice per
+  language profile, keyed by the word's simplified spelling
+  (`reading_corrections`, `scripts/db/readings.ts`, `POST /api/readings`
+  with `learner: true`). The browser lays it over every text, and the
+  bank's phrases holding the word are read again.
+- **Ranks:** the learner's own > the shared list's active entries > the
+  dictionary > the prior. A correction applies as a whole word only.
+- **The shared list** (`shared_readings`, every query in
+  `scripts/db/sharedReadings.ts`) is install-wide.
+  - An admin's entry is active at once. A learner's or a recap's is a
+    suggestion and a vote of one user (`shared_reading_votes`, migration
+    0016; a recap's is its session owner's, a kids recap's none), active
+    when an admin confirms it or when two different users who are not
+    disabled vote for it, at least one by hand; at most 50 votes a user a
+    day (counted under a lock on the user's row).
+  - 还 before 钱 / 书 / 你 is huán only where the phrase ends (`giveBack`
+    in zh.ts), else hái and marked.
+  - Only a choice made by hand ranks as the learner's own; a recap's
+    agreement with the reader only clears the mark.
+  - The browser fetches `GET /api/readings/shared` once a page (with an
+    ETag).
+  - The admin page is the menu's **Shared readings**
+    (`/api/readings/admin/*`, `auth: "admin"`): confirm, remove, the
+    30-day count, and a YAML or JSON export with no personal data.
+- **The recap** of a Mandarin session is given the dojo master's
+  uncertain words (at most 12, each with its line) and returns a reading
+  for each.
+  - Every answer is checked by `validateHint`.
+  - One that differs is the learner's suggestion, the shared list's, and
+    their bank phrase's reading. One that agrees confirms the word.
+  - The adult card shows **Readings to check**.
+  - With nothing to ask, the recap prompt is byte for byte unchanged.
+    Live turns are unchanged.
+
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
   `wrap()`, `scripts/claude.mjs`, SSE chat, `macos/` Dock app) and `../wine-guide`

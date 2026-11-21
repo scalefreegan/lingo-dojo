@@ -251,6 +251,30 @@ h3 {
   ruby.ld-ruby > rt::before {
     content: attr(data-rt);
   }
+  /* An uncertain reading (ld-4i2): a dotted underline under the reading,
+     never colour alone; the word's screen-reader note or its button's
+     label says so in words. */
+  ruby.ld-ruby-unsure > rt::before {
+    text-decoration: underline dotted;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+  /* A marked character that opens the character card, inside a line of
+     text: no tile (the line reads on), only the pointer and a hover. */
+  .ld-unsure {
+    display: inline;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: none;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    border-radius: 0.25rem;
+  }
+  .ld-unsure:hover {
+    background: var(--accent-soft);
+  }
   :root[data-mode="kids"] ruby.ld-ruby > rt {
     font-size: 0.7em;
   }

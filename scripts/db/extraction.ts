@@ -79,6 +79,22 @@ export interface StoredRecap {
   /** Compared with the attempt it built on (scripts/revisit.mjs
    *  compareAttempts; DATA.md §Revisit); absent when it built on none. */
   vsLast?: RecapVsLast | null;
+  /** Mandarin (ld-4i2): the words of the session whose reading the reader
+   *  couldn't settle, and what the recap made of each
+   *  (web/server/readings.ts judgeRecapReadings); absent when none was asked. */
+  readings?: StoredRecapReading[];
+}
+
+/** One word the recap was asked to read (web/server/readings.ts JudgedReading). */
+export interface StoredRecapReading {
+  word: string;
+  key: string;
+  sentence: string;
+  /** UTF-16 offset of the word in `sentence`. */
+  at: number;
+  reader: string;
+  answer: string | null;
+  verdict: "differs" | "agrees" | "dropped";
 }
 
 /* ---------------------------------- claim ---------------------------------- */
@@ -180,7 +196,7 @@ export async function recapPhrases(db: Db, profile: LanguageProfileRef, ids: str
 export async function applyExtraction(
   db: Db,
   profile: LanguageProfileRef,
-  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[]; vsLast?: RecapVsLast | null },
+  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[]; vsLast?: RecapVsLast | null; readings?: StoredRecapReading[] },
 ): Promise<StoredRecap | null> {
   return retrying(() =>
     db.transaction(async (tx) => {
@@ -201,6 +217,7 @@ export async function applyExtraction(
         dropped: opts.dropped,
         inBank: false,
         ...(opts.vsLast ? { vsLast: opts.vsLast } : {}),
+        ...(opts.readings?.length ? { readings: opts.readings } : {}),
       };
       if (opts.bankLocale != null) recap = await writeBank(tx, profile, conv, { ...opts, bankLocale: opts.bankLocale }, recap);
       await mine.update(

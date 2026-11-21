@@ -7,6 +7,7 @@ import {
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
 import { handleHiddenScenes } from "./hidden.ts";
+import { handleReadings, handleReadingsAdmin, handleSharedReadings } from "./readings.ts";
 import { handlePhrases } from "./phrases.ts";
 import { handleGame, handlePictures } from "./pictures.ts";
 import { handleStock, handleStockAdmin } from "./stockPictures.ts";
@@ -243,6 +244,13 @@ function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
   // browsing route could see the path.
   middlewares.use("/api/stock-pictures/admin", wrap(handleStockAdmin, { auth: "admin" }));
   middlewares.use("/api/stock-pictures", wrap(handleStock));
+  // Mandarin readings settled by people (readings.ts, ld-4i2): the shared
+  // list's active entries for any logged-in user (nobody's), its admin
+  // view and writes under /admin (mounted first), and the active
+  // language's own corrections.
+  middlewares.use("/api/readings/admin", wrap(handleReadingsAdmin, { auth: "admin" }));
+  middlewares.use("/api/readings/shared", wrap(handleSharedReadings));
+  middlewares.use("/api/readings", wrap(handleReadings, { learner: true }));
   // Pronunciation checks (pronunciation.ts): a recording scored against
   // known text for the active learner's language, Mandarin only; Azure
   // with keys for any learner, local otherwise. Nothing is stored.

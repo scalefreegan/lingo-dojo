@@ -24,6 +24,7 @@ import type {
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
+import type { MyReadingsReply, ReadingSaveReply, ReadingSaveRequest, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
  *  `code` the reason beside it for the few errors the client acts on. */
@@ -610,6 +611,38 @@ export function hideScene(kind: "scenario" | "collection", key: string): Promise
 export function unhideScene(kind: "scenario" | "collection", key: string): Promise<UnhideSceneReply> {
   return req<UnhideSceneReply>("/api/hidden-scenes", json({ kind, key }, "DELETE"));
 }
+
+/* ---------------------------- Mandarin readings ---------------------------- */
+// Readings settled by people (ld-4i2): the shared list's active entries
+// (anyone's; the browser revalidates by ETag and the server answers 304
+// while unchanged), the active language's own, and the admin view.
+
+export function getSharedReadings(): Promise<SharedReadingsReply> {
+  return req<SharedReadingsReply>("/api/readings/shared", { cache: "no-cache" });
+}
+
+export function getMyReadings(): Promise<MyReadingsReply> {
+  return req<MyReadingsReply>("/api/readings");
+}
+
+export function saveReading(body: ReadingSaveRequest): Promise<ReadingSaveReply> {
+  return req<ReadingSaveReply>("/api/readings", json(body));
+}
+
+export function getSharedReadingsAdmin(): Promise<SharedReadingsAdminReply> {
+  return req<SharedReadingsAdminReply>("/api/readings/admin");
+}
+
+export function confirmSharedReading(id: string): Promise<SharedReadingsAdminReply> {
+  return req<SharedReadingsAdminReply>(`/api/readings/admin/${encodeURIComponent(id)}/confirm`, { method: "POST" });
+}
+
+export function removeSharedReading(id: string): Promise<SharedReadingsAdminReply> {
+  return req<SharedReadingsAdminReply>(`/api/readings/admin/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Where the admin view's export downloads from (a plain link). */
+export const sharedReadingsExportUrl = (format: "yaml" | "json") => `/api/readings/admin/export?format=${format}`;
 
 /* ------------------------------ conversations ----------------------------- */
 // Saved voice sessions: the active learner's, like the turn that writes them.

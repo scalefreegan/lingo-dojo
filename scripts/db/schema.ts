@@ -1012,3 +1012,139 @@ export const pictureStockCalls = pgTable(
     index("picture_stock_calls_created_idx").on(t.createdAt),
   ],
 );
+
+/* ---------------------------- Mandarin readings ---------------------------- */
+
+/**
+ * A learner's own reading of a Mandarin word, in one language profile
+ * (docs/DATA.md §Reading corrections, migration 0015, bead ld-4i2): what
+ * the learner chose by hand ("This reading is wrong": `corrected`; "This
+ * is right": `confirmed`) or what the post-session recap settled for them
+ * (`suggested`: the model's reading, differing from the reader's, until
+ * the learner checks it; `confirmed` with source `recap`: the model agreed
+ * with the reader). The browser lays them over the reader's readings for
+ * this learner only (zh.ts Corrections: a hand choice outranks
+ * everything, a suggestion only the dictionary and the prior). One row per
+ * word, keyed by its simplified spelling (zh.ts correctionKey) so one
+ * script's correction reads in the other; a hand choice is never replaced
+ * by the recap's. Queries only in scripts/db/readings.ts.
+ */
+export const readingCorrections = pgTable(
+  "reading_corrections",
+  {
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** zh.ts correctionKey: the word's simplified spelling. */
+    key: text("key").notNull(),
+    /** The word as the learner saw it (2–8 Chinese characters). */
+    word: text("word").notNull(),
+    /** One tone-marked syllable per character, space separated (zh.ts validateCorrection). */
+    reading: text("reading").notNull(),
+    kind: text("kind").$type<"corrected" | "confirmed" | "suggested">().notNull(),
+    source: text("source").$type<"user" | "recap">().notNull(),
+    createdAt: createdAt(),
+    updatedAt: tz("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("reading_corrections_kind", sql`${t.kind} in ('corrected', 'confirmed', 'suggested')`),
+    check("reading_corrections_source", sql`${t.source} in ('user', 'recap')`),
+    check("reading_corrections_by_hand", sql`${t.source} = 'user' or ${t.kind} <> 'corrected'`),
+    check("reading_corrections_word", sql`char_length(${t.word}) between 2 and 8 and char_length(${t.key}) between 2 and 8`),
+    check("reading_corrections_reading", sql`char_length(${t.reading}) between 2 and 80`),
+    primaryKey({ name: "reading_corrections_pk", columns: [t.languageProfileId, t.key] }),
+    foreignKey({ name: "reading_corrections_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * The shared list of Mandarin readings (docs/DATA.md §Shared readings,
+ * migration 0015, bead ld-4i2): whole-word readings every learner's reader
+ * applies once `active` (zh.ts Corrections: below a learner's own hand
+ * choice, above the library's dictionary). Install-wide and not personal:
+ * words and readings only. An admin's correction is active at once; a
+ * learner's (`by_user`) or the recap's (`by_recap`) is `suggested`, and
+ * becomes active when an admin confirms it or when both agree on the same
+ * reading. One row per (word, scope, reading): competing suggestions sit
+ * side by side, and at most one reading per (word, scope) is active.
+ * `suggested_by` and `confirmed_by` are for the admin view only (the
+ * browser's list carries word, scope and reading alone). Queries only in
+ * scripts/db/sharedReadings.ts.
+ */
+export const sharedReadings = pgTable(
+  "shared_readings",
+  {
+    id: id(),
+    /** zh.ts correctionKey: the word's simplified spelling. */
+    key: text("key").notNull(),
+    /** The word as first written (either script). */
+    word: text("word").notNull(),
+    reading: text("reading").notNull(),
+    /** "tw": a reading only Taiwan uses (zh.ts correctionScope). */
+    scope: text("scope").$type<"all" | "tw">().notNull().default("all"),
+    status: text("status").$type<"active" | "suggested">().notNull(),
+    /** Who first proposed it. */
+    source: text("source").$type<"admin" | "user" | "recap">().notNull(),
+    byUser: boolean("by_user").notNull().default(false),
+    byRecap: boolean("by_recap").notNull().default(false),
+    suggestedBy: uuid("suggested_by").references(() => users.id, { onDelete: "set null" }),
+    confirmedBy: uuid("confirmed_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+    updatedAt: tz("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("shared_readings_status", sql`${t.status} in ('active', 'suggested')`),
+    check("shared_readings_source", sql`${t.source} in ('admin', 'user', 'recap')`),
+    check("shared_readings_scope", sql`${t.scope} in ('all', 'tw')`),
+    check("shared_readings_word", sql`char_length(${t.word}) between 2 and 8 and char_length(${t.key}) between 2 and 8`),
+    check("shared_readings_reading", sql`char_length(${t.reading}) between 2 and 80`),
+    unique("shared_readings_entry").on(t.key, t.scope, t.reading),
+    uniqueIndex("shared_readings_one_active").on(t.key, t.scope).where(sql`${t.status} = 'active'`),
+  ],
+);
+
+/**
+ * How many readings the shared list changed in one session's dojo-master
+ * lines, counted when its recap ran (docs/DATA.md §Shared readings): what
+ * the admin view sums over the last 30 days. A count, no words; a recap
+ * made again replaces its row.
+ */
+/**
+ * Who stands behind a shared suggestion (PR #67 review, ld-4i2; migration
+ * 0016): one row per user per entry, a learner's own correction or
+ * confirmation (`user`) or a recap of one of their sessions (`recap`,
+ * counted as the conversation owner's: one person agreeing with a model's
+ * answer to their own transcript is one source, not two). A suggestion is
+ * activated without an admin only by two different users. Also the per-user
+ * daily cap's count. User ids leave scripts/db/sharedReadings.ts only for
+ * the admin view.
+ */
+export const sharedReadingVotes = pgTable(
+  "shared_reading_votes",
+  {
+    sharedReadingId: uuid("shared_reading_id")
+      .notNull()
+      .references(() => sharedReadings.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    source: text("source").$type<"user" | "recap">().notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sharedReadingId, t.userId] }),
+    check("shared_reading_votes_source", sql`${t.source} in ('user', 'recap')`),
+    index("shared_reading_votes_user_idx").on(t.userId, t.createdAt),
+  ],
+);
+
+export const sharedReadingUses = pgTable(
+  "shared_reading_uses",
+  {
+    conversationId: uuid("conversation_id")
+      .primaryKey()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    changed: integer("changed").notNull(),
+    countedAt: tz("counted_at").notNull().defaultNow(),
+  },
+  (t) => [check("shared_reading_uses_changed", sql`${t.changed} >= 0`), index("shared_reading_uses_counted_idx").on(t.countedAt)],
+);
