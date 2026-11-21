@@ -942,3 +942,64 @@ export const hiddenScenes = pgTable(
     foreignKey({ name: "hidden_scenes_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
   ],
 );
+
+/* ------------------------------ stock pictures ------------------------------ */
+
+/**
+ * A shared stock picture concept an admin added from the picture library
+ * page (docs/DATA.md §Stock pictures, migration 0013, bead ld-318),
+ * install-wide: every learner's word game may use it. It sits beside
+ * content/pictures.yaml's concepts and is merged with them wherever the
+ * stock list is read (the picturable check, the CLI, the routes), by the
+ * same rules (pictures.mjs readStockList), the file's concepts first, so an
+ * id the file also has keeps the file's. A route never writes content/
+ * (only the content agent does), so a concept added there lives here. Not
+ * personal: no owner column, never through owned.ts; `created_by` is
+ * provenance only. The reader role (0005) gets nothing on it.
+ */
+export const pictureStockConcepts = pgTable(
+  "picture_stock_concepts",
+  {
+    /** pictures.mjs STOCK_ID_RE; also its file's name under stock/<theme>/. */
+    id: text("id").primaryKey(),
+    category: text("category").notNull(),
+    /** What the theme's prompt draws: passes pictures.mjs cleanDescription as written. */
+    description: text("description").notNull(),
+    /** The English words it stands for (what the picturable check matches). */
+    words: text("words").array().notNull(),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_stock_concepts_id", sql`${t.id} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
+    check("picture_stock_concepts_category", sql`char_length(${t.category}) between 1 and 40`),
+    check("picture_stock_concepts_description", sql`char_length(${t.description}) between 1 and 80`),
+    check("picture_stock_concepts_words", sql`cardinality(${t.words}) between 1 and 20`),
+  ],
+);
+
+/**
+ * One stock picture drawn from the picture library page (docs/DATA.md
+ * §Stock pictures, migration 0013): the ledger the install-wide daily cap
+ * on stock draws counts (pictures.mjs PICTURE_DAILY_STOCK), apart from each
+ * language's picture_calls. Written as the call starts, whatever it then
+ * gives (a failure was, or may have been, paid); pruned past the window as
+ * draws are made. The CLI (npm run pictures:stock) is the grown-up's
+ * explicit one-off and writes none. The reader role (0005) gets nothing.
+ */
+export const pictureStockCalls = pgTable(
+  "picture_stock_calls",
+  {
+    id: id(),
+    /** Who asked (provenance; the slot it ran in). */
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    conceptId: text("concept_id").notNull(),
+    /** How it ended, for diagnosis: null while it runs or when the server stopped. */
+    outcome: text("outcome").$type<"ok" | "refused" | "failed">(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_stock_calls_outcome", sql`${t.outcome} is null or ${t.outcome} in ('ok', 'refused', 'failed')`),
+    index("picture_stock_calls_created_idx").on(t.createdAt),
+  ],
+);

@@ -30,6 +30,10 @@ export interface PictureStatus {
   outOfTheme: number;
   /** Pictures waiting for a Redraw all already asked for. */
   restyling: number;
+  /** Images drawn for this language in the last 24 hours (the ledger), and
+   *  the cap (pictures.mjs PICTURE_DAILY_IMAGES). */
+  imagesToday: number;
+  imagesCap: number;
 }
 
 /** POST /api/pictures/restyle: how many pictures were taken up (moved to
@@ -86,6 +90,9 @@ export interface GameAnswerReply {
   pictureId: string;
   /** This same tap was already recorded (a resend). */
   replayed: boolean;
+  /** For an adult learner only: the word heard, shown after the tap like
+   *  the other adult drills' answers. A kids learner's reply never has it. */
+  word?: { text: string; meaning: string | null };
 }
 
 export type PictureState = "pending" | "ready" | "none" | "failed" | "removed";
@@ -118,4 +125,85 @@ export interface DrawAnywayRequest {
 export interface PhrasePictureReply {
   picture: PhrasePicture | null;
   status: PictureStatus;
+}
+
+/** One word in the picture library's "My word pictures" (GET
+ *  /api/pictures/words): a word of the active language with a verdict or a
+ *  picture for its words as they are now. */
+export interface WordPictureItem {
+  phraseId: string;
+  text: string | null;
+  meaning: string | null;
+  picture: PhrasePicture;
+}
+
+/** GET /api/pictures/words. */
+export interface WordPicturesReply {
+  words: WordPictureItem[];
+  status: PictureStatus;
+}
+
+/* ------------------------------- stock pictures ------------------------------ */
+
+/** One concept of the shared stock set, as the picture library shows it. */
+export interface StockConceptView {
+  id: string;
+  category: string;
+  description: string;
+  words: string[];
+  /** Added from the page (the database): an admin may delete it. The
+   *  file's (content/pictures.yaml) are only redrawn. */
+  custom: boolean;
+  /** The picture's version in the current theme (the file URL's
+   *  cache-busting part: /api/stock-pictures/file/:id/:version), or null
+   *  while it isn't drawn. */
+  version: string | null;
+  /** Waiting in the stock drawing queue, or being drawn now. */
+  queued: boolean;
+  /** The provider refused it the last time (its moderation), since the
+   *  server started. */
+  refused: boolean;
+}
+
+/** GET /api/stock-pictures: the whole shared set, and the stock drawing's
+ *  state. Starts nothing. */
+export interface StockListReply {
+  theme: string;
+  concepts: StockConceptView[];
+  /** The caller is an admin: the page shows the write actions. */
+  canEdit: boolean;
+  /** A stock drawing run is going on. */
+  drawing: boolean;
+  /** Stock pictures drawn from the page in the last 24 hours, install-wide,
+   *  and the cap (pictures.mjs PICTURE_DAILY_STOCK). */
+  usedToday: number;
+  cap: number;
+  /** What one picture costs, in US dollars (an estimate). */
+  costEach: number;
+  /** Why stock pictures can't be drawn now (no Black Forest Labs key), or null. */
+  problem: string | null;
+  /** Why the last stock run stopped early (a failure, the cap), or null. */
+  stopped: string | null;
+}
+
+/** POST /api/stock-pictures/admin/concepts. `words` is a list or a
+ *  comma-separated line. */
+export interface AddStockConceptRequest {
+  name: string;
+  category: string;
+  description: string;
+  words: string[] | string;
+}
+
+/** POST /api/stock-pictures/admin/missing: `count` is the number the page
+ *  showed when the admin confirmed (another number now is a 409, so
+ *  nothing is queued that wasn't seen and priced). */
+export interface DrawMissingRequest {
+  count: number;
+}
+
+/** An admin's stock write replies with the list as it is now; `queued` is
+ *  how many concepts the call put in the drawing queue. */
+export interface StockChangeReply extends StockListReply {
+  queued?: number;
 }

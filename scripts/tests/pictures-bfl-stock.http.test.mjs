@@ -305,7 +305,9 @@ test("a word the check matches to a drawn stock picture is ready at once: no ima
   const r = await pip.call("GET", `/api/game/pictures/${dogRow.id}/${stockKey(PICTURE_THEME.id, "dog")}`);
   assert.equal(r.status, 200);
   assert.equal(r.headers.get("content-type"), "image/jpeg");
-  assert.equal(r.headers.get("cache-control"), "private, max-age=31536000, immutable");
+  // Revalidated, not immutable: an admin may redraw the stock picture
+  // under the same name from the picture library (ld-318).
+  assert.equal(r.headers.get("cache-control"), "private, no-cache");
   assert.ok(rounds.length >= 3);
   const view = (await pip.call("GET", `/api/pictures/phrase/${dogRow.phrase_id}`)).body.picture;
   assert.deepEqual([view.stock, view.inTheme], [true, true]);

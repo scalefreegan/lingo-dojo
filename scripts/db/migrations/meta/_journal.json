@@ -92,6 +92,13 @@
       "when": 1795269677271,
       "tag": "0012_picture_themes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795271812404,
+      "tag": "0013_stock_concepts",
+      "breakpoints": true
     }
   ]
 }

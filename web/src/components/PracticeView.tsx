@@ -8,6 +8,7 @@ import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
 } from "../types";
 import { MarkedText, RubyText, RubyToggle } from "./Ruby";
+import PictureGameView from "./PictureGameView";
 import { ToneScoreView } from "./ToneCheck";
 import { useToneScore } from "./useToneScore";
 import { Badge, Button, Card, inputClass } from "./ui";
@@ -32,6 +33,8 @@ import { Badge, Button, Card, inputClass } from "./ui";
  *    meaning as the hint; type or say the missing words. The gap shows no
  *    length, and its words travel only with the grade. A bad sentence can
  *    be flagged: it is never shown again.
+ *  - Pictures: the picture game (PictureGameView, ld-318): hear a word,
+ *    pick its picture; a tap is a review of its listen card. Not in Mixed.
  *  - Mixed: recognize as a flashcard, listen by ear, produce aloud (or,
  *    for a phrase with a sentence, every other time as a gap).
  * Every answer is graded by the server (a lenient match, then a model check
@@ -43,11 +46,20 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 
 const LENGTHS = [5, 10, 20] as const;
 const PREFS_KEY = "lingo-dojo.practice.v1";
-const MODES: { value: PracticeMode; label: string; hint: string }[] = [
+/** The modes the picker offers: the drills of /api/practice, and the
+ *  picture game (its own routes, /api/game: PictureGameView), which Mixed
+ *  leaves out. */
+type UiMode = PracticeMode | "pictures";
+/** The drill mode the counts and the queue are asked for: the picture game
+ *  has its own; while it is picked the counts are read as flashcards (for
+ *  the language's name and locale only). */
+const drillMode = (m: UiMode): PracticeMode => (m === "pictures" ? "flashcards" : m);
+const MODES: { value: UiMode; label: string; hint: string }[] = [
   { value: "flashcards", label: "Flashcards", hint: "Read and type, either way; the answer shows it in a sentence" },
   { value: "listening", label: "Listening", hint: "Hear it, pick or type what it means" },
   { value: "speak", label: "Speak it", hint: "See the meaning, say it aloud" },
   { value: "cloze", label: "Fill the gap", hint: "A sentence with the phrase missing: type or say it" },
+  { value: "pictures", label: "Pictures", hint: "Hear a word, pick its picture" },
   { value: "mixed", label: "Mixed", hint: "A bit of everything" },
 ];
 
@@ -68,7 +80,7 @@ const VERDICT: Record<PracticeVerdict, { label: string; tone: "accent" | "warn" 
 
 interface Prefs {
   length: number;
-  mode: PracticeMode;
+  mode: UiMode;
   direction: PracticeDirection;
 }
 
@@ -119,7 +131,7 @@ export default function PracticeView() {
   useEffect(() => {
     if (items) return;
     const ctrl = new AbortController();
-    practiceStats(prefs.mode, prefs.direction, ctrl.signal).then(
+    practiceStats(drillMode(prefs.mode), prefs.direction, ctrl.signal).then(
       (r) => {
         setInfo(r);
         setError(null);
@@ -145,7 +157,7 @@ export default function PracticeView() {
     setLoading(true);
     setError(null);
     try {
-      const r = await practiceQueue(prefs.length, prefs.mode, prefs.direction);
+      const r = await practiceQueue(prefs.length, drillMode(prefs.mode), prefs.direction);
       // The queue doesn't check the voice setup: keep what the counts said.
       setInfo((was) => ({ ...r, setup: r.setup ?? was?.setup ?? null }));
       if (!r.items.length) {
@@ -231,13 +243,34 @@ export default function PracticeView() {
     ...(needsSpeech && setup?.speech ? [`Speak-it can't hear answers: ${setup.speech.replace(/\.\s*$/, "")}.`] : []),
   ];
   const blocked = (prefs.mode === "listening" && !!setup?.audio) || (prefs.mode === "speak" && !!setup?.speech);
+  const header = (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-fg">Practice{languageName ? ` · ${languageName}` : ""}</h2>
+      <span className={`${fine} text-fg-3`}>Drills from your phrase bank</span>
+      <RubyToggle locale={locale} className="ml-auto" />
+    </div>
+  );
+  const modeChips = (
+    <>
+      <legend className={`${fine} mb-1 font-medium text-fg-2`}>Mode</legend>
+      <div role="group" aria-label="Mode" className="flex flex-wrap gap-1">
+        {MODES.map((m) => (
+          <Chip key={m.value} on={prefs.mode === m.value} title={m.hint} onClick={() => setPrefs((p) => ({ ...p, mode: m.value }))}>
+            {m.label}
+          </Chip>
+        ))}
+      </div>
+      <p className={`${fine} text-fg-3`}>{MODES.find((m) => m.value === prefs.mode)?.hint}</p>
+    </>
+  );
+  // The picture game is a screen of its own (its counts, rounds and end),
+  // with the same heading and mode chips, so the mode can be changed back.
+  if (prefs.mode === "pictures") {
+    return <PictureGameView header={header} modePicker={<fieldset className="flex flex-col gap-1.5">{modeChips}</fieldset>} locale={locale} lang={locale ?? undefined} />;
+  }
   return (
     <div className="flex flex-col gap-3" data-testid="practice">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="font-[family-name:var(--font-display)] text-lg font-semibold text-fg">Practice{languageName ? ` · ${languageName}` : ""}</h2>
-        <span className={`${fine} text-fg-3`}>Drills from your phrase bank</span>
-        <RubyToggle locale={locale} className="ml-auto" />
-      </div>
+      {header}
       <Card className="flex flex-col gap-4">
         {s ? (
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="practice-stats">
@@ -250,15 +283,7 @@ export default function PracticeView() {
           !error && <p className="text-sm text-fg-3">Loading…</p>
         )}
         <fieldset className="flex flex-col gap-1.5">
-          <legend className={`${fine} mb-1 font-medium text-fg-2`}>Mode</legend>
-          <div role="group" aria-label="Mode" className="flex flex-wrap gap-1">
-            {MODES.map((m) => (
-              <Chip key={m.value} on={prefs.mode === m.value} title={m.hint} onClick={() => setPrefs((p) => ({ ...p, mode: m.value }))}>
-                {m.label}
-              </Chip>
-            ))}
-          </div>
-          <p className={`${fine} text-fg-3`}>{MODES.find((m) => m.value === prefs.mode)?.hint}</p>
+          {modeChips}
           {(prefs.mode === "cloze" || prefs.mode === "mixed") && info?.cloze && !info.cloze.writable && (
             <p className={`${fine} text-fg-2`} role="status" data-testid="practice-cloze-unwritten">
               No gap sentences are written for {languageName || "this language"} yet (its words take endings, so a saved phrase rarely fits a sentence as it is). Lines from your own

@@ -174,6 +174,79 @@ export function readStockList(raw) {
   return { concepts, problems };
 }
 
+/** Stock pictures drawn from the picture library page in any 24 hours,
+ *  install-wide, counted from picture_stock_calls as each call starts (a
+ *  failure counts, a restart doesn't reset it). Apart from each language's
+ *  PICTURE_DAILY_IMAGES: the shared set is the admin's, not a learner's. At
+ *  Black Forest Labs' $0.008 a picture, at most about $2.40 a day; the
+ *  whole set of about 200 fits in one day. The CLI isn't counted. */
+export const PICTURE_DAILY_STOCK = 300;
+
+/**
+ * The stock list as everything reads it: content/pictures.yaml's concepts
+ * (`base`, already checked by readStockList) and the admin's own from the
+ * database (`custom`: rows of picture_stock_concepts), merged by the same
+ * rules. The file's come first and keep their id: a custom concept with an
+ * id the file also has is left out (with a warning), so the content agent
+ * adding a concept by that name never makes two. Each concept says whether
+ * it is `custom` (it may be deleted from the page; the file's may not).
+ * `{ concepts, problems }`.
+ */
+export function mergeStock(base, custom = []) {
+  const taken = new Set(base.map((c) => c.id));
+  const raw = { categories: {} };
+  for (const c of base) (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words });
+  const problems = [];
+  const mine = new Set();
+  for (const c of custom ?? []) {
+    if (taken.has(c.id)) {
+      problems.push({ level: "warning", message: `the added stock concept "${c.id}" has the id of one in pictures.yaml; the file's is used` });
+      continue;
+    }
+    mine.add(c.id);
+    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words });
+  }
+  const out = readStockList(raw);
+  return { concepts: out.concepts.map((c) => ({ ...c, custom: mine.has(c.id) })), problems: [...problems, ...out.problems] };
+}
+
+/** A stock category's name as the page takes it: letters, digits, spaces
+ *  and & , ' -, at most 40 characters. */
+const CATEGORY_RE = /^[\p{L}\p{N}][\p{L}\p{N} &,'-]{0,39}$/u;
+
+/** A concept's id from the name an admin typed: lower case ASCII letters
+ *  and digits, anything else a hyphen ("Ice cream" → "ice-cream"). */
+export const stockIdFrom = (name) =>
+  String(name ?? "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48).replace(/-+$/, "");
+
+/**
+ * A new stock concept from the picture library page: `{ concept: { id,
+ * category, description, words } }` or `{ error }` (a sentence for the
+ * admin). The id is made from `name`; it must be new among `existing` (the
+ * merged list). The description passes cleanDescription as typed, with no
+ * learner name on the admin's account (`names`); stored cleaned. Words are
+ * a list or a comma-separated line of English words, 1 to 20.
+ */
+export function readNewConcept(body, existing = [], names = []) {
+  const b = body && typeof body === "object" ? body : {};
+  if (typeof b.name !== "string" || !b.name.trim()) return { error: "Give the picture a name, like \"ice cream\"." };
+  const id = stockIdFrom(b.name);
+  if (!STOCK_ID_RE.test(id)) return { error: "The name needs at least one letter or digit (a-z, 0-9)." };
+  if (existing.some((c) => c.id === id)) return { error: `There is already a shared picture called "${id}".` };
+  const category = typeof b.category === "string" ? b.category.trim().replace(/\s+/g, " ") : "";
+  if (!CATEGORY_RE.test(category)) return { error: "Pick or type a category (letters and digits, at most 40 characters)." };
+  if (typeof b.description !== "string") return { error: "Say what the picture shows, in a few plain words." };
+  const d = grownUpDescription(b.description, names);
+  if (d.error === "name") return { error: "A picture's description can't have a learner's name in it." };
+  if (d.error !== undefined) return { error: "That description doesn't say what to draw. Use a few plain words, like \"a cone of ice cream\"." };
+  const list = Array.isArray(b.words) ? b.words : typeof b.words === "string" ? b.words.split(",") : [];
+  const words = [...new Set(list.map(stockWord).filter(Boolean))];
+  if (!words.length) return { error: "List the English words it stands for, like \"ice cream, ice-cream cone\"." };
+  if (words.length > 20) return { error: "At most 20 words." };
+  if (words.some((w) => w.length > 60)) return { error: "Each word at most 60 characters." };
+  return { concept: { id, category, description: d.description, words } };
+}
+
 /* ---------------------------------- the key --------------------------------- */
 
 /** A word's picture key: its words and meaning. A picture is for one
