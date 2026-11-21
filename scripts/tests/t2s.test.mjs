@@ -19,6 +19,8 @@ import {
   alignedStage,
   looksTraditional,
   makeStage,
+  scriptOf,
+  simplifiedOnlyChars,
   mergedWith,
   simplifyAligned,
   tradOnlyChars,
@@ -36,17 +38,15 @@ test("the reported words read as the dictionaries do, in pinyin and in zhuyin, f
     ["徵求", "zhēng qiú", "ㄓㄥ ㄑㄧㄡˊ"],
   ];
   for (const [w, py, zy] of cases) {
-    assert.equal(line(w, "zh-TW"), py, w);
-    assert.equal(zhuyin(w, "zh-TW"), zy, w);
-    // A zh-CN profile converts a text only when it holds a
-    // traditional-only character (蘋 is one; 瞭, 徵 are not: 瞭望, 宫商角徵羽
-    // are simplified too), so beside one in a sentence.
-    const s = `我們${w}這個`;
-    assert.equal(line(s, "zh-CN"), `wǒ men ${py} zhè ge`, s);
-    assert.equal(zhuyin(s, "zh-CN"), `ㄨㄛˇ ˙ㄇㄣ ${zy} ㄓㄜˋ ˙ㄍㄜ`, s);
+    for (const l of ["zh-TW", "zh-CN"]) {
+      assert.equal(line(w, l), py, `${w} ${l}`);
+      assert.equal(zhuyin(w, l), zy, `${w} ${l}`);
+      const s = `我們${w}這個`;
+      assert.equal(line(s, l), `wǒ men ${py} zhè ge`, `${s} ${l}`);
+      assert.equal(zhuyin(s, l), `ㄨㄛˇ ˙ㄇㄣ ${zy} ㄓㄜˋ ˙ㄍㄜ`, `${s} ${l}`);
+    }
   }
-  assert.equal(line("蘋果", "zh-CN"), "píng guǒ");
-  // Alone in a zh-CN profile they are simplified text, read as the library reads it.
+  // 徵 alone is the note (zhǐ) in a zh-CN profile, as before.
   assert.equal(line("徵", "zh-CN"), "zhǐ");
   // The same in a sentence, beside other words.
   assert.equal(line("我想吃蘋果，你瞭解嗎？"), "wǒ xiǎng chī píng guǒ · nǐ liǎo jiě ma ·");
@@ -56,11 +56,8 @@ test("the reported words read as the dictionaries do, in pinyin and in zhuyin, f
 
 test("the words the old reader read right still read the same (zh-TW, then zh-CN)", () => {
   // Locked from the reader before ld-37t; Taiwan's 頭髮 fǎ, sandhi off (對不起 duì bù qǐ).
-  // A zh-CN profile reads 乾杯, 睡著, 看著 alone as simplified text (no
-  // traditional-only character: simplified writes 乾 and 著 too), so as
-  // the library reads them; beside one, as traditional (below).
   const locked = {
-    乾淨: "gān jìng", 乾杯: ["gān bēi", "qián bēi"], 頭髮: ["tóu fǎ", "tóu fa"], 發現: "fā xiàn", 睡著: ["shuì zháo", "shuì zhù"], 看著: ["kàn zhe", "kàn zhù"], 為什麼: "wèi shén me",
+    乾淨: "gān jìng", 乾杯: "gān bēi", 頭髮: ["tóu fǎ", "tóu fa"], 發現: "fā xiàn", 睡著: "shuì zháo", 看著: "kàn zhe", 為什麼: "wèi shén me",
     銀行: "yín háng", 音樂: "yīn yuè", 快樂: "kuài lè", 還有: "hái yǒu", 覺得: "jué de", 睡覺: "shuì jiào", 計程車: "jì chéng chē",
     腳踏車: "jiǎo tà chē", 週末: "zhōu mò", 颱風: "tái fēng", 麵包: "miàn bāo", 臺灣: "tái wān", 老闆: "lǎo bǎn", 手錶: "shǒu biǎo",
     遊戲: "yóu xì", 裡面: "lǐ miàn", 謝謝: "xiè xiè", 對不起: "duì bù qǐ", 沒關係: "méi guān xì", 喜歡: "xǐ huan", 電腦: "diàn nǎo",
@@ -81,6 +78,44 @@ test("the words the old reader read right still read the same (zh-TW, then zh-CN
   assert.equal(line("我們乾杯，他睡著了，你看著", "zh-CN"), "wǒ men gān bēi · tā shuì zháo le · nǐ kàn zhe");
 });
 
+test("script-neutral text in a zh-CN profile reads as traditional, 著 as simplified text writes it (PR #62 second review)", () => {
+  // No traditional-only and no simplified-only character: read as zh-TW
+  // text is, minus Taiwan's readings; 1501e1b read these as simplified.
+  const neutral = {
+    乾杯: "gān bēi", 乾脆: "gān cuì", 乾燥: "gān zào", 看著: "kàn zhe", 睡著: "shuì zháo", 著急: "zháo jí", 著手: "zhuó shǒu",
+    著想: "zhuó xiǎng", 睡不著: "shuì bù zháo", 於是: "yú shì", 由於: "yóu yú", 於: "yú", 瞭解: "liǎo jiě", 徵求: "zhēng qiú",
+    // 著 is zhù unless a neighbour says otherwise: simplified text writes it only so.
+    著名: "zhù míng", 著者: "zhù zhě", 著有: "zhù yǒu", 合著: "hé zhù", 著作: "zhù zuò",
+    // Taiwan writes 沈默 for 沉默; a mainland text would write 沉默 (chosen: chén).
+    沈默: "chén mò", 沈: "shěn",
+    // Simplified characters too, kept where likelier: the note, 幺麽.
+    徵: "zhǐ", 含商咀徵: "hán shāng zuǐ zhǐ", 幺麽: "yāo mó", 什麽: "shén me", 乾隆: "qián lóng", 乾安: "qián ān",
+  };
+  for (const [w, r] of Object.entries(neutral)) {
+    assert.equal(scriptOf(w), "neutral", w);
+    assert.equal(line(w, "zh-CN"), r, w);
+  }
+  assert.equal(line("頭髮", "zh-CN"), "tóu fa", "no Taiwan reading in a zh-CN profile");
+  assert.equal(scriptOf("我们"), "simplified");
+  assert.equal(scriptOf("我們"), "traditional");
+  assert.equal(scriptOf("他們打坏了"), "traditional", "mixed: converted, its simplified phrases left alone");
+});
+
+test("瞭 that OpenCC spells 了 is liǎo, and a 了 after it stays the particle (PR #62 second review)", () => {
+  for (const l of ["zh-TW", "zh-CN"]) {
+    assert.equal(line("明瞭", l), "míng liǎo", l);
+    assert.equal(line("簡單明瞭", l), "jiǎn dān míng liǎo", l);
+    assert.equal(line("我明瞭了", l), "wǒ míng liǎo le", l);
+    assert.equal(line("一目瞭然", l), "yī mù liǎo rán", l);
+    assert.equal(line("瞭望", l), "liào wàng", l);
+    assert.equal(line("我瞭解了", l), "wǒ liǎo jiě le", l);
+  }
+  assert.equal(line("简单明了", "zh-CN"), "jiǎn dān míng liǎo");
+  // 明了 itself is no correction: it would catch 说明了.
+  for (const w of ["说明了", "证明了", "表明了", "說明了", "證明了", "表明了"]) assert.equal(line(w, "zh-CN").split(" ")[2], "le", w);
+  assert.equal(line("他说明了原因", "zh-CN"), "tā shuō míng le yuán yīn");
+});
+
 test("simplified text reads as before: the conversion leaves it alone", () => {
   const simp = {
     我们去银行吧: "wǒ men qù yín háng ba", 他长得很高: "tā zhǎng de hěn gāo", 为什么: "wèi shén me", 头发: "tóu fa", 了解: "liǎo jiě",
@@ -96,8 +131,8 @@ test("simplified text is never converted: OpenCC's t2s would re-map valid simpli
   // As the reader before ld-37t read them (PR #62 review): TSPhrases maps
   // 打坏 to 打坯 (pī), TSCharacters 徵 to 征 and 沈默 is a phrase for 沉默.
   const before = {
-    打坏: "dǎ huài", 打坏了: "dǎ huài le", 拉坏: "lā huài", 捏坏: "niē huài", 一坏: "yī huài", 徵: "zhǐ", 沈默: "shěn mò", 沈: "shěn",
-    他把杯子打坏了: "tā bǎ bēi zi dǎ huài le", 么: "me",
+    打坏: "dǎ huài", 打坏了: "dǎ huài le", 拉坏: "lā huài", 捏坏: "niē huài", 一坏: "yī huài", 徵: "zhǐ", 沈: "shěn",
+    他把杯子打坏了: "tā bǎ bēi zi dǎ huài le", 么: "me", 他很沉默: "tā hěn chén mò", 沈阳: "shěn yáng",
   };
   for (const [w, r] of Object.entries(before)) {
     assert.equal(looksTraditional(w), false, w);
@@ -131,6 +166,14 @@ test("PHRASE_SIMPLIFIED, ALSO_SIMPLIFIED and the traditional-only set are what O
   assert.deepEqual([...ALSO_SIMPLIFIED].sort(), [...keys].filter((c) => !vals.has(c) && stKeys.has(c)).sort());
   for (const c of "見這裡為們蘋") assert.ok(tradOnlyChars().has(c), c);
   for (const c of "瞭徵乾著沈坏么见这里为们苹") assert.equal(tradOnlyChars().has(c), false, c);
+  // Simplified-only, from the t→s tables alone: each a STCharacters key
+  // that lists only other characters (so never a traditional one).
+  const st = new Map(parse(STCharacters).map(([k, ...v]) => [k, v]));
+  const so = simplifiedOnlyChars();
+  assert.ok(so.size > 2800, `${so.size}`);
+  for (const c of so) assert.ok(st.has(c) && !st.get(c).includes(c), c);
+  for (const c of "们这发干台后里见为苹") assert.ok(so.has(c), c);
+  for (const c of "只坏么乾著於徵瞭沈們") assert.equal(so.has(c), false, c);
 });
 
 test("positions: one reading per code point in mixed text, UTF-16 offsets kept", () => {
@@ -181,7 +224,7 @@ test("SHARED_FORMS is what OpenCC's tables say, and mergedWith names the charact
 
 test("the correction list: each word reads as the dictionaries do, in both scripts", () => {
   const trad = {
-    嚣: "囂", 睡不着: "睡不著", 找不着: "找不著", 用不着: "用不著", 犯不着: "犯不著", 处理不当: "處理不當", 年轻有为: "年輕有為", 挨饿: "挨餓", 挨打: "挨打",
+    嚣: "囂", 睡不着: "睡不著", 找不着: "找不著", 用不着: "用不著", 犯不着: "犯不著", 处理不当: "處理不當", 年轻有为: "年輕有為", 挨饿: "挨餓", 挨打: "挨打", 简单明了: "簡單明瞭", 北斗星: "北斗星", 北斗七星: "北斗七星",
   };
   assert.deepEqual(Object.keys(READING_FIXES).sort(), Object.keys(trad).sort());
   for (const [simp, want] of Object.entries(READING_FIXES)) {
@@ -204,7 +247,7 @@ test("no correction fires across a word boundary (PR #62 review)", () => {
     ["我沒有為什麼", "zh-TW", 3, "wèi"], ["我有为你准备", "zh-CN", 2, "wèi"],
     ["他不倒是", "zh-CN", 2, "dǎo"], ["这种植物", "zh-CN", 1, "zhǒng"], ["弄虚作假日益", "zh-CN", 3, "jiǎ"],
     ["感受难以言表", "zh-CN", 2, "nán"], ["汽油炸弹", "zh-CN", 2, "zhà"],
-    ["说话不着边际", "zh-CN", 3, "zhuó"],
+    ["说话不着边际", "zh-CN", 3, "zhuó"], ["华北斗争", "zh-CN", 2, "dòu"], ["華北鬥爭", "zh-TW", 2, "dòu"], ["北斗七星", "zh-CN", 1, "dǒu"], ["看北斗星", "zh-TW", 2, "dǒu"],
   ];
   for (const [text, locale, at, want] of cases) assert.equal(readCodePoints(text, locale, { cache: false })[at], want, text);
   // Frames of common words around each kept entry change nothing else.

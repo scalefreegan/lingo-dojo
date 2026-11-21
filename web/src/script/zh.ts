@@ -21,7 +21,7 @@
 import { customPinyin, pinyin } from "pinyin-pro";
 import { isHan, isPinyin, isTaiwan, particleDe, taiwanize } from "./script.ts";
 import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
-import { looksTraditional, mergedWith, simplifyAligned } from "./t2s.ts";
+import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
@@ -48,6 +48,9 @@ export const READING_FIXES: Record<string, string> = {
   年轻有为: "nián qīng yǒu wéi", // 有为 alone is often 有 + 为 wèi
   挨饿: "ái è",
   挨打: "ái dǎ",
+  简单明了: "jiǎn dān míng liǎo", // 明了 alone would also catch 说明了 le
+  北斗星: "běi dǒu xīng", // 北斗 alone would also catch 华北斗争 dòu
+  北斗七星: "běi dǒu qī xīng",
 };
 customPinyin(READING_FIXES);
 
@@ -72,21 +75,26 @@ export function readCodePoints(text: string, locale: string, { cache: useCache =
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
   if (cps.some(isHan)) {
-    // Converted only when it is traditional text: a zh-TW profile's always
-    // is (its 乾杯, 看著, 徵求 hold no traditional-only character, yet need
-    // OpenCC's choice and the 著 rule), a zh-CN one's only when the text
-    // holds a traditional-only character (t2s.ts looksTraditional), so
-    // simplified text reads exactly as the library reads it (打坏 huài,
-    // 沈默 shěn, 徵 zhǐ), whatever the profile.
-    const simp = tw || looksTraditional(text) ? simplifyAligned(text) : cps;
-    const items = pinyin(simp.join(""), { type: "all", toneSandhi: false, nonZh: "spaced" });
+    // A zh-TW profile's text is always read as traditional. A zh-CN one's
+    // by its characters (t2s.ts scriptOf): simplified text (one with a
+    // simplified-only character and no traditional-only one) is read as it
+    // is, so OpenCC's t2s never re-maps it (打坏 stays huài, not 打坯 pī);
+    // traditional text is converted; text that is neither (乾杯, 看著, 於是)
+    // is converted with 著 read zhù unless its neighbours say otherwise.
+    const script = tw ? "traditional" : scriptOf(text);
+    const simp = script === "simplified" ? cps : simplifyAligned(text, { neutral: script === "neutral" });
+    // 瞭 that OpenCC spells 了 (瞭解, 明瞭) is always liǎo; read as 了 the
+    // library would make it le (明了 míng le) or a 了 after it liǎo (明了了).
+    // So the library sees 瞭 there and the reading is set after.
+    const liao = simp.map((s, k) => cps[k] === "瞭" && s === "了");
+    const items = pinyin(simp.map((s, k) => (liao[k] ? "瞭" : s)).join(""), { type: "all", toneSandhi: false, nonZh: "spaced" });
     // One item per character (nonZh "spaced" keeps every other character
     // its own item too); walk them by their origin so an item that ever
     // covers two code points can't shift the rest.
     let i = 0;
     for (const it of items) {
       const n = [...it.origin].length || 1;
-      if (it.isZh && n === 1 && isHan(cps[i] ?? "") && isPinyin(it.pinyin)) out[i] = ownReading(cps[i], simp[i], it.pinyin);
+      if (it.isZh && n === 1 && isHan(cps[i] ?? "") && isPinyin(it.pinyin)) out[i] = liao[i] ? "liǎo" : ownReading(cps[i], simp[i], it.pinyin);
       i += n;
     }
     if (tw) taiwanize(text, out);

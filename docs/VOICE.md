@@ -261,18 +261,21 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   by character), and decides Taiwan's 著 by its neighbours (看著 zhe, 睡著
   zháo, 著名 zhù). OpenCC assumes traditional input, so simplified text is
   never converted (it would turn 打坏 into 打坯, pī): a zh-TW profile's text
-  always is, a zh-CN profile's only when it holds a traditional-only
-  character (one OpenCC's tables never write in simplified text: 見 這 們
-  蘋, not 乾 徵 瞭 著), and a phrase whose key is already simplified text
-  (坏, 么 …) is never applied. So a zh-CN profile reads 乾杯 or 看著 alone
-  as simplified text would read them. Then it applies Taiwan's standard readings for a zh-TW
+  always is converted; a zh-CN profile's is decided by its characters
+  (`scriptOf`): one with a traditional-only character (見 這 們 蘋) is
+  converted, else one with a simplified-only character (们 这 发) is read
+  as it is, and one with neither (乾杯, 看著, 於是, 瞭解) is converted with
+  著 read zhù unless its neighbours make it zhe / zháo / zhuó (著者, 合著
+  stay zhù) and 徵 kept as the note alone or beside another. A phrase whose
+  key is already simplified text (坏, 么 …) is never applied, and a 瞭
+  OpenCC spells 了 (明瞭, 瞭解) is always liǎo, the particle after it le. Then it applies Taiwan's standard readings for a zh-TW
   profile (星期 xīng qí, 垃圾 lè sè). A traditional character that shares
   its simplified form with another keeps a reading of its own (髮 fà, never
   發's fā; 幹 gàn, not 乾's gān); any other reading from the word stands,
   since the library's lists for traditional characters are short (間 lists
   only jiàn: 時間 is shí jiān). A short correction list (`READING_FIXES`:
   囂 xiāo, 睡不著 / 找不著 / 用不著 / 犯不著 zháo, 處理不當 dàng, 年輕有為
-  wéi, 挨餓 / 挨打 ái) fixes everyday words the library misreads in either
+  wéi, 挨餓 / 挨打 ái, 簡單明瞭 liǎo, 北斗星 dǒu) fixes everyday words the library misreads in either
   script; each entry wins over the library's word matching even across two
   words, so only ones that can't misfire are kept (和面 would read
   牛奶和面包 huó), found by the CC-CEDICT sweep (`npm run pinyin:sweep`,

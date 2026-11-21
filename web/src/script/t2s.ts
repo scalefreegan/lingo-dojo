@@ -133,16 +133,67 @@ export function tradOnlyChars(): ReadonlySet<string> {
 
 /** Whether `text` holds a traditional-only character, so it is
  *  traditional text (or mixed) and is read through its simplified
- *  spelling; text with none (any simplified text) is read as it is. */
+ *  spelling. */
 export function looksTraditional(text: string): boolean {
   const set = tradOnlyChars();
   for (const c of text) if (set.has(c) || set.has(c.normalize("NFC"))) return true;
   return false;
 }
 
+let simpOnly: Set<string> | null = null;
+/** The simplified-only characters: TSCharacters candidates that are no
+ *  key of either table (so not a traditional character too) and not a
+ *  SHARED_FORMS one: 们 这 发 干 台 后 里, some 2,900. From the t→s tables
+ *  alone, so STCharacters needn't ship: every one is a STCharacters key
+ *  that lists only other characters (t2s.test.mjs), a subset of those
+ *  (the rest, ~940 rare ones such as 馀 锺, never occur as a TSCharacters
+ *  candidate; a text holding only those reads as script-neutral). */
+export function simplifiedOnlyChars(): ReadonlySet<string> {
+  if (!simpOnly) {
+    const trad = new Set<string>();
+    const cand = new Set<string>();
+    for (const [from, to] of entries(TSCharacters)) {
+      trad.add(from);
+      for (const t of to) cand.add(t);
+    }
+    for (const [from] of entries(TSPhrases)) for (const c of from) trad.add(c);
+    simpOnly = new Set([...cand].filter((c) => !trad.has(c) && !SHARED_FORMS.includes(c)));
+  }
+  return simpOnly;
+}
+
+/** How a zh-CN text is read. "traditional": it holds a traditional-only
+ *  character, so it is converted (a mixed line too: no phrase whose key
+ *  is simplified text is applied, PHRASE_SIMPLIFIED). "simplified": no
+ *  traditional-only character but a simplified-only one, so read as it
+ *  is. "neutral": neither (乾杯, 看著, 著名, 於是, 瞭解): converted too, but
+ *  著 is zhù unless its neighbours say otherwise (zheNeutral), since
+ *  simplified text writes 著 only for zhù. */
+export type Script = "traditional" | "simplified" | "neutral";
+export function scriptOf(text: string): Script {
+  if (looksTraditional(text)) return "traditional";
+  const set = simplifiedOnlyChars();
+  for (const c of text) if (set.has(c)) return "simplified";
+  return "neutral";
+}
+
+// A word OpenCC's tables lack, ahead of them: 乾安 (a county, qián) would
+// otherwise take TSCharacters' 乾 → 干.
+const EXTRA_PHRASES = "乾安 乾安";
 let ts: Stage | null = null;
 const tsStage = () =>
-  (ts ??= makeStage([TSPhrases, TSCharacters], (from, to) => [...from].length > 1 && from !== to && [...from].some((c) => PHRASE_SIMPLIFIED.includes(c))));
+  (ts ??= makeStage([EXTRA_PHRASES, TSPhrases, TSCharacters], (from, to) => [...from].length > 1 && from !== to && [...from].some((c) => PHRASE_SIMPLIFIED.includes(c))));
+
+/** In script-neutral text (scriptOf), the characters that are simplified
+ *  ones too keep that reading where it is the likelier: 麽 mó after 幺
+ *  (幺麽小丑; 什麽 is 什么), 徵 zhǐ (the note) alone or beside another note
+ *  or 咀 (含商咀徵); 徵求, 特徵 still read zhēng. */
+function neutralForm(cps: readonly string[], i: number, out: string): string {
+  const near = `${cps[i - 1] ?? ""}${cps[i + 1] ?? ""}`;
+  if (cps[i] === "麽" && /[幺么]/.test(cps[i - 1] ?? "")) return "麽";
+  if (cps[i] === "徵" && (!/\p{Script=Han}/u.test(near) || /[宫宮商角羽咀]/.test(near))) return "徵";
+  return out;
+}
 
 // 著 is zhù (write; notable) in these words, else 着 (看著 zhe, 睡著 zháo,
 // 著急 zháo, 著陸 zhuó): Taiwan writes all of them with 著. From CC-CEDICT's
@@ -155,6 +206,15 @@ const ZHU_PREV = "顯显名土編编原巨論论專专譯译遺遗拙卓昭炳�
 function zheForm(cps: readonly string[], i: number): string {
   // "\0" for no neighbour: "".includes would find it in any list.
   return ZHU_NEXT.includes(cps[i + 1] ?? "\0") || ZHU_PREV.includes(cps[i - 1] ?? "\0") ? "著" : "着";
+}
+
+// In script-neutral text 著 is zhù (all simplified text has) unless it
+// follows a verb as the aspect particle or the complement (看著 zhe, 睡著,
+// 睡不著 zháo) or begins a zháo / zhuó word (著急 著手 著想 著陸 著涼).
+const ZHE_PREV = "看睡等坐站躺拿聽听想笑哭唱跟帶带穿戴開开關关走跑寫写讀读用找吃喝說说望忙接拉抱背扶藏留守聊陪叫問问不得";
+const ZHE_NEXT = "急手想陸陆涼凉迷火眼力落地實实重色裝装墨";
+function zheNeutral(cps: readonly string[], i: number): string {
+  return ZHE_PREV.includes(cps[i - 1] ?? "\0") || ZHE_NEXT.includes(cps[i + 1] ?? "\0") ? "着" : "著";
 }
 
 /** The simplified characters (BMP) that are also traditional characters
@@ -191,12 +251,15 @@ export function mergedWith(ch: string, simp: string): string[] {
  *  character with no simplified form, or not Chinese, as itself). A CJK
  *  compatibility ideograph (U+F900…) is first read as the unified one it
  *  stands for, as OpenCC normalises it. */
-export function simplifyAligned(text: string): string[] {
+export function simplifyAligned(text: string, { neutral = false }: { neutral?: boolean } = {}): string[] {
   const cps = [...text].map((c) => {
     const n = c.normalize("NFC");
     return [...n].length === 1 ? n : c;
   });
   const out = alignedStage(tsStage(), cps);
-  for (let i = 0; i < cps.length; i++) if (cps[i] === "著") out[i] = zheForm(cps, i);
+  for (let i = 0; i < cps.length; i++) {
+    if (cps[i] === "著") out[i] = neutral ? zheNeutral(cps, i) : zheForm(cps, i);
+    else if (neutral) out[i] = neutralForm(cps, i, out[i]);
+  }
   return out;
 }
