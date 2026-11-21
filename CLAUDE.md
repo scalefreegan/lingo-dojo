@@ -97,6 +97,16 @@ most one Azure call per clip and record version (an O_EXCL ledger,
 record holds Azure's spans: the clip is read again on them, `spansFrom`);
 the tips are pure rules in `web/shared/compare.ts`, never touching the
 scorer.
+Pace (ld-9gz, docs/VOICE.md §Pace; no migration): the dojo master wraps
+what it says slowly in `<slow>…</slow>` (outside `<t>`), the only thing that
+slows a voice; a slow piece is a segment with `slow: true`, kept by the
+stream, the stored turn and the replay (`markedText`). The browser sends
+`pace: "slow"` (a word, never a number; else 400) and `speechPace` in
+`scripts/voice.mjs` holds each provider's setting: ElevenLabs
+`voice_settings.speed`, Azure `<prosody rate>`, `say -r`; where the voice
+can't (Eleven v3/v4, Azure HD voices) the reply's `X-Lingo-Playback-Rate`
+has the Go tab slow the playback. Slowing down for the session is the
+model's marking, not server state.
 Tone checks where the text is known (pronunciation stage 1, ld-ne0.2; no
 migration, docs/VOICE.md §Pronunciation in the app): `POST
 /api/pronunciation/score?text=` (`web/server/pronunciation.ts`, pure rules

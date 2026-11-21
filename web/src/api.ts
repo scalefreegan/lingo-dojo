@@ -23,6 +23,7 @@ import type {
   HiddenSceneReply, HiddenScenesReply, UnhideSceneReply,
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
+import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
  *  `code` the reason beside it for the few errors the client acts on. */
@@ -687,8 +688,23 @@ export function endConversation(id: string, page: PageLearner): Promise<void> {
 
 /** One line → playable audio. Errors come back as the usual {error}; a
  *  429 (the user's paid calls all busy) is retried a moment later. */
-export function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<Blob> {
+export function speakLine(body: VoiceSpeakRequest, signal?: AbortSignal): Promise<SpokenClip> {
   return whenFree(() => audioFrom("/api/voice/speak", body, signal), signal);
+}
+
+/** A spoken piece and the rate to play it at: 1, or slower when the piece
+ *  was asked for slow and the voice couldn't slow down itself (the reply's
+ *  PLAYBACK_RATE_HEADER). */
+export interface SpokenClip {
+  blob: Blob;
+  playbackRate: number;
+}
+
+/** The header's rate, kept to what a slowed line may be: anything else
+ *  (absent, junk, faster than normal, a crawl) is the normal rate. */
+export function playbackRateOf(header: string | null): number {
+  const n = Number(header);
+  return header && Number.isFinite(n) && n >= 0.5 && n < 1 ? n : 1;
 }
 
 /** The character card's sounds: 1–4 example characters said by the
@@ -699,10 +715,10 @@ export async function soundAudio(body: VoiceSoundRequest, signal?: AbortSignal):
   return (await reqBlob("/api/voice/sound", { ...json(body), signal })).blob;
 }
 
-async function audioFrom(url: string, body: unknown, signal?: AbortSignal): Promise<Blob> {
+async function audioFrom(url: string, body: unknown, signal?: AbortSignal): Promise<SpokenClip> {
   const res = await send(url, { ...json(body), signal });
   check401(res);
-  if (res.ok) return res.blob();
+  if (res.ok) return { blob: await res.blob(), playbackRate: playbackRateOf(res.headers.get(PLAYBACK_RATE_HEADER)) };
   const text = await res.text();
   let msg = text.slice(0, 200) || `${res.status} ${res.statusText}`;
   try {

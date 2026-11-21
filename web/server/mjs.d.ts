@@ -234,12 +234,17 @@ declare module "*/scripts/voice.mjs" {
   export function elevenLibrary(json: unknown): import("../shared/wire.ts").LibraryReply;
   /** Throws on an id that isn't an ElevenLabs id. */
   export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;
-  export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string }): Req;
+  export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string; speed?: number }): Req;
+  export const PACES: readonly import("../shared/wire.ts").SpeechPace[];
+  export function paceOf(v: unknown): import("../shared/wire.ts").SpeechPace | null;
+  export const SLOW_RATE: number;
+  export const SAY_SLOW_WPM: number;
+  export function speechPace(provider: string, pace: import("../shared/wire.ts").SpeechPace, o?: { model?: string; voice?: string }): { speed: number; playbackRate: number };
   export function elevenVoicesRequest(o: { key: string }): Req;
   export function elevenTranscribeRequest(o: { key: string; audio: Uint8Array; mime?: string; language?: string; keyterms?: string[] }): Req;
   export const MAX_KEYTERMS: number;
   export function keytermsFrom(phrases: unknown, max?: number): string[];
-  export function azureSpeechRequest(o: { key: string; region: string; voice: string; text: string; locale?: string }): Req;
+  export function azureSpeechRequest(o: { key: string; region: string; voice: string; text: string; locale?: string; speed?: number }): Req;
   export function azureVoicesRequest(o: { key: string; region: string }): Req;
   export function azureTranscribeRequest(o: { key: string; region: string; audio: Uint8Array; locales: string[]; mime?: string }): Req;
   export function elevenVoices(json: unknown, locale: string, nativeLocale?: string): VoiceChoice[];

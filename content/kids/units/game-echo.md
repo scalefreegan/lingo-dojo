@@ -11,7 +11,7 @@ Run the echo game before the story and again whenever a new word turns up
 inside it. Announce it like a game ("echo time!"). Pick three or four of
 the most useful words for today's scene, favoring concrete things
 {{learner_name}} will meet right away (an animal, a color, a number, a
-greeting). For each: say it once in {{target_language}} nice and slow, add
+greeting). For each: say it once in {{target_language}} nice and slow (inside <slow>…</slow>), add
 a sound effect or silly voice if it fits, say in {{native_language}} what it
 means in a few words, say the {{target_language}} word again, and ask
 {{learner_name}} to copy it. The helper character echoes too, so the child

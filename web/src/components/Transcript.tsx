@@ -273,7 +273,7 @@ const TranscriptRow = memo(function TranscriptRow({
             <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
             <span className="min-w-0 max-w-[72ch] flex-1 text-fg break-words">
               {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
-                <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined}>
+                <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined} data-pace={g.slow ? "slow" : undefined} title={g.slow ? "Spoken slowly" : undefined}>
                   {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
                   {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
                 </span>

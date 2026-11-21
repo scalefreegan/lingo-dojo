@@ -748,7 +748,21 @@ export type SegmentLang = "target" | "native";
 export interface VoiceSegment {
   lang: SegmentLang;
   text: string;
+  /** The dojo master wrapped this piece in <slow>…</slow>: it is spoken
+   *  slower (sent to /api/voice/speak as `pace: "slow"`). Absent at the
+   *  normal pace, as in every line stored before the mark existed. */
+  slow?: true;
 }
+
+/** How fast a piece is spoken. A word, never a number: the server holds
+ *  each provider's own setting for "slow" (scripts/voice.mjs speechPace). */
+export type SpeechPace = "normal" | "slow";
+
+/** A /api/voice/speak reply's header, present only when the piece was asked
+ *  for slow and the provider, model or voice can't slow down itself (Eleven
+ *  v3/v4, an Azure HD voice): the clip is at normal speed and the browser
+ *  plays it at this rate with the pitch kept. */
+export const PLAYBACK_RATE_HEADER = "X-Lingo-Playback-Rate";
 
 /** One spoken line of a dojo-master turn. `text` is the segments joined, for
  *  display and copying. */
@@ -1073,6 +1087,9 @@ export interface VoiceSpeakRequest {
   locale: string;
   /** The language this text is in; "target" when absent. */
   lang?: SegmentLang;
+  /** "slow" for a piece inside <slow>; "normal" when absent. Anything else
+   *  is a 400. */
+  pace?: SpeechPace;
   /** The learner's native locale, for "native" text. */
   nativeLocale?: string;
   /** Picks the woman's or man's voice for the speaker. */

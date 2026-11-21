@@ -416,6 +416,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Every clip playing right now: usually one, two while lines overlap.
   const audiosRef = useRef(new Set<HTMLAudioElement>());
   const urls = useRef(new Map<string, Promise<string>>());
+  // The rate a clip plays at when it isn't 1, by its object URL: a slow
+  // piece from a voice that can't slow down itself (api.ts SpokenClip).
+  const rates = useRef(new Map<string, number>());
   // Segment keys already counted in "characters spoken".
   const counted = useRef(new Set<string>());
   const settingsRef = useRef<VoiceSettings | null>(null);
@@ -817,7 +820,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
    *  replayed in place of the new one. */
   function audioFor(base: string, line: VoiceLine, seg: VoiceSegment, signal: AbortSignal, who?: SpeakAs, retry = false): Promise<string> {
     const as = who ?? { voice: castVoiceFor(castRef.current, line), fallback: castFallbackFor(castRef.current, line) };
-    const key = `${base}@${as.voice ?? ""}`;
+    // The pace is part of the key: a slow piece is its own clip.
+    const key = `${base}@${as.voice ?? ""}${seg.slow ? "@slow" : ""}`;
     let p = urls.current.get(key);
     if (!p) {
       if (!locale) return Promise.reject(new Error("no locale for the target language"));
@@ -828,9 +832,13 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         setChars((c) => c + seg.text.length);
       }
       p = speakLine(
-        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, nativeLocale: nativeLocale ?? undefined, voice: as.voice, fallback: as.fallback, provider: castRef.current?.provider },
+        { speaker: line.speaker, gender: line.gender ?? null, text: seg.text, locale, lang: seg.lang, ...(seg.slow ? { pace: "slow" as const } : {}), nativeLocale: nativeLocale ?? undefined, voice: as.voice, fallback: as.fallback, provider: castRef.current?.provider },
         signal,
-      ).then((b) => URL.createObjectURL(b));
+      ).then((clip) => {
+        const url = URL.createObjectURL(clip.blob);
+        if (clip.playbackRate !== 1) rates.current.set(url, clip.playbackRate);
+        return url;
+      });
       const mine = p;
       urls.current.set(key, mine);
       // A failed fetch leaves the cache (this handler runs before the
@@ -855,6 +863,13 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   function playUrl(url: string, signal: AbortSignal, leadMs = 0): Promise<void> {
     return new Promise((resolve, reject) => {
       const a = new Audio(url);
+      // A slow piece the voice couldn't slow: stretched here, pitch kept
+      // (the browser's default; said outright because tones depend on it).
+      const rate = rates.current.get(url);
+      if (rate) {
+        a.preservesPitch = true;
+        a.playbackRate = rate;
+      }
       audiosRef.current.add(a);
       let poll = 0;
       let settled = false;
@@ -1651,6 +1666,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     setRecapId(null);
     for (const p of urls.current.values()) void p.then(URL.revokeObjectURL, () => {});
     urls.current.clear();
+    rates.current.clear();
     // "Characters spoken" is per session; keys start from 0 again.
     counted.current.clear();
     setChars(0);
