@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { answerWavRequest } from "../../web/src/wav16k.ts";
-import { makeWavConverter, wavOnThisThread } from "../../web/src/wavConverter.ts";
+import { makeWavConverter, wavOnThisThread, workerTimeoutMs } from "../../web/src/wavConverter.ts";
 
 const sine = (hz, rate, seconds = 0.5) => {
   const x = new Float32Array(Math.round(rate * seconds));
@@ -17,7 +17,9 @@ const sine = (hz, rate, seconds = 0.5) => {
 };
 
 /** A stand-in Worker. `mode`: "ok" answers; "error" fires onerror instead
- *  (a module Worker that couldn't load); "refuse" answers with an error. */
+ *  (a module Worker that couldn't load); "refuse" answers with an error;
+ *  "hang" never answers; "throwOnce" throws from the first postMessage
+ *  (a clone error), then answers. */
 function fakeWorker(mode = "ok") {
   const w = {
     posted: 0,
@@ -26,6 +28,8 @@ function fakeWorker(mode = "ok") {
     onerror: null,
     postMessage(message, transfer) {
       w.posted++;
+      if (mode === "throwOnce" && w.posted === 1) throw new Error("DataCloneError");
+      if (mode === "hang") return;
       // What a real postMessage does to the sender's copy: detaches it.
       const moved = structuredClone(message, { transfer });
       setTimeout(() => {
@@ -101,4 +105,67 @@ test("a Worker that answers with an error: converted on this thread; a bad rate 
   const mono = sine(440, 48_000);
   same(await convert([mono], 48_000), wavOnThisThread([mono], 48_000));
   await assert.rejects(makeWavConverter(() => fakeWorker())([mono], 0), /bad sample rate 0/);
+});
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("a Worker that never answers: past the timeout the take is converted here, and later ones skip it", { timeout: 5000 }, async () => {
+  const workers = [];
+  const convert = makeWavConverter(
+    () => {
+      const w = fakeWorker("hang");
+      workers.push(w);
+      return w;
+    },
+    { timeoutMs: () => 50 },
+  );
+  const mono = sine(440, 48_000);
+  same(await convert([mono], 48_000), wavOnThisThread([mono], 48_000));
+  assert.ok(workers[0].terminated);
+  same(await convert([mono], 48_000), wavOnThisThread([mono], 48_000));
+  assert.equal(workers[0].posted, 1);
+});
+
+test("an answered conversion's timeout is cleared: a working Worker is not given up on later", { timeout: 5000 }, async () => {
+  const workers = [];
+  const convert = makeWavConverter(
+    () => {
+      const w = fakeWorker();
+      workers.push(w);
+      return w;
+    },
+    { timeoutMs: () => 50 },
+  );
+  const mono = sine(440, 48_000);
+  await convert([mono], 48_000);
+  await wait(120);
+  await convert([mono], 48_000);
+  assert.ok(!workers[0].terminated);
+  assert.equal(workers[0].posted, 2);
+});
+
+test("the default timeout is generous: 5 s plus 5 s per 10 s of audio", () => {
+  assert.equal(workerTimeoutMs(0), 5_000);
+  assert.equal(workerTimeoutMs(10), 10_000);
+  assert.equal(workerTimeoutMs(60), 35_000);
+});
+
+test("a postMessage that throws: converted here, and nothing of it is left waiting to time out", { timeout: 5000 }, async () => {
+  const workers = [];
+  const convert = makeWavConverter(
+    () => {
+      const w = fakeWorker("throwOnce");
+      workers.push(w);
+      return w;
+    },
+    { timeoutMs: () => 50 },
+  );
+  const mono = sine(440, 48_000);
+  same(await convert([mono], 48_000), wavOnThisThread([mono], 48_000));
+  // Long past that request's timeout: had it been left pending, its timer
+  // would have given up on a Worker that works.
+  await wait(120);
+  same(await convert([mono], 48_000), wavOnThisThread([mono], 48_000));
+  assert.ok(!workers[0].terminated);
+  assert.equal(workers[0].posted, 2);
 });

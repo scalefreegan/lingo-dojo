@@ -26,23 +26,37 @@ export function wavOnThisThread(channels: readonly Float32Array[], rate: number)
   return encodeWav16k(resampleTo16k(downmix(channels), rate));
 }
 
+/** How long a conversion may take in the Worker before the take is done
+ *  here instead: 5 s plus 5 s per 10 s of audio (35 s at the 60 s cap).
+ *  The Worker measured 0.1 s per 10 s in Chromium, so only a hung Worker
+ *  gets near it. */
+export function workerTimeoutMs(seconds: number): number {
+  return 5_000 + 500 * seconds;
+}
+
 /** A converter that uses the Worker `spawn` makes (null or a throw: none
- *  available) and falls back to this thread whenever it can't. */
-export function makeWavConverter(spawn: () => WorkerLike | null) {
+ *  available) and falls back to this thread whenever it can't: no Worker,
+ *  one that fails or refuses, or one that doesn't answer in `timeoutMs`
+ *  (for the recording's length in seconds). */
+export function makeWavConverter(spawn: () => WorkerLike | null, { timeoutMs = workerTimeoutMs }: { timeoutMs?: (seconds: number) => number } = {}) {
   let worker: WorkerLike | null = null;
   // Once a Worker has failed to start or died, later recordings don't try
   // again: whatever stopped it (a browser without module Workers, a CSP)
   // will stop the next one too.
   let unavailable = false;
   let nextId = 0;
-  const pending = new Map<number, { resolve: (wav: ArrayBuffer) => void; reject: (e: Error) => void }>();
+  const pending = new Map<number, { resolve: (wav: ArrayBuffer) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
   function giveUp() {
     unavailable = true;
     worker?.terminate();
     worker = null;
-    for (const p of pending.values()) p.reject(new Error("conversion worker failed"));
+    const all = [...pending.values()];
     pending.clear();
+    for (const p of all) {
+      clearTimeout(p.timer);
+      p.reject(new Error("conversion worker failed"));
+    }
   }
 
   function current(): WorkerLike | null {
@@ -60,6 +74,7 @@ export function makeWavConverter(spawn: () => WorkerLike | null) {
       const p = pending.get(data.id);
       if (!p) return;
       pending.delete(data.id);
+      clearTimeout(p.timer);
       if ("wav" in data) p.resolve(data.wav);
       else p.reject(new Error(data.error));
     };
@@ -84,11 +99,24 @@ export function makeWavConverter(spawn: () => WorkerLike | null) {
       try {
         return await new Promise<ArrayBuffer>((resolve, reject) => {
           const id = nextId++;
-          pending.set(id, { resolve, reject });
-          w.postMessage({ id, pcm, rate }, [pcm.buffer]);
+          // A Worker that never answers (hung, or lost without an error
+          // event) must not hang the take: past the timeout it is given up
+          // on, and this and every waiting take are done here.
+          // (A bad rate is the Worker's to refuse; its length counts as 0 s,
+          // never an Infinity that setTimeout would read as no wait at all.)
+          const timer = setTimeout(giveUp, timeoutMs(rate > 0 ? pcm.length / rate : 0));
+          pending.set(id, { resolve, reject, timer });
+          try {
+            w.postMessage({ id, pcm, rate }, [pcm.buffer]);
+          } catch (e) {
+            // Refused before it left (a clone error): nothing will answer.
+            pending.delete(id);
+            clearTimeout(timer);
+            reject(e instanceof Error ? e : new Error(String(e)));
+          }
         });
       } catch {
-        // The Worker failed or refused it: do it here. A request that is
+        // The Worker failed, refused it or timed out: do it here. A request that is
         // simply bad (a 0 Hz rate) throws again below, as it always has.
       }
     }

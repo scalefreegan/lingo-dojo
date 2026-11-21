@@ -11,10 +11,12 @@
 // -45 dBFS (RMS 0.0056) and never armed the detector (ld-5cj). For "pitch"
 // the minimum is 0.004 (about -48 dBFS) and the floor term does the work.
 //
-// After calibration the floor follows the room slowly (ld-efi): a noise
-// that starts later and holds steady (a fan, an air conditioner) would
-// otherwise stay above the threshold, keep the take from ending on a pause
-// and, after 200 ms, count as speech. See `createPauseDetector`.
+// After calibration a pitch take's floor follows a steady room up slowly
+// (ld-efi): a noise that starts later and holds steady (a fan, an air
+// conditioner) would otherwise stay above the threshold, keep the take from
+// ending on a pause and, after 200 ms, count as speech. A conversation take
+// (noise suppression and auto gain on) keeps the fixed threshold. See
+// `createPauseDetector`.
 
 export const FLOOR_MULTIPLE = 3;
 export const MIN_THRESHOLD = { conversation: 0.015, pitch: 0.004 } as const;
@@ -28,9 +30,13 @@ export const CALIBRATE_MS = 350;
  *  cough or a click does not arm the pause detector). */
 export const SPEECH_MIN_MS = 200;
 
-/** The floor follower (ld-efi). It rises only while the last FOLLOW_MS of
- *  ticks all sit within FOLLOW_SPREAD of each other, and then at most
- *  FOLLOW_RISE_DB per second, never above the quietest of those ticks.
+/** The floor follower (ld-efi), pitch takes only. It rises only while the
+ *  last FOLLOW_MS of ticks all sit within FOLLOW_SPREAD of each other, and
+ *  then at most FOLLOW_RISE_DB per second, never above the quietest of
+ *  those ticks. It comes back down only after FALL_MS of ticks all under
+ *  it, to the loudest of them, and never below the calibration floor: one
+ *  quiet tick in a fluctuating room (a TV, a café) must not ratchet the
+ *  threshold down for the rest of the take (PR #53 review).
  *
  *  Why these numbers (chosen without a real microphone: see docs/VOICE.md,
  *  a real-mic check is owed):
@@ -44,8 +50,10 @@ export const SPEECH_MIN_MS = 200;
  *    speaker of ld-5cj, -45 dBFS against the pitch minimum of -48 dBFS
  *    (3 dB). At 1 dB/s, after the 1 s gate, a vowel held perfectly steady
  *    for 4 s would be the first to be cut; a 3 s one is not (tested).
- *    Louder speech has 10 dB and more. Any tick quieter than the floor drops
- *    it at once, so each pause between words resets the climb.
+ *    Louder speech has 10 dB and more. A conversation take never climbs:
+ *    with auto gain a drawn-out note at -30 dBFS is steady enough to pass
+ *    the gate and was cut at about 9.5 s (PR #53 review), and noise
+ *    suppression already removes the steady noise this is for.
  *  - What it buys: a steady -38 dBFS fan that starts mid-take, in a quiet
  *    room, is under the threshold about 11 s after it starts (10 dB from
  *    the minimum's own floor at 1 dB/s, plus the gate), then the take ends
@@ -55,6 +63,7 @@ export const SPEECH_MIN_MS = 200;
 export const FOLLOW_MS = 1_000;
 export const FOLLOW_SPREAD_DB = 3;
 export const FOLLOW_RISE_DB = 1;
+export const FALL_MS = 300;
 
 /** The room's level from the calibration window's per-tick RMS values: the
  *  quietest tick, not the mean. A learner who starts talking inside the
@@ -95,18 +104,21 @@ export interface PauseDetector {
 }
 
 /** The detector: calibrate on the first CALIBRATE_MS, then count speech
- *  against the threshold, while the floor follows a steady room up slowly
- *  (FOLLOW_*) and drops at once to any quieter tick. */
+ *  against the threshold; on a pitch take the floor also follows a steady
+ *  room up slowly (FOLLOW_*) and back down to no lower than calibration. */
 export function createPauseDetector({ processing, silenceMs, maxMs, idleMs }: PauseDetectorOptions): PauseDetector {
   const calibration: number[] = [];
   const window: number[] = [];
   const windowTicks = Math.round(FOLLOW_MS / TICK_MS);
+  const fallTicks = Math.round(FALL_MS / TICK_MS);
   const steadyRatio = 10 ** (FOLLOW_SPREAD_DB / 20);
   const risePerTick = 10 ** ((FOLLOW_RISE_DB * TICK_MS) / 1000 / 20);
   // Below this the floor does not move the threshold (the minimum rules),
   // so a climb starts here, not from a very quiet room's -80 dBFS.
   const floorAtMinimum = MIN_THRESHOLD[processing] / FLOOR_MULTIPLE;
+  const follows = processing === "pitch";
   let calibrated = false;
+  let calibratedFloor = 0;
   let floor = 0;
   let threshold = 0.02;
   let loudMs = 0;
@@ -114,12 +126,17 @@ export function createPauseDetector({ processing, silenceMs, maxMs, idleMs }: Pa
   let lastLoud = 0;
 
   function follow(rms: number) {
+    // A 0 (or NaN, made 0 in tick) is a dropped read, not the room.
+    if (!(rms > 0)) return;
     window.push(rms);
     if (window.length > windowTicks) window.shift();
-    if (rms < floor) floor = rms;
-    else if (window.length === windowTicks) {
+    const recent = window.slice(-fallTicks);
+    if (recent.length === fallTicks && Math.max(...recent) < floor) {
+      // The noise stopped: back down, but never under the room calibration heard.
+      floor = Math.max(calibratedFloor, Math.max(...recent));
+    } else if (window.length === windowTicks) {
       const lo = Math.min(...window);
-      if (Math.max(...window) <= lo * steadyRatio) floor = Math.min(lo, Math.max(floor, floorAtMinimum) * risePerTick);
+      if (Math.max(...window) <= lo * steadyRatio) floor = Math.max(floor, Math.min(lo, Math.max(floor, floorAtMinimum) * risePerTick));
     }
     threshold = pauseThreshold(floor, processing);
   }
@@ -141,7 +158,8 @@ export function createPauseDetector({ processing, silenceMs, maxMs, idleMs }: Pa
       if (!calibrated) {
         // Three times the room's own level (its quietest tick, so speech in
         // the window doesn't count), but never so low that hiss counts.
-        floor = noiseFloor(calibration);
+        calibratedFloor = noiseFloor(calibration);
+        floor = calibratedFloor;
         threshold = pauseThreshold(floor, processing);
         calibrated = true;
       }
@@ -153,7 +171,7 @@ export function createPauseDetector({ processing, silenceMs, maxMs, idleMs }: Pa
         loudMs = Math.max(0, loudMs - TICK_MS / 2);
       }
       // After the decision: this tick is judged by the threshold it met.
-      follow(rms);
+      if (follows) follow(rms);
       if (elapsed >= maxMs) return "max";
       if (silenceMs != null && spoke && elapsed - lastLoud >= silenceMs) return "pause";
       if (silenceMs != null && !spoke && elapsed >= idleMs) return "idle";

@@ -1434,8 +1434,10 @@ the page; `web/src/wavConverter.ts`, tested in
 copied, and the page stays responsive (headless Chromium, the built
 bundle: 10 s of 48 kHz audio in 102 ms, the page's 10 ms timer still
 firing throughout). When no Worker starts (no module Workers, a blocked
-script) or one fails, the same code runs on the page's thread, as it did
-before: slower, never a lost recording. Safari's Worker was not run
+script), one fails, or one doesn't answer within 5 s plus 5 s per 10 s of
+audio (35 s at the 60 s cap; a hung Worker is then dropped for the page),
+the same code runs on the page's thread, as it did before: slower, never a
+lost or stuck recording. Safari's Worker was not run
 (ld-lvk). A NaN or ±Infinity sample (decoders don't produce them) is
 read as 0, so it can't become about 6 ms of full-scale output. Until 2026-11 it played the
 decoded buffer through a 16 kHz OfflineAudioContext, which interpolates
@@ -1549,20 +1551,45 @@ the room: −45 dBFS speech arms it in a room quieter than about −54.5 dBFS
 limit: a quiet voice in a noisier room still ends only on Stop or the idle
 cap.
 
-**The floor follows a steady room** (ld-efi; `createPauseDetector` in the
-same file, tested on synthetic level sequences). Until 2026-11 the
-threshold was fixed after calibration, so a noise that started later (a
-fan, the model clip's echo on loud speakers) and stayed above it kept the
-take from ending on a pause, and after 200 ms counted as speech, which also
-skips the idle cap: the take ran to its maximum (20 s for Practice
-speak-it, 8 s for the character card, 60 s by default). Now, after each
-tick, the floor:
+**On a pitch take the floor follows a steady room** (ld-efi;
+`createPauseDetector` in the same file, tested on synthetic level
+sequences). Until 2026-11 the threshold was fixed after calibration, so a
+noise that started later (a fan, the model clip's echo on loud speakers)
+and stayed above it kept the take from ending on a pause, and after 200 ms
+counted as speech, which also skips the idle cap: the take ran to its
+maximum (20 s for Practice speak-it, 8 s for the character card). Now, on
+a `pitch` take, after each tick the floor:
 
-- drops at once to any tick quieter than it (each pause between words
-  resets it);
 - rises only while the last 1 s of ticks all sit within 3 dB of each other,
   at 1 dB/s, never above the quietest of them, starting from the floor the
-  minimum implies (minimum ÷ 3) rather than a very quiet room's own.
+  minimum implies (minimum ÷ 3) rather than a very quiet room's own;
+- comes back down only after 300 ms of ticks all under it, to the loudest
+  of them, and **never below the calibration floor**. Following the
+  quietest single tick down (PR #53's first version) ratcheted the
+  threshold down in a fluctuating room (a TV, a café), so such a room's
+  peaks kept the take going: see the table;
+- ignores a 0 or NaN tick (a dropped read).
+
+A `conversation` take (voice turns, hands-free, a said cloze) keeps the
+fixed threshold, exactly as before: noise suppression already removes the
+steady noise this is for, and with auto gain a drawn-out note at −30 dBFS
+is steady enough to pass the gate (the first version cut one at 9.6 s).
+
+Main's fixed threshold, PR #53's first version and now, each case over 200
+seeded synthetic level sequences (the PR #53 review's simulation,
+extended): takes that ended on the pause, and their median end:
+
+| case | before (fixed) | first version | now | now = before |
+|---|---|---|---|---|
+| pitch, café −45 ±3 dBFS, speech −30 | 200, 4.8 s | 200, 4.8 s | 200, 4.8 s | 200/200 |
+| pitch, café −45 ±6, speech −30 | 128, 6.0 s | 18, 13.6 s | 128, 6.0 s | 200/200 |
+| pitch, steady fan −38 after speech, −60 room | 0 (cap) | 200, 16.1 s | 200, 16.1 s | (the fix) |
+| pitch, steady hum −40, one 0 tick | 192, 4.8 s | 200, 14.1 s | 192, 4.8 s | 200/200 |
+| pitch, quiet speech −45 with pauses, 15 s | 200, 16.8 s | 200, 16.8 s | 200, 16.8 s | 200/200 |
+| conversation hands-free, room −35 ±3, speech −15 | 200, 4.8 s | 200, 4.8 s | 200, 4.8 s | 200/200 |
+| conversation hands-free, room −35 ±6, speech −15 | 165, 7.5 s | 54, 30.9 s | 165, 7.5 s | 200/200 |
+| conversation, steady fan −30 after speech | 0 (cap) | 200, 12.6 s | 0 (cap) | 200/200 |
+| conversation, −30 note held 12 s | 200, 13.8 s | 200, 9.6 s (cut) | 200, 13.8 s | 200/200 |
 
 Why those numbers, chosen without a real microphone: a 21 ms RMS of
 broadband noise varies by about ±0.2 dB, speech by 10–30 dB between
@@ -1572,7 +1599,8 @@ minimum (3 dB): at 1 dB/s a vowel held perfectly steady for 3 s is not cut
 (tested), 4 s would be the first. On the synthetic sequences: a steady
 −38 dBFS fan that starts after 3 s of speech in a −60 dBFS room is under
 the threshold about 11 s after it starts and the take ends 1.5 s later on
-the pause, against the 20 s cap before; 15 s of −45 dBFS speech with normal
+the pause, against the 20 s cap before. 2 dB/s would end that take about
+5 s sooner but cuts the held 3 s quiet vowel, so 1 dB/s stays. 15 s of −45 dBFS speech with normal
 pauses, connected −45 dBFS speech whose gaps only reach −50 (a live room),
 and speech that starts inside calibration all end only after the speech.
 Limits: on the character card's 8 s cap a fan that starts mid-take still

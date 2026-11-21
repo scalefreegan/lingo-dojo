@@ -2,7 +2,7 @@
 // follows a steady room (ld-efi). node --test scripts/tests/pause-threshold.test.mjs
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { MIN_THRESHOLD, TICK_MS, createPauseDetector, noiseFloor, pauseThreshold } from "../../web/shared/pause-threshold.ts";
+import { CALIBRATE_MS, MIN_THRESHOLD, TICK_MS, createPauseDetector, noiseFloor, pauseThreshold } from "../../web/shared/pause-threshold.ts";
 
 const dbfs = (db) => 10 ** (db / 20);
 const close = (a, b) => Math.abs(a - b) < 1e-9;
@@ -62,6 +62,27 @@ function run(levelsDb, opts) {
     if (why) return { why, at, spoke: d.spoke };
   }
   return { why: null, at: levelsDb.length * TICK_MS, spoke: d.spoke };
+}
+
+/** Main's detector before ld-efi, for comparison: calibration's threshold,
+ *  never moved (silenceMs 1500, idle 10 s, as `run`). */
+function fixedRun(levelsDb, processing, maxMs) {
+  const fixed = pauseThreshold(noiseFloor(levelsDb.slice(0, ticks(CALIBRATE_MS)).map(dbfs)), processing);
+  let loud = 0;
+  let spoke = false;
+  let last = 0;
+  for (let i = ticks(CALIBRATE_MS); i < levelsDb.length; i++) {
+    const at = i * TICK_MS;
+    if (dbfs(levelsDb[i]) > fixed) {
+      loud += TICK_MS;
+      last = at;
+      if (loud >= 200) spoke = true;
+    } else loud = Math.max(0, loud - TICK_MS / 2);
+    if (at >= maxMs) return "max";
+    if (spoke && at - last >= 1500) return "pause";
+    if (!spoke && at >= 10_000) return "idle";
+  }
+  return null;
 }
 
 const ticks = (ms) => Math.round(ms / TICK_MS);
@@ -142,14 +163,65 @@ test("detector: connected quiet speech whose dips never reach the room (a live r
   assert.ok(got.at >= 400 + 12_000, `cut at ${got.at} ms`);
 });
 
-test("detector: when the noise stops, the floor drops back at once", () => {
+test("detector: when the noise stops, the floor comes back down within 300 ms, to the calibration floor and no lower", () => {
   const r = rng(13);
   const d = createPauseDetector({ processing: "pitch", silenceMs: null, maxMs: 60_000, idleMs: 60_000 });
   let at = 0;
-  for (const db of [...steady(-60, 400, 0.5, r), ...steady(-38, 15_000, 0.5, r)]) d.tick(dbfs(db), (at += TICK_MS));
+  for (const db of [...steady(-50, 400, 0.2, r), ...steady(-38, 15_000, 0.5, r)]) d.tick(dbfs(db), (at += TICK_MS));
   assert.ok(d.threshold > dbfs(-38), "followed the fan up");
-  d.tick(dbfs(-60), (at += TICK_MS));
-  assert.equal(d.threshold, MIN_THRESHOLD.pitch, "one quiet tick and a quiet voice counts again");
+  for (let i = 0; i < 6; i++) d.tick(dbfs(-70), (at += TICK_MS));
+  // Calibration heard about -50: the threshold is 3x that again, not 3x -70.
+  assert.ok(d.threshold > 3 * dbfs(-50.5) && d.threshold < 3 * dbfs(-49.5), `threshold ${d.threshold}`);
+});
+
+test("detector: a fluctuating room (a café) never pulls the threshold under calibration's", () => {
+  // -45 ±6 dBFS around a pitch take, speech at -30: the take still ends
+  // on the pause after it, as on main. Following the quietest single tick
+  // down left -39 dBFS bumps over the threshold for the rest of the take.
+  // Whenever the fixed threshold (main's detector: calibration's, never
+  // moved) ends the take on the pause, this one does too.
+  let fixedPauses = 0;
+  for (let seed = 100; seed < 160; seed++) {
+    const r = rng(seed);
+    const room = (ms) => steady(-45, ms, 6, r);
+    const levels = [...room(400), ...speech(-30, 3000, -45, r), ...room(20_000)];
+    if (fixedRun(levels, "pitch", 30_000) !== "pause") continue;
+    fixedPauses++;
+    const got = run(levels, { maxMs: 30_000 });
+    assert.equal(got.why, "pause", `seed ${seed}: ${got.why} at ${got.at}`);
+  }
+  assert.ok(fixedPauses >= 20, `only ${fixedPauses} seeds to compare`);
+});
+
+test("detector: one dropped (0 or NaN) tick does not collapse the floor", () => {
+  for (const bad of [0, Number.NaN]) {
+    const r = rng(19);
+    const d = createPauseDetector({ processing: "pitch", silenceMs: 1500, maxMs: 20_000, idleMs: 10_000 });
+    let at = 0;
+    for (const db of steady(-40, 400, 0.5, r)) d.tick(dbfs(db), (at += TICK_MS));
+    const before = d.threshold;
+    d.tick(bad, (at += TICK_MS));
+    for (let i = 0; i < 6; i++) d.tick(dbfs(-40), (at += TICK_MS));
+    assert.ok(d.threshold >= before, `${bad}: ${d.threshold} < ${before}`);
+  }
+});
+
+test("detector: dropped (0) reads under a steady fan don't hold its climb back", () => {
+  const r = rng(21);
+  const fan = steady(-38, 30_000, 0.5, r).map((db, i) => (i % 15 === 7 ? -Infinity : db));
+  const got = run([...steady(-60, 400, 0.5, r), ...speech(-30, 3000, -60, r), ...fan]);
+  assert.equal(got.why, "pause");
+});
+
+test("detector: a conversation take keeps the fixed threshold (a long steady note, a steady fan)", () => {
+  const r = rng(20);
+  // A -30 dBFS drawn-out note for 12 s: never cut.
+  const note = run([...steady(-60, 400, 0.5, r), ...steady(-30, 12_000, 0.5, r), ...steady(-60, 3000, 0.5, r)], { processing: "conversation", maxMs: 60_000 });
+  assert.equal(note.why, "pause");
+  assert.ok(note.at >= 400 + 12_000, `cut at ${note.at} ms`);
+  // A steady fan over speech: as on main, only the cap ends it.
+  const fan = run([...steady(-60, 400, 0.5, r), ...speech(-20, 3000, -60, r), ...steady(-30, 30_000, 0.5, r)], { processing: "conversation", maxMs: 25_000 });
+  assert.equal(fan.why, "max");
 });
 
 test("detector: speech that starts inside calibration still arms it and ends on the pause", () => {
