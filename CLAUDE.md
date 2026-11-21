@@ -79,6 +79,17 @@ per (profile, kind, key), unhide deletes it; queries only in
 `isHiddenScene` in `web/shared/scenes.ts` leaves them out of the Scene tab
 and of every random draw (`randomPool`'s `hidden`), never out of a pack
 that names one.
+Reading hints (ld-op2, migration 0014, docs/VOICE.md §Reading hints): the
+Mandarin reader takes the common reading where no dictionary word settles
+one (the generated `web/src/script/zh-freq.ts`, CC BY-SA 4.0, built by
+`npm run pinyin:freq`); a Mandarin session's GLOSS entry may carry pinyin
+in brackets (`READINGS_RULE`, only in Mandarin prompts), checked by
+`settleHints` (`web/server/hints.ts`, `validateHint` in
+`web/src/script/zh.ts`: one known reading per character, a rare one only
+with a confirming word, never against a dictionary word), kept only where
+it differs from the reader: on the turn's gloss (jsonb) and in
+`phrases.reading`, laid over that phrase in that turn's lines and read by
+the bank, Practice, the character card and the tone check; never spoken.
 First steps drills (docs/CONTENT.md §Drills; no migration): a scenario with
 `format: drill` is the narrator alone drilling words, played under
 `frame-drill.md` with the schema's `scene_only` slots skipped, rounds as its

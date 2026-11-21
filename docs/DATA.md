@@ -569,7 +569,11 @@ phrases         id, learner_id, language_profile_id, lang (BCP-47 of the
                 variant it was first met in, e.g. es-MX; provenance only),
                 text (target form; null while pending), norm (match key of
                 text; null while pending), meaning (native language),
-                meaning_norm (a pending row's key), note, source
+                meaning_norm (a pending row's key), note, reading
+                (Mandarin: the dojo master's checked reading where the
+                reader's differs, "nǐ děi qù"; null for almost every
+                phrase; migration 0014, docs/VOICE.md §Reading hints),
+                source
                 (gloss|extraction|manual|scenario), alternates jsonb
                 (accepted other forms, default []), starred, suspended,
                 first_seen_at, last_seen_at, seen_count,
@@ -3779,6 +3783,9 @@ Tests:
   concepts merged and checked, file concepts not deletable, a redraw's new
   URL).
 - `scripts/tests/db-migration-0013.test.mjs`: the migration.
+- `scripts/tests/db-migration-0014.test.mjs`: migration
+  `0014_phrase_reading` (`phrases.reading`, one nullable text column, no
+  default, no rewrite; ld-op2).
 - `scripts/tests/pictures.test.mjs`: the pure rules, the theme, the stock
   list and the stock files.
 - `scripts/tests/pictures.http.test.mjs`: the HTTP side, with OpenAI and

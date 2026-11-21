@@ -151,6 +151,8 @@ declare module "*/scripts/phrases.mjs" {
   type CardInput = Parameters<typeof import("*/scripts/fsrs.mjs").fromRow>[0];
   /** A target form to put in the bank, with its match key. */
   export interface Capture {
+    /** The dojo master's reading for it, when one was kept (ld-op2). */
+    reading?: string;
     text: string;
     norm: string;
     meaning: string | null;

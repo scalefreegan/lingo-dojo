@@ -248,7 +248,7 @@ const TAG = { narrator: "NARRATOR", character: "CHARACTER", sidekick: "SIDEKICK"
  *  assembled pack. It is transport, not teaching: the pack still decides what
  *  happens in the session; this only fixes the shape of the text so each line
  *  can go to the right voice. */
-export function voiceAdapter(mode = "adult", { drill = false } = {}) {
+export function voiceAdapter(mode = "adult", { drill = false, readings = false } = {}) {
   const speakers = speakersFor(mode, { drill });
   const tags = speakers.map((s) => `${TAG[s]}-F:`).join(", ");
   const who = mode === "kids"
@@ -287,7 +287,7 @@ ${slowExample}
 - When the learner asks you to slow down ("[direct]" with such a request, the "Slow down" choice, or asking for it in the practice), wrap everything you say in the target language in <slow>…</slow> from then on, in every turn, until they ask for normal speed again. Your own earlier turns show whether you are doing that: if their target language is inside <slow> and nobody has asked for normal speed since, keep marking.
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
 - End every turn that has any target language with one GLOSS line, so the learner can tap a phrase to see what it means. It is shown, not spoken, and needs no speaker tag: GLOSS: then entries separated by " | ", each the target-language text exactly as you wrote it inside <t>, " = ", and its meaning in the learner's native language, a few words. Give each whole target-language sentence a natural translation, then the key words or set phrases in it that are new or matter for this scene (at most six of those), with a short note where it helps (a regional word, a polite form). Skip words already glossed earlier in the session. For example:
-  GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?
+  GLOSS: ¡Claro que sí, güero! ¿Algo más? = Of course, blondie! Anything else? | güero = blondie, a friendly nickname for a light-skinned person | ¿Algo más? = Anything else?${readings ? `\n${READINGS_RULE}` : ""}
 ${castRule}
 - CAST lines go just before the line they introduce; GLOSS, CHOICES and STAGE lines come after all the spoken lines, in that order. Each is on its own line with its label in capitals and no speaker tag.
 - Keep each turn short, then stop and wait for the learner.
@@ -304,9 +304,19 @@ ${castRule}
 - A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator, in the language your instructions say to guide in (the learner's native language unless they say otherwise): do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
 }
 
+/** The one rule a Mandarin session adds (`readings: true`; ld-op2): the
+ *  dojo master wrote the line and knows which reading it meant, the app's
+ *  reader only guesses where no dictionary word settles a character. Its
+ *  hint rides on the gloss, shown and never spoken; the server checks it
+ *  against the character's known readings (web/src/script/zh.ts
+ *  validateHint). No other language's prompt carries this. */
+export const READINGS_RULE =
+  "- In the GLOSS line, when a glossed word or phrase (not a whole sentence) has a character with more than one reading (行, 長, 樂, 還, 覺, 重, 著, 了, 得 and the like), add its pinyin with tone marks in square brackets right after it, one syllable per character: 銀行 [yín háng] = bank. The app shows it over the characters; it is never spoken.";
+
 /** The system prompt for a voice turn: the pack as assembled, then the
  *  delivery adapter. `{ drill: true }` for a drill scenario (First steps):
- *  the narrator is the only speaker. */
+ *  the narrator is the only speaker; `{ readings: true }` for a Mandarin
+ *  session (READINGS_RULE). */
 export function voiceSystemPrompt(markdown, mode = "adult", opts = {}) {
   return `${String(markdown).trim()}\n\n${voiceAdapter(mode, opts)}\n`;
 }
@@ -588,10 +598,21 @@ export const MAX_GLOSSES = 16;
 const GLOSS_TERM_CHARS = 200;
 const GLOSS_MEANING_CHARS = 300;
 
+/** A gloss term that ends in a bracketed romanization, "銀行 [yín háng]"
+ *  (round or full-width brackets too): the term has a Chinese character,
+ *  the bracket only letters, tone marks, digits and spaces. */
+const HINT_RE = /^(.*\p{Script=Han}.*?)\s*[[［(（]\s*([\p{L}\p{M}0-9 '’:·-]{1,120}?)\s*[\]］)）]$/u;
+/** The longest reading hint kept from a reply or a replay. */
+export const GLOSS_READING_CHARS = 120;
+
 /** The GLOSS line(s) of a reply as `{term, meaning}`: "term = meaning"
  *  entries split on "|", <t> marks dropped, duplicates (by term, ignoring
  *  case) dropped, capped at MAX_GLOSSES. A malformed entry is skipped, not
- *  fatal: a missing definition costs nothing that matters. */
+ *  fatal: a missing definition costs nothing that matters. A term may
+ *  carry a reading hint in brackets (READINGS_RULE): it comes back as
+ *  `reading`, exactly as written and unchecked (the turn route keeps only
+ *  what validateHint accepts), and the term without it; a reply without
+ *  hints parses as it always did. */
 export function parseGlosses(text) {
   const out = [];
   const seen = new Set();
@@ -602,11 +623,17 @@ export function parseGlosses(text) {
       const eq = entry.indexOf("=");
       if (eq < 0) continue;
       const clean = (x) => x.replace(MARKS_RE, "").replace(/\*\*/g, "").trim();
-      const term = clean(entry.slice(0, eq)).replace(/^["“”']+|["“”']+$/g, "").trim().slice(0, GLOSS_TERM_CHARS);
+      const unquote = (x) => x.replace(/^["“”']+|["“”']+$/g, "").trim();
+      let term = unquote(clean(entry.slice(0, eq)));
+      const hint = HINT_RE.exec(term);
+      // No Chinese character in the bracket itself: "漢字 [汉字]" is a term.
+      const reading = hint && !/\p{Script=Han}/u.test(hint[2]) && /[a-z]/i.test(hint[2].normalize("NFD")) ? squeeze(hint[2]).trim() : "";
+      if (reading) term = unquote(hint[1]);
+      term = term.slice(0, GLOSS_TERM_CHARS);
       const meaning = clean(entry.slice(eq + 1)).slice(0, GLOSS_MEANING_CHARS);
       if (!term || !meaning || seen.has(term.toLowerCase())) continue;
       seen.add(term.toLowerCase());
-      out.push({ term, meaning });
+      out.push(reading ? { term, meaning, reading } : { term, meaning });
       if (out.length >= MAX_GLOSSES) return out;
     }
   }
@@ -888,10 +915,15 @@ export const replayLine = (s) => oneLine(s).slice(0, REPLAY_MAX_CHARS);
  *  a slot prefix); anything else is dropped. */
 export const replayStage = (v) => (typeof v === "string" && /^[A-Za-z0-9:_.-]{1,80}$/.test(v) ? v : "");
 
-/** A turn's glosses as the GLOSS line it came with, for the replay. */
+/** A replayed gloss's reading hint, if it is one: syllables and spaces. */
+export const replayReading = (v) => (typeof v === "string" && v.length <= GLOSS_READING_CHARS && /^[\p{L}\p{M}]+( [\p{L}\p{M}]+)*$/u.test(v) ? v : "");
+
+/** A turn's glosses as the GLOSS line it came with, for the replay: a kept
+ *  reading hint goes back in its brackets, so the dojo master keeps seeing
+ *  the form. */
 function glossLine(glosses) {
   if (!Array.isArray(glosses) || !glosses.length) return "";
-  return `\nGLOSS: ${glosses.map((g) => `${g.term} = ${g.meaning}`).join(" | ")}`;
+  return `\nGLOSS: ${glosses.map((g) => `${g.term}${replayReading(g.reading) ? ` [${g.reading}]` : ""} = ${g.meaning}`).join(" | ")}`;
 }
 
 export function parseVoiceReply(text, mode = "adult", opts = {}) {

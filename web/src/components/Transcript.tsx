@@ -275,7 +275,7 @@ const TranscriptRow = memo(function TranscriptRow({
               {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                 <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined} data-pace={g.slow ? "slow" : undefined} title={g.slow ? "Spoken slowly" : undefined}>
                   {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}
-                  {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
+                  {g.lang === "target" ? <Glossed text={g.text} glosses={glosses} hints={m.role === "master" ? m.glosses : undefined} locale={locale ?? undefined} picked={picked?.at === `${i}:${j}` ? picked.gloss : null} onPick={(gl) => onPick(`${i}:${j}`, gl)} /> : g.text}
                 </span>
               ))}
             </span>
@@ -322,7 +322,7 @@ const TranscriptRow = memo(function TranscriptRow({
                 {/* accent-hover, not accent: accent on accent-soft is 4.34:1 in
                     the adult dark theme; hover is 5.47:1 there and no lower
                     in the others. */}
-                <CharTerm text={picked.gloss.term} locale={locale} className="font-medium text-accent-hover" />
+                <CharTerm text={picked.gloss.term} locale={locale} reading={picked.gloss.reading} className="font-medium text-accent-hover" />
                 <span className="text-fg-3"> — </span>
                 {picked.gloss.meaning}
               </span>

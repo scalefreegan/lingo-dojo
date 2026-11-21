@@ -446,6 +446,12 @@ export const phrases = pgTable(
      *  meaning) never captures the later gloss of the target word "taxi". */
     meaningNorm: text("meaning_norm"),
     note: text("note"),
+    /** Mandarin only (migration 0014, ld-op2): the dojo master's reading
+     *  for `text`, one tone-marked syllable per Chinese character ("yín
+     *  háng"), kept only when the server accepted it and the app's reader
+     *  reads the phrase otherwise (web/server/hints.ts). Null for almost
+     *  every phrase: the reader's own reading is then the one shown. */
+    reading: text("reading"),
     source: text("source").$type<"gloss" | "extraction" | "manual" | "scenario">().notNull(),
     /** Other target forms the grader accepted, so they grade exact next time. */
     alternates: jsonb("alternates").$type<string[]>().notNull().default([]),

@@ -20,7 +20,7 @@
  * zhuyin textbooks print them (不是 bù shì, 一個 yī gè). */
 
 import { OutputFormat, customPinyin, pinyin, segment } from "pinyin-pro";
-import { isHan, isPinyin, isTaiwan, particleDe, taiwanize } from "./script.ts";
+import { TAIWAN_READINGS, isHan, isPinyin, isTaiwan, particleDe, taiwanize } from "./script.ts";
 import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
@@ -303,9 +303,11 @@ export function ambiguousChars(text: string, locale: string, opts: { cache?: boo
 }
 
 /** The same, indexed by UTF-16 offset (what String.slice and the gloss
- *  layout count in): the reading at the offset each character starts. */
-export function readOffsets(text: string, locale: string): (string | null)[] {
-  const cps = readCodePoints(text, locale);
+ *  layout count in): the reading at the offset each character starts.
+ *  `hints` (the dojo master's readings for phrases of this text) are laid
+ *  over the reader's own. */
+export function readOffsets(text: string, locale: string, hints?: readonly ReadingHint[] | null): (string | null)[] {
+  const cps = hints?.length ? withHints(text, readCodePoints(text, locale), hints) : readCodePoints(text, locale);
   const out: (string | null)[] = new Array(text.length).fill(null);
   let at = 0;
   let k = 0;
@@ -418,4 +420,172 @@ export function exemplars(locale: string): ExemplarIndex {
  *  simplified form (each read the same: sounds.test.mjs). */
 export function inScript(text: string, locale: string): string {
   return isTaiwan(locale) ? text : [...text].map(simplified).join("");
+}
+
+/* --------------------------- the dojo master's hints -------------------------- */
+
+/** A reading the dojo master gave for a phrase it glossed (ld-op2): the
+ *  phrase as written and one tone-marked syllable per Chinese character of
+ *  it, separated by spaces ("yín háng"). Only ever one the server checked
+ *  (validateHint) and that differs from the reader's own. */
+export interface ReadingHint {
+  term: string;
+  reading: string;
+}
+
+/** `readings` (one per code point of `text`) with each hint laid over
+ *  every occurrence of its phrase, and nothing else touched; a hint whose
+ *  syllables don't count out to its phrase's characters is ignored. The
+ *  longer phrase wins where two overlap. A copy: the reader's cache keeps
+ *  its own. */
+export function withHints(text: string, readings: readonly (string | null)[], hints: readonly ReadingHint[]): (string | null)[] {
+  const out = readings.slice();
+  const cps = [...text];
+  const sorted = hints.filter((h) => h && typeof h.term === "string" && typeof h.reading === "string").sort((a, b) => a.term.length - b.term.length);
+  for (const h of sorted) {
+    const term = [...h.term.normalize("NFC")];
+    const syl = h.reading.split(" ");
+    if (!term.length || term.filter(isHan).length !== syl.length || !syl.every(isPinyin)) continue;
+    for (let i = 0; i + term.length <= cps.length; i++) {
+      if (!term.every((c, k) => cps[i + k] === c)) continue;
+      let n = 0;
+      term.forEach((c, k) => {
+        if (isHan(c)) out[i + k] = syl[n++];
+      });
+      i += term.length - 1;
+    }
+  }
+  return out;
+}
+
+/** The readings a hint may give `ch`: `usual` (the ones in use: the
+ *  prior's ranks, the card's first, Taiwan's for a zh-TW text and the
+ *  mainland's it replaces) and `rare` (the prior's rare ones, the readings
+ *  only names have, the rest of the library's list). */
+export function knownReadings(ch: string, locale: string): { usual: string[]; rare: string[] } {
+  const s = simplified(ch);
+  const lib = charReadings(ch, locale);
+  const usual = [...(priorFor(prior.ranks, ch, s) ?? []), ...lib.slice(0, 1)];
+  const t = TAIWAN_READINGS[ch];
+  if (t && isTaiwan(locale)) usual.push(t.to, t.from);
+  if (ch === "兒" || ch === "儿") usual.push("r");
+  const rare = [...(priorFor(prior.rare, ch, s) ?? []), ...lib];
+  const uniq = (list: string[]) => list.filter((r, k) => isPinyin(r) && list.indexOf(r) === k);
+  return { usual: uniq(usual), rare: uniq(rare).filter((r) => !usual.includes(r)) };
+}
+
+const TONE_MARK: Record<string, string> = { "̄": "1", "́": "2", "̌": "3", "̀": "4" };
+/** A tone-marked syllable as its letters (NFD, ü's and ê's own marks
+ *  kept) and its tone digit, "" for the neutral tone. */
+function letters(r: string): [string, string] {
+  let tone = "";
+  let base = "";
+  for (const c of r.normalize("NFD")) {
+    if (TONE_MARK[c]) tone = TONE_MARK[c];
+    else base += c;
+  }
+  return [base, tone];
+}
+
+export type HintVerdict = { ok: true; reading: string[] } | { ok: false; why: "shape" | "count" | "unknown" | "rare" | "settled" };
+
+/**
+ * A reading hint checked against what the characters can be read as. The
+ * dojo master may choose among a character's readings, never invent one:
+ *  - `raw` is taken apart against `term`'s Chinese characters in order,
+ *    each consuming one of its known readings, written with a tone mark
+ *    (háng), a tone number (hang2), or bare / 5 / 0 for the neutral tone;
+ *    ü may be v or u:, and spaces, apostrophes and hyphens are free. So
+ *    the syllables must count out to the characters exactly ("count"
+ *    when they don't, "unknown" when one is no reading of its character).
+ *  - 一 and 不 take any tone of yi / bu (their sandhi) and keep the app's
+ *    own; a neutral-tone syllable keeps the reader's tone where it is the
+ *    same syllable (dictionaries differ on these); 兒 may be the r of erhua.
+ *  - A rare reading (knownReadings) stands only if a dictionary word
+ *    confirms it: the reader, given the phrase alone, reads that
+ *    character so from a word ("rare" otherwise: the common reading is
+ *    kept, 行 is not héng on the model's word alone).
+ *  - A zh-TW text then takes Taiwan's readings over the result.
+ *  - It settles only what no dictionary word does: where the reader,
+ *    given the phrase alone, read a character from a word (銀行 háng, 長大
+ *    zhǎng), a hint that says otherwise is dropped whole ("settled": the
+ *    dictionary outranks the model, which outranks only the prior). Such
+ *    a hint can still matter: inside a line the same phrase may be read
+ *    across another word, and there the hint puts it right.
+ * `reading`: one syllable per Chinese character of `term`.
+ */
+export function validateHint(term: string, raw: string, locale: string): HintVerdict {
+  const cps = [...term.normalize("NFC")];
+  const han = cps.map((c, k) => (isHan(c) ? k : -1)).filter((k) => k >= 0);
+  if (!han.length || han.length > 24 || typeof raw !== "string" || raw.length > 240) return { ok: false, why: "shape" };
+  const typed = raw.toLowerCase().replace(/u:|v/g, "ü").normalize("NFD");
+  const src = typed.replace(/[^a-z0-9\p{M}]/gu, "");
+  if (!src) return { ok: false, why: "shape" };
+  const own = readDetail(term.normalize("NFC"), locale, { cache: false });
+  // Each character's candidates: [what is written, the reading it means, rare].
+  const options = han.map((k): [string, string, boolean][] => {
+    const ch = cps[k];
+    const list: [string, string, boolean][] = [];
+    const mine = own.readings[k];
+    if (ch === "一" || ch === "不") {
+      const [b] = letters(mine ?? (ch === "一" ? "yī" : "bù"));
+      const marked = ch === "一" ? ["yī", "yí", "yǐ", "yì"] : ["bū", "bú", "bǔ", "bù"];
+      for (const m of marked) list.push([m.normalize("NFD"), mine ?? marked[ch === "一" ? 0 : 3], false]);
+      for (const t of ["", "1", "2", "3", "4", "5", "0"]) list.push([b + t, mine ?? marked[ch === "一" ? 0 : 3], false]);
+      return list;
+    }
+    const { usual, rare } = knownReadings(ch, locale);
+    for (const [group, isRare] of [[usual, false], [rare, true]] as const) {
+      for (const r of group) {
+        const [b, t] = letters(r);
+        list.push([r.normalize("NFD"), r, isRare]);
+        if (t) list.push([b + t, r, isRare]);
+        // The neutral tone of this syllable: the reader's own tone where it
+        // read the same syllable, else the bare syllable.
+        const neutral = mine && letters(mine)[0] === b ? mine : t ? b.normalize("NFC") : r;
+        for (const n of ["5", "0", ""]) list.push([b + n, neutral, t ? false : isRare]);
+      }
+    }
+    // Longest first, so "hang2" is not taken as "hang" and a stray "2".
+    return list.sort((x, y) => y[0].length - x[0].length);
+  });
+  const fit = (i: number, at: number): [string, boolean][] | null => {
+    if (i === options.length) return at === src.length ? [] : null;
+    for (const [written, reading, rare] of options[i]) {
+      if (!src.startsWith(written, at)) continue;
+      const rest = fit(i + 1, at + written.length);
+      if (rest) return [[reading, rare], ...rest];
+    }
+    return null;
+  };
+  const got = fit(0, 0);
+  if (!got) {
+    const tokens = typed.split(/[\s'’\-·]+/).filter((x) => /[a-z]/.test(x)).length;
+    return { ok: false, why: tokens === han.length ? "unknown" : "count" };
+  }
+  const full: (string | null)[] = cps.map(() => null);
+  for (const [n, k] of han.entries()) {
+    const [reading, rare] = got[n];
+    if (rare && !(own.settled[k] && own.readings[k] === reading)) return { ok: false, why: "rare" };
+    full[k] = isPinyin(reading) ? reading : own.readings[k];
+  }
+  if (isTaiwan(locale)) taiwanize(cps.join(""), full);
+  if (han.some((k) => own.settled[k] && own.readings[k] != null && full[k] !== own.readings[k])) return { ok: false, why: "settled" };
+  const reading = han.map((k) => full[k] ?? "");
+  return reading.every(isPinyin) ? { ok: true, reading } : { ok: false, why: "unknown" };
+}
+
+/** What the server keeps of a gloss's hint: the checked reading when it
+ *  differs from the reader's own, for the phrase alone or where it stands
+ *  in one of `lines` (the turn's target-language text); null when the
+ *  reader already reads it so. */
+export function hintToKeep(term: string, reading: string[], lines: readonly string[], locale: string): string | null {
+  const t = term.normalize("NFC");
+  const hint: ReadingHint = { term: t, reading: reading.join(" ") };
+  for (const text of [t, ...lines.map((l) => l.normalize("NFC")).filter((l) => l.includes(t))]) {
+    const base = readCodePoints(text, locale, { cache: false });
+    const laid = withHints(text, base, [hint]);
+    if (laid.some((r, k) => r !== base[k])) return hint.reading;
+  }
+  return null;
 }

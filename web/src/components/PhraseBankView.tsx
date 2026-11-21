@@ -377,7 +377,7 @@ function PhraseRow({
           <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             {p.text ? (
               <span className="font-medium text-accent" lang={locale}>
-                <RubyText text={p.text} locale={locale} />
+                <RubyText text={p.text} locale={locale} reading={p.reading} />
               </span>
             ) : (
               <span className="text-fg-3 italic">no words yet</span>
@@ -586,7 +586,7 @@ function PhraseDetailView({
           {detail.text && scriptFor(locale) && hanChars(detail.text).length > 0 && (
             <p className="flex flex-wrap items-baseline gap-x-2">
               <span className={`${fine} text-fg-3`}>Characters</span>
-              <CharTerm text={detail.text} locale={locale} className="text-lg font-medium text-accent" />
+              <CharTerm text={detail.text} locale={locale} reading={detail.reading} className="text-lg font-medium text-accent" />
             </p>
           )}
           <dl className={`grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 ${fine} text-fg-3`}>

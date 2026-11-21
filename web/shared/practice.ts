@@ -72,6 +72,9 @@ export interface PracticeItem {
   /** The words; "" on a listening card (heard, not read: they come with
    *  the answer's reply) and on a cloze card (they are the gap). */
   text: string;
+  /** Mandarin: the dojo master's stored reading for `text`
+   *  (phrases.reading), shown instead of the reader's; only with `text`. */
+  reading?: string;
   /** The meaning; "" on a listening card (it is among `choices`). On a
    *  cloze card it is the hint for the gap. */
   meaning: string;
@@ -174,7 +177,7 @@ export interface PracticeAnswerReply {
     answer: string | null;
   };
   card: { version: string; due: string; mastery: MasteryBand; state: number; reps: number; lapses: number };
-  expected: { text: string; meaning: string };
+  expected: { text: string; meaning: string; reading?: string };
   /** A cloze answer's sentence with its gap's words: the page shows it
    *  whole once answered. Null for the other drills. */
   cloze: { before: string; blank: string; after: string } | null;

@@ -352,6 +352,9 @@ function queueItem({ phrase, skill, drill = "flashcard", card, kind }, choices =
     drill,
     kind,
     text: listening || drill === "cloze" ? "" : phrase.text,
+    // The stored reading goes with the words (ld-op2), so never with a
+    // card that hides them.
+    ...(phrase.reading && !(listening || drill === "cloze") ? { reading: phrase.reading } : {}),
     meaning: listening ? "" : phrase.meaning,
     choices: listening ? choices : null,
     cloze: cloze ? clozeView(cloze) : null,

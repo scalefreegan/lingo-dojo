@@ -397,6 +397,77 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `scripts/tests/script.test.mjs` and an entry in the tables in
   `web/src/script/script.ts`.
 
+### Reading hints (ld-op2)
+
+The reader guesses a reading from the text; the dojo master wrote the line
+and knows which one it meant. So a **Mandarin** session's prompt (adult,
+kids and drills; `wantsReadings(locale)` in `web/server/hints.ts`, the
+conversation's own language) carries one more rule after the GLOSS example
+(`READINGS_RULE` in `scripts/voice.mjs`): a glossed word or phrase with a
+character of more than one reading may carry its pinyin in brackets,
+`GLOSS: 銀行 [yín háng] = bank`. Every other language's prompt is byte for
+byte what it was. The reading is in the GLOSS line only: never in a spoken
+line, never in the text sent to a voice.
+
+- **Syntax.** `parseGlosses` takes a bracket (`[]`, `()`, full-width too)
+  at the end of a term that has a Chinese character, when the bracket holds
+  letters and no Chinese character, as `reading` (raw, unchecked); the term
+  is what stands before it. A reply without one parses as before. The
+  stream reader never hands out a GLOSS line, so streaming is unchanged.
+- **Checks** (`validateHint` in `web/src/script/zh.ts`, run by
+  `settleHints` on the server for every reply): tone marks, tone numbers or
+  syllables run together; `v`/`u:` for ü; one syllable per Chinese
+  character, exactly; each a reading that character has (the reader's
+  tables, CC-CEDICT's corrections and the frequency ranks; a wrong tone is
+  not one). 一 and 不 in any tone, a neutral tone on the reader's own
+  syllable and erhua keep the app's form; a zh-TW text takes Taiwan's
+  readings. A **rare** reading (the ranks' rare list: huán for 還, héng for
+  行) passes only where a dictionary word in the phrase reads the character
+  so; and a hint **never overrules a dictionary word** (銀行 is háng
+  whatever the bracket says). A hint that fails is dropped silently, the
+  gloss kept without it.
+- **Kept** only when it differs from what the reader shows, for the phrase
+  alone or where it stands in one of the turn's lines (`hintToKeep`): then
+  the gloss keeps `reading` in the normal form ("nǐ děi qù"). It is stored
+  with the turn (`turns.glosses`, jsonb, no migration), replayed in its
+  brackets (`replayReading` lets only plain syllables back into a prompt,
+  whatever a client's history says), and written to the phrase when the
+  gloss fills the bank (`phrases.reading`, migration 0014; a later gloss
+  without one leaves it).
+- **Shown.** The transcript lays a turn's kept readings over that turn's
+  own lines, on every occurrence of exactly that phrase, the longer phrase
+  winning (`withHints`; `useRuby`'s `hints`); the definition card's term and
+  the character card opened from it lead with the hinted reading
+  (`CharContext.hints`). A bank phrase's stored reading is used the same
+  way by the Phrase bank, Practice (the card, the answer, and the tone
+  check: `/api/pronunciation/score?reading=`, checked again by
+  `validateHint`, ignored when it fails) and the adult picture game's word.
+  Nothing is laid over a cloze sentence or a listening card, which hide the
+  words.
+- **Log.** One line per turn that had hints, counts only (given, accepted,
+  kept, dropped by reason), never the text.
+
+**Measured** (2026-11-21, 16 `claude -p --model sonnet --tools ""` runs, 12
+with the rule over traditional and simplified scenes steered at 行 長 樂 還
+覺 重 著 了 得 地 乾 發 髮 蘋, 4 paired without): 5 of 12 replies carried a
+hint, 7 hints in all (0.6 a reply, 59 glosses); 6 passed, 1 was dropped
+(one syllable for two characters); **none differed from the reader**, so
+none was kept. The model mostly glosses whole sentences, which the rule
+leaves alone, and the words it does hint (銀行, 音樂, 快樂, 便宜) are ones
+the dictionary settles. The hints add about 3 visible tokens a reply; the
+reported output tokens (thinking included) averaged 1,941 with the rule and
+634 without, on 4 pairs, too few to say the rule causes it. As measured the
+rule earns nothing; the smallest alternative is to drop it from the turn
+prompt and have the recap call (one a session, already there) give
+readings for the phrases it keeps, through the same checks into
+`phrases.reading`.
+
+Tests: `scripts/tests/reading-hints.test.mjs` (syntax, streaming, replay,
+checks, overlay, what a turn keeps, the rule text),
+`scripts/tests/reading-hints.http.test.mjs` (turn, bank, Practice, other
+languages, kids), `scripts/tests/pronunciation.http.test.mjs` (the tone
+check's `reading`), `scripts/tests/db-migration-0014.test.mjs`.
+
 ### Streaming the reply (ld-erp)
 
 A whole reply takes about 4 s to write; the Go tab no longer waits for it.

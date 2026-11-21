@@ -15,7 +15,7 @@ import type { PronunciationModelReply, PronunciationScoreReply } from "../shared
 // (script.ts, sounds.ts, pinyin-pro, the JSON tables) must stay free of
 // browser globals at the top level; scripts/tests/server-imports.test.mjs
 // loads this chain under plain node to catch that.
-import { charReadings, readCodePoints } from "../src/script/zh.ts";
+import { charReadings, readCodePoints, validateHint, withHints } from "../src/script/zh.ts";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { paidSlot } from "./paid.ts";
 import { phraseClip } from "./practice.ts";
@@ -316,7 +316,15 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   const han = [...t.text].filter((c) => /\p{Script=Han}/u.test(c));
   if (all && han.length !== 1) throw new HttpError(400, "every reading is only for one character alone");
   const alternatives = all ? charReadings(han[0], locale) : null;
-  const s = scoreSyllables(t.text, readCodePoints(t.text, locale, { cache: false }), { alternatives });
+  // `reading`: a bank phrase's stored reading (phrases.reading, ld-op2),
+  // sent back by Practice. Checked again here as any hint is (validateHint:
+  // only readings the characters have), so the page can't have a recording
+  // judged against a sound the text doesn't have; one that fails is
+  // ignored and the reader's reading scores, as without it.
+  const hint = params.get("reading");
+  const checked = hint ? validateHint(t.text, hint, locale) : null;
+  const own = readCodePoints(t.text, locale, { cache: false });
+  const s = scoreSyllables(t.text, checked?.ok ? withHints(t.text, own, [{ term: t.text, reading: checked.reading.join(" ") }]) : own, { alternatives });
   if (s.error !== undefined) throw new HttpError(400, s.error);
 
   // The limits before the body is read: a busy user or server costs no

@@ -637,7 +637,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   if (!own) throw new HttpError(409, "this word has no picture now; skip it");
   // An adult sees the word and its meaning after the tap, like the other
   // adult drills' answers; a child's game never shows text (ld-318).
-  const word = learnerMode(req, ctx) === "adult" ? { word: { text: phrase.text ?? "", meaning: phrase.meaning ?? null } } : {};
+  const word = learnerMode(req, ctx) === "adult" ? { word: { text: phrase.text ?? "", meaning: phrase.meaning ?? null, ...(phrase.reading ? { reading: phrase.reading } : {}) } } : {};
   sendJson(res, 200, { right: out.review.rating >= 3, pictureId: own.id, replayed: out.replayed, ...word } satisfies GameAnswerReply);
 }
 
@@ -772,7 +772,7 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     const words: WordPictureItem[] = [];
     for (const p of [...phrases].sort((a, b) => +new Date(b.createdAt ?? 0) - +new Date(a.createdAt ?? 0))) {
       const row = rows.get(p.id);
-      if (row && isCurrent(row, p)) words.push({ phraseId: p.id, text: p.text, meaning: p.meaning, picture: pictureView(row) });
+      if (row && isCurrent(row, p)) words.push({ phraseId: p.id, text: p.text, meaning: p.meaning, ...(p.reading ? { reading: p.reading } : {}), picture: pictureView(row) });
     }
     return sendJson(res, 200, { words, status: await statusOf(ctx) } satisfies WordPicturesReply);
   }

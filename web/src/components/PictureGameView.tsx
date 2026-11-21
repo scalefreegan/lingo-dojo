@@ -325,7 +325,7 @@ export default function PictureGameView({
                 <Badge tone={reply.right ? "accent" : "err"}>{reply.right ? "Correct" : "Not quite"}</Badge>
                 {reply.word && (
                   <p className="text-lg font-semibold text-fg" lang={lang} data-testid="picture-game-word">
-                    <RubyText text={reply.word.text} locale={locale} />
+                    <RubyText text={reply.word.text} locale={locale} reading={reply.word.reading} />
                   </p>
                 )}
                 {reply.word?.meaning && <p className="text-sm text-fg-2">· {reply.word.meaning}</p>}

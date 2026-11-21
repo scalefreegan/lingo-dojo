@@ -1,0 +1,1 @@
+ALTER TABLE "phrases" ADD COLUMN "reading" text;

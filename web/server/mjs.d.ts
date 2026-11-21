@@ -164,7 +164,7 @@ declare module "*/scripts/voice.mjs" {
   export function envFile(): string;
   export function voiceKeys(): { elevenlabs: string; azureKey: string; azureRegion: string; bfl: string; openai: string };
   export function configuredProviders(keys: { elevenlabs: string; azureKey: string; azureRegion: string }): Record<TtsProvider, boolean>;
-  export function voiceSystemPrompt(markdown: string, mode: Mode, opts?: { drill?: boolean }): string;
+  export function voiceSystemPrompt(markdown: string, mode: Mode, opts?: { drill?: boolean; readings?: boolean }): string;
   /** `notes`: recall's delimited blocks (bank retrieval, LOOKUP results), after the clock. */
   export function voiceTurnPrompt(history: import("../shared/wire.ts").VoiceHistoryItem[], message: string, clock?: string, notes?: string[]): string;
   /** The query of a reply's first LOOKUP line, or null. */
@@ -217,6 +217,8 @@ declare module "*/scripts/voice.mjs" {
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[], opts?: { drill?: boolean }): string;
   export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
+  export function replayReading(v: unknown): string;
+  export const READINGS_RULE: string;
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];
   export function voiceSlots(mode: Mode, opts?: { drill?: boolean }): import("../shared/wire.ts").VoiceSlot[];
   /** The voice id for a speaker and gender from one locale's slot map; "" if none. */
