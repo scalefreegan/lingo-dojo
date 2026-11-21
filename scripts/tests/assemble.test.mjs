@@ -370,3 +370,47 @@ test("a fractional minutes value is rounded to whole minutes with a warning", ()
   assert.match(budgetOf(markdown), /^The learner has \*\*8 minutes\*\*/);
   assert.match(budgetOf(run({ overrides: { minutes: 0.2 } }).markdown), /^The learner has \*\*1 minute\*\*/);
 });
+
+/* ------------------------- unit `closing` section ------------------------- */
+
+function closingContent() {
+  const root = copyFixture();
+  write(root, "units/intro-closing.md", [
+    "---",
+    "id: intro-closing",
+    "slot: intro",
+    "title: Closing intro",
+    "summary: Says its rule last.",
+    "closing: |",
+    "  Speak only {{target_language}} to {{learner_name}}.",
+    "  Help is in {{native_language}}.",
+    "---",
+    "Open the scene.",
+  ].join("\n"));
+  return loadContent(root);
+}
+
+test("a unit's closing renders last, filled, after the notes and every slot", () => {
+  const c = closingContent();
+  const { markdown, warnings } = run({ units: ["intro-closing", "warmup-vocab", "correct-gently", "debrief-top-three"], notes: "More numbers." }, c);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(h2(markdown).slice(-2), ["Notes from the learner", "Final rules"]);
+  assert.match(markdown, /### Closing intro\n\nSpeak only [^\n]+ to [^\n]+\.\nHelp is in [^\n]+\.\n$/);
+  assert.ok(!markdown.includes("{{"), "filled");
+  assert.ok(markdown.indexOf("Open the scene.") < markdown.indexOf("Speak only"), "the body stays in its slot");
+  assert.equal(markdown.split("Speak only").length, 2, "the closing is not also in the slot section");
+});
+
+test("no closing section when the unit isn't picked", () => {
+  const c = closingContent();
+  const { markdown } = run({}, c);
+  assert.ok(!markdown.includes("Final rules"));
+  assert.ok(!markdown.includes("Speak only"));
+});
+
+test("a closing with an unknown placeholder warns like a body", () => {
+  const root = copyFixture();
+  write(root, "units/intro-bad.md", "---\nid: intro-bad\nslot: intro\ntitle: Bad\nsummary: s\nclosing: Say {{nope}}.\n---\nx\n");
+  const { warnings } = run({ units: ["intro-bad"] }, loadContent(root));
+  assert.ok(warnings.some((w) => w.includes("{{nope}}") && w.includes('closing of unit "intro-bad"')));
+});

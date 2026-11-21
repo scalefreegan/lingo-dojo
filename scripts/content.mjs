@@ -467,8 +467,17 @@ function loadUnit(abs, report) {
     default: fm.default === true,
     level: strList(fm.level),
     body,
+    // Rendered at the very end of the assembled prompt (docs/CONTENT.md).
+    closing: closingText(fm.closing, abs, report),
     path: displayPath(abs),
   };
+}
+
+function closingText(v, abs, report) {
+  if (v == null) return "";
+  if (typeof v === "string") return v.trim();
+  report(abs, "warning", "closing must be text; ignored");
+  return "";
 }
 
 function loadScenario(abs, report) {

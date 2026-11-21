@@ -39,6 +39,9 @@ const ROLE_LABELS = { dojo_master: "You (dojo master)", learner: "Learner" };
 export const QUICK_SCENARIO_TITLE = "Quick scenario";
 /** A random scene's title before its scene is drawn (the preview). */
 export const RANDOM_SCENE_TITLE = "Random scene";
+/** The last section: units' `closing` texts (docs/CONTENT.md). */
+export const CLOSING_TITLE = "## Final rules";
+const CLOSING_LEAD = "These rules come last on purpose: where anything above says otherwise, follow these.";
 const NO_SCENARIO_TITLE = "No scenario";
 
 /** Shown under a required slot the pack left empty. */
@@ -179,6 +182,8 @@ export function assemble(content, rawPack, options = "adult") {
   }
 
   const slotSections = [];
+  // Units' `closing` texts, in slot order, for the last section (below).
+  const closings = [];
   for (const slot of slots) {
     // A drill has no scene, so a slot about one (its character, a warm-up
     // before it, twists in it) has nothing to act on. Its units are dropped
@@ -207,6 +212,8 @@ export function assemble(content, rawPack, options = "adult") {
       parts.push(`### ${unit.title}`);
       const body = fill(unit.body ?? "", `unit "${unit.id}"`).trimEnd();
       if (body) parts.push(body);
+      const closing = fill(unit.closing ?? "", `closing of unit "${unit.id}"`).trim();
+      if (closing) closings.push(`### ${unit.title}\n\n${closing}`);
     }
     slotSections.push(parts.join("\n\n"));
   }
@@ -234,6 +241,10 @@ export function assemble(content, rawPack, options = "adult") {
   if (budget.minutes != null) sections.push(renderTimeBudget(budgetSplit(sessionPlan(content, pack, mode), budget.minutes), budget.minutes, mode, drill));
   const notes = pack.notes.trim();
   if (notes) sections.push(`## Notes from the learner\n\n${notes}`);
+  // Last of all (the voice adapter follows in a session): a unit whose rule
+  // must beat other units' wording says it here, since a model weighs the
+  // later instruction. Only picked, unskipped units get this far.
+  if (closings.length) sections.push([CLOSING_TITLE, CLOSING_LEAD, ...closings].join("\n\n"));
 
   const markdown = `${sections.join("\n\n")}\n`;
 

@@ -62,6 +62,8 @@ summary: Finish the beat, then offer a more natural phrasing once.
 tags: [corrections, beginner-friendly]
 default: true                 # preselected in a new pack (optional, default false)
 level: [A1, A2, B1]           # optional hint; UI shows a badge, never filters
+closing: |                    # optional: rules rendered at the very end of the prompt
+  (text)
 ---
 When the learner makes an error, do not interrupt mid-sentence. Finish the
 beat of the conversation, then briefly offer a more natural phrasing in
@@ -78,6 +80,20 @@ grammar unless the learner asks.
   phrases from the learner's bank; see "The recall slot" below). Unknown
   placeholders are left as-is and reported as a warning. When the effective profile has no
   `target_variant`, `{{target_variant}}` renders as the target language name.
+- `closing` (optional, text) is a **closing instruction**: it is not rendered
+  in the unit's slot but in a last `## Final rules` section, after every
+  slot, the Time budget and the learner's notes, so it is the last thing the
+  model reads before the voice adapter (`voiceSystemPrompt` appends that).
+  Use it for a rule that must beat other units' wording: a model follows
+  the later of two conflicting instructions, so a rule in the body loses to
+  units in later slots. It takes the same placeholders as the body (an
+  unknown one is a warning), is trimmed, and is rendered under `### <unit
+  title>` in slot order. It is present only when its unit is: an unpicked
+  unit, a unit left out for having no review, and a unit in a `scene_only`
+  slot of a drill contribute nothing. Kids and drill frames render it the
+  same way. Preview and export show it, as they show everything assembled.
+  A non-text `closing` is a loader warning and ignored. `intro-target` uses
+  it for the session-language rule.
 - `id` is kebab-case and unique across units. Filename is `<id>.md`.
 - Tags are free-form labels, with one that the app reads: in kids mode, a
   `games` unit tagged `opener` (the echo game) is placed **before** the story
@@ -498,6 +514,8 @@ Input: loaded content + one pack. Output: `{ markdown, warnings[], stats }`.
      The third argument may also be `{ mode, review }`, where `review` is
      the phrase list for `{{phrase_review}}` (see "The recall slot").
    - `## Notes from the learner` — `pack.notes`, omitted if empty
+   - `## Final rules` — the picked units' `closing` texts, each under
+     `### <unit title>` in slot order; omitted when none has one
 5. `stats`: word count and approximate token count (words × 1.3).
 
 Rendering must be deterministic: same inputs, byte-identical output. Unit bodies
