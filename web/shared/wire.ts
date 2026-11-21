@@ -836,6 +836,25 @@ export interface VoiceTurnReply {
   review?: RecallReview;
 }
 
+/** POST /api/voice/turn with `Accept: text/event-stream` (docs/VOICE.md
+ *  §Streaming the reply): once the first line is final the reply becomes an
+ *  SSE stream of `line` events, then one `reply` (the VoiceTurnReply, whose
+ *  `lines` start with the streamed ones) or one `error`. A turn that
+ *  finishes, or fails, before any line was final answers as JSON instead. */
+export interface VoiceTurnLineEvent {
+  /** The line's place in the reply's `lines`, from 0, in order. */
+  index: number;
+  line: VoiceLine;
+  /** The CAST notes so far, so a new person's voice is drawn before their
+   *  line plays. */
+  castNotes: VoiceCastNote[];
+}
+export interface VoiceTurnErrorEvent {
+  error: string;
+  status: number;
+  code?: ErrorCode;
+}
+
 /* ------------------------------ conversations ----------------------------- */
 // Saved voice sessions (docs/DATA.md §Conversations), the active learner's
 // active language's.

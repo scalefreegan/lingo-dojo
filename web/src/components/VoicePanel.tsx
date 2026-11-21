@@ -14,7 +14,7 @@ import {
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
-  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
@@ -41,6 +41,33 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e a
 const CAST_TIMEOUT_MS = 10_000;
 const HELD_NOTICE = "Your words to the dojo master are waiting above the box.";
 const isAbort = (e: unknown) => (e as Error)?.name === "AbortError" || (e instanceof ApiError && e.status === 499);
+
+/** The lines of a turn as they arrive (a streamed reply: docs/VOICE.md
+ *  §Streaming the reply): playLines speaks what is there and waits at the
+ *  end until `set` brings more, or says there is no more. */
+interface LineFeed {
+  lines: VoiceLine[];
+  done: boolean;
+  /** Resolves at the next `set`. */
+  changed(): Promise<void>;
+  set(lines: VoiceLine[], done: boolean): void;
+}
+function lineFeed(lines: VoiceLine[] = [], done = false): LineFeed {
+  let waiting: (() => void)[] = [];
+  const feed: LineFeed = {
+    lines,
+    done,
+    changed: () => new Promise<void>((resolve) => waiting.push(resolve)),
+    set(next, end) {
+      feed.lines = next;
+      feed.done = end;
+      const wake = waiting;
+      waiting = [];
+      for (const w of wake) w();
+    },
+  };
+  return feed;
+}
 
 /** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
 const EXTEND_MINUTES = 5;
@@ -380,6 +407,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const entriesRef = useRef<VoiceHistoryItem[]>([]);
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
+  // While a streamed turn is speaking its first lines and the rest is still
+  // on its way: silences them without cancelling the turn (leaving Go keeps
+  // a reply on its way, as it does one still being thought).
+  const arrivingRef = useRef<(() => void) | null>(null);
   // Every clip playing right now: usually one, two while lines overlap.
   const audiosRef = useRef(new Set<HTMLAudioElement>());
   const urls = useRef(new Map<string, Promise<string>>());
@@ -591,7 +622,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     if (p === "recording" || p === "opening") {
       stopAll();
       setNotice("The recording stopped when you left Go — tap the wave to try again.");
-    } else if (p === "speaking") stopAll();
+    } else if (p === "speaking") {
+      if (arrivingRef.current) arrivingRef.current();
+      else stopAll();
+    }
     // stopAll only touches refs and setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
@@ -853,6 +887,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     });
   }
 
+  /** Wait for a streamed turn's next lines; Stop cuts it short. */
+  function untilChanged(feed: LineFeed, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      signal.addEventListener("abort", done, { once: true });
+      void feed.changed().then(done);
+    });
+  }
+
   /** Wait between lines; Stop cuts it short. */
   function pause(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
@@ -889,26 +935,45 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
    *  while the current one plays. A line from before segments existed (or
    *  with none) is spoken whole as the target language. A line whose person
    *  is having a voice drawn waits for it (whichever way it was started: a
-   *  turn, ▶, or "Play the reply"), and isn't fetched ahead in the old one. */
-  async function playLines(entryIdx: number, lines: VoiceLine[], signal: AbortSignal, from = 0, only = false) {
-    const notes = latestCast(entriesRef.current.slice(0, entryIdx + 1));
+   *  turn, ▶, or "Play the reply"), and isn't fetched ahead in the old one.
+   *  `source` may be a LineFeed still filling (a streamed turn): the lines
+   *  play as they come, and it ends once the feed is done and all played. */
+  async function playLines(entryIdx: number, source: VoiceLine[] | LineFeed, signal: AbortSignal, from = 0, only = false) {
+    const feed = Array.isArray(source) ? lineFeed(source, true) : source;
+    // Read again for each line: a streamed turn's CAST notes grow with its
+    // lines (each arrives with the notes so far).
+    const notes = () => latestCast(entriesRef.current.slice(0, entryIdx + 1));
     const pending = (line: VoiceLine) => {
-      const person = personFor(notes, line);
+      const person = personFor(notes(), line);
       return person ? drawing.current.get(person) : undefined;
     };
     setPhase("speaking");
-    const last = only ? from : lines.length - 1;
     // `pauseMs` is the gap before a line's first segment (none before the
     // first line played); segments within a line run back to back.
     const queue: { key: string; lineKey: string; line: VoiceLine; seg: VoiceSegment; pauseMs: number }[] = [];
-    for (let i = from; i <= last; i++) {
-      const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
-      segs.forEach((seg, k) =>
-        queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg, pauseMs: k === 0 && i > from ? (lines[i].pauseMs ?? 0) : 0 }),
-      );
-    }
-    for (let q = 0; q < queue.length; q++) {
+    let built = from;
+    const fill = () => {
+      const lines = feed.lines;
+      const last = only ? Math.min(from, lines.length - 1) : lines.length - 1;
+      for (; built <= last; built++) {
+        const i = built;
+        const segs = lines[i].segments?.length ? lines[i].segments : [{ lang: "target" as const, text: lines[i].text }];
+        segs.forEach((seg, k) =>
+          queue.push({ key: `${entryIdx}:${i}:${k}`, lineKey: `${entryIdx}:${i}`, line: lines[i], seg, pauseMs: k === 0 && i > from ? (lines[i].pauseMs ?? 0) : 0 }),
+        );
+      }
+    };
+    // More may come while the feed is open, unless the one line asked for is in.
+    const open = () => !feed.done && !(only && built > from);
+    for (let q = 0; ; q++) {
+      fill();
+      while (q >= queue.length && open()) {
+        await untilChanged(feed, signal);
+        if (signal.aborted) return;
+        fill();
+      }
       if (signal.aborted) return;
+      if (q >= queue.length) break;
       const cur = queue[q];
       // A draw never rejects (recast catches), and a new one may start
       // while waiting (a second draw for the same person): wait them out.
@@ -916,9 +981,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         await waitForDraw(w, signal);
         if (signal.aborted) return;
       }
-      const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes, cur.line), cur.line));
+      const url = await audioFor(cur.key, cur.line, cur.seg, signal, speakAs(personFor(notes(), cur.line), cur.line));
+      // Lines that came in meanwhile, so the next one is fetched ahead too.
+      fill();
       const next = queue[q + 1];
-      if (next && !pending(next.line)) void audioFor(next.key, next.line, next.seg, signal, speakAs(personFor(notes, next.line), next.line)).catch(() => {});
+      if (next && !pending(next.line)) void audioFor(next.key, next.line, next.seg, signal, speakAs(personFor(notes(), next.line), next.line)).catch(() => {});
       if (signal.aborted) return;
       if (cur.pauseMs > 0) await pause(cur.pauseMs, signal);
       if (signal.aborted) return;
@@ -945,6 +1012,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     setSession(history);
     const ctrl = freshCtrl();
     setPhase("thinking");
+    // A streamed turn's entry while its lines arrive (onLine below), taken
+    // back off the transcript if the turn fails or is stopped: nothing of it
+    // was stored.
+    let provisional: VoiceHistoryItem | null = null;
+    const playCtrl = new AbortController();
     try {
       // The first turn draws the cast; later turns reuse it, unless the voice
       // provider changed mid-session (settings are shared by every open
@@ -989,6 +1061,43 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // there was none (the first turn, or the first after one ended).
       const conv = await conversationFor(turnPack, before.length, life);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // The reply streams (docs/VOICE.md §Streaming the reply): each line
+      // comes as soon as it is final, shown and spoken while the rest is
+      // still being written. That early playback has its own stop, so
+      // leaving Go silences it and the turn still lands (a reply on its way
+      // is kept); Stop and Restart abort `ctrl`, which ends both, and the
+      // server kills the run when the request closes.
+      const feed = lineFeed();
+      ctrl.signal.addEventListener("abort", () => playCtrl.abort(), { once: true });
+      let early: Promise<unknown> | null = null;
+      let castSoFar = "";
+      const onLine = (e: VoiceTurnLineEvent) => {
+        if (ctrl.signal.aborted || gen !== genRef.current) return;
+        const lines = [...feed.lines];
+        lines[e.index] = e.line;
+        provisional = { role: "master", lines, ...(e.castNotes.length ? { castNotes: e.castNotes } : {}) };
+        setSession([...history, provisional]);
+        // Someone new speaks in this turn: their voice is drawn before their
+        // line plays (playLines waits for it), as after a whole reply.
+        const notes = JSON.stringify(e.castNotes);
+        if (notes !== castSoFar) {
+          castSoFar = notes;
+          recast(latestCast(entriesRef.current));
+        }
+        feed.set(lines, false);
+        if (!early && activeRef.current && !playCtrl.signal.aborted) {
+          arrivingRef.current = () => {
+            arrivingRef.current = null;
+            // Stop or Restart got here first: their phase stands.
+            if (playCtrl.signal.aborted) return;
+            playCtrl.abort();
+            setPlaying(null);
+            setPhase("thinking");
+          };
+          // Settles with the playback's error (or null), awaited once the reply is in.
+          early = playLines(history.length, feed, playCtrl.signal).then(() => null, (err: unknown) => err ?? new Error("playback failed"));
+        }
+      };
       // Sent synchronously from here (no await before voiceTurn), and kept
       // in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
@@ -998,7 +1107,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // session drew, as a picked one; the next conversation keeps it.
         const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
         const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
-        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal);
+        const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal, onLine);
         if (c) {
           inFlight.current.set(c.id, req);
           const done = () => {
@@ -1046,6 +1155,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       }
       const idx = history.length;
       const notes = r.castNotes ?? [];
+      // The whole reply replaces the lines streamed so far (its lines begin
+      // with them), and playback goes on into the rest.
+      arrivingRef.current = null;
+      provisional = null;
+      feed.set(r.lines, true);
       setSession([
         ...history,
         { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}), ...(notes.length ? { castNotes: notes } : {}) },
@@ -1076,11 +1190,25 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         });
         return;
       }
-      await playLines(idx, r.lines, ctrl.signal, 0, false);
+      if (early && !playCtrl.signal.aborted) {
+        // Already speaking: it plays on to the reply's last line.
+        const failed = await early;
+        if (failed) throw failed;
+      } else {
+        // Nothing streamed (a reply whole before any line was final), or
+        // the early playback was silenced by leaving Go: from the top.
+        await playLines(idx, r.lines, ctrl.signal, 0, false);
+      }
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       setPhase("idle");
       listenAgain();
     } catch (e) {
+      // A failed stream: its early lines stop with it.
+      arrivingRef.current = null;
+      playCtrl.abort();
+      // Only if it is still the last entry: Restart may have cleared it.
+      const shown = entriesRef.current;
+      if (provisional && shown[shown.length - 1] === provisional) setSession(shown.slice(0, -1));
       if (ctrl.signal.aborted || isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
       setError(errText(e));

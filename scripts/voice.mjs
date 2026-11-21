@@ -869,6 +869,65 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
   return out;
 }
 
+/* ---------------------------- a reply as it comes --------------------------- */
+
+// The labels that come after all the spoken lines (the adapter's order).
+const TRAILING_META = [GLOSS_RE, CHOICES_RE, STAGE_RE];
+
+/**
+ * The spoken lines of a reply that is still being written, each handed out
+ * once it can no longer change, so the Go tab starts speaking before the
+ * reply is finished (docs/VOICE.md §Streaming the reply). `push(delta)` adds
+ * text and returns `{ lines, castNotes }`: the lines that became final (in
+ * order, never one twice) and the CAST notes so far (a new person's voice
+ * is drawn before their line plays).
+ *
+ * Only complete text lines are read, and only through parseVoiceReply, so a
+ * line handed out is the line the whole reply parses to. In parseVoiceReply
+ * only an untagged line changes the line before it (it continues it), so a
+ * line is final once a later one has started (a tag or a timing mark). The
+ * last spoken line is final once a GLOSS, CHOICES or STAGE line follows it:
+ * those come after the speech, so a line spoken after them is the model
+ * breaking its format, and the route's final parse, which wins, says so.
+ *
+ * A LOOKUP before anything was handed out is the reply asking instead of
+ * speaking (the route reruns): nothing more is handed out. One after lines
+ * went out is too late to take them back; the route leaves it unrun.
+ */
+export function replyStream(mode = "adult", opts = {}) {
+  let text = "";
+  let sent = 0;
+  let asking = false;
+  return {
+    push(delta) {
+      text += String(delta ?? "");
+      const cut = text.lastIndexOf("\n");
+      if (asking || cut < 0) return { lines: [], castNotes: [] };
+      const done = text.slice(0, cut);
+      if (!sent && parseLookup(done) != null) {
+        asking = true;
+        return { lines: [], castNotes: [] };
+      }
+      const all = parseVoiceReply(done, mode, opts);
+      let closed = all.length - 1;
+      // The line still being written counts here once its label is in
+      // ("GLOSS:" stays a GLOSS line whatever follows), so a reply's last
+      // spoken line goes out as its glosses begin, not as they end.
+      const rows = text.split("\n");
+      const meta = rows.findIndex((l) => TRAILING_META.some((re) => metaRest(re, l) != null));
+      if (meta >= 0) closed = Math.max(closed, parseVoiceReply(rows.slice(0, meta).join("\n"), mode, opts).length);
+      if (closed <= sent) return { lines: [], castNotes: [] };
+      const lines = all.slice(sent, closed);
+      sent = closed;
+      return { lines, castNotes: parseCast(done, mode, opts) };
+    },
+    /** How many lines have been handed out. */
+    get sent() {
+      return sent;
+    },
+  };
+}
+
 /* ---------------------------------- slots ---------------------------------- */
 
 export const GENDERS = ["female", "male"];
