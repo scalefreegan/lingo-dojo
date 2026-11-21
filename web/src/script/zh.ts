@@ -167,6 +167,20 @@ export interface Detail {
   /** Where a word starts by the platform's word segmenter (one flag per
    *  code point and one for the end); null where there is no segmenter. */
   starts: boolean[] | null;
+  /** Read by a correction (ld-4i2, Corrections): the learner's own
+   *  ("mine", a correction or a confirmation), the shared list's
+   *  ("shared"), or the recap's suggestion for this learner ("suggested",
+   *  which leaves the reading uncertain); null where none applied. */
+  fixed: (FixKind | null)[];
+}
+
+/** Options for a read: `cache: false` neither reads nor fills the cache;
+ *  `corrections` replaces the browser's (setCorrections) for this read
+ *  (the server passes a learner's own, never the module's), and is never
+ *  cached. */
+export interface ReadOpts {
+  cache?: boolean;
+  corrections?: Corrections | null;
 }
 
 let segmenter: Intl.Segmenter | null | undefined;
@@ -203,19 +217,22 @@ export function readingCached(text: string, locale: string): boolean {
  *  character, null for anything else. `cache: false` neither reads nor
  *  fills the cache: the server reads a learner's text this way, so no text
  *  it was asked to score outlives the request (server/pronunciation.ts). */
-export function readCodePoints(text: string, locale: string, opts: { cache?: boolean } = {}): (string | null)[] {
+export function readCodePoints(text: string, locale: string, opts: ReadOpts = {}): (string | null)[] {
   return readDetail(text, locale, opts).readings;
 }
 
 /** readCodePoints with what settled each reading (Detail). */
-export function readDetail(text: string, locale: string, { cache: useCache = true }: { cache?: boolean } = {}): Detail {
+export function readDetail(text: string, locale: string, { cache: wantCache = true, corrections: given }: ReadOpts = {}): Detail {
   const tw = isTaiwan(locale);
+  const fixes = given === undefined ? active : given;
+  const useCache = wantCache && given === undefined;
   const key = `${tw ? "tw" : "cn"}\u0001${text}`;
   const hit = useCache ? cache.get(key) : undefined;
   if (hit) return hit;
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
   const settled = cps.map(() => false);
+  let fixed: (FixKind | null)[] = cps.map(() => null);
   let dict = settled;
   let joined = settled;
   let starts: boolean[] | null = null;
@@ -266,8 +283,9 @@ export function readDetail(text: string, locale: string, { cache: useCache = tru
     const before = out.slice();
     particleDe(text, out);
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
+    if (fixes) fixed = applyCorrections(cps, simp, { joined, starts }, fixes, tw, out, settled);
   }
-  const detail = { readings: out, settled, dict, joined, starts };
+  const detail = { readings: out, settled, dict, joined, starts, fixed };
   if (!useCache) return detail;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, detail);
@@ -344,7 +362,7 @@ function anywhereAt(simp: string[], { joined, starts }: Pick<Detail, "joined" | 
 /** The characters of `text` whose reading no word settled and that have
  *  more than one reading in use (the prior's ranks): their code-point
  *  indices. What the dojo master's reading hints are for (ld-op2). */
-export function ambiguousChars(text: string, locale: string, opts: { cache?: boolean } = {}): number[] {
+export function ambiguousChars(text: string, locale: string, opts: ReadOpts = {}): number[] {
   const { readings, settled } = readDetail(text, locale, opts);
   const cps = [...text];
   const out: number[] = [];
@@ -354,6 +372,118 @@ export function ambiguousChars(text: string, locale: string, opts: { cache?: boo
     if (ranks && ranks.length > 1) out.push(k);
   }
   return out;
+}
+
+/* --------------------------- uncertain readings --------------------------- */
+
+/** Characters whose other readings are marginal wherever no dictionary
+ *  word settled them (ld-4i2): never marked. Their other readings live in
+ *  words the library's dictionary has (要 yāo in 要求, 给 jǐ in 供给, 少 shào
+ *  in 少年, 几 jī in 几乎, 角 jué in 角色, 率 shuài in 率领, 扫 sào in 扫帚, 折
+ *  zhē in 折腾, 分 fèn in 部分), or a rule reads them by their neighbours
+ *  (the particles 地 and 了 的 着, whose zhe the following verb settles in
+ *  speech; 吗 嘛 má only in 干吗). Measured on session-style text (the
+ *  reading-marks test): with them marked, 9 words in 100 were; without,
+ *  under 2. Keyed by the simplified form (給 嗎 幾 掃 too). 得 stays marked:
+ *  dé / děi alone is a real choice (你得去 děi). */
+export const CONTEXT_SETTLED = "了的地着吗嘛要给少分几角率扫折";
+
+/** The longest word a mark or a correction covers, in characters. */
+export const MAX_WORD_CHARS = 8;
+
+/** Whether the reading at `k` is uncertain: a Chinese character that no
+ *  dictionary word, rule, correction or confirmation settled (read by
+ *  default or the frequency prior) and that has another ordinary reading
+ *  (the prior's ranks: one at least 5% as frequent as its first in
+ *  CC-CEDICT's words), unless it is one of CONTEXT_SETTLED, or the other
+ *  is only the neutral tone of the same syllable (头 tou). A word that
+ *  only the recap suggested a reading for stays uncertain. */
+function unsureAt(cps: string[], d: Detail, k: number): boolean {
+  const cur = d.readings[k];
+  if (cur == null || d.settled[k]) return false;
+  const s = simplified(cps[k]);
+  if (CONTEXT_SETTLED.includes(s)) return false;
+  const ranks = priorFor(prior.ranks, cps[k], s);
+  if (!ranks || ranks.length < 2) return false;
+  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r));
+}
+
+/** An uncertain word of a text: code points [start, end), its characters,
+ *  the readings shown over them, and which of them are uncertain. */
+export interface UnsureWord {
+  start: number;
+  end: number;
+  word: string;
+  reading: string[];
+  /** The uncertain characters' code-point indices in the text. */
+  unsure: number[];
+  /** Read by the recap's suggestion, not yet checked by the learner. */
+  suggested: boolean;
+}
+
+/**
+ * The words of `text` whose reading is uncertain (unsureAt): what the
+ * transcript, the bank, Practice and the recap mark, and what the recap
+ * asks the model about. A word is one of the platform's word segmenter
+ * (Intl.Segmenter: 你|得|去, 一宿); one of a single character joins the
+ * word after it (得去, 长着, 倒车), else the one before (有点干), so a mark
+ * and a correction are always two characters or more: one character
+ * corrected alone would rewrite it inside every other word. Words of more
+ * than MAX_WORD_CHARS characters, and a character with no Chinese
+ * neighbour, are not marked. Without a segmenter each character is a word.
+ */
+export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}): UnsureWord[] {
+  const d = readDetail(text, locale, opts);
+  const cps = [...text];
+  const unsure = cps.map((_, k) => unsureAt(cps, d, k));
+  if (!unsure.some(Boolean)) return [];
+  // The segmenter's words, as [start, end) runs of Chinese characters.
+  const words: [number, number][] = [];
+  for (let k = 0; k < cps.length; ) {
+    if (!isHan(cps[k])) {
+      k++;
+      continue;
+    }
+    let e = k + 1;
+    while (e < cps.length && isHan(cps[e]) && !(d.starts ? d.starts[e] : true)) e++;
+    words.push([k, e]);
+    k = e;
+  }
+  const out: UnsureWord[] = [];
+  for (let w = 0; w < words.length; w++) {
+    let [s, e] = words[w];
+    if (!unsure.slice(s, e).some(Boolean)) continue;
+    if (e - s < 2) {
+      const next = words[w + 1];
+      const prev = words[w - 1];
+      if (next && next[0] === e) e = next[1];
+      else if (prev && prev[1] === s) s = prev[0];
+      else continue;
+    }
+    const last = out[out.length - 1];
+    if (last && s < last.end) s = last.start;
+    if (e - s > MAX_WORD_CHARS) continue;
+    if (last && s === last.start) out.pop();
+    const at = [];
+    for (let k = s; k < e; k++) if (unsure[k]) at.push(k);
+    out.push({ start: s, end: e, word: cps.slice(s, e).join(""), reading: d.readings.slice(s, e).map((r) => r ?? ""), unsure: at, suggested: at.some((k) => d.fixed[k] === "suggested") });
+  }
+  return out;
+}
+
+/** The same, as UTF-16 offsets: [start, end) of each uncertain word's
+ *  characters in `text` (what the ruby layout counts in). */
+export function unsureOffsets(text: string, locale: string, opts: ReadOpts = {}): { start: number; end: number; word: string; suggested: boolean }[] {
+  const words = uncertainWords(text, locale, opts);
+  if (!words.length) return [];
+  const offsets: number[] = [];
+  let at = 0;
+  for (const ch of text) {
+    offsets.push(at);
+    at += ch.length;
+  }
+  offsets.push(at);
+  return words.map((w) => ({ start: offsets[w.start], end: offsets[w.end], word: w.word, suggested: w.suggested }));
 }
 
 /** The same, indexed by UTF-16 offset (what String.slice and the gloss
@@ -476,6 +606,173 @@ export function inScript(text: string, locale: string): string {
   return isTaiwan(locale) ? text : [...text].map(simplified).join("");
 }
 
+/* ------------------------------ corrections ------------------------------ */
+
+/** What read a word over the reader (ld-4i2): see Detail.fixed. */
+export type FixKind = "mine" | "shared" | "suggested";
+
+/** A whole-word reading from outside the reader: the word as written (two
+ *  to MAX_WORD_CHARS Chinese characters) and one tone-marked syllable per
+ *  character. `scope` (the shared list's): "tw" for a reading only Taiwan
+ *  uses, read only for a zh-TW text; "all" (the default) everywhere. */
+export interface CorrectionEntry {
+  word: string;
+  reading: string;
+  scope?: "all" | "tw";
+}
+
+interface Entry {
+  word: string;
+  reading: string[];
+  scope: "all" | "tw";
+  /** The word has a traditional character that simplification merged
+   *  with another (髮 / 發 → 发): it matches only as written. */
+  merged: boolean;
+}
+
+/** The corrections a read lays over the reader's readings, by rank: the
+ *  learner's own by hand (`mine`: a correction or a confirmation), the
+ *  shared list's active entries (`shared`), and the recap's suggestions
+ *  for this learner (`suggested`). Each keyed by the word's simplified
+ *  spelling (correctionKey), so a correction made in one script reads in
+ *  the other. `version` names the set (the browser's cache). */
+export interface Corrections {
+  version: string;
+  mine: Map<string, Entry>;
+  shared: Map<string, Entry>;
+  suggested: Map<string, Entry>;
+  longest: number;
+}
+
+/** A word's key in a corrections set and the shared list: its simplified
+ *  spelling, chosen by the word (OpenCC, t2s.ts), so 還書 and 还书 are one. */
+export const correctionKey = (word: string): string => simplifyAligned(word.normalize("NFC")).join("");
+
+/** A corrections set from stored entries; one that is malformed (not two
+ *  to MAX_WORD_CHARS Chinese characters with a syllable each) is skipped:
+ *  a row is checked when it is written, and again here. */
+export function makeCorrections(lists: { mine?: readonly CorrectionEntry[]; shared?: readonly CorrectionEntry[]; suggested?: readonly CorrectionEntry[] }, version = ""): Corrections {
+  const c: Corrections = { version, mine: new Map(), shared: new Map(), suggested: new Map(), longest: 0 };
+  for (const kind of ["mine", "shared", "suggested"] as const) {
+    for (const e of lists[kind] ?? []) {
+      if (!e || typeof e.word !== "string" || typeof e.reading !== "string") continue;
+      const word = e.word.normalize("NFC");
+      const cps = [...word];
+      const reading = e.reading.normalize("NFC").split(" ");
+      if (cps.length < 2 || cps.length > MAX_WORD_CHARS || !cps.every(isHan) || reading.length !== cps.length || !reading.every(isPinyin)) continue;
+      const simp = simplifyAligned(word);
+      const merged = cps.some((ch, k) => ch !== simp[k] && mergedWith(ch, simp[k]).length > 0);
+      c[kind].set(simp.join(""), { word, reading, scope: e.scope === "tw" ? "tw" : "all", merged });
+      c.longest = Math.max(c.longest, cps.length);
+    }
+  }
+  return c;
+}
+
+/** The corrections the browser reads with (the learner's own and the
+ *  shared list, set by script/ruby.tsx); none on the server, whose reads
+ *  pass a learner's own explicitly (ReadOpts.corrections). */
+let active: Corrections | null = null;
+/** Swap the browser's corrections (null: none). Empties the cache. */
+export function setCorrections(c: Corrections | null): void {
+  active = c;
+  cache.clear();
+}
+export const currentCorrections = (): Corrections | null => active;
+
+/** Whether `fixed` is a reading a person settled (by hand, or the shared
+ *  list's): it outranks the dictionary and a hint, and is not uncertain. */
+const settledBy = (f: FixKind | null | undefined) => f === "mine" || f === "shared";
+
+/**
+ * The corrections over one text's readings, in place: each entry is read
+ * as a whole word only, where both its ends are word boundaries of the
+ * platform's segmenter (with none, the ends of a run of Chinese
+ * characters) and cut through no word of the library's dictionary
+ * (`joined`): 还书 in 我去还书, never 一行 inside 一行人 (行人 is one
+ * word). The longest entry wins where two start together, and at one
+ * length the learner's own, then the shared list's, then the recap's
+ * suggestion. A person's reading (mine, shared) outranks everything, the
+ * dictionary's included, and settles the word; a suggestion is read but
+ * leaves it uncertain. A zh-TW text takes Taiwan's readings over a shared
+ * or suggested entry (they are written for both); the learner's own stand
+ * as chosen.
+ */
+function applyCorrections(cps: string[], simp: string[], { joined, starts }: Pick<Detail, "joined" | "starts">, c: Corrections, tw: boolean, out: (string | null)[], settled: boolean[]): (FixKind | null)[] {
+  const fixed: (FixKind | null)[] = cps.map(() => null);
+  if (c.longest < 2) return fixed;
+  const edge = (k: number) => !joined[k] && (starts ? starts[k] : !isHan(cps[k - 1] ?? "") || !isHan(cps[k] ?? ""));
+  for (let i = 0; i < cps.length; i++) {
+    if (!isHan(cps[i]) || !edge(i)) continue;
+    let run = i;
+    while (run < cps.length && isHan(cps[run]) && run - i < c.longest) run++;
+    for (let n = run - i; n >= 2; n--) {
+      const end = i + n;
+      if (!edge(end)) continue;
+      const key = simp.slice(i, end).join("");
+      const exact = cps.slice(i, end).join("");
+      const fits = (e: Entry | undefined) => !!e && (e.word === exact || (!e.merged && !cps.slice(i, end).some((ch, k) => ch !== simp[i + k] && mergedWith(ch, simp[i + k]).length > 0)));
+      const shared = c.shared.get(key);
+      const hit: [FixKind, Entry] | null = fits(c.mine.get(key))
+        ? ["mine", c.mine.get(key)!]
+        : fits(shared) && (shared!.scope === "all" || tw)
+          ? ["shared", shared!]
+          : fits(c.suggested.get(key))
+            ? ["suggested", c.suggested.get(key)!]
+            : null;
+      if (!hit) continue;
+      const [kind, e] = hit;
+      const reading = tw && kind !== "mine" ? taiwanize(e.word, e.reading.slice()) : e.reading;
+      for (let k = 0; k < n; k++) {
+        out[i + k] = reading[k] ?? out[i + k];
+        fixed[i + k] = kind;
+        if (kind !== "suggested") settled[i + k] = true;
+      }
+      i = end - 1;
+      break;
+    }
+  }
+  return fixed;
+}
+
+export type CorrectionVerdict = { ok: true; word: string; reading: string[] } | { ok: false; why: "shape" | "count" | "unknown" };
+
+/**
+ * A correction checked before anything keeps it (the learner's, an
+ * admin's, the recap's once it passed validateHint): `word` is two to
+ * MAX_WORD_CHARS Chinese characters and nothing else, `reading` one
+ * tone-marked syllable per character (an array or space-separated), each
+ * a reading that character really has (any the reader knows, common or
+ * rare, its neutral tone, 一 / 不 in any tone: fitsChar). A person may
+ * choose a marginal reading a hint may not: this is their call.
+ */
+export function validateCorrection(word: unknown, reading: unknown, locale: string): CorrectionVerdict {
+  if (typeof word !== "string" || (typeof reading !== "string" && !Array.isArray(reading)) || word.length > 64) return { ok: false, why: "shape" };
+  const w = word.normalize("NFC").trim();
+  const cps = [...w];
+  if (cps.length < 2 || cps.length > MAX_WORD_CHARS || !cps.every(isHan)) return { ok: false, why: "shape" };
+  const raw = typeof reading === "string" ? reading.split(/\s+/) : reading;
+  if (raw.length > MAX_WORD_CHARS * 2 || !raw.every((x) => typeof x === "string" && x.length <= 12)) return { ok: false, why: "shape" };
+  const syl = (raw as string[]).map((x) => x.normalize("NFC").trim()).filter(Boolean);
+  if (syl.length !== cps.length) return { ok: false, why: "count" };
+  if (!syl.every(isPinyin) || !cps.every((c, n) => fitsChar(c, syl[n], locale))) return { ok: false, why: "unknown" };
+  return { ok: true, word: w, reading: syl };
+}
+
+/** The shared list's scope for a reading chosen in `locale`: "tw" when it
+ *  gives a character Taiwan's own reading where the mainland's differs
+ *  (script.ts TAIWAN_READINGS), so a mainland learner never reads it;
+ *  "all" otherwise (a zh-TW text then takes Taiwan's readings over it). */
+export function correctionScope(word: string, reading: readonly string[], locale: string): "all" | "tw" {
+  if (!isTaiwan(locale)) return "all";
+  return [...word.normalize("NFC")].some((c, k) => {
+    const t = TAIWAN_READINGS[c];
+    return !!t && t.from !== t.to && reading[k] === t.to;
+  })
+    ? "tw"
+    : "all";
+}
+
 /* --------------------------- the dojo master's hints -------------------------- */
 
 /** A reading the dojo master gave for a phrase it glossed (ld-op2): the
@@ -511,7 +808,7 @@ function fitsChar(ch: string, syl: string, locale: string): boolean {
  *    reading (the dictionary outranks the hint, the hint the prior).
  *  The longer phrase wins where two overlap. A copy: the reader's cache
  *  keeps its own. */
-export function withHints(text: string, locale: string, hints: readonly ReadingHint[], opts: { cache?: boolean } = {}): (string | null)[] {
+export function withHints(text: string, locale: string, hints: readonly ReadingHint[], opts: ReadOpts = {}): (string | null)[] {
   const d = readDetail(text, locale, opts);
   const out = d.readings.slice();
   const cps = [...text];
@@ -529,7 +826,8 @@ export function withHints(text: string, locale: string, hints: readonly ReadingH
       let n = 0;
       term.forEach((c, k) => {
         if (!isHan(c)) return;
-        if (!d.dict[i + k]) out[i + k] = syl[n];
+        // A correction outranks a hint as it outranks the dictionary.
+        if (!d.dict[i + k] && !settledBy(d.fixed[i + k])) out[i + k] = syl[n];
         n++;
       });
       i = end - 1;
@@ -619,7 +917,9 @@ export function validateHint(term: string, raw: string, locale: string): HintVer
   if (!src) return { ok: false, why: "shape" };
   if (han.length < 2) return { ok: false, why: "single" };
   if (src.length > han.length * HINT_PER_CHAR) return { ok: false, why: "count" };
-  const own = readDetail(term.normalize("NFC"), locale, { cache: false });
+  // The reader's own reading, without anyone's corrections: what a hint
+  // is judged against is the same for every learner.
+  const own = readDetail(term.normalize("NFC"), locale, { cache: false, corrections: null });
   // Each character's candidates: [what is written, the reading it means, rare].
   const options = han.map((k): [string, string, boolean][] => {
     const ch = cps[k];
