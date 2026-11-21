@@ -205,7 +205,7 @@ const TONED = /[̀́̄̌1-4]/u;
  * when the answer splits into one syllable per character.
  */
 function keptNeutral(word: string, raw: string, reading: string[], locale: string): string[] {
-  const sylls = raw.normalize("NFD").toLowerCase().split(/[\s'’\-]+/u).filter(Boolean);
+  const sylls = raw.normalize("NFD").toLowerCase().split(/[\s'’-]+/u).filter(Boolean);
   const chars = [...word.normalize("NFC")];
   if (sylls.length !== chars.length || reading.length !== chars.length) return reading;
   return reading.map((r, k) => {
