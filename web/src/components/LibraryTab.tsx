@@ -68,7 +68,7 @@ export default function LibraryTab(props: LibraryProps) {
       {view === "history" ? (
         <HistoryView bankLanguage={props.content.profile?.target_language} kids={props.mode === "kids"} onPracticeAgain={props.onPracticeAgain} />
       ) : view === "bank" ? (
-        <PhraseBankView key={bankAsk.n} initialQuery={bankAsk.q} kids={props.mode === "kids"} />
+        <PhraseBankView key={bankAsk.n} initialQuery={bankAsk.q} />
       ) : (
         <PacksView {...props} />
       )}

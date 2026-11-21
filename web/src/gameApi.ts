@@ -6,7 +6,10 @@
 // immutable, keyed by the picture's file in the URL).
 
 import { json, req, reqBlob } from "./api";
-import type { DrawAnywayRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply } from "./types";
+import type {
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, StockChangeReply, StockListReply,
+  WordPicturesReply,
+} from "./types";
 import { utcOffset } from "./practiceApi";
 
 /** GET /api/game: the pictures' status. Starts nothing (safe to poll). */
@@ -50,3 +53,25 @@ export const changePhrasePicture = (phraseId: string, action: "remove" | "redraw
  *  picture", drawn anyway, as the grown-up describes it (or by its meaning). */
 export const drawPhrasePictureAnyway = (phraseId: string, description: string) =>
   req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}/draw`, json({ description } satisfies DrawAnywayRequest));
+
+/** GET /api/pictures/words: the picture library's "My word pictures". */
+export const wordPictures = (signal?: AbortSignal) => req<WordPicturesReply>("/api/pictures/words", { signal });
+
+/* ------------------------------ stock pictures ------------------------------ */
+
+/** GET /api/stock-pictures: the shared set (reads only; safe to poll). */
+export const stockPictures = (signal?: AbortSignal) => req<StockListReply>("/api/stock-pictures", { signal });
+
+/** GET /api/stock-pictures/file/:id/:version: a stock picture's bytes. */
+export async function stockPictureBlob(id: string, version: string, signal?: AbortSignal): Promise<Blob> {
+  return (await reqBlob(`/api/stock-pictures/file/${encodeURIComponent(id)}/${encodeURIComponent(version)}`, { signal })).blob;
+}
+
+/** POST /api/stock-pictures/admin/concepts (admins). */
+export const addStockConcept = (body: AddStockConceptRequest) => req<StockChangeReply>("/api/stock-pictures/admin/concepts", json(body));
+
+/** POST /api/stock-pictures/admin/missing (admins): `count` is what the page showed. */
+export const drawMissingStock = (count: number) => req<StockChangeReply>("/api/stock-pictures/admin/missing", json({ count } satisfies DrawMissingRequest));
+
+/** POST /api/stock-pictures/admin/:id/draw | remove (admins). */
+export const changeStockPicture = (id: string, action: "draw" | "remove") => req<StockChangeReply>(`/api/stock-pictures/admin/${encodeURIComponent(id)}/${action}`, json({}));

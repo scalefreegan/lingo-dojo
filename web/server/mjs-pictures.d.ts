@@ -45,6 +45,11 @@ declare module "*/scripts/pictures.mjs" {
   export function currentThemes(provider: string, theme?: PictureTheme): Set<string>;
   export function stockKey(theme: string, id: string): string;
   export function readStockList(raw: unknown): { concepts: StockConcept[]; problems: { level: "error" | "warning"; message: string }[] };
+  export const PICTURE_DAILY_STOCK: number;
+  type NewConcept = { id: string; category: string; description: string; words: string[]; adults?: boolean };
+  export function mergeStock(base: StockConcept[], custom?: NewConcept[]): { concepts: (StockConcept & { custom: boolean })[]; shadowed: (NewConcept & { adults: boolean })[]; problems: { level: "error" | "warning"; message: string }[] };
+  export function stockIdFrom(name: unknown): string;
+  export function readNewConcept(body: unknown, existing?: { id: string }[], names?: Iterable<string | null | undefined>): { concept: NewConcept; error?: undefined } | { error: string; concept?: undefined };
   export function restyleTargets<R extends PictureLike>(phrases: CandidatePhrase[], rows: Map<string, R>, themes: Set<string>): R[];
   export const PICTURE_DAILY_IMAGES: number;
   export const PICTURE_DAILY_JUDGES: number;
@@ -112,8 +117,9 @@ declare module "*/scripts/picture-stock.mjs" {
   type StockConcept = import("../../scripts/pictures.mjs").StockConcept;
   type PictureTheme = import("../../scripts/pictures.mjs").PictureTheme;
   type Drawer = { draw(prompt: string, signal?: AbortSignal): Promise<{ bytes: Buffer; type: string; credits?: number | null }> };
-  export function listStock(opts?: { root?: string; theme?: string; dir?: string }): (StockConcept & { drawn: { type: string } | null })[];
-  export function drawnStock(opts?: { root?: string; theme?: string; dir?: string }): (StockConcept & { drawn: { type: string } })[];
+  type Custom = { id: string; category: string; description: string; words: string[]; adults?: boolean };
+  export function listStock(opts?: { root?: string; theme?: string; dir?: string; custom?: Custom[] }): (StockConcept & { custom: boolean; drawn: { type: string } | null })[];
+  export function drawnStock(opts?: { root?: string; theme?: string; dir?: string; custom?: Custom[] }): (StockConcept & { custom: boolean; drawn: { type: string } })[];
   export function drawStockPicture(concept: StockConcept, provider: Drawer, opts?: { theme?: PictureTheme; dir?: string; signal?: AbortSignal }): Promise<{ credits: number | null }>;
   export function removeStockPicture(id: string, opts?: { theme?: string; dir?: string }): void;
   export function addStockConcept(

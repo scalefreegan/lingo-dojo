@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, JUDGE_BATCH, PICTURE_THEME, cleanDescription, currentThemes, drawnTheme,
-  nameWords, gameRounds, grownUpDescription, judgePrompt, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readStockList, restyleTargets, roundChoices, stockForMode, stockKey,
+  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
 } from "../pictures.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -386,6 +386,56 @@ test("stock files: per theme, apart from words' pictures; deleting a word's pict
   deleteStockPicture(theme, "dog", { dir });
   assert.equal(stockPicture(theme, "dog", { dir }), null);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("mergeStock: the file's concepts first, then the admin's own by the same rules; an id the file has keeps the file's", () => {
+  const base = readStockList({ categories: { Animals: [{ id: "dog", description: "a friendly brown dog", words: ["dog"] }] } }).concepts;
+  const out = mergeStock(base, [
+    { id: "kite", category: "Toys", description: "a red kite", words: ["kite"] },
+    { id: "dog", category: "Animals", description: "another dog", words: ["hound"] },
+    { id: "hat", category: "Animals", description: "a \"quoted\" hat", words: ["hat"] },
+  ]);
+  assert.deepEqual(out.concepts.map((c) => [c.id, c.category, c.custom, c.description]), [["dog", "Animals", false, "a friendly brown dog"], ["kite", "Toys", true, "a red kite"]]);
+  assert.ok(out.problems.some((p) => /"dog".*pictures\.yaml/.test(p.message)));
+  assert.ok(out.problems.some((p) => /hat/.test(p.message)), "a stored description that no longer passes is skipped, not offered");
+  assert.deepEqual(mergeStock(base).concepts.map((c) => c.custom), [false]);
+  // The clash is reported, not silent: the added row is `shadowed`, in one warning.
+  assert.deepEqual(out.shadowed.map((c) => [c.id, c.description, c.adults]), [["dog", "another dog", false]]);
+  assert.equal(out.problems.filter((p) => /pictures\.yaml/.test(p.message)).length, 1);
+  assert.deepEqual(mergeStock(base).shadowed, []);
+  // An added concept keeps its adults flag.
+  const added = mergeStock(base, [{ id: "wine", category: "Drinks", description: "a glass of wine", words: ["wine"], adults: true }, { id: "kite", category: "Toys", description: "a kite", words: ["kite"], adults: false }]);
+  assert.deepEqual(added.concepts.map((c) => [c.id, c.adults ?? null]), [["dog", null], ["wine", true], ["kite", null]]);
+  // The file's look-alike group and adults flag survive the merge (else a
+  // kids learner would be offered beer, and a boy and a brother share a round).
+  const flagged = readStockList({ categories: { Drinks: [{ id: "beer", description: "a glass of beer", words: ["beer"], adults: true }], People: [{ id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" }] } }).concepts;
+  assert.deepEqual(mergeStock(flagged).concepts.map((c) => [c.id, c.adults ?? null, c.group ?? null]), [["beer", true, null], ["boy", null, "boy"]]);
+});
+
+test("readNewConcept: an id from the name, new; a category; a description by cleanDescription with no learner name; English words", () => {
+  const existing = [{ id: "dog" }];
+  assert.equal(stockIdFrom("  Ice Cream!  "), "ice-cream");
+  assert.equal(stockIdFrom("Crème brûlée"), "creme-brulee");
+  assert.deepEqual(readNewConcept({ name: "Ice cream", category: "Food", description: "a cone of “ice cream”", words: "Ice cream, ice-cream cone, ice cream" }, existing), {
+    concept: { id: "ice-cream", category: "Food", description: "a cone of ice cream", words: ["ice cream", "ice-cream cone"], adults: false },
+  });
+  assert.deepEqual(readNewConcept({ name: "kite", category: "Toys", description: "a kite", words: ["kite", "Kites"] }).concept.words, ["kite", "kites"]);
+  assert.equal(readNewConcept({ name: "wine", category: "Drinks", description: "a glass of wine", words: "wine", adults: true }).concept.adults, true);
+  assert.match(readNewConcept({ name: "wine", category: "Drinks", description: "a glass of wine", words: "wine", adults: "yes" }).error, /Adults only/);
+  for (const [body, re] of [
+    [{ name: "Dog", category: "Animals", description: "a dog", words: "dog" }, /already/],
+    [{ name: "!!", category: "Food", description: "a cake", words: "cake" }, /letter or digit/],
+    [{ name: "cake", category: "", description: "a cake", words: "cake" }, /category/],
+    [{ name: "cake", category: "a/b", description: "a cake", words: "cake" }, /category/],
+    [{ name: "cake", category: "Food", description: "a picture of", words: "cake" }, /what to draw/],
+    [{ name: "cake", category: "Food", description: "Rosa's birthday cake", words: "cake" }, /name/],
+    [{ name: "cake", category: "Food", description: "a cake", words: " , " }, /English words/],
+    [{ name: "cake", category: "Food", description: "a cake", words: Array.from({ length: 21 }, (_, i) => `w${i}`) }, /20/],
+    [null, /name/],
+  ]) {
+    const r = readNewConcept(body, existing, ["Rosa"]);
+    assert.ok(r.error && re.test(r.error), `${JSON.stringify(body)}: ${r.error}`);
+  }
 });
 
 /* ------------------------------ PR #60 review ------------------------------ */
