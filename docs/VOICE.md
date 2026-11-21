@@ -596,27 +596,41 @@ uncertain words in context.
     tone of the same syllable;
   - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
     simplified form). The reader's context rules settle these characters
-    almost always, and marking them made up most of the noise.
+    almost always, and marking them made up most of the noise;
+  - it is not in a common word read as CC-CEDICT reads it (PR #67 review):
+    the library's dictionary holds only words whose reading isn't each
+    character's default, so 再见, 当然 and 教练 looked unsettled. The list is
+    `web/src/script/zh-words.ts` (`npm run pinyin:words`,
+    `scripts/gen-zh-words.mjs`): 3,826 CC-CEDICT words of 2–4 characters,
+    at least 1e-6 of wordfreq's Chinese words, with a character of two
+    ordinary readings, that CC-CEDICT reads one way (not 一行, which a
+    sentence often reads háng). A word counts where it stands between
+    word boundaries of the segmenter (ICU splits the traditional 再|見)
+    and the reader read it so; it never changes a reading.
 
   The unit marked is the segmenter's word. A single character joins the
   word after it (得去, 长着, 倒车), or the word before when there is no next
-  word or the next word starts with a function word (有点干; 停车场, not
-  场很). A word with no Chinese neighbour, or one longer than 8 characters,
+  word or the next word starts with a function word (有点干; 他量, not
+  量很). A word with no Chinese neighbour, or one longer than 8 characters,
   is not marked.
 - **Measured** (2026-11-21, `scripts/tests/reading-marks.test.mjs`, about
   100 hand-written dojo-master lines across 10 scenes,
   `scripts/tests/zh-session-corpus.mjs`; not the real database).
   - With every character of two or more usual readings marked: 9.2 marks
     per 100 words.
-  - With the definition above: **1.80 per 100 in simplified** (17 in 946
-    words) and **1.63 per 100 in traditional** (15 in 921). The test holds
-    both at or under 2.
-  - Marked: 得去, 倒车, 一宿, 长着, 长时间, 当然, 教练, 有点干, 量一下. Some of
-    these are real misreadings it catches: 问得, 得很 and 得严重 read dé
-    where it should be de; zh-TW 抽空 read kōng.
-  - Not marked: 还书, because huán is under 5% of 还's uses (a rare reading
-    is not a second ordinary one). Also not marked are the dictionary words
-    银行, 第五行 (in most lines), 一行人 and, in simplified, 抽空.
+  - With the definition above, before the common words: 1.80 per 100 in
+    simplified (17 in 946 words) and 1.63 in traditional (15 in 921); 教练,
+    当然 were about a third of them. With them: **1.37 per 100 in
+    simplified** (13) and **1.19 in traditional** (11). The test holds both
+    under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
+    in 55 words, both 再見) to 0.
+  - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
+    misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
+    得严重 (dé for de), 长着 (cháng for zhǎng).
+  - Not marked: 还 before what is given back is now read huán by
+    `READING_FIXES` (还钱, 还书, 还你; not 还给, as often 还 hái + the
+    preposition 给), and the dictionary words 银行, 第五行 (in most lines),
+    一行人 and, in simplified, 抽空.
   - The adversarial `EVERYDAY_SENTENCES` set, written to trip the reader,
     marks 8.8 per 100 (CN) and 7.8 (TW).
   - Revert check: emptying `CONTEXT_SETTLED` gives 8.67 per 100 and fails
@@ -635,8 +649,11 @@ uncertain words in context.
     (`charReadings`), one syllable at a time.
   - **This is right** confirms the reading shown. When that is the
     reader's own reading, nothing else changes. When it is not (it is a
-    recap's suggestion), it goes to the shared list like a correction, so
-    the learner and the recap agree.
+    recap's suggestion), it goes to the shared list like a correction: the
+    learner's vote, the same one as their recap's.
+  - Only a choice made by hand ranks as the learner's own. A recap that
+    agreed with the reader only clears the mark (`checked`, below the
+    shared list), so a reading people settle later still reaches them.
   - The choice is saved through `POST /api/readings` (`learner: true`;
     kids 403; a language other than Mandarin 400; the word and reading
     checked by `validateCorrection`: 2–8 Chinese characters, one real
@@ -661,16 +678,31 @@ uncertain words in context.
   A recap's suggestion for this learner is laid over the prior but stays
   marked. A correction applies only as a whole word: its edges must be
   segmenter word boundaries, never inside a longer word; with no segmenter, the edges must be at non-Chinese
-  characters. One limit of this: ICU segments 我還|書, so a 還書 correction
-  doesn't apply there. A reading hint (§Reading hints) never overrides a
+  characters. ICU joins a pronoun to the character after it where no
+  word stands (我還|書, 我还|你|钱), so after a pronoun that begins a piece
+  the reader knows as no word (`looseStarts`: not in the library's
+  dictionary, the prior's tables or the common words), the boundary is
+  opened: a 還書 correction applies in 我還書. Only there: opening every
+  unknown piece let the prior's words fire inside real words (五行 in
+  第五行, 局长 in 公安局长时间). The CC-CEDICT sweep moved one reading, 还书
+  / 還書 (hái → huán) in all three readings, and broke none; PR #63's
+  everyday sets went from 261 to 263 of 276 words (还书, 还钱) and stayed
+  at 70 of 87 sentences. A reading hint (§Reading hints) never overrides a
   word settled by a person.
 - **The shared list** (`shared_readings`, `scripts/db/sharedReadings.ts`;
   docs/DATA.md §Mandarin readings). It is install-wide and holds a word, its
   reading, a scope (`all`, or `tw` for a Taiwan-only reading), a status and
   a source.
   - An admin's correction is active at once.
-  - A learner's or a recap's is a suggestion. It becomes active when an
-    admin confirms it, or when a learner and a recap agree on it.
+  - A learner's or a recap's is a suggestion, each a vote of one user
+    (`shared_reading_votes`): a recap's is its session owner's, so a
+    learner agreeing with the recap of their own session is one vote (their
+    own lines can steer that answer). It becomes active when an admin
+    confirms it, or when two different users have voted for it.
+  - A user adds at most 50 votes a day (`MAX_DAILY_VOTES`); past it their
+    corrections are still theirs but reach no one else.
+  - A reading already active is never touched by a vote (its
+    `updated_at` is the browsers' cache version).
   - The browser fetches the active list once a page
     (`GET /api/readings/shared`, with an ETag and a 304), never per word.
   - The admin page is the menu's **Shared readings**

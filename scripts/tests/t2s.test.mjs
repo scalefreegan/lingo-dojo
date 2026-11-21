@@ -224,7 +224,7 @@ test("SHARED_FORMS is what OpenCC's tables say, and mergedWith names the charact
 
 test("the correction list: each word reads as the dictionaries do, in both scripts", () => {
   const trad = {
-    嚣: "囂", 睡不着: "睡不著", 找不着: "找不著", 用不着: "用不著", 犯不着: "犯不著", 处理不当: "處理不當", 年轻有为: "年輕有為", 挨饿: "挨餓", 挨打: "挨打", 简单明了: "簡單明瞭", 北斗星: "北斗星", 北斗七星: "北斗七星",
+    嚣: "囂", 睡不着: "睡不著", 找不着: "找不著", 用不着: "用不著", 犯不着: "犯不著", 处理不当: "處理不當", 年轻有为: "年輕有為", 挨饿: "挨餓", 挨打: "挨打", 简单明了: "簡單明瞭", 北斗星: "北斗星", 北斗七星: "北斗七星", 还钱: "還錢", 还书: "還書", 还你: "還你",
   };
   assert.deepEqual(Object.keys(READING_FIXES).sort(), Object.keys(trad).sort());
   for (const [simp, want] of Object.entries(READING_FIXES)) {

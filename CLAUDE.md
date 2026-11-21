@@ -228,7 +228,9 @@ Mandarin readings (ld-4i2, migration 0015, docs/VOICE.md §Uncertain readings,
 docs/DATA.md §Mandarin readings):
 - **The mark.** An adult sees a dotted, labelled mark on a word whose reading
   the reader only guessed (`uncertainWords` in `web/src/script/zh.ts`:
-  about 1.8 marks per 100 words). Never in kids views.
+  about 1.4 marks per 100 words; common words read as CC-CEDICT reads
+  them, `zh-words.ts` from `npm run pinyin:words`, are not marked). Never
+  in kids views.
 - **The correction.** The character card's **This reading is wrong** or
   **This is right** (`ReadingFix.tsx`) saves the learner's choice per
   language profile, keyed by the word's simplified spelling
@@ -240,8 +242,12 @@ docs/DATA.md §Mandarin readings):
 - **The shared list** (`shared_readings`, every query in
   `scripts/db/sharedReadings.ts`) is install-wide.
   - An admin's entry is active at once. A learner's or a recap's is a
-    suggestion, active when an admin confirms it or when a learner and a
-    recap agree.
+    suggestion and a vote of one user (`shared_reading_votes`, migration
+    0016; a recap's is its session owner's), active when an admin
+    confirms it or when two different users vote for it; at most 50
+    votes a user a day.
+  - Only a choice made by hand ranks as the learner's own; a recap's
+    agreement with the reader only clears the mark.
   - The browser fetches `GET /api/readings/shared` once a page (with an
     ETag).
   - The admin page is the menu's **Shared readings**

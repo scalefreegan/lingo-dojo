@@ -24,6 +24,7 @@ import { TAIWAN_READINGS, isHan, isPinyin, isTaiwan, particleDe, taiwanize } fro
 import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
+import { COMMON_WORDS } from "./zh-words.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
@@ -53,6 +54,16 @@ export const READING_FIXES: Record<string, string> = {
   简单明了: "jiǎn dān míng liǎo", // 明了 alone would also catch 说明了 le
   北斗星: "běi dǒu xīng", // 北斗 alone would also catch 华北斗争 dòu
   北斗七星: "běi dǒu qī xīng",
+  // 还 huán, give back, before what is given back or to whom (PR #67
+  // review): huán is under 5% of 还's uses, so the prior reads hái, and
+  // ICU segments 我还|钱 so no word could settle it. CC-CEDICT reads 还书
+  // huán; no headword holds 还钱 or 还你 otherwise, and none ends in a 还
+  // read hái that these would join. A run that is 还 (still) + 钱/书/你 is
+  // rare beside give-back (我还钱不够, 他还书包: accepted). Not 还给: 给 is
+  // as often the preposition after 还 hái (我还给你做饭).
+  还钱: "huán qián",
+  还书: "huán shū",
+  还你: "huán nǐ",
 };
 
 /* --------------------------- the frequency prior -------------------------- */
@@ -204,6 +215,60 @@ function wordStarts(cps: string[]): boolean[] | null {
   starts[cps.length] = true;
   return starts;
 }
+/** Common words for the mark (zh-words.ts: CC-CEDICT words of a
+ *  character with two ordinary readings, read one way), by simplified
+ *  spelling. */
+const common = new Map<string, string[]>(
+  COMMON_WORDS.split("|")
+    .filter(Boolean)
+    .map((e) => {
+      const [w, r] = e.split("=");
+      return [w, r.split(" ")];
+    }),
+);
+
+/** Whether a run of characters (simplified) is a word the reader knows of:
+ *  a word of the library's dictionary (one segment: `joined` inside it),
+ *  of the prior's tables, or of the common words. */
+function knownWord(simp: string[], joined: boolean[], s: number, e: number): boolean {
+  const key = simp.slice(s, e).join("");
+  if (common.has(key) || prior.words.has(key) || prior.anywhere.has(key)) return true;
+  for (let k = s + 1; k < e; k++) if (!joined[k]) return false;
+  return !joined[e];
+}
+
+/** Personal pronouns ICU's dictionary joins to the character after them
+ *  where no word stands (我还|书, 我还|你|钱, 我要|还|钱). */
+const PRONOUNS = "我你他她它您咱";
+
+/**
+ * The segmenter's boundaries (wordStarts), opened after a pronoun that
+ * begins a piece of two or more Chinese characters that is no word the
+ * reader knows of (knownWord: 我还 is none, 我们 / 你好 are kept whole by
+ * 们 / the common words), so a whole-word entry or a correction can start
+ * on the character after it (还书 in 我还书). Only there: opening every
+ * unknown piece (第五|行, 公安局长|时间) let the prior's words fire across
+ * real words the reader's lists don't hold (五行 in 第五行, 局长 in
+ * 公安局长时间), measured on the PR #63 sentence sets. Null without a
+ * segmenter. Used where a word entry (the prior's `anywhere`) or a
+ * correction may start or end; the mark's words stay the segmenter's own.
+ */
+function looseStarts(cps: string[], simp: string[], starts: boolean[] | null, joined: boolean[]): boolean[] | null {
+  if (!starts) return null;
+  const out = starts.slice();
+  for (let s = 0; s < cps.length; ) {
+    let e = s + 1;
+    while (e < cps.length && !starts[e]) e++;
+    if (e - s >= 2 && PRONOUNS.includes(simp[s]) && simp[s + 1] !== "们" && cps.slice(s, e).every(isHan) && !knownWord(simp, joined, s, e)) out[s + 1] = true;
+    s = e;
+  }
+  return out;
+}
+
+/** Whether a common word's reading (a neutral tone written bare) is the
+ *  one read. */
+const sameReading = (want: string, got: string | null) => got != null && (want === got || (want === toneless(want) && toneless(got) === want));
+
 const cache = new Map<string, Detail>();
 const CACHE_MAX = 4000;
 
@@ -278,12 +343,16 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     }
     dict = settled.slice();
     starts = wordStarts(cps);
-    applyPrior(cps, simp, liao, { joined, dict, starts }, out, settled);
+    // Where a word entry or a correction may start or end: the segmenter's
+    // boundaries, and inside a piece of it that is no word anyone knows
+    // (looseStarts: 我还|书 lets 还书 apply).
+    const edges = looseStarts(cps, simp, starts, joined);
+    applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
-    if (fixes) fixed = applyCorrections(cps, simp, { joined, starts }, fixes, tw, out, settled);
+    if (fixes) fixed = applyCorrections(cps, simp, { joined, starts: edges }, fixes, tw, out, settled);
   }
   const detail = { readings: out, settled, dict, joined, starts, fixed };
   if (!useCache) return detail;
@@ -438,6 +507,24 @@ export function uncertainWords(text: string, locale: string, opts: ReadOpts = {}
   const unsure = cps.map((_, k) => unsureAt(cps, d, k));
   if (!unsure.some(Boolean)) return [];
   const words = hanWords(cps, d);
+  // A common word (zh-words.ts) standing between word boundaries of the
+  // segmenter (one of its words, or several: ICU splits the traditional
+  // 再|見) and read as CC-CEDICT reads it is settled: the library's
+  // dictionary leaves out every word read by default (再见, 当然, 教练).
+  const edge = (k: number) => (d.starts ? d.starts[k] : true);
+  for (const [s0] of words) {
+    for (let s = s0; s < cps.length && isHan(cps[s]); s++) {
+      if (!edge(s)) continue;
+      for (let e = Math.min(cps.length, s + 4); e >= s + 2; e--) {
+        if (!edge(e) || !cps.slice(s, e).every(isHan)) continue;
+        const r = common.get(cps.slice(s, e).map(simplified).join(""));
+        if (!r || r.length !== e - s || !r.every((x, n) => sameReading(x, d.readings[s + n]))) continue;
+        for (let k = s; k < e; k++) unsure[k] = false;
+        break;
+      }
+    }
+  }
+  if (!unsure.some(Boolean)) return [];
   const out: UnsureWord[] = [];
   for (let w = 0; w < words.length; w++) {
     if (!unsure.slice(words[w][0], words[w][1]).some(Boolean)) continue;

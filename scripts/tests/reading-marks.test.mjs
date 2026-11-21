@@ -44,7 +44,7 @@ test("what is marked: a word no dictionary word settled, with a character of two
   assert.deepEqual(marked("住一宿"), ["一宿"]);
   assert.deepEqual(marked("他长着大眼睛"), ["长着"]);
   assert.deepEqual(marked("我的头发有点干。"), ["有点干"], "no word after it: the one before");
-  assert.deepEqual(marked("停车场很窄"), ["停车场"], "a function word after it (很): the one before");
+  assert.deepEqual(marked("他量很大"), ["他量"], "a function word after it (很): the one before");
   assert.deepEqual(marked("房间在五楼，第五行的那个门。"), ["第五行"]);
   // The reader's own mistakes are among them (得 after a verb is de).
   assert.deepEqual(marked("你问得很好"), ["问得"]);
@@ -141,4 +141,35 @@ test("validateCorrection: two to eight Chinese characters, one real reading each
   assert.equal(zh.wordAt("他在银行工作", "zh-CN", 3).word, "银行");
   assert.equal(zh.wordAt("他在银行工作", "zh-CN", 3).unsure, false);
   assert.equal(zh.wordAt("好！", "zh-CN", 0), null);
+});
+
+test("common words read as CC-CEDICT reads them are not marked (PR #67 review), in a segmenter word or across its split; the real catches stay", () => {
+  // The library's dictionary leaves out every word read by default; the
+  // common-word list (zh-words.ts) settles them where the reader agrees.
+  for (const [t, loc] of [["再见", "zh-CN"], ["再見", "zh-TW"], ["你好再見", "zh-TW"], ["当然可以", "zh-CN"], ["當然可以", "zh-TW"], ["我的教练", "zh-CN"], ["没关系", "zh-CN"]]) assert.deepEqual(marked(t, loc), [], t);
+  assert.deepEqual(marked("你得去银行"), ["得去"]);
+  assert.deepEqual(marked("我得走了"), ["得走了"]);
+  assert.deepEqual(marked("她长着大眼睛"), ["长着"]);
+  // The session corpus: down from 1.80 / 1.63 per 100.
+  assert.ok(rate(SESSION_LINES, "zh-CN").per100 < 1.5);
+  assert.ok(rate(SESSION_LINES.map(toTw), "zh-TW").per100 < 1.5);
+});
+
+test("还 giving back is huán (PR #67 review); a correction starts after a pronoun ICU joined to it, never across a real word", () => {
+  const at = (t, k, loc = "zh-CN") => zh.readCodePoints(t, loc, { cache: false })[k];
+  assert.equal(at("我还钱", 1), "huán");
+  assert.equal(at("我要还钱", 2), "huán");
+  assert.equal(at("你还书了吗", 1), "huán");
+  assert.equal(at("我還你錢", 1, "zh-TW"), "huán");
+  // 还 still: untouched.
+  for (const [t, k] of [["我还有钱", 1], ["我还给你做饭", 1], ["他还在", 1], ["还是你", 0]]) assert.equal(at(t, k), "hái", t);
+  // ICU segments 我还|书: a correction of 还书 applies there all the same.
+  assert.deepEqual([...seg.segment("我还书")].map((s) => s.segment), ["我还", "书"]);
+  const fix = zh.makeCorrections({ mine: [{ word: "还书", reading: "hái shū" }] });
+  assert.equal(zh.readCodePoints("我还书", "zh-CN", { cache: false, corrections: fix })[1], "hái");
+  // Only after a pronoun: 第五|行 and 公安局长|时间 stay closed.
+  const wuxing = zh.makeCorrections({ mine: [{ word: "五行", reading: "wǔ xíng" }] });
+  assert.equal(zh.readCodePoints("第五行写错了", "zh-CN", { cache: false, corrections: wuxing })[2], "háng");
+  assert.equal(zh.readCodePoints("第五行写错了", "zh-CN", { cache: false })[2], "háng");
+  assert.equal(zh.readCodePoints("公安局长时间加班", "zh-CN", { cache: false })[3], "cháng");
 });

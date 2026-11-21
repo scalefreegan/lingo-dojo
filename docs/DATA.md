@@ -3822,9 +3822,15 @@ shared_readings       install-wide; no personal data but the two user ids
   status         active | suggested
   source         admin | user | recap (who first suggested it)
   by_user, by_recap   a learner, and a recap, suggested this reading
-  suggested_by, confirmed_by   users, ON DELETE SET NULL (admin view only)
+  suggested_by, confirmed_by   users, ON DELETE SET NULL (admin view only;
+                 a recap's suggestion names its session's owner)
   created_at, updated_at
   unique (key, scope, reading); one active row per (key, scope)
+shared_reading_votes  (migration 0016, PR #67 review) who stands behind it
+  shared_reading_id (→ shared_readings, cascade), user_id (→ users, cascade)
+  source         user | recap (a recap: its conversation owner's vote)
+  created_at     (indexed with user_id: the daily cap)
+  PK (shared_reading_id, user_id): one vote per user per entry
 shared_reading_uses   the admin view's 30-day count
   conversation_id PK (→ conversations, cascade), changed, counted_at
 ```
@@ -3839,9 +3845,15 @@ The rules:
 - **When a shared entry is active** (`propose`, `confirm`, `remove`).
   - An admin's correction is active at once, and demotes the active row
     for the same word and scope.
-  - A learner's correction sets `by_user`, and a recap's sets `by_recap`.
-    With both set and nothing active for that word, it becomes active.
+  - A learner's correction or confirmation, and a recap's answer, is a
+    vote of one user (the recap's: its conversation owner's). With votes
+    from two different users and nothing active for that word, it becomes
+    active. A learner and the recap of their own session are one vote.
   - An admin's confirm activates it.
+  - A user adds at most 50 votes in 24 hours (`MAX_DAILY_VOTES`,
+    `SharedLimitError`: their own correction is kept, nothing shared).
+  - A vote for a row already active changes nothing on it (`updated_at`
+    is the active list's version).
   - The list holds at most 20,000 rows (`SharedFullError`).
 - **What reaches the browser.**
   - The active list goes to any logged-in user (`activeList`; versioned
@@ -3853,7 +3865,8 @@ The rules:
   phrases of that language profile that hold the word, and sets
   `phrases.reading` where it changed (§Phrase bank, migration 0014).
 - **Tests.**
-  - `scripts/tests/db-migration-0015.test.mjs`: the migration.
+  - `scripts/tests/db-migration-0015.test.mjs` and
+    `scripts/tests/db-migration-0016.test.mjs`: the migrations.
   - `scripts/tests/readings.http.test.mjs`: the routes and the shared
     list's paths.
   - `scripts/tests/recap-readings.http.test.mjs`: the recap's writes.
