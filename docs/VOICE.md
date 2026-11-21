@@ -580,6 +580,155 @@ keeps, the rule text and its switch),
 languages, kids), `scripts/tests/pronunciation.http.test.mjs` (the tone
 check's `reading`), `scripts/tests/db-migration-0014.test.mjs`.
 
+### Uncertain readings (ld-4i2)
+
+The reader is sometimes guessing. When it is, an adult learner sees a quiet
+mark on the word, can correct it, and the correction makes later readings
+better: for them at once, for everyone once it is confirmed. The recap
+call, which runs once per session already, also reads the session's
+uncertain words in context.
+
+- **The mark's definition** (`uncertainWords` in `web/src/script/zh.ts`).
+  A word is marked when one of its characters meets all of these:
+  - its reading came from the frequency prior or the fallback, not from a
+    dictionary word, a rule or a person;
+  - the character has a second ordinary reading, other than the neutral
+    tone of the same syllable;
+  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
+    simplified form). The reader's context rules settle these characters
+    almost always, and marking them made up most of the noise.
+
+  The unit marked is the segmenter's word. A single character joins the
+  word after it (得去, 长着, 倒车), or the word before when there is no next
+  word or the next word starts with a function word (有点干; 停车场, not
+  场很). A word with no Chinese neighbour, or one longer than 8 characters,
+  is not marked.
+- **Measured** (2026-11-21, `scripts/tests/reading-marks.test.mjs`, about
+  100 hand-written dojo-master lines across 10 scenes,
+  `scripts/tests/zh-session-corpus.mjs`; not the real database).
+  - With every character of two or more usual readings marked: 9.2 marks
+    per 100 words.
+  - With the definition above: **1.80 per 100 in simplified** (17 in 946
+    words) and **1.63 per 100 in traditional** (15 in 921). The test holds
+    both at or under 2.
+  - Marked: 得去, 倒车, 一宿, 长着, 长时间, 当然, 教练, 有点干, 量一下. Some of
+    these are real misreadings it catches: 问得, 得很 and 得严重 read dé
+    where it should be de; zh-TW 抽空 read kōng.
+  - Not marked: 还书, because huán is under 5% of 还's uses (a rare reading
+    is not a second ordinary one). Also not marked are the dictionary words
+    银行, 第五行 (in most lines), 一行人 and, in simplified, 抽空.
+  - The adversarial `EVERYDAY_SENTENCES` set, written to trip the reader,
+    marks 8.8 per 100 (CN) and 7.8 (TW).
+  - Revert check: emptying `CONTEXT_SETTLED` gives 8.67 per 100 and fails
+    the rate tests.
+- **Where it shows**, adults only (`useRuby` gives no marks when the
+  `ScriptContext` is kids). It shows wherever pinyin or zhuyin is shown: the
+  transcript, the Phrase bank, Practice's answer sides and the recap. The
+  mark is not colour alone: a dotted line under the reading (`ld-ruby-unsure`)
+  and an accessible label ("reading uncertain in 得去, check it"). Where the
+  text is not already a button, the mark is a button (`check`) that opens
+  the character card.
+- **The control** (`web/src/components/ReadingFix.tsx`, on the character
+  card under the character's readings; also in the recap's "Readings to
+  check"). It works on the word holding the tapped character (`wordAt`).
+  - **This reading is wrong** offers each character's real readings
+    (`charReadings`), one syllable at a time.
+  - **This is right** confirms the reader's reading.
+  - The choice is saved through `POST /api/readings` (`learner: true`;
+    kids 403; a language other than Mandarin 400; the word and reading
+    checked by `validateCorrection`: 2–8 Chinese characters, one real
+    reading per character).
+  - It is kept per language profile, keyed by the word's simplified
+    spelling (`reading_corrections`, docs/DATA.md §Mandarin readings), so a
+    word that is not in the bank is handled the same way: no bank phrase is
+    made for it.
+  - Every bank phrase holding the word is read again with it, and
+    `phrases.reading` is set where the reading changed.
+  - The browser lays the learner's list over every text at once
+    (`setCorrections`). A corrected or confirmed word loses its mark.
+- **Ranks** (`applyCorrections`, after the reader's own rules):
+  1. the learner's own choice;
+  2. the shared list's active entries;
+  3. the library's dictionary words;
+  4. the prior.
+
+  A recap's suggestion for this learner is laid over the prior but stays
+  marked. A correction applies only as a whole word: its edges must be
+  segmenter word boundaries, never inside a longer word; with no segmenter, the edges must be at non-Chinese
+  characters. One limit of this: ICU segments 我還|書, so a 還書 correction
+  doesn't apply there. A reading hint (§Reading hints) never overrides a
+  word settled by a person.
+- **The shared list** (`shared_readings`, `scripts/db/sharedReadings.ts`;
+  docs/DATA.md §Mandarin readings). It is install-wide and holds a word, its
+  reading, a scope (`all`, or `tw` for a Taiwan-only reading), a status and
+  a source.
+  - An admin's correction is active at once.
+  - A learner's or a recap's is a suggestion. It becomes active when an
+    admin confirms it, or when a learner and a recap agree on it.
+  - The browser fetches the active list once a page
+    (`GET /api/readings/shared`, with an ETag and a 304), never per word.
+  - The admin page is the menu's **Shared readings**
+    (`SharedReadingsView.tsx`, `/api/readings/admin/*`, all
+    `auth: "admin"`). It offers confirm, remove, the count of readings the
+    list changed in the last 30 days (`shared_reading_uses`, counted per
+    session at its recap) and a YAML or JSON export. The export holds only
+    words, readings and scopes, never who suggested them.
+- **The recap reads them** (`web/server/extraction.ts`, pure parts in
+  `scripts/extraction.mjs` and `web/server/readings.ts`).
+  - For a Mandarin session, `uncertainInTranscript` collects the dojo
+    master's uncertain words: never the learner's, and none that a person
+    already settled for this learner. That is at most 12 words
+    (`MAX_RECAP_READINGS`), each with the line it came from.
+  - The recap prompt gains a `readings` field, a rule and a "WORDS TO READ"
+    list. With no words, or in another language, **the prompt is byte for
+    byte what it was** (a test).
+  - Each answer is checked by `validateHint`, or it is dropped. A syllable
+    written without a tone keeps the character's neutral reading where it
+    has one (问得 "wèn de" differs from the reader's wèn dé and never
+    confirms it).
+  - An answer that **differs** from the reader becomes this learner's
+    suggestion: shown, still marked, and never replacing a choice made by
+    hand. It also becomes the shared list's suggestion and updates the
+    reading of the learner's bank phrases that hold the word.
+  - An answer that **agrees** confirms the word for this learner.
+  - The card shows **Readings to check**, the words still uncertain, each in
+    its line with the same control. Adults only: a kids learner's recap may
+    settle readings, but the child is shown none.
+  - Live turns are unchanged.
+  - One log line per recap gives the counts only.
+
+**Measured, the recap** (2026-11-21). The runs used the app's own prompt
+and checks with `claude-sonnet-5-5`, `--tools ""`. There were 10 runs: 8
+with words to read and 2 paired baselines without. The transcripts were
+hand-written and seeded with 还书, 你得去, 倒车, 一宿, 长着, 穿着, 一行, 还钱,
+第五行 and 抽空, in four scenes, each in simplified and traditional.
+- 26 words were offered and 26 answered. All 26 passed the checks; none
+  were dropped.
+- **14 differed from the reader, and all 14 are right** (CC-CEDICT and
+  plain usage): 得去 děi qù ×4, 倒车 dào chē ×2, 一宿 yī xiǔ ×2, 长着 zhǎng
+  zhe ×2, 问得 wèn de ×2 and 得很 de hěn ×2.
+- The 12 that agreed are right too (第五行 háng, 有点干 gān, 停车场, 很长).
+- Before the neutral-tone fix, validateHint had snapped "wèn de" to the
+  reader's dé, which would have confirmed 4 wrong readings. That is fixed
+  and has a test.
+- The seeds that weren't asked about: 还书 and 还钱 (huán is rare, so not
+  marked), 穿着, 一行 and 抽空 (settled by the dictionary).
+- Cost: about +500 to 600 prompt characters and about +250 input tokens
+  (3,284 → 3,552 on average, against the 2 baselines). The runs cost about
+  1.4¢ each, against 1.6¢ for the baselines: output tokens vary more
+  between runs than the readings add.
+- **It earns its place.** In these sessions it corrected the reader's two
+  most common errors (得 as dé, and 长 or 倒 by meaning) without anyone
+  tapping anything.
+
+Tests: `scripts/tests/reading-marks.test.mjs` (the definition, the rate,
+ranks, whole-word application, `validateCorrection`, `wordAt`),
+`scripts/tests/readings.http.test.mjs` (the routes, admin 403s, suggestion
+→ active, export, stale_learner, kids), `scripts/tests/recap-readings.test.mjs`
+(the prompt unchanged, parsing, judging),
+`scripts/tests/recap-readings.http.test.mjs` (the recap end to end, kids,
+other languages), `scripts/tests/db-migration-0015.test.mjs`.
+
 ### Streaming the reply (ld-erp)
 
 A whole reply takes about 4 s to write; the Go tab no longer waits for it.

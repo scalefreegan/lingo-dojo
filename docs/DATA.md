@@ -3798,6 +3798,66 @@ Tests:
 - `scripts/tests/db-migration-0011.test.mjs` and
   `scripts/tests/db-migration-0012.test.mjs`: the migrations.
 
+## Mandarin readings (ld-4i2, migration 0015)
+
+The learner's corrections of the reader and the install-wide shared list
+(docs/VOICE.md §Uncertain readings for the behaviour). Migration
+`0015_mandarin_readings` was generated, not hand-edited, and runs on
+PostgreSQL 17.
+
+```
+reading_corrections   one learner's choice per word, per language profile
+  learner_id, language_profile_id   (composite FK → language_profiles, cascade)
+  key            the word's simplified spelling (zh.ts correctionKey)
+  word           as it was written
+  reading        space-separated pinyin with tone marks, one per character
+  kind           corrected | confirmed | suggested
+  source         user | recap
+  created_at, updated_at
+  PK (language_profile_id, key)
+  check by_hand: a correction is a person's (source user), never a recap's
+shared_readings       install-wide; no personal data but the two user ids
+  id, key, word, reading
+  scope          all | tw (a reading only Taiwan uses)
+  status         active | suggested
+  source         admin | user | recap (who first suggested it)
+  by_user, by_recap   a learner, and a recap, suggested this reading
+  suggested_by, confirmed_by   users, ON DELETE SET NULL (admin view only)
+  created_at, updated_at
+  unique (key, scope, reading); one active row per (key, scope)
+shared_reading_uses   the admin view's 30-day count
+  conversation_id PK (→ conversations, cascade), changed, counted_at
+```
+
+The rules:
+- **Who reads and writes what.**
+  - `reading_corrections` goes through `forLanguageProfile`
+    (`scripts/db/readings.ts`).
+  - A recap writes only `suggested` or `confirmed` rows, and only over its
+    own (`saveRecapReading`): a person's choice always stands.
+  - Every query on the shared list is in `scripts/db/sharedReadings.ts`.
+- **When a shared entry is active** (`propose`, `confirm`, `remove`).
+  - An admin's correction is active at once, and demotes the active row
+    for the same word and scope.
+  - A learner's correction sets `by_user`, and a recap's sets `by_recap`.
+    With both set and nothing active for that word, it becomes active.
+  - An admin's confirm activates it.
+  - The list holds at most 20,000 rows (`SharedFullError`).
+- **What reaches the browser.**
+  - The active list goes to any logged-in user (`activeList`; versioned
+    as count.max-updated, with an ETag).
+  - The admin view adds usernames.
+  - The export (`exportActive`, YAML or JSON) has only word, reading and
+    scope.
+- **Phrases.** A correction or a recap's suggestion rereads the bank
+  phrases of that language profile that hold the word, and sets
+  `phrases.reading` where it changed (§Phrase bank, migration 0014).
+- **Tests.**
+  - `scripts/tests/db-migration-0015.test.mjs`: the migration.
+  - `scripts/tests/readings.http.test.mjs`: the routes and the shared
+    list's paths.
+  - `scripts/tests/recap-readings.http.test.mjs`: the recap's writes.
+
 ## Docs to update as phases land
 
 - `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user
