@@ -508,9 +508,12 @@ export function listVoices(provider: TtsProvider, locale: string, signal?: Abort
 /** A WAV recording → what the learner said. `locales` are candidates (Azure
  *  uses them; ElevenLabs detects the language itself). */
 /** `locales[0]` is the target language the speech is taken to be in;
- *  `terms` are target phrases to expect (the server trims them to keyterms). */
-export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal, terms: string[] = []): Promise<TranscribeReply> {
+ *  `terms` are target phrases to expect (the server trims them to keyterms).
+ *  `conversationId` lets the server add the scene's own vocab and the
+ *  learner's recent phrases (it reads them itself; nothing else is sent). */
+export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal, terms: string[] = [], conversationId?: string): Promise<TranscribeReply> {
   const q = new URLSearchParams({ locales: locales.join(",") });
+  if (conversationId) q.set("conversation", conversationId);
   for (const t of terms) q.append("term", t);
   return whenFree(() => req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal }), signal);
 }

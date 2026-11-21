@@ -1026,8 +1026,11 @@ export function elevenTranscribeRequest({ key, audio, mime = "audio/wav", langua
   };
 }
 
-/** Scribe's keyterm limits: 100 terms, each at most 5 words and under 50
- *  characters. */
+/** Scribe's keyterm limits (ElevenLabs speech-to-text API reference, the
+ *  `keyterms` form field): each term at most 50 characters and 5 words, none
+ *  containing < > { } [ ] or a backslash, at most 1000 terms; over 100
+ *  terms the request has a 20 s minimum billable duration, and any keyterms
+ *  add a 20% surcharge, so we stay at 100. */
 export const MAX_KEYTERMS = 100;
 const KEYTERM_WORDS = 5;
 const KEYTERM_CHARS = 49;
@@ -1044,6 +1047,7 @@ export function keytermsFrom(phrases, max = MAX_KEYTERMS) {
     // A long phrase is still vocabulary worth hinting: take it in runs of
     // five words rather than dropping it.
     const pieces = String(phrase)
+      .replace(/[<>{}[\]\\]/g, " ")
       .split(/[.,;:!?¿¡…。！？、，"“”()]+/)
       .flatMap((p) => {
         const words = p.trim().split(/\s+/).filter(Boolean);

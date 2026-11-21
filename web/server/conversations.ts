@@ -10,6 +10,7 @@ import { hiddenSet } from "../../scripts/db/hidden.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
+import { scenarioKeyterms } from "../../scripts/keyterms.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
 import { storedReviewIds } from "../../scripts/recall.mjs";
 import { carryFrom, linkable, sceneKey, storedRevisit } from "../../scripts/revisit.mjs";
@@ -745,4 +746,23 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
   if (req.method === "GET") return get(req, res, ctx, id.toLowerCase());
   if (req.method === "DELETE") return remove(res, ctx, id.toLowerCase());
   methodNotAllowed(res, "GET, DELETE");
+}
+
+/**
+ * The scenario vocab of a conversation's scene, as Scribe keyterms (ld-7q4):
+ * read from the server's own record, never the client's. The scenario is the
+ * one the conversation stored when it was made (`scenario_id`, which for a
+ * random scene is the scenario that was drawn), looked up in the library, so
+ * a client can send nothing but the id. A read only: unlike openConversation
+ * it neither ends an idle session nor refuses an ended one, since a late
+ * transcription is still worth hinting. An unknown id, an unknown or other-
+ * language scenario, or a scene with no vocab is simply no terms.
+ */
+export async function conversationKeyterms(ctx: LearnerCtx, id: string, mode: Mode): Promise<string[]> {
+  const conv = await profileRows(ctx.language).get(conversations, eq(conversations.id, id));
+  if (!conv?.scenarioId) return [];
+  const scenario = loadContent(modeRoot(mode)).scenarios.find((s) => s.id === conv.scenarioId);
+  const lang = bankLocale(ctx.language, conv);
+  // null: the conversation practised another language than the profile's.
+  return lang == null ? [] : scenarioKeyterms(scenario, lang || null);
 }
