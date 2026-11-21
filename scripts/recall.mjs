@@ -392,13 +392,76 @@ const STOPWORDS = new Set(
     .split(" "),
 );
 
-/** The date window a query names, as [from, to) in ms, or null. English
- *  words only (the adapter asks for the query in plain English words or the
- *  learner's own). Generous on purpose: "last week" covers the past 14
- *  days, since a learner saying it on a Monday may mean either week. */
+/** The machine form of a window, language-independent: `since=14d` (that
+ *  many whole calendar days back from the start of today, server local time,
+ *  like the English phrases) or `since=2026-11-01` (a time after the date is
+ *  ignored), optionally with `until=2026-11-08` (an exclusive day), anywhere
+ *  in the query (the adapter asks for `LOOKUP: <words> | since=7d`). The
+ *  dojo master may write the words in any language, so the window must not
+ *  depend on them. Matched on the NFKC form with every script's digits as
+ *  0-9 (full-width, Arabic-Indic), spaces around `=` allowed. */
+const DATE = String.raw`(\d{4})-(\d{2})-(\d{2})(?:t[\d:.+z-]*)?`;
+const SINCE_RE = new RegExp(String.raw`\bsince\s*=\s*(?:(\d{1,4})d|${DATE})(?![\w-])`, "i");
+const UNTIL_RE = new RegExp(String.raw`\buntil\s*=\s*${DATE}(?![\w-])`, "i");
+/** Both clauses, valid or not, for dropping them from the search terms. */
+const WINDOW_CLAUSE_RE = /\s*\|?\s*\b(?:since|until)\s*=\s*[^\s|,;]*/gi;
+
+/** NFKC, with each decimal digit of any script as its ASCII digit. */
+function asciiDigits(s) {
+  return String(s ?? "")
+    .normalize("NFKC")
+    .replace(/\p{Nd}/gu, (c) => {
+      const cp = c.codePointAt(0);
+      let z = cp;
+      while (/\p{Nd}/u.test(String.fromCodePoint(z - 1))) z--;
+      return String((cp - z) % 10);
+    });
+}
+
+export const stripWindowClause = (query) => asciiDigits(query).replace(WINDOW_CLAUSE_RE, " ").replace(/\s+/g, " ").trim();
+
+/** A real local calendar day's midnight in ms, or null (2026-02-30 is none). */
+function localDay(y, m, d) {
+  const t = new Date(Number(y), Number(m) - 1, Number(d));
+  return t.getFullYear() === Number(y) && t.getMonth() === Number(m) - 1 && t.getDate() === Number(d) ? t.getTime() : null;
+}
+
+/** The machine-form window, or null when there is none or it is junk
+ *  (since=0d, a day that doesn't exist, an end before the start). An
+ *  invalid `until` is dropped: the window stays open to now. */
+function machineWindow(query, end) {
+  const q = asciiDigits(query);
+  const m = q.match(SINCE_RE);
+  if (!m) return null;
+  let from;
+  if (m[1] != null) {
+    const n = Number(m[1]);
+    if (n < 1) return null;
+    const d = new Date(end);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - n);
+    from = d.getTime();
+  } else {
+    from = localDay(m[2], m[3], m[4]);
+    if (from == null) return null;
+  }
+  const u = q.match(UNTIL_RE);
+  const to = u ? localDay(u[1], u[2], u[3]) : null;
+  const upper = to != null ? Math.min(to, end) : end;
+  return upper > from ? [from, upper] : null;
+}
+
+/** The date window a query names, as [from, to) in ms, or null. The machine
+ *  form (`since=7d`) first, whatever language the words are in; then the
+ *  English words (yesterday, last week...) that earlier turns and a model
+ *  that ignores the rules still write. Generous on purpose: "last week"
+ *  covers the past 14 days, since a learner saying it on a Monday may mean
+ *  either week. */
 export function lookupWindow(query, now) {
-  const q = fold(query);
   const end = ms(now);
+  const machine = machineWindow(query, end);
+  if (machine) return machine;
+  const q = fold(query);
   const startOfDay = (() => {
     const d = new Date(end);
     d.setHours(0, 0, 0, 0);
@@ -421,7 +484,7 @@ export function lookupWindow(query, now) {
  *  to find 市场 by. */
 export function lookupTerms(query) {
   const out = [];
-  for (const w of words(query)) {
+  for (const w of words(stripWindowClause(query))) {
     const chars = [...w];
     if (UNSPACED_CHAR.test(chars[0])) {
       if (chars.length <= 2) out.push(w);

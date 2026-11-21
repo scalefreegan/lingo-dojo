@@ -1388,8 +1388,13 @@ Examples: "what did I learn last week about the market?", or wanting to
 reference a past session.
 
 ```
-LOOKUP: market phrases from last week
+LOOKUP: market phrases | since=7d
 ```
+
+The window is a fixed machine form, so it does not depend on the language the
+dojo master writes the words in (`since=<N>d`, or `since=YYYY-MM-DD` with an
+optional `until=YYYY-MM-DD`, exclusive; the voice rules in `scripts/voice.mjs`
+say so). English date words still work as before (below).
 
 The server runs that query against the phrases and the conversation summaries
 (trigram, plus a date window when the query names one). It then reruns the
@@ -1527,9 +1532,13 @@ recap's offered list, LOOKUP), the turn route in `web/server/voice.ts`,
   `skipped`). A query names phrases by their words, or by a content word
   (stopwords such as "phrases", "learn", "last" and numbers out; an
   unspaced run split into bigrams) found in a phrase's words, meaning or
-  note, or a session's title or summary; English date words give a window
+  note, or a session's title or summary; a window is the
+  language-independent `since=<N>d` / `since=YYYY-MM-DD` [`until=YYYY-MM-DD`]
+  clause (first; junk such as `since=0d` or a day that does not exist is
+  ignored; the clause is never a search term), else English date words
   ("today", "yesterday", "this week" 7 days, "last week" 14, "this month"
-  31, "last month" 62, "last N days", "N days ago"). A query of date words
+  31, "last month" 62, "last N days", "N days ago"; other languages' words
+  get no window by themselves, hence the clause). A query of date words
   alone gives the most recent in the window. At most 8 phrases and 3
   sessions. The reply's duration and cost are both calls'. The reply's
   turn row records `lookup` jsonb: `{query, phraseIds, conversationIds,

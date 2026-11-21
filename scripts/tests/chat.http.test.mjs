@@ -215,3 +215,22 @@ test("a kids learner's run is marked kids: the MCP leaves out the child's words,
   const system = valuesOf(fake.lastArgs(), "--append-system-prompt")[0];
   assert.match(system, /Pip is a child\. Their transcripts leave out what they said on purpose/);
 });
+
+test("the prompt and the Edit/Write scope name the real content root, not content/ (ld-kli)", async () => {
+  const { c } = await admin();
+  await send(c);
+  const args = fake.lastArgs();
+  const rel = path.relative(REPO_ROOT, FIXTURE).split(path.sep).join("/");
+  assert.notEqual(rel, "content", "the fixture must differ from the default for this to prove anything");
+  const system = valuesOf(args, "--append-system-prompt")[0];
+  assert.ok(system.includes(`It lives under ${rel}/ in this repository`), "names the root");
+  assert.ok(system.includes(`${rel}/schema.yaml`), "the file list is under the root");
+  assert.ok(system.includes(`only under ${rel}/. Your tools`), "the rule names the root");
+  assert.ok(system.includes(`${rel}/kids/ is kids mode`));
+  // No bare "content/" left except as part of the real root's own path.
+  assert.doesNotMatch(system.replaceAll(`${rel}/`, ""), /\bcontent\//);
+  // And it is the very directory the grants allow.
+  assert.ok(valuesOf(args, "--allowedTools").includes(`Edit(//${FIXTURE.slice(1)}/**)`));
+  // The bank section's public-repo warning names it too.
+  assert.ok(system.includes(`${rel}/ is committed to a public git repository`));
+});

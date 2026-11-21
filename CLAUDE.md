@@ -185,7 +185,7 @@ and taps its picture.
   disable | enable`; the app's only sign-up is the first-run screen while
   there are no users.
 - The embedded agent spawns headless `claude -p` with your Claude Code login (no
-  API key). It may Read the repo and Write/Edit **only under `content/`**. After
+  API key). It may Read the repo and Write/Edit **only under `content/`**. (the real content root, `LINGO_CONTENT_DIR` included: the prompt's paths and the grants both come from `contentRoot()`, `contentRel()` in `web/server/chat.ts`) After
   every agent turn the server commits any `content/` change (`agent: <summary>`)
   so it can be reverted with git. Agents never touch `web/`, `scripts/`, or `.beads/`.
   With a learner picked, a run also gets the bank MCP (`bankAccess` in

@@ -308,3 +308,77 @@ test("the recap's prompt names the phrases the session offered for review, or th
   const due = extractionPrompt({ transcript: [], nativeLanguage: "English", targetVariant: "Mexican Spanish", duePhrases: ["la vuelta"] });
   assert.match(due.user, /^PHRASES DUE THIS SESSION \(due for review in the learner's bank; the coach was not given them/);
 });
+
+test("lookupWindow: the machine form (since=Nd, since=date, until=date) in any language; junk falls through; English still works (ld-uiq)", () => {
+  const day = 86_400_000;
+  // N whole calendar days back from the start of today, server local time.
+  const back = (n, at = NOW) => {
+    const d = new Date(at);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - n);
+    return d.getTime();
+  };
+  const win = (q, at = NOW) => lookupWindow(q, at);
+  // The words are in the learner's language: only the clause carries the window.
+  for (const q of ["mercado | since=7d", "市场 | since=7d", "Markt | since=7d", "السوق | since=7d", "la semana pasada mercado since=7d"]) {
+    assert.deepEqual(win(q), [back(7), NOW.getTime()], q);
+  }
+  // The machine form wins over an English phrase beside it.
+  assert.deepEqual(win("market last week | since=3d"), [back(3), NOW.getTime()]);
+  const since = win("mercado | since=2026-05-01");
+  assert.equal(since[0], new Date(2026, 4, 1).getTime());
+  assert.deepEqual(win("mercado | since=2026-05-01 until=2026-05-08"), [new Date(2026, 4, 1).getTime(), new Date(2026, 4, 8).getTime()]);
+  // Junk: no window from it.
+  for (const q of ["x | since=0d", "x | since=abc", "x | since=2026-02-30", "x | since=7days", "x | since=", "x | since=2026-05-01 until=2026-04-01"]) {
+    assert.equal(win(q), null, q);
+  }
+  // The old English forms are unchanged.
+  assert.deepEqual(win("market phrases from last week"), [NOW.getTime() - 14 * day, NOW.getTime()]);
+  assert.deepEqual(win("the last 3 days"), [NOW.getTime() - 4 * day, NOW.getTime()]);
+  assert.equal(win("yesterday | since=0d")[1] - win("yesterday | since=0d")[0], day);
+  // The clause is not a search term.
+  assert.deepEqual(lookupTerms("mercado | since=7d"), ["mercado"]);
+  assert.deepEqual(lookupTerms("上周市场 | since=14d until=2026-05-08"), ["上周", "周市", "市场"]);
+});
+
+test("since=1d is today and yesterday whole, as the English words are: 09:00 finds a session from 08:00 yesterday (PR #57 review)", () => {
+  const at = new Date(2026, 10, 21, 9, 0, 0);
+  const yest8 = new Date(2026, 10, 20, 8, 0, 0).getTime();
+  const [from, to] = lookupWindow("market | since=1d", at);
+  assert.ok(yest8 >= from && yest8 < to);
+  const [yf, yt] = lookupWindow("yesterday market", at);
+  assert.ok(yest8 >= yf && yest8 < yt);
+  assert.equal(from, new Date(2026, 10, 20).getTime());
+  // The rules text maps last week to the same 14 days the English phrase covers.
+  assert.equal(lookupWindow("m | since=14d", at)[0], new Date(2026, 10, 7).getTime());
+  assert.equal(lookupWindow("m | since=62d", at)[0], new Date(2026, 8, 20).getTime());
+});
+
+test("the machine window: full-width and Arabic-Indic digits, spaces around =, ISO with a time, no junk terms (PR #57 review)", () => {
+  const w7 = lookupWindow("mercado | since=7d", NOW);
+  assert.deepEqual(lookupWindow("市场｜since=７d", NOW), w7);
+  assert.deepEqual(lookupWindow("سوق | since=٧d", NOW), w7);
+  assert.deepEqual(lookupWindow("mercado Since = 7d", NOW), w7);
+  assert.deepEqual(lookupWindow("mercado | since=2026-11-01T00:00Z", NOW), lookupWindow("mercado | since=2026-11-01", NOW));
+  assert.ok(lookupWindow("mercado | since=2026-11-01T00:00Z", NOW));
+  assert.deepEqual(lookupTerms("市场｜since=７d"), ["市场"]);
+  assert.deepEqual(lookupTerms("سوق | since=٧d"), ["سوق"]);
+  assert.deepEqual(lookupTerms("mercado Since = 7d"), ["mercado"]);
+  assert.deepEqual(lookupTerms("mercado | since=2026-11-21T00:00Z"), ["mercado"]);
+  assert.deepEqual(lookupTerms("mercado | since=7d until=2026-13-01"), ["mercado"]);
+  assert.deepEqual(lookupTerms("mercado | since=0d"), ["mercado"]);
+  // An invalid until is dropped; the window stays open to now.
+  assert.deepEqual(lookupWindow("mercado | since=7d until=2026-13-01", NOW), w7);
+});
+
+test("the voice rules name the fixed LOOKUP window form (ld-uiq)", () => {
+  for (const mode of ["adult", "kids"]) {
+    const rules = voiceAdapter(mode);
+    assert.match(rules, /LOOKUP: market phrases \| since=7d/);
+    assert.match(rules, /since=<N>d/);
+    assert.match(rules, /since=14d for last week/);
+    assert.match(rules, /since=62d for last month/);
+    assert.match(rules, /since=YYYY-MM-DD/);
+    assert.match(rules, /whatever language/);
+  }
+});
