@@ -14,6 +14,7 @@
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { serveApi } from "./connect-stack.mjs";
@@ -39,7 +40,7 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
-const { placeholderPng, imageProvider, BFL_IMAGE, BFL_TIMING, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
+const { placeholderPng, imageProvider, bflFetch, BFL_IMAGE, BFL_TIMING, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
 const { PICTURE_THEME, stockKey } = await import("../pictures.mjs");
 const { writeStockPicture } = await import("../picture-store.mjs");
 
@@ -53,8 +54,13 @@ const fake = fakeClaude();
 const POLL = "https://api.us1.bfl.ai/v1/get_result?id=";
 const SAMPLE = "https://delivery-us1.bfl.ai/results/";
 const realFetch = globalThis.fetch;
-const bfl = { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2 };
-const openai = { calls: [] };
+// `sample`: a Ready reply's picture address instead of the usual one;
+// `fail`: a submit whose prompt matches ends with status Error.
+const bfl = { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2, sample: null, fail: null, failing: new Set() };
+// `fail`: a request whose prompt matches answers 500.
+const openai = { calls: [], fail: null };
+// Addresses no BFL request may reach (a sample off bfl.ai, or over http).
+const OFF_BFL = ["https://evil.example.com", "https://localhost", "https://other.example.com", "http://delivery-us1.bfl.ai"];
 const jpeg = (n) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(`jpeg ${n}`)]);
 const state = new Map();
 globalThis.fetch = async (url, init = {}) => {
@@ -62,32 +68,35 @@ globalThis.fetch = async (url, init = {}) => {
   const key = init.headers?.["x-key"] ?? null;
   if (u === BFL_IMAGE.url) {
     const body = JSON.parse(init.body);
-    bfl.submits.push({ body, key });
+    bfl.submits.push({ body, key, redirect: init.redirect });
     if (bfl.mode === "credits") return new Response(JSON.stringify({ detail: `Insufficient credits for ${body.prompt}` }), { status: 402 });
     const id = `task${bfl.submits.length}`;
     state.set(id, 0);
+    if (bfl.fail?.test(body.prompt)) bfl.failing.add(id);
     const polling_url = bfl.mode === "offhost" ? `https://evil.example.com/get_result?id=${id}` : POLL + id;
     return new Response(JSON.stringify({ id, polling_url, cost: 0.8 }), { status: 200 });
   }
   if (u.startsWith(POLL)) {
     const id = u.slice(POLL.length);
-    bfl.polls.push({ id, key });
+    bfl.polls.push({ id, key, redirect: init.redirect });
     const n = state.get(id) + 1;
     state.set(id, n);
     if (bfl.mode === "slow" || n <= bfl.pending) return new Response(JSON.stringify({ id, status: n === 1 ? "Pending" : "Generating" }), { status: 200 });
     if (bfl.mode === "moderated") return new Response(JSON.stringify({ id, status: "Content Moderated" }), { status: 200 });
-    return new Response(JSON.stringify({ id, status: "Ready", result: { sample: SAMPLE + id + ".jpeg?sig=x" } }), { status: 200 });
+    if (bfl.failing.has(id)) return new Response(JSON.stringify({ id, status: "Error" }), { status: 200 });
+    return new Response(JSON.stringify({ id, status: "Ready", result: { sample: bfl.sample ?? SAMPLE + id + ".jpeg?sig=x" } }), { status: 200 });
   }
   if (u.startsWith(SAMPLE)) {
-    bfl.downloads.push({ url: u, key: init.headers?.["x-key"] ?? null });
+    bfl.downloads.push({ url: u, key: init.headers?.["x-key"] ?? null, redirect: init.redirect });
     return new Response(jpeg(bfl.downloads.length), { status: 200, headers: { "content-type": "image/jpeg" } });
   }
-  if (u.startsWith("https://evil.example.com")) {
+  if (OFF_BFL.some((h) => u.startsWith(h))) {
     bfl.offhost.push({ url: u, key });
-    return new Response("{}", { status: 200 });
+    return new Response(jpeg(0), { status: 200 });
   }
   if (u === OPENAI_IMAGE.url) {
     openai.calls.push(JSON.parse(init.body));
+    if (openai.fail?.test(JSON.parse(init.body).prompt)) return new Response(JSON.stringify({ error: { type: "server_error" } }), { status: 500 });
     return new Response(JSON.stringify({ data: [{ b64_json: placeholderPng([10, 90, 150]).toString("base64") }] }), { status: 200 });
   }
   return realFetch(url, init);
@@ -113,8 +122,8 @@ beforeEach(async () => {
   await settlePictureFills();
   resetPictureMemory();
   Object.assign(BFL_TIMING, REAL_TIMING, { pollMs: 5 });
-  Object.assign(bfl, { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2 });
-  openai.calls = [];
+  Object.assign(bfl, { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2, sample: null, fail: null, failing: new Set() });
+  Object.assign(openai, { calls: [], fail: null });
   fake.picture("!auto");
   fs.writeFileSync(process.env.LINGO_ENV_FILE, BFL_ONLY);
   fs.rmSync(path.join(root, "pictures.yaml"), { force: true });
@@ -151,8 +160,9 @@ const status = async (who) => (await who.call("GET", "/api/pictures")).body.stat
 const ownFiles = () => (fs.existsSync(imagesDir) ? fs.readdirSync(imagesDir).filter((f) => !f.startsWith(".") && f !== "stock") : []);
 const stockFile = (id, theme = PICTURE_THEME.id) => path.join(imagesDir, "stock", theme, `${id}.jpg`);
 
-/** A stock list with dog, cat and ball, and the files drawn for those in `drawn`. */
-function stock(drawn = ["dog", "cat", "ball"]) {
+/** A stock list with dog, cat and ball (and any `extra` concept lines, in
+ *  a Drinks category), and the files drawn for those in `drawn`. */
+function stock(drawn = ["dog", "cat", "ball"], extra = []) {
   fs.writeFileSync(
     path.join(root, "pictures.yaml"),
     [
@@ -162,6 +172,7 @@ function stock(drawn = ["dog", "cat", "ball"]) {
       "    - { id: cat, description: a fluffy orange cat, words: [cat, kitten] }",
       "  Toys:",
       "    - { id: ball, description: a colourful ball, words: [ball] }",
+      ...(extra.length ? ["  Drinks:", ...extra.map((l) => `    - ${l}`)] : []),
       "",
     ].join("\n"),
   );
@@ -302,13 +313,18 @@ test("a word the check matches to a drawn stock picture is ready at once: no ima
   // The game serves the stock file through the picture route, like any picture.
   const { rounds } = (await pip.call("POST", "/api/game/start")).body;
   const [dogRow] = await q("select id, phrase_id from phrase_pictures where language_profile_id = $1 and stock_id = 'dog'", [pip.languageId]);
-  const r = await pip.call("GET", `/api/game/pictures/${dogRow.id}/${stockKey(PICTURE_THEME.id, "dog")}`);
+  const view = (await pip.call("GET", `/api/pictures/phrase/${dogRow.phrase_id}`)).body.picture;
+  assert.deepEqual([view.stock, view.inTheme], [true, true]);
+  // The URL's file is the stock key and the file's version (a stock
+  // picture drawn again gets a new URL).
+  assert.match(view.file, new RegExp(`^${stockKey(PICTURE_THEME.id, "dog")}\\.[0-9a-z]+$`));
+  const r = await pip.call("GET", `/api/game/pictures/${dogRow.id}/${view.file}`);
   assert.equal(r.status, 200);
   assert.equal(r.headers.get("content-type"), "image/jpeg");
   assert.equal(r.headers.get("cache-control"), "private, max-age=31536000, immutable");
   assert.ok(rounds.length >= 3);
-  const view = (await pip.call("GET", `/api/pictures/phrase/${dogRow.phrase_id}`)).body.picture;
-  assert.deepEqual([view.stock, view.inTheme], [true, true]);
+  const dogChoice = rounds.flatMap((x) => x.choices).find((c) => c.id === dogRow.id);
+  assert.equal(dogChoice?.file, view.file, "the game's URL is the same one");
 });
 
 test("a made-up stock id, or one whose file isn't drawn, is ignored: the word is drawn as usual", async () => {
@@ -354,8 +370,8 @@ test("a stock picture is fetched like any picture: never by another learner, nor
   const pip = await someone([KID, { ...KID, name: "Mo" }]);
   await add(pip, WORDS.slice(0, 3));
   await drawAll(pip);
-  const [row] = await q("select id, file from phrase_pictures where language_profile_id = $1 and stock_id = 'dog'", [pip.languageId]);
-  const url = `/api/game/pictures/${row.id}/${row.file}`;
+  const [row] = await q("select id, phrase_id from phrase_pictures where language_profile_id = $1 and stock_id = 'dog'", [pip.languageId]);
+  const url = `/api/game/pictures/${row.id}/${(await pip.call("GET", `/api/pictures/phrase/${row.phrase_id}`)).body.picture.file}`;
   assert.equal((await pip.call("GET", url)).status, 200);
   assert.equal((await client(base).call("GET", url)).status, 401, "logged out");
   const kim = await someone();
@@ -445,4 +461,157 @@ test("a theme change leaves the old theme's stock pictures unused: words pointin
   assert.equal(bfl.submits.length, 2, "only the first two drawings");
   s = await status(pip);
   assert.equal(s.pictured, 3);
+});
+
+/* ------------------------------ PR #60 review ------------------------------ */
+
+test("BFL: no redirect is ever followed: every submit, poll and download says so, and a 3xx never takes the key to another server", async () => {
+  const pip = await someone();
+  await add(pip, WORDS.slice(0, 1));
+  await drawAll(pip);
+  const all = [...bfl.submits, ...bfl.polls, ...bfl.downloads];
+  assert.ok(bfl.submits.length && bfl.polls.length && bfl.downloads.length);
+  assert.ok(all.every((x) => x.redirect === "error"), "redirect: error on every BFL request");
+
+  // Two real local servers: the first redirects, the second records what
+  // reaches it. fetch keeps a custom header like x-key across a cross-site
+  // redirect, so only refusing the redirect keeps the key home.
+  const seen = [];
+  const second = http.createServer((req, res) => {
+    seen.push(req.headers["x-key"] ?? null);
+    res.end("{}");
+  });
+  await new Promise((r) => second.listen(0, "127.0.0.1", r));
+  const first = http.createServer((req, res) => {
+    res.writeHead(302, { Location: `http://localhost:${second.address().port}/steal` });
+    res.end();
+  });
+  await new Promise((r) => first.listen(0, "127.0.0.1", r));
+  try {
+    await assert.rejects(bflFetch(`http://127.0.0.1:${first.address().port}/v1/get_result`, { headers: { "x-key": "k-redirect-test" } }));
+    assert.deepEqual(seen, [], "the second server never heard from it");
+  } finally {
+    first.close();
+    second.close();
+  }
+});
+
+test("BFL: a picture address not https on bfl.ai (an internal host, another host, plain http) is a failure with nothing fetched", async () => {
+  for (const sample of ["https://localhost/results/x.jpeg", "https://other.example.com/x.jpeg", "http://delivery-us1.bfl.ai/results/x.jpeg"]) {
+    resetPictureMemory();
+    bfl.sample = sample;
+    const pip = await someone();
+    await add(pip, WORDS.slice(0, 1));
+    await drawAll(pip);
+    assert.deepEqual((await rowsOf(pip)).map((r) => r.status), ["pending"], sample);
+    assert.deepEqual((await ledger(pip, "image")).map((r) => r.outcome), ["failed"], sample);
+  }
+  assert.deepEqual(bfl.offhost, [], "no request reached any of them");
+  assert.equal(bfl.downloads.length, 0);
+});
+
+test("a word whose drawing fails twice in a row (its own fault) is left out like a refusal, so the others are drawn; a service failure never counts", async () => {
+  bfl.fail = /picture of tree/;
+  const pip = await someone();
+  const p = await add(pip, [["der Hund", "dog"], ["der Baum", "tree"]]);
+  // The dog is drawn; the tree's task ends with Error: the run stops and waits.
+  await drawAll(pip);
+  let by = Object.fromEntries((await rowsOf(pip)).map((r) => [r.text, r.status]));
+  assert.deepEqual(by, { "der Baum": "pending", "der Hund": "ready" });
+  // A word added meanwhile, then again (the wait over): the tree's second
+  // failure in a row leaves it out, and the run goes on to the house.
+  await add(pip, [["das Haus", "house"]]);
+  resetPictureMemory("backoff");
+  await drawAll(pip);
+  by = Object.fromEntries((await rowsOf(pip)).map((r) => [r.text, r.status]));
+  assert.deepEqual(by, { "das Haus": "ready", "der Baum": "failed", "der Hund": "ready" });
+  assert.deepEqual((await ledger(pip, "image")).map((r) => r.outcome).sort(), ["failed", "failed", "ok", "ok"]);
+  // Draw again by hand still works.
+  bfl.fail = null;
+  assert.equal((await pip.call("POST", `/api/pictures/phrase/${p["der Baum"].id}/redraw`)).status, 200);
+  await settlePictureFills();
+  assert.equal((await rowsOf(pip)).find((r) => r.text === "der Baum").status, "ready");
+
+  // Out of credits again and again: the account's problem, not the word's.
+  bfl.mode = "credits";
+  const kim = await someone();
+  await add(kim, WORDS.slice(0, 1));
+  for (let i = 0; i < 3; i++) {
+    resetPictureMemory("backoff");
+    await drawAll(kim);
+  }
+  assert.deepEqual((await rowsOf(kim)).map((r) => r.status), ["pending"]);
+});
+
+test("OpenAI too: a word it answers 500 for twice in a row is left out and the run goes on", async () => {
+  fs.writeFileSync(process.env.LINGO_ENV_FILE, OPENAI_ONLY);
+  openai.fail = /picture of tree/;
+  const pip = await someone();
+  await add(pip, [["der Hund", "dog"], ["der Baum", "tree"]]);
+  await drawAll(pip);
+  await add(pip, [["das Haus", "house"]]);
+  resetPictureMemory("backoff");
+  await drawAll(pip);
+  const by = Object.fromEntries((await rowsOf(pip)).map((r) => [r.text, r.status]));
+  assert.deepEqual(by, { "das Haus": "ready", "der Baum": "failed", "der Hund": "ready" });
+});
+
+test("a stock picture drawn again in the same theme gets a new URL; the old one is gone", async () => {
+  stock(["dog"]);
+  const pip = await someone();
+  const p = await add(pip, WORDS.slice(0, 1));
+  await drawAll(pip);
+  const [row] = await q("select id from phrase_pictures where language_profile_id = $1", [pip.languageId]);
+  const view = async () => (await pip.call("GET", `/api/pictures/phrase/${p["der Hund"].id}`)).body.picture.file;
+  const before = await view();
+  assert.equal((await pip.call("GET", `/api/game/pictures/${row.id}/${before}`)).status, 200);
+  // Removed and drawn again (as removeStockPicture, then the stock CLI).
+  writeStockPicture(PICTURE_THEME.id, "dog", jpeg("a new dog, drawn again"), "image/jpeg", { dir: imagesDir });
+  const later = new Date(Date.now() + 60_000);
+  fs.utimesSync(stockFile("dog"), later, later);
+  const after = await view();
+  assert.notEqual(after, before, "a new URL");
+  assert.equal((await pip.call("GET", `/api/game/pictures/${row.id}/${before}`)).status, 404, "the old URL no longer answers");
+  const r = await pip.call("GET", `/api/game/pictures/${row.id}/${after}`);
+  assert.equal(r.status, 200);
+  assert.ok(r.text.includes("a new dog"));
+});
+
+test("Redraw all with no image key: a picture no stock picture fits isn't left waiting for ever; the status says how many need a key", async () => {
+  stock(["cat"]);
+  const pip = await someone();
+  await add(pip, [["der Hund", "dog"], ["die Katze", "cat"]]);
+  await drawAll(pip);
+  await q("update phrase_pictures set theme = null where language_profile_id = $1 and stock_id is null", [pip.languageId]);
+  fs.writeFileSync(process.env.LINGO_ENV_FILE, "");
+  assert.equal((await status(pip)).needKey, 1);
+  const r = await pip.call("POST", "/api/pictures/restyle");
+  assert.equal(r.status, 202, r.text);
+  await settlePictureFills();
+  const [dog] = (await rowsOf(pip)).filter((x) => x.text === "der Hund");
+  assert.deepEqual([dog.status, dog.restyle, dog.theme], ["ready", null, null], "keeps its picture, not marked to draw");
+  const s = await status(pip);
+  assert.deepEqual([s.outOfTheme, s.restyling, s.needKey], [1, 0, 1]);
+});
+
+test("adults-only stock concepts never reach a kids learner: not offered to the check, never matched, never in the game", async () => {
+  stock(["dog", "cat", "ball", "beer"], ["{ id: beer, description: a glass of beer, words: [beer], adults: true }"]);
+  const pip = await someone();
+  await add(pip, [["das Bier", "beer"], ["der Hund", "dog"], ["die Katze", "cat"], ["der Ball", "ball"]]);
+  await drawAll(pip);
+  assert.doesNotMatch(fake.pictureArgs().find((a) => a.startsWith("Words:")), /^beer:/m, "not offered");
+  assert.equal((await rowsOf(pip)).find((r) => r.text === "das Bier").stock_id, null);
+  // Even when the check names it anyway, it isn't taken.
+  fake.picture("!auto-stock=beer");
+  const kim = await someone();
+  await add(kim, [["das Bier", "beer"]]);
+  await drawAll(kim);
+  assert.deepEqual((await rowsOf(kim)).map((r) => r.stock_id), [null]);
+  // A word matched before the flag was set leaves the game.
+  const before = (await status(pip)).pictured;
+  await q("update phrase_pictures set stock_id = 'beer', file = $1 where language_profile_id = $2 and stock_id = 'dog'", [stockKey(PICTURE_THEME.id, "beer"), pip.languageId]);
+  assert.equal((await status(pip)).pictured, before - 1);
+  const { rounds } = (await pip.call("POST", "/api/game/start")).body;
+  const [beerRow] = await q("select id from phrase_pictures where language_profile_id = $1 and stock_id = 'beer'", [pip.languageId]);
+  assert.ok(!rounds.some((x) => x.choices.some((c) => c.id === beerRow.id)), "never on a round's buttons");
 });

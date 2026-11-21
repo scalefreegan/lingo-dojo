@@ -55,6 +55,11 @@ declare module "*/scripts/content.mjs" {
   /** Never throws; bad files land in `problems`. The mode and its levels are
    *  the route's to add (content.ts contentReply). */
   export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels" | "defaultLevel">;
+  /** content/pictures.yaml, checked (scripts/pictures.mjs readStockList). */
+  export function loadPictureStock(root?: string): {
+    concepts: import("../../scripts/pictures.mjs").StockConcept[];
+    problems: { level: "error" | "warning"; message: string; file?: string }[];
+  };
   /** A tree's pack files (seed content and the export CLI's input; the app's
    *  saved packs are in the database): the packs that load, every folder
    *  under packs/, and the problems of the pack files that did not load. */

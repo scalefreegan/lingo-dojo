@@ -203,10 +203,11 @@ export async function restyleDone(
   return row ? { row, oldFile: ownFile(before) } : undefined;
 }
 
-/** The provider refused to restyle a word: it keeps its picture as it was,
- *  and nothing tries again by itself. */
-export async function restyleDropped(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
-  await forLanguageProfile(db, profile).update(phrasePictures, { restyle: null, updatedAt: sql`now()` }, waiting(phraseId, phraseKey, "draw"));
+/** A restyle given up: the provider refused it, it failed twice, or (from
+ *  `check`) no stock picture fits and there is no image key to draw one.
+ *  The word keeps its picture as it was, and nothing tries again by itself. */
+export async function restyleDropped(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, from: "check" | "draw" = "draw"): Promise<void> {
+  await forLanguageProfile(db, profile).update(phrasePictures, { restyle: null, updatedAt: sql`now()` }, waiting(phraseId, phraseKey, from));
 }
 
 /**

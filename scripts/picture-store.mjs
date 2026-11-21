@@ -119,6 +119,21 @@ export function stockPicture(theme, id, { dir = imagesDir() } = {}) {
   return null;
 }
 
+/** A stock picture's version: its file's modification time and size, short.
+ *  Its URL carries it (pictures.ts pictureRef), so a stock picture removed
+ *  and drawn again in the same theme is a new URL, not a year-old cached
+ *  one. Null when there is no file. */
+export function stockVersion(theme, id, { dir = imagesDir() } = {}) {
+  const at = stockPicture(theme, id, { dir });
+  if (!at) return null;
+  try {
+    const st = fs.statSync(at.path);
+    return `${Math.floor(st.mtimeMs).toString(36)}${st.size.toString(36)}`;
+  } catch {
+    return null;
+  }
+}
+
 /** A stock picture's bytes and type, or null. */
 export function readStockPicture(theme, id, { dir = imagesDir() } = {}) {
   const at = stockPicture(theme, id, { dir });

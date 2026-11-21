@@ -16,6 +16,9 @@ declare module "*/scripts/pictures.mjs" {
     theme?: string | null;
     stockId?: string | null;
     restyle?: string | null;
+    /** A stock picture's look-alike group (set by the server from
+     *  pictures.yaml): a round never offers two of one. */
+    group?: string | null;
   }
   /** A stock concept as the check is offered it. */
   interface StockOffer {
@@ -25,7 +28,10 @@ declare module "*/scripts/pictures.mjs" {
   }
   export interface StockConcept extends StockOffer {
     category: string;
+    group?: string;
+    adults?: true;
   }
+  export function stockForMode<C extends { adults?: true }>(concepts: C[], mode: string): C[];
   export interface PictureTheme {
     readonly id: string;
     readonly provider: string;
@@ -95,6 +101,7 @@ declare module "*/scripts/picture-store.mjs" {
   export function readPicture(key: string, type: string, opts?: { dir?: string }): Buffer | null;
   export function deletePicture(key: string, opts?: { dir?: string }): void;
   export function stockDir(theme: string, opts?: { dir?: string }): string;
+  export function stockVersion(theme: string, id: string, opts?: { dir?: string }): string | null;
   export function stockPicture(theme: string, id: string, opts?: { dir?: string }): { path: string; type: string } | null;
   export function readStockPicture(theme: string, id: string, opts?: { dir?: string }): { bytes: Buffer; type: string } | null;
   export function writeStockPicture(theme: string, id: string, bytes: Uint8Array, type: string, opts?: { dir?: string }): void;

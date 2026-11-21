@@ -30,6 +30,9 @@ export interface PictureStatus {
   outOfTheme: number;
   /** Pictures waiting for a Redraw all already asked for. */
   restyling: number;
+  /** Pictures out of the theme that only an image key can redraw (no
+   *  stock picture fits, or none is drawn): 0 when there is a key. */
+  needKey: number;
 }
 
 /** POST /api/pictures/restyle: how many pictures were taken up (moved to

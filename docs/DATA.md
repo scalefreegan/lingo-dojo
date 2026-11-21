@@ -3211,6 +3211,16 @@ Failures:
 - Any other failure (network, a 402 out of credits, a 429, a bad key, no
   picture within BFL's 60 seconds, the CLI) stops the run and leaves the
   word `pending`. A new run waits 10 minutes.
+- **A word that keeps failing is given up** (`PICTURE_WORD_FAILURES`, 2):
+  a failure that is the word's own (`ImageFailed.perWord`: a BFL task that
+  ended with Error, No Card Generated or Task not found, a download that
+  isn't a picture, an OpenAI 5xx) counts against that word. The second in
+  a row marks it `failed` like a refusal (a restyled word keeps its old
+  picture) and the run goes on, so one bad word can't stay first in the
+  work list spending a ledger row every retry. Out of credits, a rate
+  limit, a bad key or the network never count. The count is in memory
+  (no migration): a restart gives a word two more tries, under the cap.
+  Draw again by hand still works.
 
 **How the backlog drains:** every trigger works newest-first until the caps
 of the last 24 hours. Older words, and words past the cap, wait for a later
@@ -3304,9 +3314,18 @@ beside `languages.yaml`, so both libraries share it), grouped by category:
 animals, colours, the numbers one to five, family and people, body,
 health, fruit and vegetables, food, drinks, the table, home, clothes,
 toys, school and work, money and shopping, transport and travel, places,
-nature and weather, actions. Each is `{ id, description, words }`: the id
-(also the file's name), the short description the theme's prompt gets,
-and the English words it stands for. The loader checks it with the rest of
+nature and weather, actions. Each is `{ id, description, words, group?,
+adults? }`: the id (also the file's name), the short description the
+theme's prompt gets, and the English words it stands for; `group` names
+look-alike concepts (a boy and a brother, a ball and catching one, a tree
+and a forest), and a round never offers two of one group (two right
+answers); `adults: true` (beer, wine, pills) keeps a concept from kids
+learners: it is never offered to their check, so never matched, and a kids
+word pointing at one (matched before the flag) leaves the game
+(`stockForMode` in `scripts/pictures.mjs`, `playable` in
+`web/server/pictures.ts`). Adult learners get them. The numbers one to five
+are one object counted ("exactly three smooth round pebbles in a row"): no
+printed digit, no colour of their own. The loader checks it with the rest of
 the library (`loadPictureStock`, `scripts/content.mjs`; the rules are
 `readStockList` in `scripts/pictures.mjs`): unique ids, a description that
 passes `cleanDescription` as written, at least one word, and a warning for
@@ -3341,7 +3360,13 @@ How a word uses one:
 - `GET /api/game/pictures/:id/:file` serves a stock row's file from
   `stock/<theme>/` with the same owner check (the row must be this learner's
   and language's) and the same immutable cache headers. Logged out is a
-  401; another learner, even on the same account, a 404.
+  401; another learner, even on the same account, a 404. For a stock
+  picture the URL's `file` is `<stock key>.<version>`, the version being
+  the file's modification time and size (`stockVersion`,
+  `scripts/picture-store.mjs`; `pictureRef` in `web/server/pictures.ts`):
+  a stock picture removed and drawn again in the same theme gets a new URL
+  instead of the browser's year-old cached copy, and the old URL is a 404.
+  The row itself is unchanged.
 - A word pointing at a stock file whose file isn't on disk (removed, or an
   old theme's never drawn on this install) leaves the game until it is.
 - **Draw again** on a stock-matched word draws a picture of its own (paid,
@@ -3351,7 +3376,8 @@ How a word uses one:
   only a word's own file (`deletePhrase` returns none for a stock row), and
   `deletePicture` only ever touches `<images dir>/<64 hex>.<ext>`.
 - Two words pointing at one stock picture are never in one round (two right
-  answers): `roundChoices` skips a picture file already offered.
+  answers): `roundChoices` skips a picture file already offered, and a
+  stock picture of a look-alike group already offered.
 - Words judged before 2026-11-21 keep their verdicts. Matching older
   `none` words against the stock is bead `ld-30r`.
 
@@ -3377,6 +3403,17 @@ themes (`theme` null), by another provider, or in an older theme.
 - **The old picture stays in place and in the game until the new one is
   stored**, so a child never meets a gap. Then the old file is deleted.
 - A refusal leaves the word with its old picture; nothing retries it.
+- **With no image key** (but some stock drawn), the check still runs: a
+  word a stock picture fits is re-pointed; the rest are *not* marked to
+  draw (they would wait for ever). They keep their pictures, stay counted
+  in `outOfTheme`, and the status's `needKey` says how many only an image
+  key can redraw; the bar says so.
+- A swap during a game can't break a tile on screen: the game loads every
+  round's pictures as blobs before the first round
+  (`web/src/components/KidsGameView.tsx`), so deleting the old file
+  afterwards changes nothing shown. Only a swap in the second or two of
+  loading can make a round's picture fail to load; that round is left out
+  rather than shown half. No delay before the delete was needed.
 - With the fallback provider (OpenAI) in use, its own pictures
   (`<id>+openai`) count as current, so pressing again never loops over
   them.
@@ -3398,11 +3435,20 @@ themes (`theme` null), by another provider, or in an older theme.
   $0.01). The `polling_url` is used as given (the docs say it must be), but
   the key is only ever sent to an https URL on `*.bfl.ai`; anything else is
   refused and nothing is sent there.
+- **No redirect is ever followed** (`bflFetch`: `redirect: "error"` on the
+  submit, every poll and the download). fetch drops `authorization` on a
+  cross-site redirect but keeps a custom header like `x-key`, so following
+  a 3xx from a bfl.ai host could hand the key to another server (PR #60
+  review; a test redirects between two local servers).
 - It is polled every 0.5 s with the key. Statuses: Task not found,
   Pending, Reasoning, Generating, Request Moderated, Content Moderated, No
   Card Generated, Ready, Error. Ready carries `result.sample`, a signed URL
   valid for about 10 minutes with no CORS: the server downloads it at once,
-  without the key, capped at 4 MB and checked by its magic bytes.
+  without the key, capped at 4 MB and checked by its magic bytes. Only an
+  https URL on `*.bfl.ai` is fetched (BFL's delivery hosts are
+  `delivery.*.bfl.ai`; the host of the 2026-11-21 real draws wasn't
+  recorded); anything else, an internal address included, is a failure
+  with no request made.
 - The whole draw (submit, polls, download) has 60 s (`BFL_TIMING`).
 - 402 is out of credits, 429 is over the account's limit (24 tasks at once
   on most endpoints). Each gets a plain log line (the status and a fixed

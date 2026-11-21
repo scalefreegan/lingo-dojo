@@ -129,7 +129,10 @@ const stockWord = (w) =>
  *     Animals:
  *       - { id: dog, description: a friendly brown dog, words: [dog, puppy] }
  *
- * Each concept is `{ id, category, description, words }`: an id
+ * Each concept is `{ id, category, description, words, group?, adults? }`:
+ * `group` names look-alike concepts (roundChoices never offers two of one
+ * group), `adults: true` keeps a concept from kids learners (stockForMode).
+ * An id
  * (STOCK_ID_RE, unique), a description that passes cleanDescription as it
  * is written (it is what the theme's prompt receives), and at least one
  * English word. A bad entry is skipped with a warning, so the rest still
@@ -167,12 +170,28 @@ export function readStockList(raw) {
         if (wordOwner.has(w)) warn(`${where} (${id}): the word "${w}" is also ${wordOwner.get(w)}'s; the check may pick either`);
         else wordOwner.set(w, id);
       }
+      // Optional: a look-alike group (never two of one in a round) and the
+      // adults-only flag (never offered or shown to a kids learner). A bad
+      // value is warned about and left off: a group is only a nicety, and a
+      // concept meant for adults with a malformed flag is dropped, not
+      // shown to children.
+      let group = null;
+      if (c.group != null) {
+        const g = typeof c.group === "string" ? c.group.trim() : "";
+        if (STOCK_ID_RE.test(g)) group = g;
+        else warn(`${where} (${id}): group ${JSON.stringify(c.group)} should be lowercase letters, digits and hyphens; ignored`);
+      }
+      if (c.adults != null && typeof c.adults !== "boolean") return warn(`${where} (${id}): adults should be true or false; skipped`);
       ids.add(id);
-      concepts.push({ id, category, description, words });
+      concepts.push({ id, category, description, words, ...(group ? { group } : {}), ...(c.adults === true ? { adults: true } : {}) });
     });
   }
   return { concepts, problems };
 }
+
+/** The stock concepts a learner of `mode` may be offered or shown: an
+ *  `adults` concept (beer, wine, pills) never reaches a kids learner. */
+export const stockForMode = (concepts, mode) => (mode === "kids" ? concepts.filter((c) => !c.adults) : concepts);
 
 /* ---------------------------------- the key --------------------------------- */
 
@@ -502,16 +521,21 @@ export function roundChoices(phrase, bank, version) {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   // Never two of one meaning, nor two of one picture (two words pointing
-  // at one stock picture): either would be two right answers.
+  // at one stock picture), nor two stock pictures of one look-alike group
+  // (a boy and a brother; the server sets `group` from pictures.yaml):
+  // each would be two right answers.
   const seen = new Set([meaningKey(phrase.meaning)]);
   const files = new Set([own.picture.file]);
+  const groups = new Set(own.picture.group ? [own.picture.group] : []);
   const picked = [];
   for (const x of pool) {
     if (picked.length === GAME_CHOICES - 1) break;
     const k = meaningKey(x.phrase.meaning);
-    if (seen.has(k) || files.has(x.picture.file)) continue;
+    const g = x.picture.group;
+    if (seen.has(k) || files.has(x.picture.file) || (g && groups.has(g))) continue;
     seen.add(k);
     files.add(x.picture.file);
+    if (g) groups.add(g);
     picked.push(x.picture.id);
   }
   picked.splice(Math.floor(rand() * (picked.length + 1)), 0, own.picture.id);
