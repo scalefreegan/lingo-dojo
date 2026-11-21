@@ -216,7 +216,7 @@ declare module "*/scripts/voice.mjs" {
   }): { pools: Record<string, { id: string; name: string; age?: string; exact?: boolean }[]>; omitted: string[] };
   export function sessionPlan(content: unknown, pack: unknown, mode?: Mode): import("../shared/wire.ts").VoicePlanItem[];
   export function planDirective(plan: import("../shared/wire.ts").VoicePlanItem[], opts?: { drill?: boolean }): string;
-  export function parseGlosses(text: string): import("../shared/wire.ts").VoiceGloss[];
+  export function parseGlosses(text: string, opts?: { readings?: boolean }): import("../shared/wire.ts").VoiceGloss[];
   export function replayReading(v: unknown): string;
   export const READINGS_RULE: string;
   export function splitSegments(text: string): import("../shared/wire.ts").VoiceSegment[];

@@ -41,6 +41,7 @@
 //      across its edge, mean the characters are not this word (这种 before
 //      植物 for 种植).
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
@@ -49,8 +50,20 @@ import { cedictDir, cedictSyllables, loadCedict, numbered, parseCedict, syllable
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const freqDir = () => process.env.LINGO_FREQ_DIR || path.join(here, "..", "data", "freq");
-export const WORDFREQ_URL = "https://github.com/rspeer/wordfreq/raw/master/wordfreq/data/large_zh.msgpack.gz";
-export const UNIHAN_URL = "https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip";
+// Pinned: wordfreq at a commit, Unihan at a Unicode version, each checked
+// by its SHA-256 (a changed file is a changed table: re-pin on purpose).
+// CC-CEDICT has no versioned download (MDBG serves the current file); its
+// date goes into the table's header.
+export const WORDFREQ_URL = "https://github.com/rspeer/wordfreq/raw/912caf64b657478d1dff1138efdc078947d54bb1/wordfreq/data/large_zh.msgpack.gz";
+export const WORDFREQ_SHA256 = "e079d7aaff1cfb92874850cb3ffbc7b611af939d9d671c1cbda932d968467cdd";
+export const UNIHAN_URL = "https://www.unicode.org/Public/18.0.0/ucd/Unihan.zip";
+export const UNIHAN_ZIP_SHA256 = "4c93ea9c1f636451729a840978f1667a53886af37ba854fdcce109721c63d43e";
+export const UNIHAN_READINGS_SHA256 = "9d39995b5de714e8ce93716ed5d15eaa0792d68e407cdf8a0add2893b8f4150b";
+/** Throws unless `file`'s SHA-256 is `want`. */
+export function checkSha256(file, want) {
+  const got = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  if (got !== want) throw new Error(`${file}: SHA-256 is ${got}, expected ${want} (delete it to download the pinned file again)`);
+}
 
 /** A reading under this share of a character's most frequent one is rare. */
 export const RARE_SHARE = 0.05;
@@ -65,6 +78,11 @@ export const COMMON_FREQ = 1e-7;
 export const NAME_MARGIN = 50;
 /** The least frequency mass behind a fallback. */
 export const FALLBACK_FREQ = 1e-7;
+/** A fallback replaces the library's default only where one reading
+ *  dominates overwhelmingly: this share of the weighted use at the
+ *  positions no word settles (PR #63 review: "the common reading over an
+ *  ultra-rare one", not the likelier of two ordinary ones). */
+export const FALLBACK_SHARE = 0.9;
 /** What a word no list has counts for. */
 const FLOOR = 1e-9;
 
@@ -128,6 +146,7 @@ async function download(url, file) {
 async function loadWordfreq() {
   const file = path.join(freqDir(), "wordfreq", "large_zh.msgpack.gz");
   await download(WORDFREQ_URL, file);
+  checkSha256(file, WORDFREQ_SHA256);
   return decodeCBpack(zlib.gunzipSync(fs.readFileSync(file)));
 }
 
@@ -139,8 +158,10 @@ async function loadUnihan() {
   const file = path.join(dir, "Unihan_Readings.txt");
   if (!fs.existsSync(file)) {
     await download(UNIHAN_URL, path.join(dir, "Unihan.zip"));
+    checkSha256(path.join(dir, "Unihan.zip"), UNIHAN_ZIP_SHA256);
     throw new Error(`unpack it first: unzip ${path.join(dir, "Unihan.zip")} Unihan_Readings.txt -d ${dir}`);
   }
+  checkSha256(file, UNIHAN_READINGS_SHA256);
   const pinlu = new Map();
   const mandarin = new Map();
   for (const line of fs.readFileSync(file, "utf8").split("\n")) {
@@ -337,17 +358,42 @@ export function ranksFrom({ mass, proper, free = new Set() }, lone = new Map(), 
   return { ranks, rare };
 }
 
-const emptyPrior = () => ({ ranks: new Map(), rare: new Map(), fallback: new Map(), words: new Map(), anywhere: new Map(), block: new Map() });
+const emptyPrior = () => ({ ranks: new Map(), rare: new Map(), fallback: new Map(), words: new Map(), anywhere: new Map(), block: new Map(), fixes: new Set() });
+/** A seeded shuffle's coin (mulberry32): the held-out split is the same every run. */
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 async function main() {
   const report = process.argv.includes("--report");
+  // --holdout: the tables' character stages (RANKS, FALLBACK) built from a
+  // random 80% of CC-CEDICT's headwords and tried on the other 20%, which
+  // they never saw; nothing is written.
+  const holdout = process.argv.includes("--holdout");
   const zh = await import("../web/src/script/zh.ts");
+  const { mergedWith } = await import("../web/src/script/t2s.ts");
   const { TAIWAN_READINGS, TAIWAN_WORDS, taiwanize } = await import("../web/src/script/script.ts");
   const { text, date } = await loadCedict();
   const freq = await loadWordfreq();
   const { pinlu, mandarin } = await loadUnihan();
-  const entries = cedictEntries(text);
-  const { words } = parseCedict(text);
+  let entries = cedictEntries(text);
+  let { words } = parseCedict(text);
+  let heldOut = [];
+  if (holdout) {
+    const coin = seeded(20261121);
+    const test = new Set(words.filter(() => coin() < 0.2).map((w) => w.trad));
+    heldOut = words.filter((w) => test.has(w.trad));
+    words = words.filter((w) => !test.has(w.trad));
+    entries = entries.filter((e) => !test.has(e.trad));
+    console.error(`held out: ${heldOut.length} headwords; the tables are built from the other ${words.length}`);
+  }
   const opts = { taiwan: TAIWAN_READINGS, taiwanWords: TAIWAN_WORDS };
   const f = (simp) => freq.get(simp) ?? FLOOR;
 
@@ -359,9 +405,9 @@ async function main() {
     if (app.includes(null)) return false;
     return wordAgrees(app, key === "tw" ? [...w.readings, ...w.taiwan] : w.readings, [...(key === "simp" ? w.simp : w.trad)], { ...opts, tw: key === "tw" }).ok;
   };
-  const sweep = () => {
+  const sweep = (list = words) => {
     const ok = new Map();
-    for (const w of words) ok.set(w.trad, RUNS.map(([key, form, locale]) => agrees(w, key, zh.readCodePoints(w[form], locale, { cache: false }))));
+    for (const w of list) ok.set(w.trad, RUNS.map(([key, form, locale]) => agrees(w, key, zh.readCodePoints(w[form], locale, { cache: false }))));
     return ok;
   };
   const count = (ok) => RUNS.map((_, k) => [...ok.values()].filter((v) => !v[k]).length);
@@ -369,6 +415,16 @@ async function main() {
   // Before: the reader with no prior at all.
   zh.setPrior(null);
   const before = sweep();
+  const heldBefore = holdout ? sweep(heldOut) : null;
+  // What the library's own dictionary settles in each headword, and how
+  // (no prior touches these): an entry that would change one is a
+  // correction of the library, marked "!" in the tables.
+  const plain = new Map();
+  for (const w of words) for (const form of new Set([w.trad, w.simp])) plain.set(form, zh.readDetail(form, "zh-CN", { cache: false }));
+  const isFix = (key, r) => {
+    const d = plain.get(key);
+    return !!d && d.dict.some((x, k) => x && d.readings[k] !== r[k]);
+  };
   console.error(`no prior: disagree ${count(before).join(" / ")} (zh-TW / traditional zh-CN / simplified)`);
 
   // 1. RANKS.
@@ -381,6 +437,27 @@ async function main() {
     if (r) lone.set(ch, numbered(r));
   }
   const { ranks, rare } = ranksFrom(masses, lone, mandarin, pinlu);
+  // One lead per character whatever the script: a traditional character
+  // that is simply its simplified form's spelling (蘋 → 苹, no other
+  // character merged into 苹) has no entry of its own and takes that
+  // form's; one that shares the form with others (為 and 爲 → 为, 髮 and 發
+  // → 发) keeps its own readings but leads with the simplified form's
+  // first where it has that reading (為 wèi like 为; 髮 has no fā and
+  // stays fà). 著 and 乾 stand for a form chosen by the word (t2s.ts):
+  // alone they keep the reader's own (著 zhe, the particle it is written
+  // for in a traditional text, which is Taiwan's use of it; 乾 gān).
+  for (const c of [...ranks.keys()]) {
+    const s = zh.simplified(c);
+    if (s === c) continue;
+    if ("著乾".includes(c) || !mergedWith(c, s).length) {
+      ranks.delete(c);
+      rare.delete(c);
+      continue;
+    }
+    const lead = ranks.get(s)?.[0];
+    const own = ranks.get(c);
+    if (lead && own.includes(lead)) ranks.set(c, [lead, ...own.filter((r) => r !== lead)]);
+  }
   const prior = { ...emptyPrior(), ranks, rare };
   zh.setPrior(prior);
 
@@ -425,6 +502,13 @@ async function main() {
     }
   }
   const flips = [];
+  const short = []; // enough behind them by the old rule, not by the share
+  // The readings a character has as a word by itself (any entry of its
+  // own that is not a name): a free word combines with others in words no
+  // dictionary lists (逮住, 拧紧, 剥皮, 很倔), so the library's default is
+  // never replaced when it is one of these.
+  const single = new Set();
+  for (const e of entries) if (e.tc.length === 1 && !e.proper && !e.variant) for (const c of new Set([e.trad, e.simp])) single.add(`${c}${e.syl[0]}`);
   const { commonChars } = await import("../web/src/script/sounds.ts");
   const everyday = new Set([...commonChars(true), ...commonChars(false)]);
   for (const [c, m] of want) {
@@ -439,12 +523,44 @@ async function main() {
     if (!cur || !marked(r) || split(r)[0] === split(cur)[0] && (split(r)[1] === 5 || split(cur)[1] === 5)) continue;
     // 地 得 兒 著 了 are read by rules of their own (script.ts particleDe, t2s.ts).
     if ("一不地得兒儿著着了瞭".includes(c) || syllableAgrees(cur, r, c, opts)) continue;
-    if (w >= FLIP_MARGIN * have && w >= FALLBACK_FREQ && !(TAIWAN_READINGS[c] && numbered(TAIWAN_READINGS[c].to) === cur)) flips.push([c, marked(r), cur, w, have]);
+    if (!(w >= FLIP_MARGIN * have && w >= FALLBACK_FREQ && !(TAIWAN_READINGS[c] && numbered(TAIWAN_READINGS[c].to) === cur))) continue;
+    const total = [...m.values()].reduce((a, x) => a + x, 0);
+    const share = w / total;
+    if (share >= FALLBACK_SHARE && !single.has(`${c}${cur}`)) flips.push([c, marked(r), cur, w, have]);
+    else short.push([c, marked(r), marked(cur) ?? cur, Number(share.toFixed(3)), single.has(`${c}${cur}`) ? "the default is a word by itself" : "share"]);
   }
+  console.error(`fallbacks: ${flips.length} characters qualify (one reading has ${FALLBACK_SHARE * 100}% of the use and the default is no word by itself); ${short.length} that the old rule took do not: ${short.sort((a, b) => a[3] - b[3]).map((x) => `${x[0]} ${x[1]}/${x[2]} ${x[3]}`).join(", ")}`);
   for (const [c, r] of flips) prior.fallback.set(c, r);
   zh.setPrior(prior);
   let afterFlips = sweep();
   console.error(`ranks + ${flips.length} fallbacks: disagree ${count(afterFlips).join(" / ")}`);
+  if (holdout) {
+    // The fallback alone, then with the ranks (a headword of one
+    // character), on headwords the tables never saw.
+    const tally = (now) => RUNS.map((_, k) => {
+      let fixed = 0;
+      let broken = 0;
+      const which = [];
+      for (const w of heldOut) {
+        const [a, b] = [heldBefore.get(w.trad)[k], now.get(w.trad)[k]];
+        if (!a && b) fixed++;
+        if (a && !b) {
+          broken++;
+          which.push(k === 2 ? w.simp : w.trad);
+        }
+      }
+      return { fixed, broken, which };
+    });
+    zh.setPrior({ ...emptyPrior(), fallback: prior.fallback });
+    const fb = tally(sweep(heldOut));
+    zh.setPrior(prior);
+    const both = tally(sweep(heldOut));
+    const line = (t) => t.map((x, k) => `${RUNS[k][2]}${k === 1 ? " traditional" : k === 2 ? " simplified" : ""}: ${x.fixed} fixed, ${x.broken} worse${x.broken ? ` (${x.which.slice(0, 12).join(" ")})` : ""}`).join("; ");
+    console.error(`held out, wrong with no prior: ${count(heldBefore).join(" / ")} of ${heldOut.length}`);
+    console.error(`held out, the fallback alone: ${line(fb)}`);
+    console.error(`held out, ranks and fallback: ${line(both)}`);
+    return;
+  }
 
   // 3. WORDS: what is still wrong and common, or made worse.
   const target = (w, form) => {
@@ -467,6 +583,10 @@ async function main() {
     // 穿着 chuān zhuó, attire; 端的 is 端 + 的): the list that counts words
     // can't tell them apart, so the particle's reading stays.
     if (chars.length === 2 && "的地得着著了".includes(chars[1]) && out[1] !== cur[1]) return null;
+    // A numeral and one more character is as often the numeral and a
+    // measure word or noun (一行字 yī háng, a line, beside 一行 yī xíng, a
+    // party; 第五行 beside 五行): the reader's own stays.
+    if (chars.length === 2 && "一二两兩三四五六七八九十几幾半每".includes(chars[0])) return null;
     return out;
   };
   const index = buildIndex(entries, freq, masses.mass);
@@ -497,6 +617,7 @@ async function main() {
       }
     }
     prior.words = new Map([...wordList].map(([k, v]) => [k, v.r.split(" ")]));
+    prior.fixes = new Set([...wordList].filter(([k, v]) => isFix(k, v.r.split(" "))).map(([k]) => k));
     zh.setPrior(prior);
     afterWords = sweep();
     // A headword a fallback made worse that no entry could put right:
@@ -565,13 +686,22 @@ async function main() {
     }
     for (const a of accepted) {
       const n = [...a.word].length;
+      let applied = 0;
+      let miss = "";
       for (const fr of FRAMES) {
         for (const [text, at] of [[`${fr}${a.word}`, 1], [`${a.word}${fr}`, 0]]) {
           const got = zh.readCodePoints(text, "zh-CN", { cache: false }).slice(at, at + n).join(" ");
-          if (got !== a.r) drop.set(a.word, `${text} reads ${got}`);
+          if (got === a.r) applied++;
+          else miss = `${text} reads ${got}`;
         }
       }
+      if (applied < FRAMES_SHARE * 2 * FRAMES.length) drop.set(a.word, `applies beside ${applied} of ${2 * FRAMES.length} common words (${miss})`);
     }
+    // Each pair of neighbours the reader then misreads counts as the two
+    // words meeting by chance (their frequencies multiplied: 身心 + 脏辫 is
+    // next to never, 这种 + 植物 is not), and the entry goes when those
+    // together pass the same margin as the audit's.
+    const misfires = new Map();
     for (const c of contexts) {
       if (!prior.anywhere.has(c.a.word)) continue;
       const got = zh.readCodePoints(c.text, "zh-CN", { cache: false });
@@ -581,19 +711,33 @@ async function main() {
         const owner = k < c.cut ? c.y : c.x;
         const idx = k < c.cut ? i : k - c.cut;
         const ok = owner.readings.some((syl) => got[i] != null && syllableAgrees(numbered(got[i]), syl[idx], owner.chars[idx], opts));
-        if (!ok) drop.set(c.a.word, `${c.text} reads ${got.join(" ")}`);
+        if (ok) continue;
+        const m = misfires.get(c.a.word) ?? { chance: 0, worst: 0, text: "" };
+        const chance = c.y.f * c.x.f;
+        m.chance += chance;
+        if (chance > m.worst) Object.assign(m, { worst: chance, text: `${c.text} reads ${got.join(" ")}` });
+        misfires.set(c.a.word, m);
+        break;
       }
     }
+    for (const a of accepted) {
+      const m = misfires.get(a.word);
+      if (m && m.chance * MISFIRE_MARGIN > a.f) drop.set(a.word, `misread beside its neighbours for ${(m.chance / a.f).toFixed(3)} of its use, most in ${m.text}`);
+    }
     if (!drop.size) break;
-    for (let k = accepted.length - 1; k >= 0; k--) if (drop.has(accepted[k].word)) rejected.push({ ...accepted.splice(k, 1)[0], why: drop.get(accepted[k]?.word) ?? "in the reader" });
+    for (let k = accepted.length - 1; k >= 0; k--) {
+      if (!drop.has(accepted[k].word)) continue;
+      const [gone] = accepted.splice(k, 1);
+      rejected.push({ ...gone, why: drop.get(gone.word) });
+    }
   }
   console.error(`+ ${accepted.length} anywhere words (${rejected.length} rejected): disagree ${count(after).join(" / ")}`);
 
   const enc = {
     RANKS: [...ranks].map(([c, list]) => `${c}${list.join(",")}${rare.has(c) ? `;${rare.get(c).join(",")}` : ""}`).join("|"),
     FALLBACK: flips.map(([c, r]) => `${c}${r}`).join("|"),
-    WORDS: [...wordList].filter(([k]) => !prior.anywhere.has(k)).map(([k, v]) => `${k}=${v.r}`).join("|"),
-    ANYWHERE: accepted.map((a) => `${a.word}=${a.r}`).join("|"),
+    WORDS: [...wordList].filter(([k]) => !prior.anywhere.has(k)).map(([k, v]) => `${k}=${prior.fixes.has(k) ? "!" : ""}${v.r}`).join("|"),
+    ANYWHERE: accepted.map((a) => `${a.word}=${prior.fixes.has(a.word) ? "!" : ""}${a.r}`).join("|"),
     BLOCK: [...prior.block].map(([k, set]) => `${k}:${[...set].join(",")}`).join("|"),
   };
   const out = path.join(here, "..", "web", "src", "script", "zh-freq.ts");
@@ -606,7 +750,9 @@ async function main() {
  * ";". FALLBACK: the reading inside a word no dictionary settles. WORDS:
  * corrections for a whole run of characters. ANYWHERE: corrections that
  * are safe inside a sentence, except beside a BLOCK word (">长=zhǎng:长期"
- * is: a word ending 长 zhǎng is not one where 长期 starts on its 长).
+ * is: a word ending 长 zhǎng is not one where 长期 starts on its 长). A
+ * reading after "!" corrects pinyin-pro's own dictionary word (the only
+ * entries that may replace one).
  * Loaded only with zh.ts (on demand). */
 `;
   fs.writeFileSync(out, `${head}${Object.entries(enc).map(([k, v]) => `export const ${k} =\n  ${JSON.stringify(v)};\n`).join("")}`);
@@ -628,9 +774,62 @@ async function main() {
     }
     console.error(`first reading against Unihan kMandarin: ${same} of ${both} the same`);
     const changed = (k) => words.filter((w) => before.get(w.trad)[k] !== after.get(w.trad)[k]).map((w) => `${k === 2 ? w.simp : w.trad}${after.get(w.trad)[k] ? "" : " (worse)"}`);
-    fs.writeFileSync(rep, JSON.stringify({ flips, differ, accepted, rejected, fixed: { tw: changed(0), cn: changed(1), simp: changed(2) } }, null, 1));
+    const fixes = [...prior.fixes].map((k) => `${k} ${plain.get(k).readings.join(" ")} → ${(prior.words.get(k) ?? prior.anywhere.get(k)).join(" ")}${prior.anywhere.has(k) ? " (anywhere)" : ""}`);
+    console.error(`${fixes.length} entries correct pinyin-pro's own dictionary word: ${fixes.join("; ")}`);
+    // The same words inside a sentence (TIER_FRAME), where only the
+    // tables that work in running text apply: read again with no prior
+    // and with this one.
+    const framed = (w, key, form, locale) => {
+      const [pre, post] = TIER_FRAME[form];
+      return agrees(w, key, zh.readCodePoints(`${pre}${w[form]}${post}`, locale, { cache: false }).slice([...pre].length, [...pre].length + [...w[form]].length));
+    };
+    const top = new Set([...words].filter((w) => freq.has(w.simp)).sort((a, b) => freq.get(b.simp) - freq.get(a.simp)).slice(0, 40000));
+    const sweepFramed = () => new Map([...top].map((w) => [w.trad, RUNS.map(([key, form, locale]) => framed(w, key, form, locale))]));
+    const framedAfter = sweepFramed();
+    zh.setPrior(null);
+    const framedBefore = sweepFramed();
+    zh.setPrior(prior);
+    const tiers = frequencyTiers(words, freq, before, after);
+    const inText = frequencyTiers([...top], freq, framedBefore, framedAfter);
+    tiers.inText = inText;
+    for (const t of inText.table) console.error(`in a sentence (${TIER_FRAME.simp.join("…")}): ${t}`);
+    for (const t of tiers.table) console.error(t);
+    fs.writeFileSync(rep, JSON.stringify({ flips, short, fixes, tiers, differ, accepted, rejected, fixed: { tw: changed(0), cn: changed(1), simp: changed(2) } }, null, 1));
     console.error(`report written to ${rep}`);
   }
+}
+
+/** The sentence a tier's words are also read in: Chinese characters on
+ *  both sides, so the word is not the whole run. */
+const TIER_FRAME = { simp: ["他们", "吗"], trad: ["他們", "嗎"] };
+
+/** How often a learner meets a wrong reading: the `n` most frequent words
+ *  of the frequency list that CC-CEDICT has, simplified read as zh-CN and
+ *  their traditional forms as zh-TW, with the number that disagree with
+ *  CC-CEDICT before (no prior: main's reader) and after, and those words'
+ *  share of the tier's running text (their frequencies over the tier's). */
+export function frequencyTiers(words, freq, before, after, sizes = [1000, 2000, 5000, 10000, 20000]) {
+  const bySimp = new Map();
+  for (const w of words) if (freq.has(w.simp)) (bySimp.get(w.simp) ?? bySimp.set(w.simp, []).get(w.simp)).push(w);
+  const ranked = [...bySimp].map(([simp, list]) => ({ simp, list, f: freq.get(simp) })).sort((a, b) => b.f - a.f);
+  // Simplified: right if any headword of that spelling is read right (a
+  // spelling has one reading here); traditional: every form must be.
+  const ok = (sweep, item, run) => (run === 2 ? item.list.some((w) => sweep.get(w.trad)[2]) : item.list.every((w) => sweep.get(w.trad)[0]));
+  const table = [];
+  const wrong = {};
+  for (const [run, name] of [[2, "simplified zh-CN"], [0, "traditional zh-TW"]]) {
+    for (const n of sizes) {
+      const tier = ranked.slice(0, n);
+      const mass = tier.reduce((a, x) => a + x.f, 0);
+      const cell = (sweep) => {
+        const bad = tier.filter((x) => !ok(sweep, x, run));
+        return `${bad.length} (${((100 * bad.length) / tier.length).toFixed(2)}%, ${((100 * bad.reduce((a, x) => a + x.f, 0)) / mass).toFixed(3)}% of running text)`;
+      };
+      table.push(`${name}, top ${n}: before ${cell(before)}; after ${cell(after)}`);
+    }
+    wrong[name] = ranked.slice(0, 5000).map((x, k) => ({ ...x, rank: k + 1 })).filter((x) => !ok(after, x, run)).map((x) => `${x.rank} ${run === 2 ? x.simp : [...new Set(x.list.map((w) => w.trad))].join("/")} [${x.list.map((w) => w.readings.map((r) => r.join(" ")).join(" / ")).join(" ; ")}]`);
+  }
+  return { table, wrong };
 }
 
 /** What the audit needs of the dictionary: every spelling with its
@@ -676,11 +875,16 @@ const BLOCK_FREQ = 1e-6;
 /** How many times more frequent the word must be than all the misfires
  *  left to chance, each estimated as its two words meeting by chance
  *  (which undercounts words that go together, hence the size of it). */
-const MISFIRE_MARGIN = 100;
+const MISFIRE_MARGIN = 10;
+/** An entry must take effect beside at least this share of the FRAMES
+ *  words, before it and after it. Where it doesn't, the reader's word
+ *  boundary check left it out and the text reads as it did without the
+ *  entry: no harm, but an entry that rarely applies earns nothing. */
+const FRAMES_SHARE = 0.75;
 const FRAMES = [..."我你他不很有是在和的了也都"];
 /** How many of the most frequent neighbours on each side the reader is
  *  tried against. */
-const NEIGHBOURS = 8;
+const NEIGHBOURS = 20;
 
 /**
  * Whether a correction is safe inside a sentence. Its characters can
@@ -716,7 +920,9 @@ function audit(word, reading, fw, index) {
       for (const it of list) {
         const share = harm(it, at(it), wantPart);
         if (!share) continue;
-        if (it.chars.length > 1 && it.f >= BLOCK_FREQ && it.simp) {
+        // A block word runs across the entry's edge: one that lies wholly
+        // inside the entry (分子 in 知识分子) would veto it everywhere.
+        if (it.chars.length > wantPart.length && it.f >= BLOCK_FREQ && it.simp) {
           block.set(key, [...(block.get(key) ?? []), it.word]);
           continue;
         }

@@ -298,6 +298,9 @@ async function assessWithAzure(
   }
 }
 
+/** The longest `reading` taken: 24 characters' syllables with spaces. */
+const MAX_READING_CHARS = 240;
+
 async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
   if (!scoresTones(locale)) throw new HttpError(422, "pronunciation checks aren't available for this language", "not_available");
@@ -321,17 +324,18 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   // only readings the characters have), so the page can't have a recording
   // judged against a sound the text doesn't have; one that fails is
   // ignored and the reader's reading scores, as without it.
-  const hint = params.get("reading");
-  const checked = hint ? validateHint(t.text, hint, locale) : null;
-  const own = readCodePoints(t.text, locale, { cache: false });
-  const s = scoreSyllables(t.text, checked?.ok ? withHints(t.text, own, [{ term: t.text, reading: checked.reading.join(" ") }]) : own, { alternatives });
-  if (s.error !== undefined) throw new HttpError(400, s.error);
-
-  // The limits before the body is read: a busy user or server costs no
-  // upload. The slots are held from here, through the Azure call, so a
-  // recording paid for at Azure is never then turned away.
+  // The limits before the body is read, and before the hint is looked at:
+  // a busy user or server costs no upload and no work here. (Nothing
+  // awaits between this check and the slots being taken below.) The slots
+  // are held through the Azure call, so a recording paid for at Azure is
+  // never then turned away.
   if (scoring.has(ctx.user.id)) throw new HttpError(429, "a recording is already being checked; try again in a moment");
   if (workers >= MAX_WORKERS) throw new HttpError(429, "pronunciation checks are busy; try again in a moment");
+  const hint = params.get("reading");
+  if (hint != null && hint.length > MAX_READING_CHARS) throw new HttpError(400, "reading is too long");
+  const checked = hint ? validateHint(t.text, hint, locale) : null;
+  const s = scoreSyllables(t.text, checked?.ok ? withHints(t.text, locale, [{ term: t.text, reading: checked.reading.join(" ") }], { cache: false }) : readCodePoints(t.text, locale, { cache: false }), { alternatives });
+  if (s.error !== undefined) throw new HttpError(400, s.error);
   scoring.add(ctx.user.id);
   workers++;
   try {

@@ -304,14 +304,14 @@ ${castRule}
 - A message that starts with "[direct]" is the learner talking to you, the dojo master, outside the practice, in their native language: a request about the session, such as changing the scene, redoing or repeating something, going slower, or a question. It is not an answer to correct or grade. Reply as the narrator, in the language your instructions say to guide in (the learner's native language unless they say otherwise): do what they ask (or say briefly why you can't), confirm in a sentence, then carry on from there, back in the scene if that is where you were.`;
 }
 
-/** The one rule a Mandarin session adds (`readings: true`; ld-op2): the
- *  dojo master wrote the line and knows which reading it meant, the app's
- *  reader only guesses where no dictionary word settles a character. Its
- *  hint rides on the gloss, shown and never spoken; the server checks it
- *  against the character's known readings (web/src/script/zh.ts
- *  validateHint). No other language's prompt carries this. */
+/** The one rule a Mandarin session adds when reading hints are switched
+ *  on (`readings: true`; web/server/hints.ts LINGO_READING_HINTS, off by
+ *  default; ld-op2): pinyin after each glossed word, unconditionally (no
+ *  judging which characters have several readings: that cost thinking).
+ *  The server checks every one against the characters' known readings
+ *  (web/src/script/zh.ts validateHint) and keeps only what differs. */
 export const READINGS_RULE =
-  "- In the GLOSS line, when a glossed word or phrase (not a whole sentence) has a character with more than one reading (行, 長, 樂, 還, 覺, 重, 著, 了, 得 and the like), add its pinyin with tone marks in square brackets right after it, one syllable per character: 銀行 [yín háng] = bank. The app shows it over the characters; it is never spoken.";
+  "- In the GLOSS line, after each glossed word of two or more characters (not a whole sentence, not a single character), add its pinyin with tone marks in square brackets, one syllable per character: 銀行 [yín háng] = bank. The app shows it over the characters; it is never spoken.";
 
 /** The system prompt for a voice turn: the pack as assembled, then the
  *  delivery adapter. `{ drill: true }` for a drill scenario (First steps):
@@ -598,22 +598,24 @@ export const MAX_GLOSSES = 16;
 const GLOSS_TERM_CHARS = 200;
 const GLOSS_MEANING_CHARS = 300;
 
-/** A gloss term that ends in a bracketed romanization, "銀行 [yín háng]"
- *  (round or full-width brackets too): the term has a Chinese character,
- *  the bracket only letters, tone marks, digits and spaces. */
-const HINT_RE = /^(.*\p{Script=Han}.*?)\s*[[［(（]\s*([\p{L}\p{M}0-9 '’:·-]{1,120}?)\s*[\]］)）]$/u;
+/** A gloss term that ends in a romanization in square brackets, "銀行 [yín
+ *  háng]" (full-width ones too; never round ones, which are part of a term:
+ *  "東京 (Tōkyō)"): the term has a Chinese character, the bracket only
+ *  letters, tone marks, digits and spaces. */
+const HINT_RE = /^(.*\p{Script=Han}.*?)\s*[[［]\s*([\p{L}\p{M}0-9 '’:·-]{1,120}?)\s*[\]］]$/u;
 /** The longest reading hint kept from a reply or a replay. */
 export const GLOSS_READING_CHARS = 120;
 
 /** The GLOSS line(s) of a reply as `{term, meaning}`: "term = meaning"
  *  entries split on "|", <t> marks dropped, duplicates (by term, ignoring
  *  case) dropped, capped at MAX_GLOSSES. A malformed entry is skipped, not
- *  fatal: a missing definition costs nothing that matters. A term may
- *  carry a reading hint in brackets (READINGS_RULE): it comes back as
- *  `reading`, exactly as written and unchecked (the turn route keeps only
- *  what validateHint accepts), and the term without it; a reply without
- *  hints parses as it always did. */
-export function parseGlosses(text) {
+ *  fatal: a missing definition costs nothing that matters. With
+ *  `readings` (a Mandarin session only) a term may carry a reading hint in
+ *  square brackets (READINGS_RULE): it comes back as `reading`, exactly as
+ *  written and unchecked (the turn route keeps only what validateHint
+ *  accepts), and the term without it. Without `readings` every term is
+ *  kept whole, brackets and all, as it always was. */
+export function parseGlosses(text, { readings = false } = {}) {
   const out = [];
   const seen = new Set();
   for (const rawLine of String(text).split(/\r?\n/)) {
@@ -625,7 +627,7 @@ export function parseGlosses(text) {
       const clean = (x) => x.replace(MARKS_RE, "").replace(/\*\*/g, "").trim();
       const unquote = (x) => x.replace(/^["“”']+|["“”']+$/g, "").trim();
       let term = unquote(clean(entry.slice(0, eq)));
-      const hint = HINT_RE.exec(term);
+      const hint = readings ? HINT_RE.exec(term) : null;
       // No Chinese character in the bracket itself: "漢字 [汉字]" is a term.
       const reading = hint && !/\p{Script=Han}/u.test(hint[2]) && /[a-z]/i.test(hint[2].normalize("NFD")) ? squeeze(hint[2]).trim() : "";
       if (reading) term = unquote(hint[1]);

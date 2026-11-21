@@ -572,7 +572,9 @@ phrases         id, learner_id, language_profile_id, lang (BCP-47 of the
                 meaning_norm (a pending row's key), note, reading
                 (Mandarin: the dojo master's checked reading where the
                 reader's differs, "nǐ děi qù"; null for almost every
-                phrase; migration 0014, docs/VOICE.md §Reading hints),
+                phrase; cleared when the text is edited, checked
+                against the text again wherever it is shown; migration
+                0014, docs/VOICE.md §Reading hints),
                 source
                 (gloss|extraction|manual|scenario), alternates jsonb
                 (accepted other forms, default []), starred, suspended,

@@ -14,8 +14,18 @@ import type { VoiceGloss, VoiceLine } from "../shared/wire.ts";
 import { scriptFor } from "../src/script/script.ts";
 import { hintToKeep, validateHint } from "../src/script/zh.ts";
 
-/** Whether sessions in `locale` ask the dojo master for readings. */
-export const wantsReadings = (locale: string | null | undefined): boolean => scriptFor(locale)?.id === "zh";
+/** Whether a reply in `locale` may carry reading hints at all (Mandarin):
+ *  they are parsed, checked and stored whenever one comes, whatever asked
+ *  for it. */
+export const readsHints = (locale: string | null | undefined): boolean => scriptFor(locale)?.id === "zh";
+
+/** The one switch for asking: `LINGO_READING_HINTS=on` in the environment
+ *  puts READINGS_RULE in a Mandarin session's prompt. OFF by default (the
+ *  owner's decision, PR #63): measured on 16 runs no hint changed a
+ *  reading, and the rule may cost thinking time every turn. With it off a
+ *  Mandarin prompt is byte for byte what it was before there were hints. */
+export const READING_HINTS_SWITCH = "LINGO_READING_HINTS";
+export const wantsReadings = (locale: string | null | undefined): boolean => process.env[READING_HINTS_SWITCH] === "on" && readsHints(locale);
 
 export interface HintStats {
   /** Glosses that came with a hint. */
@@ -25,7 +35,7 @@ export interface HintStats {
   /** Accepted and different from the reader's reading: kept. */
   kept: number;
   /** Dropped, by reason (validateHint's). */
-  dropped: { shape: number; count: number; unknown: number; rare: number; settled: number };
+  dropped: { shape: number; single: number; count: number; unknown: number; rare: number; settled: number };
 }
 
 /**
@@ -34,8 +44,8 @@ export interface HintStats {
  * and gone from every other, in any language but Mandarin from all.
  */
 export function settleHints(glosses: VoiceGloss[], lines: Pick<VoiceLine, "text">[], locale: string | null | undefined): { glosses: VoiceGloss[]; stats: HintStats } {
-  const stats: HintStats = { given: 0, accepted: 0, kept: 0, dropped: { shape: 0, count: 0, unknown: 0, rare: 0, settled: 0 } };
-  const zh = wantsReadings(locale) && locale ? locale : null;
+  const stats: HintStats = { given: 0, accepted: 0, kept: 0, dropped: { shape: 0, single: 0, count: 0, unknown: 0, rare: 0, settled: 0 } };
+  const zh = readsHints(locale) && locale ? locale : null;
   const texts = lines.map((l) => l.text);
   const out = glosses.map(({ reading, ...g }) => {
     if (reading == null) return g;
@@ -63,6 +73,6 @@ export function logHints(stats: HintStats): void {
   if (!stats.given) return;
   const d = stats.dropped;
   console.log(
-    `[lingo-dojo] reading hints: ${stats.given} given, ${stats.accepted} accepted (${stats.kept} differ from the reader and are kept), dropped ${d.count} syllable count, ${d.unknown} not a reading of the character, ${d.rare} rare without a confirming word, ${d.settled} against a dictionary word, ${d.shape} other`,
+    `[lingo-dojo] reading hints: ${stats.given} given, ${stats.accepted} accepted (${stats.kept} differ from the reader and are kept), dropped ${d.count} syllable count, ${d.unknown} not a reading of the character, ${d.single} for one character alone, ${d.rare} marginal without a confirming word, ${d.settled} against a dictionary word, ${d.shape} other`,
   );
 }

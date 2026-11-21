@@ -515,6 +515,13 @@ test("a bank phrase's stored reading (ld-op2) is what its recording is judged ag
     // sound the text doesn't have.
     assert.deepEqual(await got("nǐ dǎi qù"), [["nǐ", [3]], ["dé", [2]], ["qù", [4]]]);
     assert.deepEqual(await got("děi"), [["nǐ", [3]], ["dé", [2]], ["qù", [4]]]);
+    // One that once took a minute to refuse (every split of aaa… tried):
+    // ignored at once; one longer than any reading is a 400 before any work.
+    const t0 = Date.now();
+    const worst = await lin.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("啊".repeat(24))}&reading=${"a".repeat(25)}`, clip([1]).wav, { "Content-Type": "audio/wav" });
+    assert.notEqual(worst.status, 500);
+    assert.ok(Date.now() - t0 < 5000, "bounded (the step bound itself is in reading-hints.test.mjs)");
+    assert.equal((await said("a".repeat(241))).status, 400);
   } finally {
     withAzure();
   }

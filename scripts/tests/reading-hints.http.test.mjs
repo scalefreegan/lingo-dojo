@@ -1,6 +1,7 @@
 // Reading hints end to end over HTTP (ld-op2, docs/VOICE.md §Reading
-// hints): a Mandarin turn's prompt asks for them and a Spanish one's does
-// not; the reply's hints are checked, the kept one stored with the turn,
+// hints): with the switch off (the default) no prompt asks for them, a
+// Mandarin one included; switched on, a Mandarin turn's prompt asks and a
+// Spanish one's does not; either way a reply's hints are checked, the kept one stored with the turn,
 // replayed, and written to the phrase the gloss fills; the bank, Practice
 // and the tone check read it back. The real plugin on an in-process PGlite
 // with a stand-in `claude` first on PATH. Every name here is made up.
@@ -17,6 +18,18 @@ import { copyFixture, write } from "./helpers.mjs";
 import { ADULT, KID, addUser, client } from "./http-session.mjs";
 import { freshDb } from "./testdb.mjs";
 import { READINGS_RULE } from "../voice.mjs";
+
+const SWITCH = "LINGO_READING_HINTS";
+delete process.env[SWITCH];
+/** `fn` with the per-turn rule switched on, then off again. */
+async function switchedOn(fn) {
+  process.env[SWITCH] = "on";
+  try {
+    return await fn();
+  } finally {
+    delete process.env[SWITCH];
+  }
+}
 
 const root = copyFixture();
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-data-"));
@@ -76,11 +89,12 @@ test("a Mandarin turn: asked for readings, the kept hint stored with the turn an
   const mei = await someone(MANDARIN);
   const c = await start(mei);
   fake.answer(REPLY);
-  const r = await turn(mei, c.id, [], "");
+  const r = await switchedOn(() => turn(mei, c.id, [], ""));
   assert.equal(r.status, 200, r.text);
-  assert.ok(systemOf(fake.lastArgs()).includes(READINGS_RULE), "the prompt asks");
+  const asked = systemOf(fake.lastArgs());
+  assert.ok(asked.includes(READINGS_RULE), "the prompt asks");
   // Checked: tone numbers normalised; 銀行 is what the reader shows anyway,
-  // ní is no reading of 你, héng is rare with no word to confirm it.
+  // ní is no reading of 你, and one character alone takes no hint.
   assert.deepEqual(r.body.glosses, [
     { term: "你得去", meaning: "you have to go", reading: "nǐ děi qù" },
     { term: "銀行", meaning: "bank" },
@@ -112,13 +126,40 @@ test("a Mandarin turn: asked for readings, the kept hint stored with the turn an
 
   // The next turn replays the kept hint in its brackets; a reply that
   // glosses the phrase again without one leaves the stored reading alone.
+  // The switch is off again (the default): this Mandarin prompt has no
+  // rule, and is otherwise the one that asked, byte for byte.
   const history = [{ role: "master", lines: r.body.lines, glosses: r.body.glosses, stage: r.body.stage ?? undefined }];
   fake.answer(["CHARACTER-F: <t>你得去。</t>", "GLOSS: 你得去 = you must go", "STAGE: scene"].join("\n"));
   const r2 = await turn(mei, c.id, history, "好");
   assert.equal(r2.status, 200, r2.text);
+  const plain = systemOf(fake.lastArgs());
+  assert.ok(!plain.includes(READINGS_RULE) && !/pinyin/i.test(plain), "off: a Mandarin prompt as it was before there were hints");
+  assert.equal(asked.replace(`${READINGS_RULE}\n`, ""), plain, "the rule is the only thing the switch adds");
   assert.match(promptOf(fake.lastArgs()), /GLOSS: 你得去 \[nǐ děi qù\] = you have to go \| 銀行 = bank/);
   assert.deepEqual(r2.body.glosses, [{ term: "你得去", meaning: "you must go" }]);
   assert.deepEqual(await q("select reading from phrases where text = '你得去'"), [{ reading: "nǐ děi qù" }]);
+
+  // Editing the phrase's words drops the reading that was checked against
+  // the old ones (it would be shown over the new); another edit keeps it.
+  const id = by["你得去"].id;
+  const noted = await mei.call("PATCH", `/api/phrases/${id}`, { note: "must" });
+  assert.equal(noted.status, 200, noted.text);
+  assert.equal(noted.body.phrase.reading, "nǐ děi qù");
+  const edited = await mei.call("PATCH", `/api/phrases/${id}`, { text: "你德去" });
+  assert.equal(edited.status, 200, edited.text);
+  assert.ok(!("reading" in edited.body.phrase));
+  assert.deepEqual(await q("select text, reading from phrases where id = $1", [id]), [{ text: "你德去", reading: null }]);
+});
+
+test("with the switch off a Mandarin reply's hints are still read, checked and stored (another source can feed them)", async () => {
+  const mei = await someone(MANDARIN);
+  const c = await start(mei);
+  fake.answer(REPLY);
+  const r = await turn(mei, c.id, [], "");
+  assert.equal(r.status, 200, r.text);
+  assert.ok(!systemOf(fake.lastArgs()).includes(READINGS_RULE));
+  assert.deepEqual(r.body.glosses[0], { term: "你得去", meaning: "you have to go", reading: "nǐ děi qù" });
+  assert.deepEqual(await q("select reading from phrases where language_profile_id = $1 and text = '你得去'", [mei.languageId]), [{ reading: "nǐ děi qù" }]);
 });
 
 test("a client's history can't plant a reading that isn't plain syllables", async () => {
@@ -133,23 +174,26 @@ test("a client's history can't plant a reading that isn't plain syllables", asyn
   assert.doesNotMatch(prompt, /STAGE: done \[z/);
 });
 
-test("any other language: the prompt is not asked, and a bracketed term is no hint to keep", async () => {
+test("any other language, switch on or off: the prompt is not asked, and a bracketed term stays a term, as on main", async () => {
   const sam = await someone(ADULT);
   const c = await start(sam);
-  fake.answer(["CHARACTER-F: <t>Hola.</t>", "GLOSS: Hola = hello | 你得去 [nǐ děi qù] = you have to go", "STAGE: scene"].join("\n"));
-  const r = await turn(sam, c.id, [], "");
+  fake.answer(["CHARACTER-F: <t>Hola.</t>", "GLOSS: Hola = hello | 你得去 [nǐ děi qù] = you have to go | 東京 (Tōkyō) = Tokyo", "STAGE: scene"].join("\n"));
+  const r = await switchedOn(() => turn(sam, c.id, [], ""));
   assert.equal(r.status, 200, r.text);
   const system = systemOf(fake.lastArgs());
   assert.ok(!system.includes(READINGS_RULE) && !/pinyin/i.test(system));
-  assert.ok(r.body.glosses.every((x) => !("reading" in x)));
+  assert.deepEqual(r.body.glosses, [{ term: "Hola", meaning: "hello" }, { term: "你得去 [nǐ děi qù]", meaning: "you have to go" }, { term: "東京 (Tōkyō)", meaning: "Tokyo" }]);
   assert.deepEqual(await q("select count(*)::int as n from phrases where language_profile_id = $1 and reading is not null", [sam.languageId]), [{ n: 0 }]);
 });
 
-test("a kids Mandarin session is asked too", async () => {
+test("switched on, a kids Mandarin session is asked too", async () => {
   const pip = await someone({ ...KID, targetLanguage: "Mandarin Chinese", targetVariant: "Mainland Mandarin (Putonghua)" });
   const c = await start(pip, "kids");
   fake.answer(REPLY);
-  const r = await turn(pip, c.id, [], "", "kids");
+  const r = await switchedOn(() => turn(pip, c.id, [], "", "kids"));
   assert.equal(r.status, 200, r.text);
   assert.ok(systemOf(fake.lastArgs()).includes(READINGS_RULE));
+  fake.answer(REPLY);
+  await turn(pip, c.id, [], "", "kids");
+  assert.ok(!systemOf(fake.lastArgs()).includes(READINGS_RULE), "and not with the switch off");
 });

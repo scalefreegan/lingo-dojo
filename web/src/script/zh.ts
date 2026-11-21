@@ -78,8 +78,16 @@ export const READING_FIXES: Record<string, string> = {
  *    stand: one is applied only where it cuts through no word of the
  *    library's dictionary, and not beside a `block` word, a common word
  *    that would be misread (种植 not in 这种植物, 局长 not in 局长期).
- *  A reading that a dictionary word settles is never touched. */
+ *  A reading that a dictionary word of the library's settles is never
+ *  touched, except by an entry marked a correction (`fixes`, "!" in the
+ *  table): one where CC-CEDICT reads that exact word otherwise than the
+ *  library's dictionary does (五行 wǔ xíng, not háng). An `anywhere` word
+ *  must also stand between two word boundaries of the platform's own word
+ *  segmenter (wordStarts), so none is read across two words (五行 not in
+ *  第五行, 局长 not in 中情局长期). */
 export interface Prior {
+  /** The `words` / `anywhere` keys allowed to replace a dictionary word's reading. */
+  fixes: Set<string>;
   ranks: Map<string, string[]>;
   rare: Map<string, string[]>;
   fallback: Map<string, string>;
@@ -93,7 +101,12 @@ const pairs = (s: string) => (s ? s.split("|") : []);
 /** A prior from the tables' strings ("量liàng,liáng;liang|…", "量liàng|…",
  *  "向量=xiàng liàng|…"): what zh-freq.ts holds and the builder writes. */
 export function parsePrior(t: { RANKS: string; FALLBACK: string; WORDS: string; ANYWHERE: string; BLOCK: string }): Prior {
-  const p: Prior = { ranks: new Map(), rare: new Map(), fallback: new Map(), words: new Map(), anywhere: new Map(), block: new Map() };
+  const p: Prior = { ranks: new Map(), rare: new Map(), fallback: new Map(), words: new Map(), anywhere: new Map(), block: new Map(), fixes: new Set() };
+  const entry = (table: Map<string, string[]>, e: string) => {
+    const [w, r] = e.split("=");
+    if (r.startsWith("!")) p.fixes.add(w);
+    table.set(w, r.replace(/^!/, "").split(" "));
+  };
   for (const e of pairs(t.RANKS)) {
     const [ch] = e;
     const [usual, rare = ""] = e.slice(ch.length).split(";");
@@ -104,14 +117,8 @@ export function parsePrior(t: { RANKS: string; FALLBACK: string; WORDS: string; 
     const [ch] = e;
     p.fallback.set(ch, e.slice(ch.length));
   }
-  for (const e of pairs(t.WORDS)) {
-    const [w, r] = e.split("=");
-    p.words.set(w, r.split(" "));
-  }
-  for (const e of pairs(t.ANYWHERE)) {
-    const [w, r] = e.split("=");
-    p.anywhere.set(w, r.split(" "));
-  }
+  for (const e of pairs(t.WORDS)) entry(p.words, e);
+  for (const e of pairs(t.ANYWHERE)) entry(p.anywhere, e);
   for (const e of pairs(t.BLOCK)) {
     const at = e.indexOf(":");
     p.block.set(e.slice(0, at), e.slice(at + 1).split(","));
@@ -128,6 +135,7 @@ export const currentPrior = (): Prior => prior;
 /** Swap the prior (null: none at all): for the builder, which measures the
  *  reader without it, and the tests. Empties the caches. */
 export function setPrior(p: Prior | null): void {
+  if (p && !p.fixes) p.fixes = new Set();
   prior = p ?? parsePrior({ RANKS: "", FALLBACK: "", WORDS: "", ANYWHERE: "", BLOCK: "" });
   measure();
   cache.clear();
@@ -150,6 +158,37 @@ const priorFor = <T>(table: Map<string, T>, ch: string, simp: string): T | undef
 export interface Detail {
   readings: (string | null)[];
   settled: boolean[];
+  /** Read as part of a word of the library's dictionary (a segment of two
+   *  or more characters, a correction's included): what neither the prior
+   *  nor a reading hint may change. */
+  dict: boolean[];
+  /** In the same dictionary word as the character before it. */
+  joined: boolean[];
+  /** Where a word starts by the platform's word segmenter (one flag per
+   *  code point and one for the end); null where there is no segmenter. */
+  starts: boolean[] | null;
+}
+
+let segmenter: Intl.Segmenter | null | undefined;
+/** Word boundaries by Intl.Segmenter (ICU's dictionary segmenter: 很|重要,
+ *  中情局|长期|以来), per code point; null on a platform without one, where
+ *  nothing that needs a boundary is applied. */
+function wordStarts(cps: string[]): boolean[] | null {
+  if (segmenter === undefined) segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter("zh", { granularity: "word" }) : null;
+  if (!segmenter) return null;
+  const starts: boolean[] = new Array(cps.length + 1).fill(false);
+  const at = new Map<number, number>();
+  let n = 0;
+  cps.forEach((c, k) => {
+    at.set(n, k);
+    n += c.length;
+  });
+  for (const s of segmenter.segment(cps.join(""))) {
+    const k = at.get(s.index);
+    if (k !== undefined) starts[k] = true;
+  }
+  starts[cps.length] = true;
+  return starts;
 }
 const cache = new Map<string, Detail>();
 const CACHE_MAX = 4000;
@@ -177,6 +216,9 @@ export function readDetail(text: string, locale: string, { cache: useCache = tru
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
   const settled = cps.map(() => false);
+  let dict = settled;
+  let joined = settled;
+  let starts: boolean[] | null = null;
   if (cps.some(isHan)) {
     // A zh-TW profile's text is always read as traditional. A zh-CN one's
     // by its characters (t2s.ts scriptOf): simplified text (one with a
@@ -205,7 +247,7 @@ export function readDetail(text: string, locale: string, { cache: useCache = tru
     // as part of a dictionary word (its own, or a correction's).
     // `joined[k]`: the character at k is in the same segment as the one
     // before it.
-    const joined = cps.map(() => false);
+    joined = cps.map(() => false);
     i = 0;
     for (const seg of segment(src, { format: OutputFormat.AllSegment, toneSandhi: false, nonZh: "spaced" })) {
       const n = [...seg.origin].length || 1;
@@ -217,13 +259,15 @@ export function readDetail(text: string, locale: string, { cache: useCache = tru
       }
       i += n;
     }
-    applyPrior(cps, simp, liao, joined, out, settled);
+    dict = settled.slice();
+    starts = wordStarts(cps);
+    applyPrior(cps, simp, liao, { joined, dict, starts }, out, settled);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
   }
-  const detail = { readings: out, settled };
+  const detail = { readings: out, settled, dict, joined, starts };
   if (!useCache) return detail;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, detail);
@@ -235,7 +279,16 @@ export function readDetail(text: string, locale: string, { cache: useCache = tru
  *  `anywhere` words in it take theirs (anywhereAt), a character alone its
  *  most frequent reading, and one inside a run that no word settled the
  *  fallback, where the table has one. */
-function applyPrior(cps: string[], simp: string[], liao: boolean[], joined: boolean[], out: (string | null)[], settled: boolean[]): void {
+function applyPrior(cps: string[], simp: string[], liao: boolean[], seg: Pick<Detail, "joined" | "dict" | "starts">, out: (string | null)[], settled: boolean[]): void {
+  // An entry may replace a dictionary word's reading only as a correction.
+  const allowed = (key: string, r: string[], at: number) => prior.fixes.has(key) || r.every((x, n) => !seg.dict[at + n] || out[at + n] === x);
+  const whole = (i: number, j: number) => {
+    for (const [table, key] of [[prior.words, cps.slice(i, j).join("")], [prior.words, simp.slice(i, j).join("")], [prior.anywhere, simp.slice(i, j).join("")]] as const) {
+      const r = table.get(key);
+      if (r) return r.length === j - i && allowed(key, r, i) ? r : undefined;
+    }
+    return undefined;
+  };
   for (let i = 0; i < cps.length; ) {
     if (!isHan(cps[i])) {
       i++;
@@ -243,16 +296,16 @@ function applyPrior(cps: string[], simp: string[], liao: boolean[], joined: bool
     }
     let j = i;
     while (j < cps.length && isHan(cps[j])) j++;
-    const word = j - i > 1 ? (prior.words.get(cps.slice(i, j).join("")) ?? prior.words.get(simp.slice(i, j).join("")) ?? prior.anywhere.get(simp.slice(i, j).join(""))) : undefined;
+    const word = j - i > 1 ? whole(i, j) : undefined;
     for (let k = i; k < j; k++) {
-      const hit = word ? null : anywhereAt(simp, joined, k, j);
+      const hit = word ? null : anywhereAt(simp, seg, k, j, allowed);
       if (hit) {
         hit.forEach((r, n) => {
           out[k + n] = r;
           settled[k + n] = true;
         });
         k += hit.length - 1;
-      } else if (word && word.length === j - i) {
+      } else if (word) {
         out[k] = word[k - i];
         settled[k] = true;
       } else if (liao[k] || (j - i > 1 && CONTEXT_FORMS.includes(cps[k])) || (simp[k] === cps[k] && NEUTRAL_KEPT.includes(cps[k]))) settled[k] = true;
@@ -267,14 +320,15 @@ function applyPrior(cps: string[], simp: string[], liao: boolean[], joined: bool
 
 /** The `anywhere` word starting at `k` of the simplified text (its run
  *  ends before `end`), longest first, or null: one whose edges fall inside
- *  no word of the library's dictionary (`joined`), and with no `block`
- *  word across either of its cuts. */
-function anywhereAt(simp: string[], joined: boolean[], k: number, end: number): string[] | null {
-  if (joined[k]) return null;
+ *  no word of the library's dictionary (`joined`) and on word boundaries
+ *  of the platform's segmenter, with no `block` word across either of its
+ *  cuts, and replacing no dictionary reading unless it is a correction. */
+function anywhereAt(simp: string[], { joined, starts }: Pick<Detail, "joined" | "starts">, k: number, end: number, allowed: (key: string, r: string[], at: number) => boolean): string[] | null {
+  if (joined[k] || !starts || !starts[k]) return null;
   const is = (w: string, at: number) => at >= 0 && simp.slice(at, at + [...w].length).join("") === w;
   for (let n = Math.min(anywhereLongest, end - k); n >= 2; n--) {
     const r = prior.anywhere.get(simp.slice(k, k + n).join(""));
-    if (!r || r.length !== n || joined[k + n]) continue;
+    if (!r || r.length !== n || joined[k + n] || !starts[k + n] || !allowed(simp.slice(k, k + n).join(""), r, k)) continue;
     let blocked = false;
     for (let cut = 1; cut < n && !blocked; cut++) {
       const after = prior.block.get(`>${simp.slice(k + cut, k + n).join("")}=${r.slice(cut).join(" ")}`);
@@ -307,7 +361,7 @@ export function ambiguousChars(text: string, locale: string, opts: { cache?: boo
  *  `hints` (the dojo master's readings for phrases of this text) are laid
  *  over the reader's own. */
 export function readOffsets(text: string, locale: string, hints?: readonly ReadingHint[] | null): (string | null)[] {
-  const cps = hints?.length ? withHints(text, readCodePoints(text, locale), hints) : readCodePoints(text, locale);
+  const cps = hints?.length ? withHints(text, locale, hints) : readCodePoints(text, locale);
   const out: (string | null)[] = new Array(text.length).fill(null);
   let at = 0;
   let k = 0;
@@ -433,45 +487,73 @@ export interface ReadingHint {
   reading: string;
 }
 
-/** `readings` (one per code point of `text`) with each hint laid over
- *  every occurrence of its phrase, and nothing else touched; a hint whose
- *  syllables don't count out to its phrase's characters is ignored. The
- *  longer phrase wins where two overlap. A copy: the reader's cache keeps
- *  its own. */
-export function withHints(text: string, readings: readonly (string | null)[], hints: readonly ReadingHint[]): (string | null)[] {
-  const out = readings.slice();
+/** Whether `syl` is a reading `ch` has (any the reader knows, its neutral
+ *  tone, 一 / 不 in any tone, the r of erhua): what a stored reading must
+ *  still be for the text it is shown over. */
+function fitsChar(ch: string, syl: string, locale: string): boolean {
+  if (ch === "一" || ch === "不") return toneless(syl) === (ch === "一" ? "yi" : "bu");
+  const { usual, rare } = knownReadings(ch, locale);
+  return among(syl, [...usual, ...rare]);
+}
+
+/** `text` read (one reading per code point) with each hint laid over the
+ *  occurrences of its phrase that stand as words of their own, and nothing
+ *  else touched:
+ *  - a hint for one character alone is ignored (得 [děi] would rewrite 覺得,
+ *    長 [zhǎng] 長城), as is one whose syllables don't count out to its
+ *    characters, or name a sound a character doesn't have (a stored
+ *    reading whose phrase was since edited);
+ *  - an occurrence counts only where both its ends are word boundaries:
+ *    not inside a word of the library's dictionary, and on a boundary of
+ *    the platform's segmenter (很重 is not in 很重要); with no segmenter,
+ *    only where it is the whole run of Chinese characters;
+ *  - a character the library read from a dictionary word keeps that
+ *    reading (the dictionary outranks the hint, the hint the prior).
+ *  The longer phrase wins where two overlap. A copy: the reader's cache
+ *  keeps its own. */
+export function withHints(text: string, locale: string, hints: readonly ReadingHint[], opts: { cache?: boolean } = {}): (string | null)[] {
+  const d = readDetail(text, locale, opts);
+  const out = d.readings.slice();
   const cps = [...text];
-  const sorted = hints.filter((h) => h && typeof h.term === "string" && typeof h.reading === "string").sort((a, b) => a.term.length - b.term.length);
+  const sorted = hints.filter((h) => h && typeof h.term === "string" && typeof h.reading === "string").sort((x, y) => x.term.length - y.term.length);
   for (const h of sorted) {
     const term = [...h.term.normalize("NFC")];
     const syl = h.reading.split(" ");
-    if (!term.length || term.filter(isHan).length !== syl.length || !syl.every(isPinyin)) continue;
+    const han = term.filter(isHan);
+    if (han.length < 2 || han.length !== syl.length || !syl.every(isPinyin) || !han.every((c, n) => fitsChar(c, syl[n], locale))) continue;
     for (let i = 0; i + term.length <= cps.length; i++) {
       if (!term.every((c, k) => cps[i + k] === c)) continue;
+      const end = i + term.length;
+      const bounded = d.starts ? d.starts[i] && d.starts[end] : !isHan(cps[i - 1] ?? "") && !isHan(cps[end] ?? "");
+      if (!bounded || d.joined[i] || d.joined[end]) continue;
       let n = 0;
       term.forEach((c, k) => {
-        if (isHan(c)) out[i + k] = syl[n++];
+        if (!isHan(c)) return;
+        if (!d.dict[i + k]) out[i + k] = syl[n];
+        n++;
       });
-      i += term.length - 1;
+      i = end - 1;
     }
   }
   return out;
 }
 
-/** The readings a hint may give `ch`: `usual` (the ones in use: the
- *  prior's ranks, the card's first, Taiwan's for a zh-TW text and the
- *  mainland's it replaces) and `rare` (the prior's rare ones, the readings
- *  only names have, the rest of the library's list). */
+/** The readings a hint may give `ch`: `usual` (every reading in use: the
+ *  prior's ranks, common and rare, which is what CC-CEDICT's words attest
+ *  (還 hái and huán, 曾 céng and the surname's zēng), the card's first,
+ *  Taiwan's for a zh-TW text and the mainland's it replaces) and `rare`
+ *  (the marginal ones: what only the library's long list has, attested by
+ *  no word). */
 export function knownReadings(ch: string, locale: string): { usual: string[]; rare: string[] } {
   const s = simplified(ch);
   const lib = charReadings(ch, locale);
-  const usual = [...(priorFor(prior.ranks, ch, s) ?? []), ...lib.slice(0, 1)];
+  // 著 and 乾 have no ranks (the word chooses their form): all of theirs.
+  const usual = [...(priorFor(prior.ranks, ch, s) ?? []), ...(priorFor(prior.rare, ch, s) ?? []), ...(CONTEXT_FORMS.includes(ch) ? lib : lib.slice(0, 1)), ...charReadings(ch, "zh-CN").slice(0, 1)];
   const t = TAIWAN_READINGS[ch];
   if (t && isTaiwan(locale)) usual.push(t.to, t.from);
   if (ch === "兒" || ch === "儿") usual.push("r");
-  const rare = [...(priorFor(prior.rare, ch, s) ?? []), ...lib];
   const uniq = (list: string[]) => list.filter((r, k) => isPinyin(r) && list.indexOf(r) === k);
-  return { usual: uniq(usual), rare: uniq(rare).filter((r) => !usual.includes(r)) };
+  return { usual: uniq(usual), rare: uniq(lib).filter((r) => !usual.includes(r)) };
 }
 
 const TONE_MARK: Record<string, string> = { "̄": "1", "́": "2", "̌": "3", "̀": "4" };
@@ -487,7 +569,14 @@ function letters(r: string): [string, string] {
   return [base, tone];
 }
 
-export type HintVerdict = { ok: true; reading: string[] } | { ok: false; why: "shape" | "count" | "unknown" | "rare" | "settled" };
+export type HintVerdict = { ok: true; reading: string[] } | { ok: false; why: "shape" | "single" | "count" | "unknown" | "rare" | "settled" };
+
+let steps = 0;
+/** How many candidates the last validateHint tried: bounded by the hint's
+ *  length times the candidates per character (the tests hold it to that). */
+export const lastHintSteps = (): number => steps;
+/** The longest hint looked at, in letters and marks per character. */
+const HINT_PER_CHAR = 8;
 
 /**
  * A reading hint checked against what the characters can be read as. The
@@ -501,26 +590,35 @@ export type HintVerdict = { ok: true; reading: string[] } | { ok: false; why: "s
  *  - 一 and 不 take any tone of yi / bu (their sandhi) and keep the app's
  *    own; a neutral-tone syllable keeps the reader's tone where it is the
  *    same syllable (dictionaries differ on these); 兒 may be the r of erhua.
- *  - A rare reading (knownReadings) stands only if a dictionary word
- *    confirms it: the reader, given the phrase alone, reads that
- *    character so from a word ("rare" otherwise: the common reading is
- *    kept, 行 is not héng on the model's word alone).
+ *  - A phrase of one character takes no hint ("single"): laid over a
+ *    line it would rewrite that character inside other words.
+ *  - Any reading in use passes (還 huán as well as hái: the choice between
+ *    a character's ordinary readings is what a hint is for). Only a
+ *    marginal one (knownReadings' `rare`: in the library's long list,
+ *    attested by no CC-CEDICT word) needs a dictionary word of the phrase
+ *    to read the character so ("rare" otherwise).
  *  - A zh-TW text then takes Taiwan's readings over the result.
- *  - It settles only what no dictionary word does: where the reader,
- *    given the phrase alone, read a character from a word (銀行 háng, 長大
- *    zhǎng), a hint that says otherwise is dropped whole ("settled": the
- *    dictionary outranks the model, which outranks only the prior). Such
- *    a hint can still matter: inside a line the same phrase may be read
- *    across another word, and there the hint puts it right.
+ *  - The order of authority is: a word of the library's dictionary, then
+ *    the hint, then the prior's tables, then a character's default. So a
+ *    hint against a dictionary word's reading (銀行 háng, 長大 zhǎng) is
+ *    dropped whole ("settled"), and one against the prior's choice (抽空
+ *    kōng, 第五行 háng) stands.
+ *  - The work is bounded: the hint is cut off at HINT_PER_CHAR letters a
+ *    character, each character's candidates are distinct, and a position
+ *    that failed once is not tried again (啊啊啊… against aaa… used to take
+ *    a minute).
  * `reading`: one syllable per Chinese character of `term`.
  */
 export function validateHint(term: string, raw: string, locale: string): HintVerdict {
+  steps = 0;
   const cps = [...term.normalize("NFC")];
   const han = cps.map((c, k) => (isHan(c) ? k : -1)).filter((k) => k >= 0);
   if (!han.length || han.length > 24 || typeof raw !== "string" || raw.length > 240) return { ok: false, why: "shape" };
   const typed = raw.toLowerCase().replace(/u:|v/g, "ü").normalize("NFD");
   const src = typed.replace(/[^a-z0-9\p{M}]/gu, "");
   if (!src) return { ok: false, why: "shape" };
+  if (han.length < 2) return { ok: false, why: "single" };
+  if (src.length > han.length * HINT_PER_CHAR) return { ok: false, why: "count" };
   const own = readDetail(term.normalize("NFC"), locale, { cache: false });
   // Each character's candidates: [what is written, the reading it means, rare].
   const options = han.map((k): [string, string, boolean][] => {
@@ -546,16 +644,25 @@ export function validateHint(term: string, raw: string, locale: string): HintVer
         for (const n of ["5", "0", ""]) list.push([b + n, neutral, t ? false : isRare]);
       }
     }
-    // Longest first, so "hang2" is not taken as "hang" and a stray "2".
-    return list.sort((x, y) => y[0].length - x[0].length);
+    // One candidate per spelling (the first: an ordinary reading before a
+    // marginal one). Longest first, so "hang2" is not taken as "hang" and
+    // a stray "2".
+    const seen = new Set<string>();
+    return list.filter(([w]) => !seen.has(w) && seen.add(w)).sort((x, y) => y[0].length - x[0].length);
   });
+  // (character, position) pairs from which nothing fits: never tried twice.
+  const dead = new Set<number>();
   const fit = (i: number, at: number): [string, boolean][] | null => {
     if (i === options.length) return at === src.length ? [] : null;
+    const key = i * (src.length + 1) + at;
+    if (dead.has(key)) return null;
     for (const [written, reading, rare] of options[i]) {
+      steps++;
       if (!src.startsWith(written, at)) continue;
       const rest = fit(i + 1, at + written.length);
       if (rest) return [[reading, rare], ...rest];
     }
+    dead.add(key);
     return null;
   };
   const got = fit(0, 0);
@@ -566,11 +673,11 @@ export function validateHint(term: string, raw: string, locale: string): HintVer
   const full: (string | null)[] = cps.map(() => null);
   for (const [n, k] of han.entries()) {
     const [reading, rare] = got[n];
-    if (rare && !(own.settled[k] && own.readings[k] === reading)) return { ok: false, why: "rare" };
+    if (rare && !(own.dict[k] && own.readings[k] === reading)) return { ok: false, why: "rare" };
     full[k] = isPinyin(reading) ? reading : own.readings[k];
   }
   if (isTaiwan(locale)) taiwanize(cps.join(""), full);
-  if (han.some((k) => own.settled[k] && own.readings[k] != null && full[k] !== own.readings[k])) return { ok: false, why: "settled" };
+  if (han.some((k) => own.dict[k] && own.readings[k] != null && full[k] !== own.readings[k])) return { ok: false, why: "settled" };
   const reading = han.map((k) => full[k] ?? "");
   return reading.every(isPinyin) ? { ok: true, reading } : { ok: false, why: "unknown" };
 }
@@ -584,7 +691,7 @@ export function hintToKeep(term: string, reading: string[], lines: readonly stri
   const hint: ReadingHint = { term: t, reading: reading.join(" ") };
   for (const text of [t, ...lines.map((l) => l.normalize("NFC")).filter((l) => l.includes(t))]) {
     const base = readCodePoints(text, locale, { cache: false });
-    const laid = withHints(text, base, [hint]);
+    const laid = withHints(text, locale, [hint], { cache: false });
     if (laid.some((r, k) => r !== base[k])) return hint.reading;
   }
   return null;

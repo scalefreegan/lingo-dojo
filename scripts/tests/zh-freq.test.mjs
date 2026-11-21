@@ -9,10 +9,15 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import zlib from "node:zlib";
-import { cedictEntries, decodeCBpack, marked, ranksFrom, readingMass, tokenShares } from "../gen-zh-freq.mjs";
+import os from "node:os";
+import path from "node:path";
+import { FALLBACK_SHARE, UNIHAN_READINGS_SHA256, UNIHAN_URL, UNIHAN_ZIP_SHA256, WORDFREQ_SHA256, WORDFREQ_URL, cedictEntries, checkSha256, decodeCBpack, frequencyTiers, marked, ranksFrom, readingMass, tokenShares } from "../gen-zh-freq.mjs";
+import { EVERYDAY_SENTENCES, EVERYDAY_WORDS } from "./zh-everyday.mjs";
+import { commonChars } from "../../web/src/script/sounds.ts";
+import { mergedWith } from "../../web/src/script/t2s.ts";
 import { numbered } from "../pinyin-sweep.mjs";
 import * as table from "../../web/src/script/zh-freq.ts";
-import { READING_FIXES, ambiguousChars, charReadings, currentPrior, parsePrior, readCodePoints, readDetail, setPrior } from "../../web/src/script/zh.ts";
+import { READING_FIXES, ambiguousChars, charReadings, currentPrior, parsePrior, readCodePoints, readDetail, setPrior, simplified } from "../../web/src/script/zh.ts";
 import { isPinyin, pinyinToZhuyin } from "../../web/src/script/script.ts";
 
 const shipped = parsePrior(table);
@@ -84,7 +89,7 @@ test("the table: small, well formed, every reading a syllable the app can show",
   assert.match(src.toString(), /CC BY-SA 4\.0/);
   assert.ok(fs.existsSync(new URL("../../web/src/script/ZH-FREQ-LICENSE.txt", import.meta.url)));
   const p = shipped;
-  assert.ok(p.ranks.size > 800 && p.words.size > 500 && p.anywhere.size > 100 && p.fallback.size > 20);
+  assert.ok(p.ranks.size > 800 && p.words.size > 500 && p.anywhere.size > 100 && p.fallback.size > 10);
   const all = [...p.ranks.values(), ...p.rare.values(), ...p.words.values(), ...p.anywhere.values(), ...[...p.fallback.values()].map((r) => [r])].flat();
   for (const r of new Set(all)) {
     assert.ok(isPinyin(r), r);
@@ -172,17 +177,22 @@ test("common words the library misreads: whole runs, and inside a sentence where
   assert.equal(line("排行榜第一"), "pái háng bǎng dì yī");
   assert.equal(line("他是船长"), "tā shì chuán zhǎng");
   assert.equal(without(() => line("局长来了")), "jú cháng lái le");
-  // 种植 and 心脏 are whole-run only: 这种植物, 不小心脏了 would misread.
-  assert.equal(shipped.anywhere.has("种植"), false);
+  // 种植 and 心脏 too, between word boundaries: not 这种 + 植物.
+  assert.equal(line("农民种植水稻"), "nóng mín zhòng zhí shuǐ dào");
+  assert.equal(line("我的心脏很好"), "wǒ de xīn zàng hěn hǎo");
   assert.equal(line("这种植物很好看"), "zhè zhǒng zhí wù hěn hǎo kàn");
-  // A block word across the entry's edge vetoes it: 局 + 长期, not 局长 + 期.
+  // 局 + 长期, not 局长 + 期: the word boundary and the block list both say so.
   assert.ok([...shipped.block.get(">长=zhǎng")].includes("长期"));
   assert.equal(line("中情局长期以来"), "zhōng qíng jú cháng qī yǐ lái");
   assert.equal(line("中情局長期以來", "zh-TW"), "zhōng qíng jú cháng qí yǐ lái");
-  // Without the veto the entry would fire there (so the test bites).
+  // A block word across the entry's edge vetoes it where the segmenter
+  // doesn't: 视为 + 了 gives way to 视 + 为了. Without the veto the entry
+  // fires there (so the test bites).
+  assert.ok([...shipped.block.get(">为=wéi")].includes("为了"));
+  assert.equal(line("他们视为了"), "tā men shì wèi le");
   setPrior({ ...shipped, block: new Map() });
   try {
-    assert.equal(line("中情局长期以来").split(" ")[3], "zhǎng");
+    assert.equal(line("他们视为了"), "tā men shì wéi le");
   } finally {
     setPrior(shipped);
   }
@@ -197,15 +207,171 @@ test("no table word fires across a word boundary (PR #62's cases, and frames)", 
     ["他穿着一件衣服", 2, "zhe"], ["很美的", 2, "de"], ["我还给你做饭", 1, "hái"],
   ];
   for (const [text, at, want] of cases) assert.equal(readCodePoints(text, "zh-CN", { cache: false })[at], want, text);
-  // Every anywhere word reads as corrected beside each common word.
+  // Every anywhere word takes effect beside most common words; where it
+  // doesn't (a word boundary or a block word says the characters belong
+  // elsewhere), the text reads exactly as it would without the entry.
   const common = [..."我你他不很有是在和的了也都"];
   for (const [w, r] of shipped.anywhere) {
     const n = r.length;
+    let applied = 0;
     for (const x of common) {
-      assert.equal(readCodePoints(x + w, "zh-CN", { cache: false }).slice(1).join(" "), r.join(" "), x + w);
-      assert.equal(readCodePoints(w + x, "zh-CN", { cache: false }).slice(0, n).join(" "), r.join(" "), w + x);
+      for (const [text, at] of [[x + w, 1], [w + x, 0]]) {
+        const got = readCodePoints(text, "zh-CN", { cache: false }).slice(at, at + n).join(" ");
+        if (got === r.join(" ")) applied++;
+      }
     }
+    assert.ok(applied >= 0.75 * 2 * common.length, `${w}: beside ${applied} of ${2 * common.length}`);
   }
+});
+
+test("a prior entry never replaces a reading the library's dictionary settled, unless it is marked a correction (PR #63 review)", () => {
+  // 银行 is the library's word (háng). An entry against it is ignored; the
+  // same entry marked "!" (CC-CEDICT reads that exact word otherwise) is not.
+  const withWords = (WORDS, ANYWHERE = "") => parsePrior({ RANKS: "", FALLBACK: "", WORDS, ANYWHERE, BLOCK: "" });
+  try {
+    setPrior(withWords("银行=yín xíng"));
+    assert.equal(line("银行"), "yín háng");
+    setPrior(withWords("银行=!yín xíng"));
+    assert.equal(line("银行"), "yín xíng");
+    assert.ok(currentPrior().fixes.has("银行"));
+    setPrior(withWords("", "银行=yín xíng"));
+    assert.equal(line("我去银行了"), "wǒ qù yín háng le");
+    setPrior(withWords("", "银行=!yín xíng"));
+    assert.equal(line("我去银行了"), "wǒ qù yín xíng le");
+    // A word the library doesn't have needs no mark.
+    setPrior(withWords("", "局长=jú zhǎng"));
+    assert.equal(line("局长来了"), "jú zhǎng lái le");
+    // An anywhere word stands between word boundaries of the platform's
+    // segmenter: 五行 (the five elements) is not in 第五行 (the fifth line).
+    setPrior(withWords("", "五行=!wǔ xíng"));
+    assert.equal(line("五行是金木水火土"), "wǔ xíng shì jīn mù shuǐ huǒ tǔ");
+    assert.equal(line("第五行写错了"), "dì wǔ háng xiě cuò le");
+    assert.deepEqual(readDetail("第五行写错了", "zh-CN", { cache: false }).starts.slice(0, 4), [true, false, true, true], "第五 | 行");
+    // Both ends: 局长 starts on a boundary in 我们局长期缺人 and ends inside 长期.
+    setPrior(withWords("", "局长=jú zhǎng"));
+    assert.equal(line("我们局长来了"), "wǒ men jú zhǎng lái le");
+    assert.equal(line("我们局长期缺人"), "wǒ men jú cháng qī quē rén");
+  } finally {
+    setPrior(shipped);
+  }
+  // The shipped corrections are marked, each one a word the library reads
+  // otherwise from its own dictionary.
+  assert.ok(shipped.fixes.size > 20 && shipped.fixes.size < 200, `${shipped.fixes.size} corrections`);
+  for (const k of shipped.fixes) {
+    const r = shipped.words.get(k) ?? shipped.anywhere.get(k);
+    const plain = without(() => readDetail(k, "zh-CN", { cache: false }));
+    assert.ok(plain.dict.some((d, n) => d && plain.readings[n] !== r[n]), k);
+  }
+  // And no unmarked entry changes one.
+  for (const [k, r] of [...shipped.words, ...shipped.anywhere]) {
+    if (shipped.fixes.has(k)) continue;
+    const plain = without(() => readDetail(k, "zh-CN", { cache: false }));
+    assert.ok(!plain.dict.some((d, n) => d && plain.readings[n] !== r[n]), k);
+  }
+  // 五行 inside 第五行 is the fifth line, and a numeral with one more
+  // character is left to the reader (一行字 beside 一行人).
+  assert.equal(line("第五行写错了"), "dì wǔ háng xiě cuò le");
+  assert.equal(line("第一行"), "dì yī háng");
+  for (const k of [...shipped.words.keys(), ...shipped.anywhere.keys()]) assert.ok(!([...k].length === 2 && "一二两兩三四五六七八九十几幾半每".includes([...k][0])), k);
+});
+
+test("the fallback is only for a default that is ultra-rare: one reading with 90% of the use, the default no word by itself (PR #63 review)", () => {
+  assert.equal(FALLBACK_SHARE, 0.9);
+  assert.ok(shipped.fallback.size <= 40, `${shipped.fallback.size} fallbacks`);
+  // The reviewer's words, which the first table misread (CC-CEDICT lacks
+  // them, so the sweep never saw them): each default is a word by itself.
+  for (const c of "粘逮豁拧擰剥剝倔咀卷供夹") assert.equal(shipped.fallback.has(c), false, c);
+  const words = { 粘土: "nián tǔ", 逮住: "dǎi zhù", 豁口: "huō kǒu", 拧紧: "nǐng jǐn", 拧螺丝: "nǐng luó sī", 剥皮: "bāo pí", 很倔: "hěn juè" };
+  for (const [w, r] of Object.entries(words)) assert.equal(line(w), r, w);
+});
+
+test("on words and sentences that are not CC-CEDICT's headwords the prior is never worse, the fallback alone included", () => {
+  const bare = (r) => r.normalize("NFD").replace(/[\u0300-\u036f]/g, "").normalize("NFC");
+  const same = (a, b) => a === b || (a != null && (a === bare(a) || b === bare(b)) && bare(a) === bare(b));
+  const empty = () => parsePrior({ RANKS: "", FALLBACK: "", WORDS: "", ANYWHERE: "", BLOCK: "" });
+  const judge = () => ({
+    words: EVERYDAY_WORDS.map(([w, r]) => {
+      const want = r.split(" ");
+      // Alone, and inside a sentence.
+      const alone = readCodePoints(w, "zh-CN", { cache: false });
+      const framed = readCodePoints(`他们${w}吗`, "zh-CN", { cache: false }).slice(2, -1);
+      return [alone, framed].map((got) => got.every((g, k) => same(g, want[k])));
+    }),
+    sentences: EVERYDAY_SENTENCES.map(([t, at, r]) => same(readCodePoints(t, "zh-CN", { cache: false })[at], r)),
+  });
+  assert.ok(EVERYDAY_WORDS.length >= 150 && EVERYDAY_SENTENCES.length >= 60);
+  const none = without(judge);
+  setPrior({ ...empty(), fallback: shipped.fallback });
+  const fallback = judge();
+  setPrior(shipped);
+  const full = judge();
+  const worse = (now, k) => EVERYDAY_WORDS.filter((_, n) => none.words[n][k] && !now.words[n][k]).map((w) => w[0]);
+  const fixed = (now, k) => EVERYDAY_WORDS.filter((_, n) => !none.words[n][k] && now.words[n][k]).map((w) => w[0]);
+  for (const k of [0, 1]) {
+    assert.deepEqual(worse(fallback, k), [], "the fallback alone makes no everyday word worse");
+    assert.deepEqual(worse(full, k), [], "nor does the whole prior");
+  }
+  assert.ok(fixed(full, 0).length >= 9 && fixed(full, 1).length >= 6, `fixed ${fixed(full, 0)} / ${fixed(full, 1)}`);
+  // The sentences are aimed at the ANYWHERE words, half of them with the
+  // word's characters meeting across two words. The ones it makes worse
+  // are named: each is a string that really can be read both ways, where
+  // the segmenter took the word (小心 + 脏 as 心脏, 船 + 长 as 船长).
+  const sWorse = EVERYDAY_SENTENCES.filter((_, n) => none.sentences[n] && !full.sentences[n]).map((s) => s[0]);
+  const sFixed = EVERYDAY_SENTENCES.filter((_, n) => !none.sentences[n] && full.sentences[n]).map((s) => s[0]);
+  assert.deepEqual(sWorse, ["衣服不小心脏了", "我想吃葡萄干嘛", "这只不过河的猫", "这条船长十米"]);
+  assert.ok(sFixed.length >= 24, `${sFixed.length} fixed`);
+  assert.deepEqual(EVERYDAY_SENTENCES.filter((_, n) => none.sentences[n] && !fallback.sentences[n]), []);
+});
+
+test("a traditional character and its simplified form lead with the same reading, alone and on the card (PR #63 review)", () => {
+  for (const [t, s] of [["為", "为"], ["蘋", "苹"], ["還", "还"], ["長", "长"], ["樂", "乐"], ["覺", "觉"], ["發", "发"], ["誰", "谁"], ["種", "种"], ["當", "当"]]) {
+    assert.equal(charReadings(t, "zh-CN")[0], charReadings(s, "zh-CN")[0], `${t} / ${s} card`);
+    assert.equal(line(t), line(s), `${t} / ${s} alone`);
+    assert.equal(line(t), charReadings(t, "zh-CN")[0], `${t}: the card leads with what the line shows`);
+  }
+  // Across the common traditional characters: wherever the simplified
+  // form's first reading is one the traditional character has, it leads.
+  let checked = 0;
+  for (const t of commonChars(true)) {
+    const s = simplified(t);
+    if (s === t || "著乾".includes(t)) continue;
+    const lead = shipped.ranks.get(s)?.[0];
+    const own = shipped.ranks.get(t);
+    if (!lead) continue;
+    if (!mergedWith(t, s).length) assert.equal(own, undefined, `${t} takes ${s}'s entry`);
+    else if (own?.includes(lead)) assert.equal(own[0], lead, `${t} leads like ${s}`);
+    checked++;
+  }
+  assert.ok(checked > 200, `${checked} pairs`);
+  // 髮 shares 发 with 發 and has no fā: its own.
+  assert.equal(line("髮"), "fà");
+  // 著 alone in a zh-TW text is the particle (Taiwan writes 著 for 着): zhe,
+  // as before the prior; 乾 gān.
+  assert.equal(line("著", "zh-TW"), "zhe");
+  assert.equal(charReadings("著", "zh-TW")[0], "zhe");
+  assert.equal(line("乾", "zh-TW"), "gān");
+  assert.equal(shipped.ranks.has("著"), false);
+});
+
+test("the downloads are pinned and checked; the frequency tiers count what a learner meets", () => {
+  assert.match(WORDFREQ_URL, /\/raw\/[0-9a-f]{40}\//, "wordfreq at a commit");
+  assert.match(UNIHAN_URL, /\/Public\/\d+\.\d+\.\d+\//, "Unihan at a version");
+  for (const h of [WORDFREQ_SHA256, UNIHAN_ZIP_SHA256, UNIHAN_READINGS_SHA256]) assert.match(h, /^[0-9a-f]{64}$/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-sha-"));
+  const file = path.join(dir, "x");
+  fs.writeFileSync(file, "abc");
+  checkSha256(file, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  assert.throws(() => checkSha256(file, WORDFREQ_SHA256), /SHA-256 is ba7816bf/);
+  fs.rmSync(dir, { recursive: true });
+  // Three words by frequency; the second is wrong before and right after.
+  const w = (trad, simp) => ({ trad, simp, readings: [["x1"]] });
+  const words = [w("甲", "甲"), w("乙", "乙"), w("丙", "丙"), w("丁", "丁")];
+  const freq = new Map([["甲", 0.5], ["乙", 0.3], ["丙", 0.2]]);
+  const sweep = (bad) => new Map(words.map((x) => [x.trad, [!bad.includes(x.trad), true, !bad.includes(x.trad)]]));
+  const { table: rows, wrong } = frequencyTiers(words, freq, sweep(["乙", "丙"]), sweep(["丙"]), [2, 3]);
+  assert.equal(rows[0], "simplified zh-CN, top 2: before 1 (50.00%, 37.500% of running text); after 0 (0.00%, 0.000% of running text)");
+  assert.equal(rows[1], "simplified zh-CN, top 3: before 2 (66.67%, 50.000% of running text); after 1 (33.33%, 20.000% of running text)");
+  assert.deepEqual(wrong["simplified zh-CN"], ["3 丙 [x1]"]);
 });
 
 test("simplified text the table doesn't name reads exactly as before", () => {

@@ -692,6 +692,9 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     // those it names (read here, under the row lock, so one saved since the
     // learner's page loaded stays).
     const changed = (set.text !== undefined && set.text !== row.text) || (input.meaning !== undefined && input.meaning !== row.meaning);
+    // The stored reading (ld-op2) was checked against the words as they
+    // were: new words, no reading (the reader's own is shown again).
+    if (set.text !== undefined && set.text !== row.text) set.reading = null;
     if (changed) set.alternates = [];
     else {
       let alternates = row.alternates;

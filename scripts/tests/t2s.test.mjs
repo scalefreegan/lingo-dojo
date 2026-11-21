@@ -89,7 +89,7 @@ test("script-neutral text in a zh-CN profile reads as traditional, 著 as simpli
     // Taiwan writes 沈默 for 沉默; a mainland text would write 沉默 (chosen: chén).
     沈默: "chén mò", 沈: "shěn",
     // Simplified characters too, kept where likelier: the note, 幺麽.
-    徵: "zhǐ", 含商咀徵: "hán shāng jǔ zhǐ", 幺麽: "yāo mó", 什麽: "shén me", 乾隆: "qián lóng", 乾安: "qián ān",
+    徵: "zhǐ", 含商咀徵: "hán shāng zuǐ zhǐ", 幺麽: "yāo mó", 什麽: "shén me", 乾隆: "qián lóng", 乾安: "qián ān",
   };
   for (const [w, r] of Object.entries(neutral)) {
     assert.equal(scriptOf(w), "neutral", w);

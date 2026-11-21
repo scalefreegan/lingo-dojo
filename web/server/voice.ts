@@ -28,7 +28,7 @@ import { KEYTERM_SHARE, sessionKeyterms } from "../../scripts/keyterms.mjs";
 import { rawDb } from "./db.ts";
 import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
-import { logHints, settleHints, wantsReadings } from "./hints.ts";
+import { logHints, readsHints, settleHints, wantsReadings } from "./hints.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { paidSlot } from "./paid.ts";
@@ -558,7 +558,7 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const lines = parseVoiceReply(run.text, mode, { drill });
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
     // Every reading hint is checked before anything keeps it (hints.ts).
-    const hinted = settleHints(parseGlosses(run.text), lines, targetLocale);
+    const hinted = settleHints(parseGlosses(run.text, { readings: readsHints(targetLocale) }), lines, targetLocale);
     logHints(hinted.stats);
     const reply: VoiceTurnReply = { lines, glosses: hinted.glosses, choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
     if (conversation) {
