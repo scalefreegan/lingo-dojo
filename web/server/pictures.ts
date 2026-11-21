@@ -27,11 +27,12 @@ import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts
 import { audioProblem, phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
-// The kids word game and its pictures (docs/DATA.md §Kids word game). A
-// kids learner hears a word of the language they learn and taps the
-// matching picture; each tap is a quiet review of the word's `listen` card
-// (the same FSRS write adult Practice makes). The child sees stars and
-// cheers, never a score.
+// The word game and its pictures (docs/DATA.md §Kids word game). A learner
+// hears a word of the language they learn and taps the matching picture;
+// each tap is a quiet review of the word's `listen` card (the same FSRS
+// write adult Practice makes). A child sees stars and cheers, never a
+// score; an adult plays it as Practice's Pictures mode (ld-318), and only
+// an adult's answer reply names the word and its meaning.
 //
 //   GET  /api/game                          the pictures' status (no call starts)
 //   POST /api/game/start                    a game's rounds from ready pictures; tops up missing ones in the background
@@ -39,10 +40,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET  /api/game/audio/:phraseId          the word said (Practice's phrase audio and its cache)
 //   GET  /api/game/pictures/:id/:file       a picture (immutable: a redraw is a new file, so a new URL)
 //
-// The grown-up's side, from the Library's Phrase bank (never inside the
-// game, where a child could press it):
+// The grown-up's side, from the Library's Phrase bank and the menu's
+// Picture library (never inside the game, where a child could press it):
 //
 //   GET  /api/pictures                      the status
+//   GET  /api/pictures/words                every current word picture of the language, newest first
 //   POST /api/pictures/fill                 draw pictures for the words waiting (the backlog)
 //   GET  /api/pictures/phrase/:id           a word's picture
 //   POST /api/pictures/phrase/:id/remove    out of the game, file deleted
@@ -50,13 +52,14 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/pictures/phrase/:id/draw      {description?}: a word judged "no clear picture" drawn anyway
 //   POST /api/pictures/restyle              Redraw all in the current style (every picture not in PICTURE_THEME)
 //
-// All mounted with wrap's `learner: true`, and for kids learners only: an
-// adult learner's Practice is unchanged and has no game (a 403 here), and
-// a kids learner's Practice routes stay a 403 (practice.ts).
+// All mounted with wrap's `learner: true`, for kids and adult learners
+// alike; a kids learner's Practice routes stay a 403 (practice.ts). The
+// kids menu has no Picture library, but these routes stay reachable by a
+// kids learner's session (the Phrase bank uses them).
 //
 // Pictures are made ahead of play, in the background, by one run per
 // language profile at a time:
-//  - triggers: a kids session's end (after its recap, extraction.ts, so its
+//  - triggers: a session's end, kids or adult (after its recap, extraction.ts, so its
 //    words are in the bank), the grown-up's Draw pictures or Redraw, and a
 //    game's start (a top-up: the game is built from ready pictures only and
 //    never waits). Never a poll, a count or a page load;

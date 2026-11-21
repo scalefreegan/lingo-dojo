@@ -1862,7 +1862,9 @@ a session length picker (5 / 10 / 20 items).
 Kids get the phrase bank, session capture and the review block. The practice
 modes above assume reading and typing, which conflicts with kids goals
 ("entirely by ear"), so a kids learner's Practice tab is the word game
-instead (§Kids word game). The drills' routes are a 403 for kids.
+instead (§Kids word game). The drills' routes are a 403 for kids. (Adults
+also have the word game, as the Pictures mode: §The game for adults, and
+the picture library.)
 
 ### As built (phase 7a: flashcards)
 
@@ -3046,10 +3048,12 @@ export), `db-migration-0009.test.mjs`.
 
 Added 2026-11-20 (bead `ld-8zu`, migration `0011_word_pictures`; Black
 Forest Labs, the picture theme, the stock set and Redraw all 2026-11-21,
-bead `ld-6k7`, migration `0012_picture_themes`). A kids
+bead `ld-6k7`, migration `0012_picture_themes`; adults and the picture
+library 2026-11-21, bead `ld-318`, migration `0013_stock_concepts`). A kids
 learner's Practice tab is a by-ear game: the child hears a word of the
-language they learn and taps the matching picture. Adults are unchanged and
-get no game. A kids learner's adult drills stay a 403.
+language they learn and taps the matching picture. An adult plays the same
+game as Practice's **Pictures** mode (§The game for adults). A kids
+learner's adult drills stay a 403.
 
 ### Tables
 
@@ -3357,7 +3361,78 @@ How a word uses one:
 
 Stock access is small functions (`scripts/picture-stock.mjs`: `listStock`
 with each concept's file state, `drawStockPicture`, `removeStockPicture`,
-`addStockConcept`), which the CLI uses and a later settings page can call.
+`addStockConcept`), which the CLI and the picture library page use.
+
+#### Concepts added from the page, and the stock ledger (ld-318)
+
+Migration `0013_stock_concepts` adds two install-wide tables (nobody's
+personal rows, so not through `owned.ts`; queries only in
+`scripts/db/pictureStock.ts`):
+
+- `picture_stock_concepts (id, category, description, words text[],
+  created_by → users ON DELETE SET NULL, created_at)`: a concept an admin
+  added from the page. Checks: id `^[a-z0-9][a-z0-9-]{0,47}$`, category
+  1–40 characters, description 1–80, 1–20 words. Never written to
+  `content/` (`content/pictures.yaml` is the content agent's file).
+- `picture_stock_calls (id, user_id → users ON DELETE SET NULL,
+  concept_id, outcome ok|refused|failed|null, created_at)`, indexed on
+  `created_at`: one row per stock draw, written as the call starts (before
+  the provider is asked), pruned past a day.
+
+**Merging.** Everywhere the stock list is read (the picturable check's
+offer, the page, `npm run pictures:stock`), `mergeStock` in
+`scripts/pictures.mjs` puts the file's concepts first and then the
+database's; a database concept with a file concept's id is skipped with a
+warning; all of them pass `readStockList`'s rules. Each comes back marked
+`custom` or not. The CLI reads the database's concepts when it can (a
+warning and the file alone when it can't).
+
+**Routes** (`web/server/stockPictures.ts`, all through `wrap()`):
+
+- `GET /api/stock-pictures` (auth `user`): the merged set with each
+  concept's state (drawn, version, queued, refused), whether the session
+  can edit, the day's stock draws against the cap, the cost each, and any
+  problem. It starts nothing; the page polls it every 3 s while drawing.
+- `GET /api/stock-pictures/file/:id/:version` (auth `user`): a stock
+  picture for any logged-in user (401 logged out). The version is the
+  file's type, mtime and size, so a redraw is a new URL; the reply is
+  `private, max-age=31536000, immutable`, `Vary: Cookie`, `nosniff`; a
+  stale version is a 404.
+- `POST /api/stock-pictures/admin/…` (auth `admin`: a 403 for a non-admin
+  before anything is read; mounted ahead of the user prefix):
+  - `concepts` `{name, category, description, words}` (`readNewConcept`:
+    the id is the name's slug, the description passes the same cleaning
+    and learner-name check as Draw it anyway, words are a list or a
+    comma-separated line): 201 and its draw queued; 400 with a sentence,
+    409 for a taken id.
+  - `missing` `{count}`: queues every concept with no picture, up to what
+    the day's cap leaves. The count is what the page showed (with the cost)
+    when the admin confirmed; a different count now is a 409. No key is a
+    400, a cap already reached a 429.
+  - `:id/draw`: queues a draw (or a redraw) of one; 429 at the cap.
+  - `:id/remove`: a file concept is a 409 (it can be drawn again, not
+    deleted); an added one's row and its current-theme file are deleted.
+
+**Drawing.** Queued draws are drawn by one install-wide run, a picture at
+a time, each in the asking admin's background paid slot (the same slot as
+word pictures and cloze writing) with Black Forest Labs (the stub with
+`LINGO_IMAGE_PROVIDER=stub`), never the OpenAI fallback. At most
+`PICTURE_DAILY_STOCK` (300) stock draws start in any 24 hours,
+install-wide, counted from `picture_stock_calls` (failures count) before
+the slot is waited for and again inside it. A refusal skips that concept;
+any other failure, the cap or a busy slot stops the run and empties the
+queue, and the page says why. Draws from `npm run pictures:stock` are not
+in this ledger (bead filed).
+
+**Caching after a redraw.** A stock redraw keeps the file's name, so a
+word pointing at a stock picture is now served by
+`GET /api/game/pictures/:id/:file` with `Cache-Control: private,
+no-cache` and a sha256 `ETag` (a 304 when it matches): the game sees the
+new picture. A word's own drawing keeps the immutable headers (a redraw is
+a new file).
+
+**Deleting an added concept** deletes its file; words pointing at it leave
+the game until each is drawn again (nothing re-points them; bead filed).
 
 ### Redraw all in the current style
 
@@ -3486,7 +3561,7 @@ Sources:
 ### The game
 
 Routes are in `web/server/pictures.ts`, all mounted with wrap's `learner:
-true` and for kids learners only (a 403 for adults):
+true`, for kids and adult learners (before ld-318 adults got a 403):
 
 - `GET /api/game` returns the status (`pictured`, `ready`, `drawing`,
   `waiting`, `limited`, `problem`, `audio`). It starts nothing.
@@ -3589,7 +3664,53 @@ fact:
 A picture the grown-up asked for with Draw it anyway is shown the same way,
 with the same controls.
 
+### The game for adults, and the picture library (ld-318)
+
+**Pictures mode.** The adult Practice mode picker has **Pictures** ("Hear
+a word, pick its picture"); Mixed never includes it. It is
+`web/src/components/PictureGameView.tsx` on the same routes and rules as
+the kids game:
+- the home shows words with pictures, words waiting, and the day's
+  pictures against the cap (`imagesToday`, `imagesCap` in the status);
+- with fewer than 3 pictured words, a plain explanation and **Draw
+  pictures** (`POST /api/pictures/fill`);
+- a round shows progress `n / total` with a bar and End like the other
+  adult modes, the word plays, and after the tap Correct / Not quite with
+  the word and its meaning: `POST /api/game/answer` adds `word: {text,
+  meaning}` only when `learnerMode` is adult (a kids reply never has it, so
+  the child's game still shows nothing to read);
+- the summary is "X of Y picked right" and the missed words.
+
+An adult session's end queues picture work like a kids one
+(`picturesAfterSession`), under the same per-language ledger and the daily
+cap of 200 images; stock matches are free. The Phrase bank's picture
+actions show for adults too.
+
+**Picture library page** (`web/src/components/PictureLibraryView.tsx`,
+the menu's **Picture library**, tab `pictures`):
+- **My word pictures**: every current word picture of the active language
+  (`GET /api/pictures/words`, newest first, through `forLanguageProfile`),
+  filterable by status (ready, stock, being drawn, no picture, failed,
+  removed) with counts; each word opens its usual actions (Remove picture,
+  Draw again, Draw it anyway); the status line with Draw pictures and
+  Redraw all; and the day's usage against the cap.
+- **Shared library**: the merged stock set by category, browsed by
+  everyone. An admin also gets Draw / Redraw per picture, Delete on an
+  added one, **Draw all missing** (a confirm with the count and the
+  estimated cost) and **Add a picture**. A non-admin sees "Only an admin
+  can change this set" and no buttons (the server is a 403 regardless).
+
+**Kids.** The kids menu has no Picture library, and a kids learner's tab
+shows a note pointing at the Library. The routes are not kids-gated: a
+kids learner's session (the grown-up's login with the kids learner picked)
+still reaches `GET /api/pictures/words` and `GET /api/stock-pictures`, as
+it reaches the Phrase bank's picture actions.
+
 Tests:
+- `scripts/tests/pictures-library.http.test.mjs`: the adult game, My word
+  pictures, the stock routes (admin only writes, the ledger and cap, added
+  concepts merged and checked, file concepts not deletable, revalidation).
+- `scripts/tests/db-migration-0013.test.mjs`: the migration.
 - `scripts/tests/pictures.test.mjs`: the pure rules, the theme, the stock
   list and the stock files.
 - `scripts/tests/pictures.http.test.mjs`: the HTTP side, with OpenAI and

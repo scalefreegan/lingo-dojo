@@ -4,16 +4,16 @@ import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePictu
 import type { PhrasePicture, PictureStatus } from "../types";
 import { Button, inputClass } from "./ui";
 
-/* The grown-up's side of the kids word game (docs/DATA.md §Kids word
- * game), in a kids learner's Phrase bank, out of the game where a child
- * could press it: the pictures' status with Draw pictures (the backlog:
+/* The grown-up's side of the word game (docs/DATA.md §Kids word game), in
+ * the Phrase bank and the Picture library (any learner's, since ld-318),
+ * out of the game where a child could press it: the pictures' status with Draw pictures (the backlog:
  * words met before pictures existed, or past a day's cap), and per word
  * its picture with Remove and Draw again, or, for a word left out as
  * having no clear picture, Draw it anyway with the grown-up's own words
  * for what to show; and Redraw all in the current style, which brings
  * every picture not in the picture theme into it (a shared stock picture
  * where one fits, else a new drawing; the old picture stays until then). Pictures are otherwise drawn by
- * themselves after each kids session; nothing here is a child's. */
+ * themselves after each session; nothing here is a child's. */
 
 const small = "px-2 py-1 text-sm sm:text-xs";
 const fine = "text-sm sm:text-xs";
