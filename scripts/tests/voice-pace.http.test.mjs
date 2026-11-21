@@ -30,15 +30,27 @@ process.env.LINGO_ENV_FILE = path.join(dataDir, "test.env");
 fs.writeFileSync(process.env.LINGO_ENV_FILE, "ELEVENLABS_API_KEY=test-key\nAZURE_SPEECH_KEY=az-key\nAZURE_SPEECH_REGION=eastus\n");
 for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"]) delete process.env[k];
 
-/* Both speech providers, stubbed: each call's body is kept as it was sent. */
+/* Both speech providers, stubbed: each call's body is kept as it was sent.
+ * ElevenLabs also answers the free read of a voice's stored settings
+ * (counted; `settingsStatus` other than 200 makes it fail). */
 const eleven = [];
 const azure = [];
+const settingsReads = [];
+let settingsStatus = 200;
+const STORED = { stability: 1, similarity_boost: 1, style: 0.99, use_speaker_boost: true, speed: 1 };
+const KEPT = { stability: 1, similarity_boost: 1, style: 0.99, use_speaker_boost: true };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input.url);
   if (url.hostname === "api.elevenlabs.io" && url.pathname.startsWith("/v1/text-to-speech/")) {
     eleven.push({ raw: init.body, body: JSON.parse(init.body) });
     return new Response("MP3", { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+  }
+  const read = url.hostname === "api.elevenlabs.io" && url.pathname.match(/^\/v1\/voices\/([^/]+)\/settings$/);
+  if (read) {
+    assert.equal(init.method, "GET");
+    settingsReads.push(decodeURIComponent(read[1]));
+    return new Response(JSON.stringify(settingsStatus === 200 ? STORED : { detail: { message: "nope" } }), { status: settingsStatus, headers: { "Content-Type": "application/json" } });
   }
   if (url.hostname === "eastus.tts.speech.microsoft.com") {
     azure.push(String(init.body));
@@ -49,7 +61,7 @@ globalThis.fetch = async (input, init) => {
 };
 
 const { apiPlugins } = await import("../../web/server/api.ts");
-const { sayArgs } = await import("../../web/server/voice.ts");
+const { sayArgs, clearVoiceLists } = await import("../../web/server/voice.ts");
 const { PLAYBACK_RATE_HEADER } = await import("../../web/shared/wire.ts");
 const { SAY_SLOW_WPM, SLOW_RATE } = await import("../voice.mjs");
 
@@ -81,9 +93,11 @@ async function someone(settings) {
 const ELEVEN_VOICES = { elevenlabs: { "es-MX": { "narrator:female": "voice-f" }, "zh-TW": { "narrator:female": "voice-f" } } };
 const say = (who, extra = {}) => who.call("POST", "/api/voice/speak", { speaker: "narrator", gender: "female", text: "por favor", locale: "es-MX", ...extra });
 
-test("speak, ElevenLabs on a model with speed control: a slow piece is sent voice_settings.speed, a normal one the request it always was", async () => {
+test("speak, ElevenLabs on a model with speed control: a slow piece is sent the voice's stored settings with the speed, a normal one the request it always was", async () => {
   const sam = await someone({ tts: "elevenlabs", elevenModel: "eleven_flash_v2_5", voices: ELEVEN_VOICES });
   eleven.length = 0;
+  clearVoiceLists();
+  settingsReads.length = 0;
   const normal = await say(sam);
   assert.equal(normal.status, 200, normal.text);
   const absent = await say(sam, { pace: "normal" });
@@ -92,19 +106,70 @@ test("speak, ElevenLabs on a model with speed control: a slow piece is sent voic
   assert.equal(eleven.length, 3);
   assert.equal(eleven[0].body.voice_settings, undefined);
   assert.equal(eleven[1].raw, eleven[0].raw, "pace: normal is the same request as no pace");
-  assert.deepEqual(eleven[2].body.voice_settings, { speed: SLOW_RATE });
+  // The stored settings come back with it: a speed alone would reset them.
+  assert.deepEqual(eleven[2].body.voice_settings, { ...KEPT, speed: SLOW_RATE });
+  assert.deepEqual(settingsReads, ["voice-f"], "read once, and only for the slow piece");
   assert.deepEqual({ ...eleven[2].body, voice_settings: undefined }, { ...eleven[0].body, voice_settings: undefined }, "nothing else changes");
   // The provider slowed it: the browser is told nothing.
   for (const r of [normal, absent, slow]) assert.equal(r.headers.get(PLAYBACK_RATE_HEADER), null);
 });
 
+test("speak, ElevenLabs: a voice's stored settings are read once and kept; another voice is its own read", async () => {
+  const sam = await someone({ tts: "elevenlabs", elevenModel: "eleven_flash_v2_5", voices: { elevenlabs: { "es-MX": { "narrator:female": "voice-f", "narrator:male": "voice-m" } } } });
+  clearVoiceLists();
+  settingsReads.length = 0;
+  eleven.length = 0;
+  // Five slow pieces at once and one after: one read.
+  const many = await Promise.all(Array.from({ length: 5 }, (_, i) => say(sam, { pace: "slow", text: `uno ${i}` })));
+  assert.ok(many.every((r) => r.status === 200 || r.status === 429), many.map((r) => r.status).join());
+  assert.equal((await say(sam, { pace: "slow", text: "dos" })).status, 200);
+  assert.deepEqual(settingsReads, ["voice-f"]);
+  assert.ok(eleven.length >= 2 && eleven.every((c) => c.body.voice_settings?.stability === 1 && c.body.voice_settings.speed === SLOW_RATE));
+  // Another account's line in the same voice shares the read (one ElevenLabs account).
+  const robin = await someone({ tts: "elevenlabs", elevenModel: "eleven_flash_v2_5", voices: ELEVEN_VOICES });
+  assert.equal((await say(robin, { pace: "slow" })).status, 200);
+  assert.deepEqual(settingsReads, ["voice-f"]);
+  assert.equal((await say(sam, { pace: "slow", gender: "male" })).status, 200);
+  assert.deepEqual(settingsReads, ["voice-f", "voice-m"]);
+});
+
+test("speak, ElevenLabs: when the stored settings can't be read, no partial voice_settings is sent; the clip is made at normal speed and the browser slows it", async () => {
+  const sam = await someone({ tts: "elevenlabs", elevenModel: "eleven_flash_v2_5", voices: ELEVEN_VOICES });
+  clearVoiceLists();
+  settingsReads.length = 0;
+  eleven.length = 0;
+  settingsStatus = 500;
+  try {
+    const normal = await say(sam);
+    const slow = await say(sam, { pace: "slow" });
+    const again = await say(sam, { pace: "slow" });
+    assert.deepEqual([normal.status, slow.status, again.status], [200, 200, 200]);
+    assert.equal(eleven[1].raw, eleven[0].raw, "the normal request: no voice_settings at all");
+    assert.equal(eleven[2].raw, eleven[0].raw);
+    assert.equal(normal.headers.get(PLAYBACK_RATE_HEADER), null);
+    assert.equal(slow.headers.get(PLAYBACK_RATE_HEADER), String(SLOW_RATE));
+    assert.equal(again.headers.get(PLAYBACK_RATE_HEADER), String(SLOW_RATE));
+    assert.equal(settingsReads.length, 1, "a failed read is kept a while too, not retried per clip");
+  } finally {
+    settingsStatus = 200;
+    clearVoiceLists();
+  }
+  // Once it can be read again, the provider slows it.
+  const ok = await say(sam, { pace: "slow" });
+  assert.equal(ok.headers.get(PLAYBACK_RATE_HEADER), null);
+  assert.deepEqual(eleven.at(-1).body.voice_settings, { ...KEPT, speed: SLOW_RATE });
+});
+
 test("speak, ElevenLabs v4 (no speed control): nothing is sent to the provider, and the reply tells the browser to play the clip slower", async () => {
   const sam = await someone({ tts: "elevenlabs", elevenModel: "eleven_v4", voices: ELEVEN_VOICES });
   eleven.length = 0;
+  clearVoiceLists();
+  settingsReads.length = 0;
   const normal = await say(sam);
   const slow = await say(sam, { pace: "slow" });
   assert.deepEqual([normal.status, slow.status], [200, 200]);
   assert.equal(eleven[1].raw, eleven[0].raw, "the same request: v4 is never sent a speed");
+  assert.deepEqual(settingsReads, [], "no stored-settings read for a model that takes no speed");
   assert.equal(normal.headers.get(PLAYBACK_RATE_HEADER), null);
   assert.equal(slow.headers.get(PLAYBACK_RATE_HEADER), String(SLOW_RATE));
 });

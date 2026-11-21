@@ -383,7 +383,12 @@ app honours.
   languages. The parser treats the two marks as independent switches, so
   the other order (`<t><slow>…</slow></t>`) parses the same; `<slowly>` and
   stray spaces are the same mark; an unclosed one runs to the end of its
-  speaker's line and never into the next speaker's. A slow piece is a
+  speaker's line and never into the next speaker's. The mark is asked for
+  after the speaker tag; one written before it (`<slow>CHARACTER-M: …`,
+  `<t>NARRATOR-F: …`, `<slow><pause 1> NARRATOR-F: …`) is taken off the
+  front and carried onto that line's words, so the tag is still a tag and
+  never spoken. Known limit, left as is: a spoken line that really contains
+  the characters `<slow>` or `<t>` (`a<slow>b`) is read as the mark. A slow piece is a
   segment with `slow: true` (`VoiceSegment`); a normal one has no such key,
   so lines stored before the mark are already in today's shape and there is
   no migration (a turn's `lines` are jsonb). A change of pace starts a new
@@ -408,7 +413,7 @@ app honours.
 
   | Provider | Slow setting | Limits (read 2026-11-20) |
   | --- | --- | --- |
-  | ElevenLabs | `voice_settings.speed: 0.8` | 0.7–1.2, default 1. **Not available on Eleven v3, v4 or v4 Turbo**; Flash and Multilingual v2 take it. Clamped; never sent to a model without it. |
+  | ElevenLabs | `voice_settings`: the voice's stored settings with `speed: 0.8` | 0.7–1.2, default 1. **Not available on Eleven v3, v4 or v4 Turbo**; Flash and Multilingual v2 take it. Clamped; never sent to a model without it, and never alone (below). |
   | Azure | `<prosody rate="0.8">` around the text (inside `<lang>`) | 0.5–2. **HD voices (DragonHD, DragonHD Omni) don't support `<prosody>`**; never sent to a voice with `:` in its name. |
   | macOS | `say -r 100` | words a minute; no relative rate, and each voice's default differs: measured 0.73–0.83x across six voices. |
 
@@ -418,6 +423,29 @@ app honours.
   rate with the pitch kept (`preservesPitch`). So a slow mark is always
   heard and never applied twice. A normal piece's provider request is byte
   for byte what it was.
+- **ElevenLabs: the speed never goes alone.** A `voice_settings` holding
+  only `speed` resets the voice's other stored settings to the API
+  defaults, so a slow part would be delivered differently from the rest of
+  its line. Measured 2026-11 with real calls (run by the project owner):
+  `eleven_multilingual_v2`, a fixed seed, a voice stored at stability 1,
+  similarity 1, style 0.99, two sentences, clip sizes in bytes:
+
+  | `voice_settings` sent | Sentence 1 | Sentence 2 |
+  | --- | --- | --- |
+  | none | 27210 | 32225 |
+  | the stored settings + `speed: 1.0` | 27210 | 32225 |
+  | `speed: 1.0` only | 26374 | 30972 |
+  | the API defaults (0.5, 0.75, 0) + `speed: 1.0` | 26374 | 30972 |
+
+  So a slow piece is sent the voice's stored settings merged with the speed
+  (`elevenSpeechRequest`'s `settings`, cleaned by `elevenStoredSettings`).
+  They are read with `GET /v1/voices/{voice_id}/settings` (a free read, not
+  synthesis) and kept in memory for 10 minutes per ElevenLabs key and voice
+  (`storedElevenSettings` in `web/server/voice.ts`; the settings belong to
+  the one ElevenLabs account, so users sharing a voice share the read). If
+  the read fails or isn't a settings object, nothing partial is sent: the
+  clip is made at normal speed and goes the `X-Lingo-Playback-Rate` way; the
+  failure is held 30 s so an outage isn't a read per clip.
 - **Cache.** `/speak` has no server cache; the Go tab's per-session clip
   map keys a slow piece apart (`@slow`). `synthesize()` takes the pace, and
   a caller that caches puts `speechPace().speed` in its `audioKey` (a
@@ -428,8 +456,7 @@ app honours.
   "Spoken slowly" tooltip.
 - **Not checked by ear yet**: Arabic, Spanish and Mandarin at 0.8, per
   provider, including whether either kind of slowing (the provider's, or
-  the browser's time-stretch) bends Mandarin tones; and whether a partial
-  ElevenLabs `voice_settings` changes anything but the speed.
+  the browser's time-stretch) bends Mandarin tones.
 
 ## Saved conversations
 

@@ -234,7 +234,9 @@ declare module "*/scripts/voice.mjs" {
   export function elevenLibrary(json: unknown): import("../shared/wire.ts").LibraryReply;
   /** Throws on an id that isn't an ElevenLabs id. */
   export function elevenAddRequest(o: { key: string; ownerId: string; voiceId: string; name: string }): Req;
-  export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string; speed?: number }): Req;
+  export function elevenSpeechRequest(o: { key: string; voice: string; text: string; model?: string; locale?: string; speed?: number; settings?: unknown }): Req;
+  export function elevenVoiceSettingsRequest(o: { key: string; voice: string }): Req;
+  export function elevenStoredSettings(json: unknown): Record<string, number | boolean> | null;
   export const PACES: readonly import("../shared/wire.ts").SpeechPace[];
   export function paceOf(v: unknown): import("../shared/wire.ts").SpeechPace | null;
   export const SLOW_RATE: number;

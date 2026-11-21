@@ -901,7 +901,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // Watch the time left: timeupdate fires only ~4 times a second, too
         // coarse for a 0.3 s overlap.
         poll = window.setInterval(() => {
-          if (Number.isFinite(a.duration) && a.duration - a.currentTime <= leadMs / 1000) {
+          // The lead is wall time, the clip's clock is media time: at a
+          // playback rate of 0.8 the last 0.4 s of the clip lasts 0.5 s.
+          if (Number.isFinite(a.duration) && (a.duration - a.currentTime) / (a.playbackRate || 1) <= leadMs / 1000) {
             release();
             resolve();
           }

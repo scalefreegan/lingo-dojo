@@ -277,7 +277,7 @@ ${speakerRules}
 - Mark the language of every word you say. Wrap everything spoken in the target language in <t>…</t> — a single word, a phrase, or a whole line — and leave everything in the learner's native language unwrapped. Each piece is then pronounced in its own language by the same voice, so a target word left unwrapped gets mispronounced and an English word inside <t> gets mangled. Examples:
   NARRATOR-F: The word for tomato here is <t>jitomate</t>. Try asking for a kilo: <t>un kilo de jitomates, por favor</t>.
 ${secondExample}
-- Pace is yours to set too, and only by a mark. Everything is spoken at a normal pace except what you wrap in <slow>…</slow> (a word, a phrase or a whole line): only the text inside it is spoken slower. Put <slow> outside <t> when both apply. The voice cannot slow down any other way; writing "slowly", stretching a word's spelling or adding dots changes nothing. So whenever you say you are slowing down, model a word or phrase slowly, or your instructions ask for slow speech, put those words inside <slow>. Never say that something is, was or will be said slowly unless it is inside <slow>. No mark where the pace is normal. For example:
+- Pace is yours to set too, and only by a mark. Everything is spoken at a normal pace except what you wrap in <slow>…</slow> (a word, a phrase or all of a line's words): only the text inside it is spoken slower. The mark goes after the speaker tag, around words, never before the tag. Put <slow> outside <t> when both apply. The voice cannot slow down any other way; writing "slowly", stretching a word's spelling or adding dots changes nothing. So whenever you say you are slowing down, model a word or phrase slowly, or your instructions ask for slow speech, put those words inside <slow>. Never say that something is, was or will be said slowly unless it is inside <slow>. No mark where the pace is normal. For example:
 ${slowExample}
 - When the learner asks you to slow down ("[direct]" with such a request, the "Slow down" choice, or asking for it in the practice), wrap everything you say in the target language in <slow>…</slow> from then on, in every turn, until they ask for normal speed again. Your own earlier turns show whether you are doing that: if their target language is inside <slow> and nobody has asked for normal speed since, keep marking.
 - Inside <t>, write the target language in its normal script (Chinese characters for Mandarin, kana and kanji for Japanese, and so on), not a romanization, so it is pronounced natively. Add a romanization only when you are explicitly teaching it, and leave that romanization outside <t>.
@@ -480,6 +480,9 @@ const MARK_RE = /<(\/?)\s{0,3}(t|slow(?:ly)?)\s{0,3}>/gi;
 /** The same marks, for taking them out of a shown-not-spoken line (a
  *  gloss, a choice, a CAST note, a LOOKUP query). */
 const MARKS_RE = /<\/?\s*(?:t|slow(?:ly)?)\s*>/gi;
+/** One or more of those marks at the very start of a line (a bullet or
+ *  bold before them allowed, as before a tag). */
+const LEAD_MARKS_RE = /^\s*(?:[-•*]\s+)?(?:\*\*)?\s*(?:<\/?\s{0,3}(?:t|slow(?:ly)?)\s{0,3}>\s*)+/i;
 
 /** One line's text → language segments. <t>…</t> is the target language;
  *  an unclosed <t> runs to the end of the line (a model that forgets to close
@@ -919,6 +922,22 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
       raw = raw.replace(TIMING_RE, " ").replace(/(\*{1,2}|_{1,2})\s*\1/g, " ").replace(/\*\*\s+/, "**");
       if (!raw.replace(/\*/g, "").trim()) continue;
     }
+    // "<slow>CHARACTER-M: <t>hola</t></slow>", "<t>NARRATOR-F: hola</t>",
+    // "<slow><pause 1> NARRATOR-F: …": a mark written before the speaker tag
+    // (asked for after it). Left there, the tag isn't at the start of the
+    // line, so it would be read out in the previous speaker's voice. The
+    // marks come off the front, as the timing marks and the tag's ** do,
+    // and the ones that open are carried onto this line's words below.
+    let lead = null;
+    const before = raw.match(LEAD_MARKS_RE);
+    if (before && TAG_RE.test(raw.slice(before[0].length))) {
+      lead = { inside: false, slow: false };
+      for (const x of before[0].matchAll(MARK_RE)) {
+        if (x[2].toLowerCase() === "t") lead.inside = !x[1];
+        else lead.slow = !x[1];
+      }
+      raw = raw.slice(before[0].length);
+    }
     let line = raw;
     const m = raw.match(TAG_RE);
     if (m) {
@@ -937,8 +956,8 @@ export function parseVoiceReply(text, mode = "adult", opts = {}) {
       // A new speaker starts outside any wrap: a <t> the previous speaker
       // never closed must not turn this one's English into Spanish.
       // The same for a <slow> left open: the pace is each speaker's own.
-      inside = false;
-      slow = false;
+      inside = lead?.inside ?? false;
+      slow = lead?.slow ?? false;
       tagged = true;
     }
     let segments;
@@ -1085,13 +1104,20 @@ export const SPEECH_FORMATS = Object.freeze({
   system: "LEI16@24000",
 });
 
-export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_MODEL, locale, speed = 1 }) {
+export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_MODEL, locale, speed = 1, settings = null }) {
   const body = { text, model_id: model };
   // A pace other than normal, only for a model that takes one and never
   // outside the documented range. Nothing at speed 1, so a normal line's
   // request (and the voice's own stored settings) is untouched.
+  // Never the speed alone: a voice_settings holding only `speed` resets the
+  // voice's other stored settings to the API defaults (measured, docs/
+  // VOICE.md §Pace), so the slow part would be delivered differently from
+  // the rest of its line. It goes with the voice's stored settings
+  // (`settings`, elevenStoredSettings of GET /v1/voices/{id}/settings) or
+  // not at all; the caller then slows the playback instead.
   const rate = Number(speed);
-  if (Number.isFinite(rate) && rate !== 1 && ELEVEN_SPEED_MODELS.includes(model)) body.voice_settings = { speed: clamp(rate, ELEVEN_SPEED_RANGE) };
+  const stored = elevenStoredSettings(settings);
+  if (Number.isFinite(rate) && rate !== 1 && ELEVEN_SPEED_MODELS.includes(model) && stored) body.voice_settings = { ...stored, speed: clamp(rate, ELEVEN_SPEED_RANGE) };
   // language_code steers pronunciation and number reading toward the target
   // language. Multilingual v2 rejects it; the others take it.
   if (locale && model !== "eleven_multilingual_v2") body.language_code = languageOf(locale);
@@ -1103,6 +1129,33 @@ export function elevenSpeechRequest({ key, voice, text, model = DEFAULT_ELEVEN_M
       body: JSON.stringify(body),
     },
   };
+}
+
+/** A voice's stored settings (a free read, not synthesis). */
+export function elevenVoiceSettingsRequest({ key, voice }) {
+  return {
+    url: `https://api.elevenlabs.io/v1/voices/${encodeURIComponent(voice)}/settings`,
+    init: { method: "GET", headers: { "xi-api-key": key } },
+  };
+}
+
+/** That read's reply as the settings to send back with a speed: only the
+ *  fields the API names, each of its own type (the stored speed is left
+ *  out: ours replaces it). null unless it has the two that shape a voice
+ *  most, stability and similarity_boost: half a settings object would be
+ *  the partial one this exists to avoid. */
+export function elevenStoredSettings(json) {
+  if (!json || typeof json !== "object") return null;
+  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const out = {
+    stability: num(json.stability),
+    similarity_boost: num(json.similarity_boost),
+    style: num(json.style),
+    use_speaker_boost: typeof json.use_speaker_boost === "boolean" ? json.use_speaker_boost : undefined,
+  };
+  if (out.stability === undefined || out.similarity_boost === undefined) return null;
+  for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+  return out;
 }
 
 export function elevenVoicesRequest({ key }) {

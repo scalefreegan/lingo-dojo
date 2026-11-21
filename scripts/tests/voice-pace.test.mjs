@@ -10,7 +10,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { audioKey } from "../audio-cache.mjs";
 import {
-  AZURE_RATE_RANGE, ELEVEN_SPEED_MODELS, ELEVEN_SPEED_RANGE, SLOW_RATE, azureSpeechRequest, azureSsml, elevenSpeechRequest, markedText, paceOf, parseChoices, parseGlosses,
+  AZURE_RATE_RANGE, ELEVEN_SPEED_MODELS, elevenStoredSettings, elevenVoiceSettingsRequest, ELEVEN_SPEED_RANGE, SLOW_RATE, azureSpeechRequest, azureSsml, elevenSpeechRequest, markedText, paceOf, parseChoices, parseGlosses,
   parseVoiceReply, replyStream, speechPace, voiceAdapter, voiceTurnPrompt,
 } from "../voice.mjs";
 
@@ -63,6 +63,49 @@ test("parse: spellings a model drifts to are the same mark; an unclosed one runs
     [{ lang: "target", text: "Despacio muy despacio", slow: true }],
     [{ lang: "native", text: "Back to normal." }],
   ]);
+});
+
+// PR #55 review: the mark is asked for after the speaker tag, but "wrap the
+// whole line" invites writing it before. The tag must still be a tag: never
+// spoken, and never said in the previous speaker's voice.
+const BEFORE_TAG = [
+  // [mark before the tag, the same line with the mark after it]
+  ["NARRATOR-F: Listen.\n<slow>CHARACTER-M: <t>hola</t></slow>", "NARRATOR-F: Listen.\nCHARACTER-M: <slow><t>hola</t></slow>"],
+  ["NARRATOR-F: Listen.\n<t>CHARACTER-M: hola</t>", "NARRATOR-F: Listen.\nCHARACTER-M: <t>hola</t>"],
+  ["NARRATOR-F: Listen.\n<slow><t>CHARACTER-M: hola, joven.</t></slow>\nNARRATOR-F: Now you.", "NARRATOR-F: Listen.\nCHARACTER-M: <slow><t>hola, joven.</t></slow>\nNARRATOR-F: Now you."],
+  ["CHARACTER-M: <t>hola</t>\n<slow><pause 1> NARRATOR-F: Now <t>adiós</t></slow>", "CHARACTER-M: <t>hola</t>\n<pause 1> NARRATOR-F: <slow>Now <t>adiós</t></slow>"],
+  ["CHARACTER-M: <t>hola</t>\n<pause 1> <slow>NARRATOR-F: Now you.</slow>", "CHARACTER-M: <t>hola</t>\n<pause 1> NARRATOR-F: <slow>Now you.</slow>"],
+  ["NARRATOR-F: Listen.\n**<slow>CHARACTER-M:** <t>hola</t></slow>", "NARRATOR-F: Listen.\nCHARACTER-M: <slow><t>hola</t></slow>"],
+  // A stray closing mark before a tag closes nothing on the new line.
+  ["NARRATOR-F: <slow>Listen.\n</slow>CHARACTER-M: <t>hola</t>", "NARRATOR-F: <slow>Listen.</slow>\nCHARACTER-M: <t>hola</t>"],
+];
+
+test("parse: a <slow> or <t> written before the speaker tag (or before its <pause>) is the same line as the mark after the tag; the tag is never spoken", () => {
+  for (const [before, after] of BEFORE_TAG) {
+    const lines = parseVoiceReply(before);
+    assert.deepEqual(lines, parseVoiceReply(after), before);
+    assert.ok(!lines.some((l) => /NARRATOR|CHARACTER|[<>]/.test(l.text)), `${before} → ${lines.map((l) => l.text).join(" / ")}`);
+  }
+  const [, hola] = parseVoiceReply(BEFORE_TAG[0][0]);
+  assert.deepEqual([hola.speaker, hola.gender, hola.segments], ["character", "male", [{ lang: "target", text: "hola", slow: true }]]);
+  const [, plain] = parseVoiceReply(BEFORE_TAG[1][0]);
+  assert.deepEqual([plain.speaker, plain.segments], ["character", [{ lang: "target", text: "hola" }]]);
+  // A mark at the start of an untagged line is still just a mark on words.
+  assert.deepEqual(segs("NARRATOR-F: Listen:\n<slow><t>hola</t></slow>"), [[{ lang: "native", text: "Listen:" }, { lang: "target", text: "hola", slow: true }]]);
+});
+
+test("streaming: a mark before the tag hands out the same lines as the whole reply, whatever the chunking", () => {
+  for (const [reply] of BEFORE_TAG) {
+    const whole = parseVoiceReply(`${reply}\nGLOSS: hola = hello`);
+    for (const size of [1, 2, 3, 7, 50]) {
+      const s = replyStream("adult");
+      const out = [];
+      const text = `${reply}\nGLOSS: hola = hello\n`;
+      for (let i = 0; i < text.length; i += size) out.push(...s.push(text.slice(i, i + size)).lines);
+      assert.deepEqual(out, whole, `${JSON.stringify(reply)} in ${size}s`);
+      assert.ok(!out.some((l) => /NARRATOR|CHARACTER/.test(l.text)));
+    }
+  }
 });
 
 test("parse: kids mode and a drill (the narrator alone) carry the mark the same", () => {
@@ -132,6 +175,7 @@ test("rules: every adapter says only <slow> text is slower, to mark whenever it 
     assert.match(text, /only the text inside it is spoken slower/);
     assert.match(text, /Never say that something is, was or will be said slowly unless it is inside <slow>/);
     assert.match(text, /Put <slow> outside <t>/);
+    assert.match(text, /The mark goes after the speaker tag, around words, never before the tag/);
     assert.match(text, /asks you to slow down[^\n]*from then on, in every turn/);
     // An example line (two spaces, then a tag) that says "slowly" marks it.
     for (const line of text.split("\n").filter((l) => /^ {2}(?:<pause[^>]*> )?[A-Z]+-[FM]:/.test(l) && /slowly/i.test(l))) {
@@ -175,12 +219,32 @@ test("cache key: a clip slowed by the provider is its own file; one the browser 
   assert.equal(key("elevenlabs", "slow", { model: "eleven_v4" }), key("elevenlabs", "normal", { model: "eleven_v4" }));
 });
 
+// A voice tuned far from the API defaults (0.5 / 0.75 / 0), as in the real
+// test that found the reset.
+const STORED = { stability: 1, similarity_boost: 1, style: 0.99, use_speaker_boost: true, speed: 1.1 };
+const KEPT = { stability: 1, similarity_boost: 1, style: 0.99, use_speaker_boost: true };
+
+test("ElevenLabs: the speed is never sent alone (it would reset the voice's stored settings to the defaults): merged with them, or no voice_settings at all", () => {
+  const base = { key: "k", voice: "v1", text: "por favor", locale: "es-MX", model: "eleven_flash_v2_5", speed: SLOW_RATE };
+  const settings = (o) => JSON.parse(elevenSpeechRequest({ ...base, ...o }).init.body).voice_settings;
+  // The stored settings, with our speed in place of the stored one.
+  assert.deepEqual(settings({ settings: STORED }), { ...KEPT, speed: SLOW_RATE });
+  // No stored settings (the read failed), or not a settings object: nothing.
+  for (const none of [undefined, null, {}, "x", [], { stability: 1 }, { similarity_boost: 1 }, { stability: "1", similarity_boost: 1 }]) assert.equal(settings({ settings: none }), undefined, JSON.stringify(none));
+  // Only the API's own fields, each of its own type.
+  assert.deepEqual(elevenStoredSettings({ ...STORED, style: "high", use_speaker_boost: "yes", extra: 1 }), { stability: 1, similarity_boost: 1 });
+  assert.equal(elevenStoredSettings(null), null);
+  const read = elevenVoiceSettingsRequest({ key: "k", voice: "a/b" });
+  assert.equal(read.url, "https://api.elevenlabs.io/v1/voices/a%2Fb/settings");
+  assert.deepEqual([read.init.method, read.init.headers["xi-api-key"], read.init.body], ["GET", "k", undefined]);
+});
+
 test("ElevenLabs: voice_settings.speed only for a slow piece on a model that takes it, clamped to 0.7–1.2; a normal request is byte for byte the old one", () => {
-  const base = { key: "k", voice: "v1", text: "por favor", locale: "es-MX" };
+  const base = { key: "k", voice: "v1", text: "por favor", locale: "es-MX", settings: STORED };
   const body = (o) => JSON.parse(elevenSpeechRequest({ ...base, ...o }).init.body);
   assert.deepEqual(ELEVEN_SPEED_RANGE, [0.7, 1.2]);
-  assert.deepEqual(body({ model: "eleven_flash_v2_5", speed: SLOW_RATE }).voice_settings, { speed: SLOW_RATE });
-  assert.deepEqual(body({ model: "eleven_multilingual_v2", speed: SLOW_RATE }).voice_settings, { speed: SLOW_RATE });
+  assert.deepEqual(body({ model: "eleven_flash_v2_5", speed: SLOW_RATE }).voice_settings, { ...KEPT, speed: SLOW_RATE });
+  assert.deepEqual(body({ model: "eleven_multilingual_v2", speed: SLOW_RATE }).voice_settings, { ...KEPT, speed: SLOW_RATE });
   assert.equal(body({ model: "eleven_flash_v2_5" }).voice_settings, undefined);
   assert.equal(body({ model: "eleven_flash_v2_5", speed: 1 }).voice_settings, undefined);
   assert.equal(elevenSpeechRequest({ ...base, model: "eleven_flash_v2_5", speed: 1 }).init.body, JSON.stringify({ text: "por favor", model_id: "eleven_flash_v2_5", language_code: "es" }));

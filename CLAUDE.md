@@ -105,7 +105,10 @@ stream, the stored turn and the replay (`markedText`). The browser sends
 `scripts/voice.mjs` holds each provider's setting: ElevenLabs
 `voice_settings.speed`, Azure `<prosody rate>`, `say -r`; where the voice
 can't (Eleven v3/v4, Azure HD voices) the reply's `X-Lingo-Playback-Rate`
-has the Go tab slow the playback. Slowing down for the session is the
+has the Go tab slow the playback. An ElevenLabs speed never goes alone (it
+resets the voice's stored settings): it is merged with the voice's stored
+settings, read free and held 10 minutes (`storedElevenSettings`), and a
+failed read falls back to the playback rate. Slowing down for the session is the
 model's marking, not server state.
 Tone checks where the text is known (pronunciation stage 1, ld-ne0.2; no
 migration, docs/VOICE.md §Pronunciation in the app): `POST

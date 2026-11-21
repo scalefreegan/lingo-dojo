@@ -11,7 +11,7 @@ import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
   ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
-  SAY_SLOW_WPM, paceOf, speechPace,
+  SAY_SLOW_WPM, paceOf, speechPace, elevenStoredSettings, elevenVoiceSettingsRequest,
 } from "../../scripts/voice.mjs";
 import type {
   ErrorCode, VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
@@ -686,10 +686,6 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   res.on("close", onClose);
   try {
     const line = { provider, text, locale: textLocale, model: settings.elevenModel, pace };
-    // The rate the browser plays the clip at, when the voice that said it
-    // can't slow down itself (speechPace). Set by the call that succeeded:
-    // a retry voice is the same provider and model, so the same answer.
-    let playbackRate = 1;
     // The line's calls (a refused cast voice's retry included, one after the
     // other) hold one of the user's paid slots (paid.ts). The Go tab asks for
     // one part at a time (the next once the current one has arrived), so the
@@ -699,7 +695,6 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
         // A cast voice refused once goes straight to the retry voice after
         // that (speechVoices), so a free plan doesn't pay two calls a line.
         try {
-          playbackRate = speechPace(provider, pace, { model: line.model, voice: first }).playbackRate;
           return await synthesize({ ...line, voice: first }, ctrl.signal);
         } catch (e) {
           // A library voice drawn for the cast can be refused: a plan without
@@ -709,7 +704,6 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
           // retry voice (speechVoices) rather than lose it.
           const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
           if (!cast || !retry || !retryInOtherVoice(status)) throw e;
-          playbackRate = speechPace(provider, pace, { model: line.model, voice: retry }).playbackRate;
           const said = await synthesize({ ...line, voice: retry }, ctrl.signal);
           // The other voice worked, so it was the cast voice: skip it from now on.
           if (refusedVoices.size >= 200) refusedVoices.clear();
@@ -717,14 +711,15 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
           return said;
         }
       }
-      playbackRate = speechPace(provider, pace, { model: line.model, voice }).playbackRate;
       return synthesize({ ...line, voice }, ctrl.signal);
     });
     res.writeHead(200, {
       "Content-Type": out.type,
       "Content-Length": out.audio.length,
       "Cache-Control": "no-store",
-      ...(playbackRate !== 1 ? { [PLAYBACK_RATE_HEADER]: String(playbackRate) } : {}),
+      // The rate the browser plays the clip at, when the voice that said
+      // it couldn't slow down itself (synthesize).
+      ...(out.playbackRate && out.playbackRate !== 1 ? { [PLAYBACK_RATE_HEADER]: String(out.playbackRate) } : {}),
     });
     res.end(out.audio);
   } finally {
@@ -736,6 +731,46 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
 export interface Speech {
   audio: Buffer;
   type: "audio/mpeg" | "audio/wav";
+  /** Below 1 when the clip was asked for slow and is at normal speed: the
+   *  voice can't slow down (speechPace), or its stored ElevenLabs settings
+   *  couldn't be read. The caller slows the playback. Absent or 1 else. */
+  playbackRate?: number;
+}
+
+/** How long a voice's stored ElevenLabs settings are kept: a turn's slow
+ *  pieces must not mean a read each, and a voice re-tuned in ElevenLabs
+ *  should be heard that way within minutes. A failed read is kept for
+ *  VOICE_LIST_FAIL_MS, so an outage costs one read per half minute. */
+const VOICE_SETTINGS_TTL_MS = 10 * 60_000;
+/** Per ElevenLabs key and voice. Not per app user: the settings belong to
+ *  the one ElevenLabs account every user's speech goes through, so users
+ *  sharing a voice share the read. */
+const voiceSettings = new Map<string, { at: number; ttl: number; value: Promise<Record<string, number | boolean> | null> }>();
+
+/** `voice`'s stored settings, to send back with a speed (scripts/voice.mjs
+ *  elevenSpeechRequest: a speed alone would reset them). A free read, held
+ *  in memory. null when it can't be read or isn't a settings object: the
+ *  clip is then made at normal speed and the browser slows it. */
+async function storedElevenSettings(key: string, voice: string): Promise<Record<string, number | boolean> | null> {
+  const id = `${createHash("sha256").update(key).digest("hex").slice(0, 16)}:${voice}`;
+  let held = voiceSettings.get(id);
+  if (!held || Date.now() - held.at > held.ttl) {
+    if (voiceSettings.size >= 500) voiceSettings.clear();
+    // No request signal: the read is shared by every clip that waits on it.
+    const value = call("elevenlabs", elevenVoiceSettingsRequest({ key, voice }))
+      .then(async (r) => elevenStoredSettings(await r.json()))
+      .catch((e) => {
+        console.warn(`[lingo-dojo] ElevenLabs voice settings unread, slowing in the browser instead: ${String((e as Error)?.message || e).slice(0, 200)}`);
+        return null;
+      });
+    const entry = { at: Date.now(), ttl: VOICE_SETTINGS_TTL_MS, value };
+    void value.then((v) => {
+      if (!v) entry.ttl = VOICE_LIST_FAIL_MS;
+    });
+    voiceSettings.set(id, entry);
+    held = entry;
+  }
+  return held.value;
 }
 
 /** The output format each provider is asked for: scripts/voice.mjs's, the
@@ -764,10 +799,12 @@ export async function synthesize(
   signal: AbortSignal,
 ): Promise<Speech> {
   const keys = keysFor(provider);
-  const { speed } = speechPace(provider, pace, { model, voice });
+  const { speed, playbackRate } = speechPace(provider, pace, { model, voice });
   if (provider === "elevenlabs") {
-    const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model, locale, speed }), signal);
-    return { audio: Buffer.from(await r.arrayBuffer()), type: "audio/mpeg" };
+    // A slow piece goes with the voice's stored settings or not at all.
+    const stored = speed !== 1 ? await storedElevenSettings(String(keys.elevenlabs), voice) : null;
+    const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model, locale, speed, settings: stored }), signal);
+    return { audio: Buffer.from(await r.arrayBuffer()), type: "audio/mpeg", playbackRate: speed !== 1 && !stored ? speed : playbackRate };
   }
   if (provider === "azure") {
     let request;
@@ -776,9 +813,9 @@ export async function synthesize(
     } catch (e) {
       throw new HttpError(400, String((e as Error).message));
     }
-    return { audio: Buffer.from(await (await call(provider, request, signal)).arrayBuffer()), type: "audio/mpeg" };
+    return { audio: Buffer.from(await (await call(provider, request, signal)).arrayBuffer()), type: "audio/mpeg", playbackRate };
   }
-  return { audio: await sayToWav(text, voice, signal, speed), type: "audio/wav" };
+  return { audio: await sayToWav(text, voice, signal, speed), type: "audio/wav", playbackRate };
 }
 
 /** The macOS voices for a locale (`say -v '?'`, read once per process). */
@@ -807,6 +844,7 @@ const voiceLists = new Map<string, { at: number; ttl: number; json: Promise<unkn
 /** Forget the cached voice lists (tests stub a provider per case). */
 export function clearVoiceLists(): void {
   voiceLists.clear();
+  voiceSettings.clear();
 }
 
 async function providerVoices(provider: TtsProvider, locale: string): Promise<VoiceChoice[]> {
