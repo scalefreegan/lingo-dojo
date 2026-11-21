@@ -22,6 +22,7 @@ import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, turnsSettled } from "../conversationLife";
 import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
+import { deferredVoiceTaken } from "../../shared/voice-cast.ts";
 import { Button, Card, Chevron, inputClass } from "./ui";
 
 /* Voice practice on the Go tab: run the pack as a spoken session right here.
@@ -1248,6 +1249,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     let cast = cur.cast;
     let fallbacks = cur.fallbacks;
     for (const [key, d] of deferred.current) {
+      // A first draw for someone else may have gone ahead without waiting
+      // for this retry and got the same voice: keep this person's own.
+      const others = Object.entries(cast).filter(([x]) => x !== d.slot).flatMap(([x, v]) => [v.id, fallbacks?.[x]]);
+      if (deferredVoiceTaken({ key, slot: d.slot, voiceId: d.held.voice.id, held: [...heldBy.current].map(([k, h]) => [k, h.voice.id]), others })) continue;
       heldBy.current.set(key, d.held);
       if (holder.current.get(d.slot) === key && cast[d.slot]) {
         cast = { ...cast, [d.slot]: d.held.voice };
