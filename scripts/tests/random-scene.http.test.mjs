@@ -382,3 +382,89 @@ test("kids: the pool is the kids library's scenes for the kid's language, never 
   const preview = await pip.call("POST", "/api/assemble", { mode: "kids", pack: randomPack() });
   assert.match(preview.body.markdown, /one of the 2 scenes in its pool/);
 });
+
+// Draw another (ld-k23): POST /api/conversations/:id/redraw.
+const redraw = (who, id, pack = randomPack(["Travel essentials"]), extra = {}) =>
+  who.call("POST", `/api/conversations/${id}/redraw`, { mode: "adult", pack, title: "Random scene", ...extra });
+const other = (id) => (id === "taxi" ? "hotel" : "taxi");
+const countFor = async (name) =>
+  (await q("select count(*)::int as n from conversations c join learners l on l.id = c.learner_id join users u on u.id = l.user_id where u.username = $1", [name]))[0].n;
+
+test("draw another before the learner speaks replaces the conversation: another scene, its key and revisit link, the old one gone", async () => {
+  const sam = await someone();
+  // An earlier finished attempt of each scene, so whichever is drawn links.
+  const done = {};
+  for (const s of ["taxi", "hotel"]) {
+    const c = await start(sam, libraryPack(s), { title: s });
+    assert.equal((await sam.call("POST", `/api/conversations/${c.id}/end`)).status, 200);
+    await q("update conversations set extraction_status = 'done' where id = $1", [c.id]);
+    done[s] = c.id;
+  }
+  useSceneRandom(() => 0);
+  const pack = randomPack(["Travel essentials"]);
+  const c = await start(sam, pack);
+  const first = c.scenarioId;
+  // The dojo master's opening is stored (no learner turn yet).
+  assert.equal((await turn(sam, c.id, pack)).status, 200);
+  const r = await redraw(sam, c.id, pack);
+  assert.equal(r.status, 201, r.text);
+  const next = r.body.conversation;
+  assert.equal(next.scenarioId, other(first), "never the scene just drawn");
+  assert.notEqual(next.id, c.id);
+  assert.equal(next.randomScene, true);
+  const row = await snapshot(next.id);
+  assert.equal(row.pack_snapshot.random_draw.drawn, other(first));
+  assert.equal(row.pack_snapshot.scenario, other(first));
+  const links = (await q("select scene_key, previous_conversation_id from conversations where id = $1", [next.id]))[0];
+  assert.deepEqual([links.scene_key, links.previous_conversation_id], [`s:${other(first)}`, done[other(first)]]);
+  // The old conversation and its opening are gone.
+  assert.equal((await sam.call("GET", `/api/conversations/${c.id}`)).status, 404);
+  assert.equal((await q("select count(*)::int as n from turns where conversation_id = $1", [c.id]))[0].n, 0);
+  assert.equal(await countFor(`user${n}`), 3);
+  // The new one plays the new scene.
+  const t = await turn(sam, next.id, pack);
+  assert.equal(t.status, 200, t.text);
+  assert.ok(prompt().includes(other(first) === "taxi" ? "Taxi across town" : "Checking in"));
+});
+
+test("draw another is refused once the learner has spoken (409 already_spoken) and changes nothing", async () => {
+  const sam = await someone();
+  useSceneRandom(() => 0);
+  const pack = randomPack(["Travel essentials"]);
+  const c = await start(sam, pack);
+  assert.equal((await turn(sam, c.id, pack)).status, 200);
+  const said = await sam.call("POST", "/api/voice/turn", {
+    mode: "adult", pack, conversationId: c.id, message: "Hola", elapsedMs: 0,
+    history: [{ role: "master", lines: [{ speaker: "NARRATOR-F", text: "Hola." }], stage: "scene" }],
+  });
+  assert.equal(said.status, 200, said.text);
+  const r = await redraw(sam, c.id, pack);
+  assert.equal(r.status, 409);
+  assert.equal(r.body.code, "already_spoken");
+  assert.equal((await snapshot(c.id)).scenario_id, c.scenarioId);
+  assert.equal(await countFor(`user${n}`), 1);
+});
+
+test("draw another with no other scene in the pool, an ended or non-random conversation, or a non-random pack is refused and keeps the old one", async () => {
+  const sam = await someone();
+  const solo = randomPack(["Daily life"]); // cafe alone
+  const a = await start(sam, solo);
+  const r = await redraw(sam, a.id, solo);
+  assert.deepEqual([r.status, r.body.code], [409, "no_other_scene"]);
+  assert.equal((await sam.call("GET", `/api/conversations/${a.id}`)).status, 200);
+  // A picked scene's conversation has no draw to replace.
+  const picked = await start(sam, libraryPack("taxi"));
+  assert.equal((await redraw(sam, picked.id, randomPack(["Travel essentials"]))).status, 409);
+  // A pack that isn't random can't ask for another.
+  assert.equal((await redraw(sam, a.id, libraryPack("taxi"))).status, 400);
+  // An ended one stays ended.
+  const t = randomPack(["Travel essentials"]);
+  const b = await start(sam, t);
+  await sam.call("POST", `/api/conversations/${b.id}/end`);
+  const e = await redraw(sam, b.id, t);
+  assert.deepEqual([e.status, e.body.code], [409, "conversation_ended"]);
+  // An unknown conversation is a 404; someone else's is never found.
+  assert.equal((await redraw(sam, "00000000-0000-4000-8000-000000000000", t)).status, 404);
+  const jo = await someone();
+  assert.equal((await redraw(jo, a.id, solo)).status, 404);
+});

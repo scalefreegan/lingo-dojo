@@ -536,6 +536,24 @@ not random and runs as any picked scene does.) Avoiding recent scenes reads the
 language profile's last 20 conversations' `scenario_id`. No migration: the
 snapshot is jsonb.
 
+**Draw another** (ld-k23): `POST /api/conversations/:id/redraw`, with the same
+body as a create (the random pack, mode, title), replaces a random scene's
+conversation the learner hasn't spoken in (no `role = 'learner'` turn; the
+dojo master's opening may be stored). The draw is never in place: the
+replacement is made by the same code as a create (`makeConversation`), with
+the scene just drawn passed as an extra most-recent scene to avoid, so its
+`scene_key`, `scenario_id`, title, snapshot (`random_draw`, `review`,
+`revisit`) and `previous_conversation_id` (the new scene's last attempt with a
+done recap) are all the new scene's; then the old conversation is deleted as
+Delete does (its turns cascade, no recap, no History row). It holds End's
+lock while it checks and deletes, so a turn racing it either stores first
+(and a learner turn makes it a 409) or is refused `conversation_ended`.
+Refusals change nothing: 409 `already_spoken`, 409 `no_other_scene` (a pool
+of one, or the draw landed on the same scene), 409 `conversation_ended`, 409
+for a conversation with no draw, 400 for a pack that isn't random, 404. The
+phrases the discarded scene's lists and its opening's glosses added to the
+bank stay there, as after a Restart.
+
 Added by migration `0001_conversation_languages_from_client` (phase 3 review):
 `native_language`, `target_language` (with `target_variant`, the session's
 languages when it started; `''` for none) and `turns.from_client` (not null,
