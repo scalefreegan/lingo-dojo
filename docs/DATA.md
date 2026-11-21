@@ -3112,17 +3112,29 @@ Each run, in order:
 The description is free text a model wrote, and it goes to OpenAI, so the
 code enforces the rules too (`cleanDescription`, `scripts/pictures.mjs`), both
 when the verdict is stored and again just before drawing:
-- It keeps only letters, digits, spaces and `,.'-`. No quotes, brackets or
-  colons survive.
+- Apostrophe look-alikes (’ ʼ ` and others) become `'`. Then it keeps
+  only letters, digits, spaces and `,.'-`. No quotes, brackets or colons
+  survive.
 - It is capped at 12 words (`DESCRIPTION_WORDS`) and 80 characters
   (`DESCRIPTION_MAX`), cut at a word.
-- Every word equal to a learner name on the account, archived learners
-  included, is dropped. The match is case-insensitive, and a possessive
-  `'s` counts ("Pip's" is "pip"). The names are read once per run, so a
-  learner added after the check still never reaches the provider.
-- If nothing useful is left (only names, or filler such as "a picture
-  of"), the word gets no picture. It becomes `none`, and no image call is
-  made.
+- **Names:** if any word names a learner on the account (archived learners
+  included), the word gets **no picture** (`none`), and no image call is
+  made. The rest of the description is never sent, because when the name
+  was the subject the leftover is a wrong picture: for a learner called
+  Rose, "a rose bush" would become "a bush".
+  - Both sides are folded before comparing: NFKD, combining marks
+    stripped, lower case. So José, NFD José and Jose match, and Zoë matches
+    Zoe.
+  - Each word and each name is split on anything not a letter or digit.
+    A word names someone when any of its parts is a name part, so
+    "Mia-Rose", "Mia’s" and "O’Neil" are caught.
+  - A part that is a name with an "s" glued on also counts ("Mias", for a
+    lost apostrophe).
+  - Name parts shorter than two letters are ignored ("O" of O'Neil).
+  - The names are read once per run, so a learner added after the check
+    still never reaches the provider.
+- If nothing useful is left (filler such as "a picture of"), the word also
+  gets no picture.
 
 The prompt (`picturePrompt`) starts with the fixed safe style: a flat,
 friendly picture-book cartoon of one subject, with no text and nothing
@@ -3201,7 +3213,13 @@ Why that model:
 Why those settings:
 - **complexity `low`:** it sets planning compute. The guide's 2.6 section
   takes low, medium or high, with high as the default. A plain cartoon
-  doesn't need more.
+  doesn't need more. No doc page explicitly confirms it on
+  `/v1/images/generations` for gpt-image-2.6-flare; the first real draw
+  settles it. A refusal shows in the server log as `OpenAI answered 400
+  <type> <code> param=<name>` (never the prompt). If that happens, drop
+  `complexity` from `OPENAI_IMAGE`.
+- **quality `low`:** the reference lists low/medium/high/auto for GPT image
+  models (xhigh and max only for gpt-image-2.5).
 - **size:** 1024x1024 is the recommended square. Smaller sizes are below
   the 655,360-pixel minimum.
 - **background `auto`:** the reference confirms opaque and transparent only

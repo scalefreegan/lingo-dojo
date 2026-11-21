@@ -29,10 +29,18 @@ import { voiceKeys } from "../../scripts/voice.mjs";
 //    under $0.001 of prompt, ~$0.007 a word. `usage` comes back with each
 //    image and its output tokens are logged (no prompt, no key), so the real
 //    figure shows on the first real draw;
-//  - `quality: "low"` (the guide: low/medium/high/xhigh/max/auto for
-//    Sunburst and Flare), `complexity: "low"` (the guide's 2.6 section: low,
-//    medium or high, default high; planning compute a single plain cartoon
-//    doesn't need; the pages don't say it changes the price);
+//  - `quality: "low"`: the API reference lists low/medium/high/auto for
+//    GPT image models (its xhigh and max are named only for the
+//    gpt-image-2.5 models, not 2.6);
+//  - `complexity: "low"`: the guide's 2.6 section says Sunburst and Flare
+//    take low, medium or high, default high (planning compute a single
+//    plain cartoon doesn't need; the pages don't say it changes the
+//    price), and the reference lists the parameter on the endpoint. No doc
+//    page explicitly confirms it on /v1/images/generations for
+//    gpt-image-2.6-flare: the first real draw settles it. If it is
+//    refused, the 400 is logged with its status, type, code and the
+//    parameter's name (below), never the prompt; drop it from
+//    OPENAI_IMAGE then;
 //  - `size: "1024x1024"`, the square the guide recommends for 2.6. Smaller
 //    sizes are below its 655,360-pixel minimum, so the file is kept small
 //    by its format instead: WebP (`output_format`, png/jpeg/webp) at
@@ -90,6 +98,11 @@ export const OPENAI_IMAGE = {
 } as const;
 const TIMEOUT_MS = 120_000;
 
+/** An error field fit for a log line: a short identifier (an error code, a
+ *  type, a parameter's name), else "". Never free text that could carry
+ *  the prompt. */
+const safeToken = (v: unknown): string => (typeof v === "string" && /^[A-Za-z0-9_.[\]-]{1,64}$/.test(v) ? v : "");
+
 const openai: ImageProvider = {
   name: "OpenAI",
   problem: () => (voiceKeys().openai ? null : "Pictures need an OpenAI key: add OPENAI_API_KEY to .env.local in the app's folder, then press Draw pictures."),
@@ -117,11 +130,18 @@ const openai: ImageProvider = {
       /* not JSON */
     }
     if (!res.ok) {
-      const code = String(body.error?.code ?? "");
-      // Only the code and status: the message can quote the prompt.
+      const code = safeToken(body.error?.code);
+      // Only the status, type, code and the parameter's name: the message
+      // can quote the prompt, so it is never logged.
       if (code === "moderation_blocked" || code === "content_policy_violation") throw new ImageRefused(`OpenAI refused it (${code})`);
-      const hint = res.status === 401 ? " (check OPENAI_API_KEY)" : "";
-      throw new ImageFailed(`OpenAI answered ${res.status}${code ? ` ${code}` : ""}${hint}`);
+      const type = safeToken(body.error?.type);
+      const param = safeToken(body.error?.param);
+      const hint =
+        res.status === 401 ? " (check OPENAI_API_KEY)"
+        : res.status === 400 && param ? ` (the request's "${param}" was refused: a parameter or value ${IMAGE_MODEL} doesn't take? see OPENAI_IMAGE in imageProvider.ts)`
+        : res.status === 400 ? ` (a bad request: check OPENAI_IMAGE in imageProvider.ts against ${IMAGE_MODEL})`
+        : "";
+      throw new ImageFailed(`OpenAI answered ${res.status}${type ? ` ${type}` : ""}${code ? ` ${code}` : ""}${param ? ` param=${param}` : ""}${hint}`);
     }
     // The tokens billed, for the cost (no prompt, no key in the line).
     const tokens = body.usage?.output_tokens;

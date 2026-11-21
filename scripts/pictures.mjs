@@ -79,43 +79,57 @@ const NOT_DESCRIPTION = /[^\p{L}\p{M}\p{N} ,.'-]/gu;
 const FILLER = new Set(["a", "an", "the", "of", "and", "with", "in", "on", "at", "to", "for", "its", "his", "her", "their", "some", "one",
   "picture", "cartoon", "drawing", "image", "illustration", "portrait", "photo", "photograph", "selfie", "person", "someone", "somebody", "named", "called", "child", "kid"]);
 
-/** A word as names are compared: lower case, without edge punctuation or a
- *  possessive "'s" ("Pip's" is "pip"). */
-const bare = (w) => w.toLowerCase().replace(/^[,.'-]+|[,.'-]+$/g, "").replace(/'s$/u, "");
+/** Text as names are compared: compatibility-decomposed (NFKD), combining
+ *  marks stripped, lower case. "José", NFD "José", "Jose" and "JOSE" are
+ *  one; "Zoë" is "zoe". */
+const fold = (t) => String(t ?? "").normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
 
-/** The words of these names (each learner name on the account, split on
- *  anything not a letter), lower case, two letters or more. */
+/** Apostrophe look-alikes, mapped to ' before the character filter (which
+ *  would otherwise drop them and glue "Mia’s" into "Mias"). */
+const APOSTROPHES = /[‘’ʼʻ′＇`´]/g;
+
+/** The parts of a word or name: folded, split on anything not a letter or
+ *  digit (so on - and ' too: "Mia-Rose" is "mia" and "rose", "O'Neil" is
+ *  "o" and "neil", "Mia's" is "mia" and "s"). */
+const parts = (t) => fold(t).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/** The parts of these names (each learner name on the account), two
+ *  letters or more. */
 export function nameWords(names) {
   const out = new Set();
-  for (const n of names ?? []) {
-    for (const w of String(n ?? "").toLowerCase().split(/[^\p{L}\p{M}]+/u)) if (w.length >= 2) out.add(w);
-  }
+  for (const n of names ?? []) for (const w of parts(n)) if (w.length >= 2) out.add(w);
   return out;
 }
 
+/** A description word names someone: any of its parts is a name part, or a
+ *  name part with an "s" glued on ("Mias", "Pips": a lost apostrophe). */
+const namesSomeone = (word, avoid) => parts(word).some((x) => avoid.has(x) || (x.endsWith("s") && avoid.has(x.slice(0, -1))));
+
 /**
  * A visual description as the style prompt takes it, or null (nothing to
- * draw): one line of plain words (NOT_DESCRIPTION dropped), without any word
- * equal to one of `names` (the learner's name, any learner name on the
- * account; case-insensitive: a child's name never goes to the provider), at
- * most DESCRIPTION_WORDS words and DESCRIPTION_MAX characters, and with at
- * least one word that says what to draw. `names` is a list of names or the
- * Set nameWords made of them.
+ * draw): one line of plain words (apostrophe look-alikes made ', then
+ * NOT_DESCRIPTION dropped), at most DESCRIPTION_WORDS words and
+ * DESCRIPTION_MAX characters, with at least one word that says what to draw.
+ *
+ * Names: if any word names a learner on the account (`names`: the learner's
+ * name, any learner name on the account; accent- and case-insensitive, any
+ * part of a hyphenated or apostrophised word), the whole description is
+ * null: the word gets no picture. Dropping just the name would send what is
+ * left, and when the name was the subject that is a wrong picture ("a rose
+ * bush" for a learner called Rose would be "a bush"; "a dog with Pip", "a
+ * dog with"). A child's name never goes to the provider. `names` is a list
+ * of names or the Set nameWords made of them.
  */
 export function cleanDescription(v, names = []) {
   if (typeof v !== "string") return null;
-  const flat = modelText(v).replace(/\s+/g, " ").replace(NOT_DESCRIPTION, "").replace(/\s+/g, " ").trim();
+  const flat = modelText(v).normalize("NFC").replace(APOSTROPHES, "'").replace(/\s+/g, " ").replace(NOT_DESCRIPTION, "").replace(/\s+/g, " ").trim();
   const avoid = names instanceof Set ? names : nameWords(names);
-  const words = flat
-    .split(" ")
-    .filter((w) => w && !avoid.has(bare(w)))
-    .slice(0, DESCRIPTION_WORDS);
+  const all = flat.split(" ").filter(Boolean);
+  if (avoid.size && all.some((w) => namesSomeone(w, avoid))) return null;
+  const words = all.slice(0, DESCRIPTION_WORDS);
   while (words.length && words.join(" ").length > DESCRIPTION_MAX) words.pop();
   const s = words.join(" ").replace(/^[,.'-]+|[,.'-]+$/g, "").trim();
-  const useful = s.split(" ").some((w) => {
-    const b = bare(w);
-    return /\p{L}{3}/u.test(b) && !FILLER.has(b);
-  });
+  const useful = s.split(" ").some((w) => parts(w).some((x) => /\p{L}{3}/u.test(x) && !FILLER.has(x)));
   return useful ? s : null;
 }
 
@@ -172,8 +186,8 @@ export function judgePrompt({ words, targetLanguage = "the target language", nat
  * list. `{ ok: true, verdicts }`, one per word sent (undefined for a word
  * the reply left out: it is judged again by a later call), or `{ ok:
  * false, error }`. A "yes" with no usable description is a "no": there
- * would be nothing to draw. `names` (the account's learner names) are
- * dropped from each description (cleanDescription).
+ * would be nothing to draw, and so is one that names a learner on the
+ * account (`names`; cleanDescription).
  */
 export function parseJudgeReply(text, count, names = []) {
   const avoid = nameWords(names);

@@ -45,21 +45,47 @@ test("a description is a short noun phrase: at most 80 characters and 12 words, 
   assert.equal(chars, "a magnificently enormous extraordinarily colourful hot-air balloon floating");
 });
 
-test("names never reach the provider: any word equal to a learner name on the account goes, case-insensitively; nothing useful left is no picture", () => {
+test("names never reach the provider: a description naming a learner on the account is no picture at all, case-insensitively", () => {
   const names = ["Pip", "Mia Rose", null];
-  assert.equal(cleanDescription("PIP holding a red ball", names), "holding a red ball");
-  assert.equal(cleanDescription("pip's red ball", names), "red ball");
-  assert.equal(cleanDescription("a rose bush with mia", names), "a bush with");
-  assert.equal(cleanDescription("a picture of Pip", names), null, "only the name: nothing to draw");
+  assert.equal(cleanDescription("PIP holding a red ball", names), null);
+  assert.equal(cleanDescription("pip's red ball", names), null);
+  assert.equal(cleanDescription("a picture of Pip", names), null);
   assert.equal(cleanDescription("Mia", names), null);
-  assert.equal(cleanDescription("a pipe", names), "a pipe", "only whole words");
-  assert.deepEqual([...nameWords(["Pip", "Mia-Rose O'Neil", "J"])], ["pip", "mia", "rose", "o", "neil"].filter((w) => w.length >= 2));
-  // The check's reply drops them too, and a yes left with nothing is a no.
-  const r = parseJudgeReply('{"items": [{"n": 1, "picturable": true, "description": "Pip waving"}, {"n": 2, "picturable": true, "description": "Pip"}]}', 2, names);
-  assert.deepEqual(r.verdicts, [{ picturable: true, description: "waving" }, { picturable: false, description: null }]);
+  assert.equal(cleanDescription("a pipe", names), "a pipe", "only whole parts: pipe isn't Pip");
+  assert.equal(cleanDescription("a red ball", names), "a red ball");
+  assert.deepEqual([...nameWords(["Pip", "Mia-Rose O'Neil", "J"])], ["pip", "mia", "rose", "neil"]);
+  // The check's reply: a yes naming someone is a no.
+  const r = parseJudgeReply('{"items": [{"n": 1, "picturable": true, "description": "Pip waving"}, {"n": 2, "picturable": true, "description": "a kite"}]}', 2, names);
+  assert.deepEqual(r.verdicts, [{ picturable: false, description: null }, { picturable: true, description: "a kite" }]);
   // And the prompt, when a name came after the verdict was stored.
   assert.equal(picturePrompt("a portrait of Mia", names), null);
-  assert.doesNotMatch(picturePrompt("Pip with a kite", names), /pip/i);
+  assert.equal(picturePrompt("Pip with a kite", names), null);
+});
+
+test("a name is caught however it is spelt: curly apostrophes, hyphens, accents, NFD, a lost apostrophe", () => {
+  assert.equal(cleanDescription("Mia’s red ball", ["Mia"]), null, "curly apostrophe");
+  assert.equal(cleanDescription("Mias red ball", ["Mia"]), null, "apostrophe lost");
+  assert.equal(cleanDescription("a Mia-Rose doll", ["Mia"]), null, "one part of a hyphenated word");
+  assert.equal(cleanDescription("a Mia-Rose doll", ["Mia-Rose"]), null);
+  assert.equal(cleanDescription("O’Neil with a kite", ["Sean O'Neil"]), null, "O’Neil");
+  assert.equal(cleanDescription("ONeil with a kite", ["Sean O'Neil"]), "ONeil with a kite", "a glued O'Neil isn't a part: the whole-part rule");
+  assert.equal(cleanDescription("Jose with a kite", ["José"]), null, "accent folded");
+  assert.equal(cleanDescription("José with a kite", ["Jose"]), null);
+  assert.equal(cleanDescription("José with a kite", ["José"]), null, "NFD in the description");
+  assert.equal(cleanDescription("José with a kite", ["José"]), null, "NFD in the name");
+  assert.equal(cleanDescription("Zoe and a cat", ["Zoë"]), null);
+  assert.equal(cleanDescription("ZOË and a cat", ["zoe"]), null);
+  // Curly apostrophes in a description with no name are kept, as plain '.
+  assert.equal(cleanDescription("a dog’s red ball", ["Mia"]), "a dog's red ball");
+});
+
+test("when a name was the subject, the leftover is no picture, not a wrong one", () => {
+  // A learner called Rose: "a rose bush" never becomes "a bush".
+  assert.equal(cleanDescription("a rose bush", ["Rose"]), null);
+  assert.equal(picturePrompt("a rose bush", ["Rose"]), null);
+  // Nor a dangling "a brown dog with".
+  assert.equal(cleanDescription("a brown dog with Pip", ["Pip"]), null);
+  assert.equal(cleanDescription("a rose bush", ["Pip"]), "a rose bush");
 });
 
 test("the style prompt is fixed, with the description as data and no writing in the image", () => {

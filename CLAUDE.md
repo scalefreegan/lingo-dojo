@@ -128,9 +128,11 @@ and taps its picture.
   (`web/server/imageProvider.ts`, `OPENAI_API_KEY`, `IMAGE_MODEL` `gpt-image-2.6-flare` at
   low quality).
 - The check's description goes to OpenAI only through `cleanDescription`: a
-  noun phrase of at most 12 words and 80 characters, with every learner
-  name on the account dropped (nothing left means no picture). It is sent as
-  quoted data after the fixed style.
+  noun phrase of at most 12 words and 80 characters. If any word names a
+  learner on the account, the word gets no picture. The match is
+  accent-folded (NFKD) and case-insensitive, and it catches any part of a
+  hyphenated or apostrophised word. The description is sent as quoted data
+  after the fixed style.
 - Each call is in the background paid slot, with a ledger row
   (`picture_calls`) written as it starts. The cap is `PICTURE_DAILY_IMAGES`
   (50) images per language profile a day, redraws included.
