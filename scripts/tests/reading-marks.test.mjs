@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { SESSION_LINES } from "./zh-session-corpus.mjs";
 
 const zh = await import("../../web/src/script/zh.ts");
+const zh_standard = await import("../../web/src/script/zh-standard.ts");
 const OpenCC = await import("../../web/node_modules/opencc-js/dist/esm/cn2t.js");
 const toTw = (OpenCC.default ?? OpenCC).Converter({ from: "cn", to: "tw" });
 
@@ -225,7 +226,7 @@ test("the common words leave the reader's call where CC-CEDICT reads a word two 
   // 明朝: Míng cháo (the dynasty) / míng zhāo (tomorrow morning).
   assert.equal(line("明朝"), "míng cháo");
   assert.deepEqual(marked("明朝"), ["明朝"]);
-  assert.deepEqual(marked("结果"), ["结果"]);
+  assert.deepEqual(marked("正当"), ["正当"]);
   // A reading the reader's rules chose stays (不当 is a word, but in
   // 我不当老师 当 is dāng; 还给 in 我还给你做饭 is hái).
   assert.equal(line("我不当老师"), "wǒ bù dāng lǎo shī");
@@ -255,4 +256,35 @@ test("gen-zh-words: CC-CEDICT's readings of the top words, doubles read alike, n
   // 稀有 is past the top 5; 的 is one character.
   assert.deepEqual(got, { 东西: ["dōng xī", "dōng xi"], 狗狗: ["gǒu gǒu"], 长沙: ["cháng shā"] });
   assert.deepEqual(two.map((t) => t.word), ["明朝"]);
+});
+
+test("words CC-CEDICT reads two ways take the learner's standard reading (zh-standard.ts: HSK 3.0, else a stated judgement), zh-TW only where Taiwan agrees (PR #67)", () => {
+  const { STANDARD_READINGS } = zh_standard;
+  assert.ok(STANDARD_READINGS.length >= 30);
+  for (const s of STANDARD_READINGS) {
+    assert.ok(/^HSK 3\.0 level|^judgement: /.test(s.note), s.word);
+    const first = s.reading.split("/")[0];
+    // Alone, in a sentence: the standard reading (or another standard one), settled.
+    for (const t of [s.word, `${s.word}，我知道。`]) {
+      const got = zh.readCodePoints(t, "zh-CN", { cache: false }).filter(Boolean).join(" ");
+      assert.ok(s.reading.split("/").some((r) => got.includes(r)), `${t}: ${got}, want ${first}`);
+    }
+    assert.deepEqual(marked(s.word), [], s.word);
+  }
+  // The reader alone read these otherwise.
+  assert.equal(line("当天"), "dàng tiān");
+  assert.equal(line("恶心"), "ě xin");
+  assert.equal(line("琢磨"), "zuó mo");
+  // zh-TW keeps Taiwan's reading where it differs.
+  assert.equal(line("當天", "zh-TW"), "dāng tiān");
+  assert.equal(line("琢磨", "zh-TW"), "zhuó mó");
+  // A longer word the segmenter splits keeps its own reading.
+  assert.equal(line("好事者"), "hào shì zhě");
+  assert.equal(line("便宜行事"), "biàn yi xíng shì");
+  // 盡量 (jìn) is not 儘量 (jǐn): the traditional spelling decides.
+  assert.equal(line("儘量"), "jǐn liàng");
+  assert.equal(line("盡量"), "jìn liàng");
+  // Listed both ways, or the other sense as common: still the reader's, marked.
+  assert.deepEqual(marked("正当"), ["正当"]);
+  assert.deepEqual(marked("所长"), ["所长"]);
 });

@@ -25,6 +25,7 @@ import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 import { COMMON_WORDS } from "./zh-words.ts";
+import { STANDARD_READINGS } from "./zh-standard.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
@@ -216,7 +217,14 @@ function wordStarts(cps: string[]): boolean[] | null {
  *  reads one way), by simplified spelling: each word's readings, the
  *  first the one applied, the others the same syllables with a neutral
  *  tone where CC-CEDICT lists both (东西 dōng xī / dōng xi). */
-const common = new Map<string, { readings: string[][]; trad: string[][] | null }>(
+type CommonWord = {
+  readings: string[][];
+  trad: string[][] | null;
+  /** A learner's standard reading (zh-standard.ts): written over the
+   *  reader's choice, in zh-TW only where Taiwan agrees (`cnOnly` else). */
+  standard?: { cnOnly: boolean; notBefore: string[] };
+};
+const common = new Map<string, CommonWord>(
   COMMON_WORDS.split("|")
     .filter(Boolean)
     .map((e) => {
@@ -225,6 +233,14 @@ const common = new Map<string, { readings: string[][]; trad: string[][] | null }
       return [w, { readings: r.split("/").map((x) => x.split(" ")), trad: t ? t.split(",").map((x) => [...x]) : null }];
     }),
 );
+// The words CC-CEDICT reads two ways, by their standard reading (PR #67).
+for (const s of STANDARD_READINGS) {
+  common.set(s.word, {
+    readings: s.reading.split("/").map((x) => x.split(" ")),
+    trad: s.trad ? [[...s.trad]] : null,
+    standard: { cnOnly: !s.tw, notBefore: s.notBefore ?? [] },
+  });
+}
 /** Off only for scripts/gen-zh-words.mjs, which compares the reader
  *  without the list to CC-CEDICT. */
 let commonOn = true;
@@ -251,11 +267,14 @@ export function useCommonWords(on: boolean): void {
  *     in 我还给你做饭; a reading a dictionary word,
  *     rule or table entry settled) leaves the word to the reader: not
  *     taken, so the mark may show.
+ * A word of zh-standard.ts (one CC-CEDICT reads two ways) takes its
+ * standard reading whatever the reader chose (当天 dàng tiān), in zh-TW
+ * only where Taiwan agrees.
  * The longest word wins where two start together. A person's correction
  * still outranks it (applyCorrections), and Taiwan's readings are laid
  * over it after (taiwanize).
  */
-function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[]): void {
+function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[], tw: boolean): void {
   const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
   const bare = (r: string) => r === toneless(r);
   /** The reading at k for CC-CEDICT's `x`: the reader's, x, or undefined (a
@@ -282,6 +301,22 @@ function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: b
       // Written in traditional characters: one of the word's spellings
       // (散髮, hair, is no 散發 sàn fā).
       if (c.trad && !c.trad.some((t) => t.every((x, n) => cps[i + n] === x || cps[i + n] === simp[i + n]))) continue;
+      if (c.standard) {
+        // A standard reading (zh-standard.ts) is the word's, whatever the
+        // reader chose; in zh-TW only where Taiwan reads it so.
+        if (c.standard.cnOnly && tw) continue;
+        // Part of a longer word the segmenter split (好事|者 hào shì zhě).
+        const after = simp.slice(e).join("");
+        if (c.standard.notBefore.some((x) => after.startsWith(x))) continue;
+        const now = out.slice(i, e);
+        const r = c.readings.find((r) => r.every((x, n) => x === now[n])) ?? c.readings[0];
+        r.forEach((x, n) => {
+          out[i + n] = x;
+          settled[i + n] = true;
+        });
+        hit = e - i;
+        break;
+      }
       for (const r of c.readings) {
         const got = r.map((x, n) => take(i + n, x, n > 0 && simp[i + n] === simp[i + n - 1]));
         if (got.some((x) => x === undefined)) continue;
@@ -417,7 +452,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     // (looseStarts: 我还|书 lets 还书 apply).
     const edges = looseStarts(cps, simp, starts, joined);
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
-    if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled);
+    if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);

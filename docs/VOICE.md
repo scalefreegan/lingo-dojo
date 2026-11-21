@@ -607,9 +607,26 @@ uncertain words in context.
       characters with a CC-CEDICT entry, name entries included (长江,
       华盛顿), an entry that only points to another ("see 長沙市") where it
       is the word's only one.
-    - A word CC-CEDICT reads two ways stays out: 57 of the 20,000 (结果,
-      当时, 重点, 不了, 教授, 当年, 教学, 高中, 分子, 当天, 教会, 便宜, 明朝 …;
-      the reader decides, and the mark may show). Readings that differ only
+    - A word CC-CEDICT reads two ways stays out of the list: 57 of the
+      20,000. 38 of them have a learner's standard reading instead
+      (`web/src/script/zh-standard.ts`, our own table): 30 checked by hand
+      in the official HSK 3.0 word list (GF 0025—2021; it has no stated
+      licence, so it is a reference only: the PDF stays in the gitignored
+      `data/freq/hsk/`, and nothing from it is kept but each word's reading
+      and the note "HSK 3.0 level N"), and 8 by a stated judgement (结果:
+      HSK lists jiéguǒ and jiē//guǒ, the result sense overwhelming; 好玩,
+      中式, 较差, 小儿, 禁用, 失调, 大王, not in HSK, the other reading rare).
+      Such a word takes its reading over the reader's choice (当天 dàng
+      tiān, 恶心 ě xin, 琢磨 zuó mo), in zh-TW only where Taiwan agrees
+      (not 便宜, 大夫, 尽量, 恶心, 当天, 当晚, 片子, 琢磨: Taiwan's reading,
+      from general knowledge of Taiwan usage, not a checked source), never
+      inside a longer word the segmenter splits (好事|者 hào, 便宜|行事 biàn),
+      and by its traditional spelling where a character has two (儘量 jǐn,
+      盡量 jìn). The other 19 stay to the reader and may be marked: 转动
+      (HSK lists both), 背着, 看好, 同行, 正当, 所长 (HSK lists one, but the
+      other is as common in running text: 背着书包, 看好孩子, 正当…时,
+      一无所长), and 13 not in HSK (不了, 分子, 教会, 明朝, 总长, 重重, 朝阳,
+      供养, 播种, 外传, 倾倒, 散落, 调配). Readings that differ only
       by a neutral tone are one word with both (东西 dōng xī / dōng xi: the
       reader's stands). Not 一行 (a sentence often reads yī háng).
     - Reduplicated words read alike: a doubled character takes the first
@@ -635,7 +652,8 @@ uncertain words in context.
       5 / 23 / 199 are marked in simplified (before: 5 / 38 / 290) and 5 /
       22 / 207 in traditional (before: 6 / 39 / 300); what is left is
       mostly words CC-CEDICT reads two ways and phrases it has no entry
-      for (一场, 更好, 很难, 长时间). On CC-CEDICT's 110,382 headwords
+      for (一场, 更好, 很难, 长时间). With the standard readings: 1 / 14 /
+      180 (simplified), 1 / 14 / 191 (traditional). On CC-CEDICT's 110,382 headwords
       (`pinyin-sweep.mjs`) it changed only neutral tones of doubled
       characters (谢谢, 星星, 看看, 太太, 娘娘, 泡泡 …), none broken; PR #63's
       word and sentence sets unchanged (263/276, 70/87).
