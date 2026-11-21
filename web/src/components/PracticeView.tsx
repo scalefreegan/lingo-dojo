@@ -587,7 +587,7 @@ function FlashCard({ item, languageName, nativeName, locale, answer, last, onNex
   // Readings go over the target words only where they are already shown:
   // a recognize card's prompt and the answer once it is out. A produce
   // card's prompt is the meaning, so nothing there gives the answer away.
-  const prompt = recognize ? <RubyText text={item.text} locale={locale} /> : item.meaning;
+  const prompt = recognize ? <RubyText text={item.text} locale={locale} reading={item.reading} /> : item.meaning;
   return (
     <>
       <p className="font-[family-name:var(--font-display)] text-2xl font-semibold break-words text-fg sm:text-3xl" lang={recognize ? item.lang || undefined : undefined} data-testid="practice-prompt">
@@ -1114,7 +1114,7 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
 function SpokenTones({ take, result, locale, model }: { take: Blob; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
   const text = result.expected.text;
   const wanted = scoresTonesHere(locale) && scorableText(text) && result.review.verdict !== "wrong";
-  const state = useToneScore(take, text, wanted);
+  const state = useToneScore(take, text, wanted, false, result.expected.reading);
   if (!wanted) return null;
   return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId: model.phraseId }} />;
 }
@@ -1363,7 +1363,7 @@ function Result({
       {result.review.note && <p className="text-sm text-fg-2" data-testid="practice-note">{result.review.note}</p>}
       <div className="rounded-xl bg-raised px-3 py-2" data-testid="practice-answer-shown">
         <p className="text-lg font-medium text-fg" lang={item.lang || undefined}>
-          <RubyText text={result.expected.text} locale={locale} />
+          <RubyText text={result.expected.text} locale={locale} reading={result.expected.reading} />
         </p>
         <p className="text-sm text-fg-2">{result.expected.meaning}</p>
         {play && <PhrasePlay model={play} />}

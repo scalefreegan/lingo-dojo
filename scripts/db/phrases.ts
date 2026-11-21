@@ -317,6 +317,12 @@ export async function recordGlosses(
           // The first meaning stays, and the learner's always does.
           { ...IDENTITY, set: { meaning: AUTO_MEANING } },
         );
+        // A reading the dojo master gave and the server kept (ld-op2): the
+        // latest one stands; a gloss without one leaves it as it is.
+        if (item.reading && row.reading !== item.reading) {
+          await mine.update(phrases, { reading: item.reading }, eq(phrases.id, row.id));
+          row.reading = item.reading;
+        }
         rows.push(row);
       }
       await absorbPending(sp, profile, rows.map((r, i) => ({ id: r.id, meaningNorm: opts.items[i].meaningNorm })));
@@ -486,6 +492,7 @@ function summary(row: PhraseRow, cardRows: CardRow[], lapses: number, examples: 
     id: row.id,
     text: row.text,
     meaning: row.meaning,
+    ...(row.reading ? { reading: row.reading } : {}),
     note: row.note,
     lang: row.lang,
     source: row.source,
@@ -685,6 +692,9 @@ export async function updatePhrase(db: Db, profile: LanguageProfileRef, id: unkn
     // those it names (read here, under the row lock, so one saved since the
     // learner's page loaded stays).
     const changed = (set.text !== undefined && set.text !== row.text) || (input.meaning !== undefined && input.meaning !== row.meaning);
+    // The stored reading (ld-op2) was checked against the words as they
+    // were: new words, no reading (the reader's own is shown again).
+    if (set.text !== undefined && set.text !== row.text) set.reading = null;
     if (changed) set.alternates = [];
     else {
       let alternates = row.alternates;

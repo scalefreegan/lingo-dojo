@@ -501,6 +501,32 @@ test("without the flag (Practice) one character keeps its one reading: 好, 不�
   }
 });
 
+test("a bank phrase's stored reading (ld-op2) is what its recording is judged against, once it passes the hint checks again", async () => {
+  withoutAzure();
+  try {
+    const lin = await someone();
+    const said = (reading) =>
+      lin.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("你得去")}${reading == null ? "" : `&reading=${encodeURIComponent(reading)}`}`, clip([3, 3, 4]).wav, { "Content-Type": "audio/wav" });
+    const got = async (reading) => (await said(reading)).body.syllables.map((x) => [x.pinyin, x.accept]);
+    assert.deepEqual(await got(null), [["nǐ", [3]], ["dé", [2]], ["qù", [4]]], "the reader's reading without one");
+    // (nǐ before a third tone is said as a second: the scorer's own sandhi.)
+    assert.deepEqual(await got("nǐ děi qù"), [["nǐ", [2]], ["děi", [3]], ["qù", [4]]]);
+    // Not a reading of the character, or the wrong count: ignored, never a
+    // sound the text doesn't have.
+    assert.deepEqual(await got("nǐ dǎi qù"), [["nǐ", [3]], ["dé", [2]], ["qù", [4]]]);
+    assert.deepEqual(await got("děi"), [["nǐ", [3]], ["dé", [2]], ["qù", [4]]]);
+    // One that once took a minute to refuse (every split of aaa… tried):
+    // ignored at once; one longer than any reading is a 400 before any work.
+    const t0 = Date.now();
+    const worst = await lin.call("POST", `/api/pronunciation/score?text=${encodeURIComponent("啊".repeat(24))}&reading=${"a".repeat(25)}`, clip([1]).wav, { "Content-Type": "audio/wav" });
+    assert.notEqual(worst.status, 500);
+    assert.ok(Date.now() - t0 < 5000, "bounded (the step bound itself is in reading-hints.test.mjs)");
+    assert.equal((await said("a".repeat(241))).status, 400);
+  } finally {
+    withAzure();
+  }
+});
+
 test("a scored text stays in neither the reader's cache nor anywhere it can be found", async () => {
   withoutAzure();
   try {

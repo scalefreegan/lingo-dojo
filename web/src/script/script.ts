@@ -124,6 +124,11 @@ export function readMarked(
   });
 }
 
+/** A phrase's stored reading as the hint the reader lays over it (zh.ts
+ *  ReadingHint), or undefined when there is none. */
+export const hintFor = (term: string | null | undefined, reading: string | null | undefined): { term: string; reading: string }[] | undefined =>
+  term && reading ? [{ term, reading }] : undefined;
+
 /** The distinct Chinese characters in `text`, in first-seen order. */
 export function hanChars(text: string): string[] {
   const seen: string[] = [];

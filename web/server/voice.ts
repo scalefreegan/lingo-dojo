@@ -10,7 +10,7 @@ import { REPO_ROOT, isDrill, loadContent, modeRoot } from "../../scripts/content
 import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
-  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, replayReading, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   SAY_SLOW_WPM, paceOf, speechPace, elevenStoredSettings, elevenVoiceSettingsRequest,
 } from "../../scripts/voice.mjs";
 import type {
@@ -28,6 +28,7 @@ import { KEYTERM_SHARE, sessionKeyterms } from "../../scripts/keyterms.mjs";
 import { rawDb } from "./db.ts";
 import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
+import { logHints, readsHints, settleHints, wantsReadings } from "./hints.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { paidSlot } from "./paid.ts";
@@ -365,10 +366,12 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
       // Glosses go back in the replay too, so the dojo master keeps writing
       // its GLOSS line and knows which words it has already explained.
       const glosses: VoiceGloss[] = Array.isArray(m.glosses)
-        ? (m.glosses as { term?: unknown; meaning?: unknown }[])
+        ? (m.glosses as { term?: unknown; meaning?: unknown; reading?: unknown }[])
             .filter((g) => typeof g?.term === "string" && typeof g.meaning === "string")
             .slice(0, MAX_GLOSSES)
-            .map((g) => ({ term: oneLine(g.term as string).slice(0, 200), meaning: oneLine(g.meaning as string).slice(0, 300) }))
+            // A kept reading hint goes back too (only syllables and spaces:
+            // replayReading), so the dojo master keeps seeing the form.
+            .map((g) => ({ term: oneLine(g.term as string).slice(0, 200), meaning: oneLine(g.meaning as string).slice(0, 300), ...(replayReading(g.reading) ? { reading: replayReading(g.reading) } : {}) }))
         : [];
       const choices = Array.isArray(m.choices)
         ? (m.choices as unknown[]).filter((c): c is string => typeof c === "string").slice(0, MAX_CHOICES).map((c) => oneLine(c).slice(0, 60))
@@ -463,8 +466,12 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // unless the pack's own narrator unit fixes it.
     // A session that builds on an earlier attempt of this scene (docs/DATA.md
     // §Revisit) carries a briefing on it, frozen when it began; adults only.
+    // The session's target locale: the conversation's own (its pack's
+    // variant), else the language profile's. A Mandarin session asks for
+    // reading hints on its glosses; no other language's prompt changes.
+    const targetLocale = (conversation ? localeFor(conversation.targetLanguage, conversation.targetVariant) : null) ?? bankLocaleOf(ctx.language) ?? "";
     const systemPrompt =
-      voiceSystemPrompt(markdown, mode, { drill }) +
+      voiceSystemPrompt(markdown, mode, { drill, readings: wantsReadings(targetLocale) }) +
       (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
       planDirective(plan, { drill }) +
       (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "") +
@@ -550,7 +557,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     }
     const lines = parseVoiceReply(run.text, mode, { drill });
     if (!lines.length) throw new HttpError(502, "the dojo master's reply had nothing to say aloud");
-    const reply: VoiceTurnReply = { lines, glosses: parseGlosses(run.text), choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
+    // Every reading hint is checked before anything keeps it (hints.ts).
+    const hinted = settleHints(parseGlosses(run.text, { readings: readsHints(targetLocale) }), lines, targetLocale);
+    logHints(hinted.stats);
+    const reply: VoiceTurnReply = { lines, glosses: hinted.glosses, choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
     if (conversation) {
       // Stored before the reply goes out, still under the lock. A failed
       // write doesn't cost the learner a reply that's already paid for: the

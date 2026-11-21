@@ -95,7 +95,7 @@ export interface GameAnswerReply {
   replayed: boolean;
   /** For an adult learner only: the word heard, shown after the tap like
    *  the other adult drills' answers. A kids learner's reply never has it. */
-  word?: { text: string; meaning: string | null };
+  word?: { text: string; meaning: string | null; reading?: string };
 }
 
 export type PictureState = "pending" | "ready" | "none" | "failed" | "removed";

@@ -792,6 +792,12 @@ export interface VoiceLine {
 export interface VoiceGloss {
   term: string;
   meaning: string;
+  /** Mandarin only (ld-op2): the dojo master's reading for `term`, one
+   *  tone-marked syllable per Chinese character ("yín háng"), present only
+   *  when the server accepted it (web/src/script/zh.ts validateHint) and it
+   *  differs from the reader's own. Shown over the characters of this
+   *  turn's lines; never spoken. */
+  reading?: string;
 }
 
 export type VoiceHistoryItem =
@@ -1321,6 +1327,9 @@ export interface PhraseSummary {
   /** The target form; null while pending (a scenario meaning, no words yet). */
   text: string | null;
   meaning: string | null;
+  /** Mandarin: the dojo master's reading for `text` where the reader's
+   *  differs (VoiceGloss.reading); absent for almost every phrase. */
+  reading?: string;
   note: string | null;
   /** The variant it was first met in (BCP-47, e.g. es-MX); "" when unknown. */
   lang: string;

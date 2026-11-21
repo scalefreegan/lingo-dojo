@@ -111,15 +111,18 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
 
   const fromText = from?.text ?? "";
   const fromAt = from?.at ?? -1;
-  const readKey = `${ch}\u0001${locale}\u0001${fromText}\u0001${fromAt}`;
+  // The hints by value (callers build the list inline): "term=reading|…".
+  const hintKey = (from?.hints ?? []).map((h) => `${h.term}=${h.reading}`).join("|");
+  const readKey = `${ch}\u0001${locale}\u0001${fromText}\u0001${fromAt}\u0001${hintKey}`;
   useEffect(() => {
     let gone = false;
     loadZh().then(
       (zh) => {
         if (gone) return;
+        const hints = hintKey ? hintKey.split("|").map((e) => ({ term: e.slice(0, e.indexOf("=")), reading: e.slice(e.indexOf("=") + 1) })) : null;
         // The reading over the character where it was tapped (蘋 in 蘋果:
         // píng), when it is there: it leads the list.
-        const inContext = fromAt >= 0 && fromText.startsWith(ch, fromAt) ? zh.readOffsets(fromText, locale)[fromAt] : null;
+        const inContext = fromAt >= 0 && fromText.startsWith(ch, fromAt) ? zh.readOffsets(fromText, locale, hints)[fromAt] : null;
         const usual = zh.charReadings(ch, locale)[0];
         const list = zh.charReadings(ch, locale, inContext);
         setRead({ key: readKey, list, usual, inWord: !!inContext && inContext !== usual });
@@ -129,7 +132,7 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
     return () => {
       gone = true;
     };
-  }, [ch, locale, readKey, fromText, fromAt]);
+  }, [ch, locale, readKey, fromText, fromAt, hintKey]);
 
   const loaded = entry?.ch === ch ? entry : null;
   const row = loaded ? loaded.row : undefined;
@@ -343,7 +346,7 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
             <ul className="flex flex-col gap-1">
               {phrases.slice(0, BANK_SHOWN).map((p) => (
                 <li key={p.id} className="flex flex-wrap items-baseline gap-x-2">
-                  <CharTerm text={p.text!} locale={locale} className={`font-medium text-accent ${kids ? "text-xl" : "text-base"}`} />
+                  <CharTerm text={p.text!} locale={locale} reading={p.reading} className={`font-medium text-accent ${kids ? "text-xl" : "text-base"}`} />
                   {p.meaning && <span className="text-sm text-fg-2">{p.meaning}</span>}
                 </li>
               ))}
@@ -356,7 +359,7 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
           <a className="underline" href={ARPHIC_LICENSE_URL} target="_blank" rel="noreferrer">
             Arphic Public License
           </a>
-          ) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro, traditional text through OpenCC's tables (Apache-2.0).
+          ) via Hanzi Writer. Meanings, radicals and strokes: Unicode Unihan database. Readings: pinyin-pro, traditional text through OpenCC's tables (Apache-2.0); which reading is the common one from CC-CEDICT, wordfreq and Unihan (CC BY-SA 4.0).
         </p>
       </div>
     </dialog>

@@ -26,6 +26,9 @@ export interface ScriptState {
 export interface CharContext {
   text: string;
   at: number;
+  /** The dojo master's readings for phrases of `text` (zh.ts ReadingHint),
+   *  so the card leads with what the learner saw over the character. */
+  hints?: readonly { term: string; reading: string }[];
 }
 
 const NONE: ScriptState = { stored: null, setMode: () => undefined, kids: false, openChar: () => undefined };
@@ -85,11 +88,20 @@ export interface Ruby {
   readings: (string | null)[] | null;
 }
 
-/** The readings to draw over `text` (target-language text in `locale`). */
-export function useRuby(text: string, locale: string | null | undefined): Ruby {
+/** The readings to draw over `text` (target-language text in `locale`).
+ *  `hints`: readings the dojo master gave for phrases of it, or a bank
+ *  phrase's stored one (zh.ts ReadingHint); entries without a reading (a
+ *  turn's plain glosses) are skipped. */
+export function useRuby(text: string, locale: string | null | undefined, hints?: readonly { term: string; reading?: string }[] | null): Ruby {
   const mode = useRubyMode(locale);
   const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
-  const readings = useMemo(() => (reader && locale ? reader.readOffsets(text, locale) : null), [reader, text, locale]);
+  // By value: callers build the list inline.
+  const key = (hints ?? []).filter((h) => h.reading).map((h) => `${h.term}\u0001${h.reading}`).join("\u0002");
+  const readings = useMemo(() => {
+    if (!reader || !locale) return null;
+    const list = key ? key.split("\u0002").map((e) => ({ term: e.split("\u0001")[0], reading: e.split("\u0001")[1] })) : null;
+    return reader.readOffsets(text, locale, list);
+  }, [reader, text, locale, key]);
   return { mode, readings: mode === "off" ? null : readings };
 }
 

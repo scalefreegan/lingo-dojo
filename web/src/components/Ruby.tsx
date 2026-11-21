@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { rubyPieces, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
-import { isHan, readMarked, scriptFor } from "../script/script.ts";
+import { hintFor, isHan, readMarked, scriptFor } from "../script/script.ts";
 
 /* The reading-aid pieces the transcript, History and the phrase bank use:
  * text with readings over it, the Off / Pinyin / Zhuyin switch, and a
@@ -8,20 +8,22 @@ import { isHan, readMarked, scriptFor } from "../script/script.ts";
  * nothing extra for a language without a reading aid. */
 
 /** Target-language `text` with its readings over it (plain where none). */
-export function RubyText({ text, locale }: { text: string; locale: string | null | undefined }) {
-  const ruby = useRuby(text, locale);
+export function RubyText({ text, locale, reading }: { text: string; locale: string | null | undefined; reading?: string | null }) {
+  // `reading`: a bank phrase's stored reading for exactly this text.
+  const ruby = useRuby(text, locale, hintFor(text, reading));
   return <>{rubyPieces(text, 0, text.length, ruby)}</>;
 }
 
 /** A whole sentence with one stretch marked (`<mark>`): the readings are
  *  taken over the whole sentence once (script.ts readMarked), so the words
  *  beside the mark keep their context (了 in 天黑了 is le, not liǎo). */
-export function MarkedText({ before, marked, after, locale, markClassName }: { before: string; marked: string; after: string; locale: string | null | undefined; markClassName: string }) {
+export function MarkedText({ before, marked, after, locale, markClassName, reading }: { before: string; marked: string; after: string; locale: string | null | undefined; markClassName: string; reading?: string | null }) {
   const mode = useRubyMode(locale);
   const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
   const [b, m, a] = useMemo(
-    () => readMarked([before, marked, after], reader && locale && mode !== "off" ? (t) => reader.readOffsets(t, locale) : null),
-    [before, marked, after, reader, locale, mode],
+    // `reading`: the marked phrase's stored reading, laid over it.
+    () => readMarked([before, marked, after], reader && locale && mode !== "off" ? (t) => reader.readOffsets(t, locale, hintFor(marked, reading)) : null),
+    [before, marked, after, reader, locale, mode, reading],
   );
   const pieces = (p: { text: string; readings: (string | null)[] | null }) => rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings });
   return (
@@ -70,9 +72,12 @@ export function RubyToggle({ locale, className = "" }: { locale: string | null |
  *  These are the character taps: a transcript line's own taps stay on its
  *  glossed words, and its characters are reached through the definition
  *  card, so the two never compete for one tap. */
-export function CharTerm({ text, locale, className = "" }: { text: string; locale: string | null | undefined; className?: string }) {
+export function CharTerm({ text, locale, className = "", reading }: { text: string; locale: string | null | undefined; className?: string; reading?: string | null }) {
   const { openChar } = useScript();
-  const ruby = useRuby(text, locale);
+  // `reading`: the gloss's or the bank phrase's own reading for this text;
+  // the card opened from a character leads with it.
+  const hints = hintFor(text, reading);
+  const ruby = useRuby(text, locale, hints);
   if (!locale || !scriptFor(locale)) return <span className={className} lang={locale ?? undefined}>{text}</span>;
   const out = [];
   let plain = "";
@@ -91,7 +96,7 @@ export function CharTerm({ text, locale, className = "" }: { text: string; local
           title="Character details"
           onClick={(e) => {
             e.stopPropagation();
-            openChar(ch, locale, { text, at: offset });
+            openChar(ch, locale, { text, at: offset, ...(hints ? { hints } : {}) });
           }}
         >
           {rubyPieces(text, at, at + ch.length, ruby)}

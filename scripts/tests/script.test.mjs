@@ -28,7 +28,8 @@ test("readMarked: a sentence with a marked phrase is read once, whole, so the wo
   // What Ruby.tsx MarkedText draws: the flashcard's sentence and a filled gap.
   const read = (t) => readOffsets(t, "zh-CN");
   const cases = [
-    [["", "天黑", "了"], [[], ["tiān", "hēi"], ["le"]], "liǎo"],
+    // (了 alone is le too since the frequency prior, ld-op2; it was liǎo.)
+    [["", "天黑", "了"], [[], ["tiān", "hēi"], ["le"]], "le"],
     [["他", "跑", "得很快"], [["tā"], ["pǎo"], ["de", "hěn", "kuài"]], "dé"],
     [["我", "会", "长时间等你"], [["wǒ"], ["huì"], ["zhǎng", "shí", "jiān", "děng", "nǐ"]], "cháng"],
   ];

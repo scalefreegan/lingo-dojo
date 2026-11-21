@@ -38,9 +38,11 @@ function Word({ gloss, active, onPick, children }: { gloss: VoiceGloss; active: 
 
 /** `text` with every glossed word or phrase a button, and every glossed
  *  sentence opening its translation on a pointer tap. */
-export function Glossed({ text: raw, glosses, picked, onPick, locale }: { text: string; glosses: VoiceGloss[]; picked: VoiceGloss | null; onPick: (g: VoiceGloss) => void; locale?: string }) {
+export function Glossed({ text: raw, glosses, hints, picked, onPick, locale }: { text: string; glosses: VoiceGloss[]; hints?: VoiceGloss[]; picked: VoiceGloss | null; onPick: (g: VoiceGloss) => void; locale?: string }) {
   const text = raw.normalize("NFC");
-  const ruby = useRuby(text, locale);
+  // `hints`: this turn's own glosses; the ones with a reading (the dojo
+  // master's, checked by the server) are laid over this line's readings.
+  const ruby = useRuby(text, locale, hints);
   const piece = (from: number, to: number) => rubyPieces(text, from, to, ruby);
   if (!glosses.length) return <>{piece(0, text.length)}</>;
   const out: ReactNode[] = [];

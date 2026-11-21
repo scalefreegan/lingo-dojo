@@ -15,17 +15,17 @@ export type ScoreState =
 /** Score `take` against `text`, once per take (ToneCheck.tsx). Each answer
  *  says which take and text it is for, so a new take shows "scoring" until
  *  its own reply, never the last one's marks. Leaving drops the request. */
-export function useToneScore(take: Blob | null, text: string, enabled: boolean, allReadings = false): ScoreState {
+export function useToneScore(take: Blob | null, text: string, enabled: boolean, allReadings = false, reading?: string | null): ScoreState {
   const [got, setGot] = useState<{ take: Blob; text: string; reply: PronunciationScoreReply | null; message: string | null } | null>(null);
   useEffect(() => {
     if (!enabled || !take) return;
     const ctrl = new AbortController();
-    scorePronunciation(take, text, ctrl.signal, { allReadings }).then(
+    scorePronunciation(take, text, ctrl.signal, { allReadings, reading }).then(
       (reply) => !ctrl.signal.aborted && setGot({ take, text, reply, message: null }),
       (e: unknown) => !ctrl.signal.aborted && setGot({ take, text, reply: null, message: e instanceof ApiError ? e.message : String((e as Error)?.message || e) }),
     );
     return () => ctrl.abort();
-  }, [take, text, enabled, allReadings]);
+  }, [take, text, enabled, allReadings, reading]);
   if (!enabled || !take) return { step: "idle" };
   if (!got || got.take !== take || got.text !== text) return { step: "scoring" };
   return got.message !== null ? { step: "failed", message: got.message } : { step: "done", reply: got.reply, take };

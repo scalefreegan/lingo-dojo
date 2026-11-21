@@ -282,7 +282,130 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `scripts/pinyin-sweep.mjs`: every traditional headword of CC-CEDICT read
   for zh-TW and zh-CN and its simplified one for zh-CN, compared with the
   dictionary; run by hand, the dictionary downloaded into the gitignored
-  `data/cedict/`, nothing of it shipped). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  `data/cedict/`, nothing of it shipped). A **frequency prior** (ld-op2,
+  `web/src/script/zh-freq.ts`, built by `npm run pinyin:freq`,
+  `scripts/gen-zh-freq.mjs`) settles what no dictionary word does. The
+  library's dictionary holds only the words whose reading is not a
+  character's default, so a character in a one-character segment is read
+  by default; the prior chooses there instead. **The order of authority**
+  is: a word of the library's dictionary, then a checked reading hint
+  (below), then the prior's word tables, then the per-character choice. A
+  prior entry never replaces a reading the library's dictionary settled
+  unless the table marks it a correction (`!` before the reading,
+  `prior.fixes`: 86 words where CC-CEDICT reads that exact word otherwise,
+  执行长 zhǎng, 大将军 jiāng). (1) A character alone (no Chinese character
+  beside it) and the character card lead with its most frequent reading
+  (`RANKS`: 了 le, 量 liàng, 只 zhǐ, 誰 shéi), which replaces the library's
+  first only on strong evidence (twice the frequency mass, a reading the
+  character has as a word by itself, and Unihan's kMandarin agreeing: 長
+  alone stays cháng, 佛 fó). A traditional character and its simplified
+  form lead with the same reading: one that maps to its simplified form
+  alone takes that form's entry, one that shares it (為 and 爲 with 为,
+  發 and 髮 with 发) leads with the simplified form's first reading where
+  it has it (為 wèi like 为; 髮 fà, having no fā). 著 and 乾 have no entry:
+  著 alone in a zh-TW text is zhe, since Taiwan writes 著 for the particle
+  着 and that is by far its commonest use there (zhù is 著名's, which the
+  dictionary settles), and 乾 is gān. (2) Inside a longer run, a character
+  no word settles takes its `FALLBACK` only where the default is
+  ultra-rare: one other reading has at least 90% of the character's use
+  (`FALLBACK_SHARE`) and the default is no word by itself in CC-CEDICT.
+  18 characters remain (傖 嗨 妳 崁 暍 歙 猓 琿 簿 籲 糝 菟 蚵 誰 谁 鏜 雋
+  鱖; five that qualified are refused by hand, `FALLBACK_SKIP`: 疋, pǐ in
+  一疋布; 拚, pīn in 拚命 and 打拚 as readily as pàn; 摑, guó by Taiwan's
+  standard; 輾/辗, niǎn in 輾過); 61 that a
+  plain majority would take do not, among them 粘 (82%), 逮, 剥, 豁, 倔,
+  拧, 咀, whose defaults are everyday words the dictionary lacks (粘土,
+  逮住, 剥皮, 豁口, 很倔, 拧紧), and never 地 得 兒 著 了, which have rules.
+  (3) `WORDS`, some 810 common words the reader still got wrong, apply
+  only where the word is the whole run of characters (a bank phrase, a
+  gloss, a card), so none can fire across a word boundary. (4) `ANYWHERE`,
+  some 810 more, apply inside a sentence too (局长来了 zhǎng, 排行榜 háng,
+  农民种植水稻 zhòng): unlike `READING_FIXES` they are not the library's
+  custom words but a pass of the reader's own, which applies one only
+  where it **stands between word boundaries of the platform's segmenter**
+  (`Intl.Segmenter("zh")`, ICU's dictionary: 第五|行, so 五行 wǔ xíng is
+  not read into 第五行; 这种|植物; 局|长期; where there is no segmenter
+  nothing of (4) applies), its edges cut through no word of the library's
+  dictionary, and no `BLOCK` word stands across them (the common words it
+  would misread where the segmenter doesn't say: 视 + 为了, never 视为 +
+  了). The builder audits each by frequency: for every way to cut the word
+  in two, every word ending with its first part against every word
+  starting with its second, read by the reader itself in context; a common
+  word running beyond the entry's part that would be misread goes on its
+  block list, and what is left to chance must be under a tenth of the
+  word's own use (`MISFIRE_MARGIN`; the two meeting by chance, which
+  undercounts collocations, hence the margin); it must also take effect
+  beside three quarters of the common one-character words. A
+  two-character word ending in a particle is never corrected (穿着 is 穿 +
+  着 zhe far more often than chuān zhuó, attire), nor one starting with a
+  numeral (一行字 yī háng beside 一行 yī xíng, a party), and a spelling
+  several headwords share takes a correction only if none reads worse.
+  No entry mixes CC-CEDICT's syllable with the reader's tone for one
+  repeated character (`mixesTones`: 转转 [zhuan4 zhuan5] came out zhuàn
+  zhuǎn, 吵吵 chāo chǎo; such a word gets no entry and reads as before),
+  and a few words CC-CEDICT reads as everyday use doesn't get none
+  (`WORD_SKIP`: 狗狗 [gou3 gou1], 宏碁 [Hong2 ji1], 喳喳, 懒洋洋, 柏柏尔);
+  a test lists every entry left with a repeated character (32, read the
+  same each time except 数数 shǔ shù and 糊糊 hú hu). Two block words are
+  added by hand (`HAND_BLOCK`), where the word across the edge is not
+  itself misread so the audit can't find it: 小心 before 心脏 (衣服不小心脏了
+  zāng) and 葡萄干 before 干嘛 (我想吃葡萄干嘛 gān). The general form of
+  that rule, blocking an entry wherever a more frequent word runs across
+  its edge (`--overlap`), was measured and not kept: the table grows from
+  72 KB to 198 KB (94 KB gzipped), the sweep gets 3 or 4 headwords worse,
+  and on the sentences below it trades two fixes (这最为重要, 他不当回事)
+  for one (这只得奖的猫). **The segmenter is the platform's**: the server
+  (Node's ICU) checks hints and the browser (its own ICU) draws the
+  readings, so on a string that can be cut two ways an in-sentence entry
+  may apply on one and not the other; the difference is one syllable of
+  such a string, never an error. With no `Intl.Segmenter` at all (4)
+  does not apply and a hint is laid only over a whole run of characters:
+  the readings are then main's plus (1) to (3). The tests assert readings
+  that hinge on no contested boundary, and no exact list of misreads.
+  Sources: CC-CEDICT's readings weighted by wordfreq's Chinese word list,
+  with Unihan's kHanyuPinlu to split a one-character word's count between
+  its readings; wordfreq is pinned at a commit and Unihan at 18.0.0, each
+  download checked against a SHA-256 in the generator (CC-CEDICT has no
+  versioned URL); all go into gitignored caches (`data/cedict/`,
+  `data/freq/`), only the derived table committed (72 KB, 35 KB gzipped,
+  in the reader's on-demand chunk). **Measured** (2026-11-21, `npm run
+  pinyin:freq -- --report`, and `--holdout`):
+  - Sweep, headwords disagreeing with CC-CEDICT before → after (110,382):
+    zh-TW 3,704 → 2,597, traditional read as zh-CN 3,763 → 2,629,
+    simplified 3,919 → 2,735; no headword reads worse in any of the three
+    (the builder drops whatever would make one).
+  - By frequency (wordfreq's top N words with a CC-CEDICT entry, the word
+    alone; share of running text frequency-weighted), simplified: top
+    1,000 1 → 0; 2,000 5 → 0; 5,000 28 (0.56%, 0.224% of text) → 3 (0.06%,
+    0.018%); 10,000 80 → 5; 20,000 213 (1.06%, 0.361%) → 17 (0.09%,
+    0.026%). Traditional zh-TW: 0 → 0; 3 → 0; 24 → 3; 70 → 5; 196 → 20.
+    Inside a sentence frame (他们…吗), simplified: 1 → 0; 5 → 0; 29 → 6;
+    82 → 21; 215 (0.369% of text) → 55 (0.077%); traditional 0 → 0; 3 → 0;
+    25 → 6; 72 → 21; 199 → 58. Left in the top 5,000:
+    穿着 (zhuó or 穿 + 着), 一行 (xíng or háng), 美的 (the brand Midea),
+    and in the frame 不当, 还给 and 若干 (the frame's 吗 makes 干吗): all
+    read both ways in real text, so none is corrected by hand.
+  - Held out (the tables built from a seeded 80% of the headwords, read on
+    the other 21,853): the fallback alone fixes 7 and worsens 1 (zh-TW),
+    10 and 1 (traditional zh-CN), 9 and 0 (simplified); the one is 雋譽.
+  - Not CC-CEDICT's headwords (`scripts/tests/zh-everyday.mjs`, written by
+    hand: 276 everyday words with a many-reading character, 87 sentences
+    aimed at `ANYWHERE` words, half with the word's characters meeting
+    across two words): the fallback alone changes none; the whole prior
+    fixes 9 words (6 in a sentence frame) and worsens none; it fixes 26
+    sentences and worsens 3, each truly ambiguous as written, where the
+    segmenter takes the word: 这只不过河的猫 (只不过), 这条船长十米 (船长),
+    这只得奖的猫 (只得). They are left as they are.
+  - A seeded sample of 100 of the simplified disagreements left: 43 truly
+    wrong (mostly uncommon or technical words: 切点, 跳弹, 销冠, 卒中; 卷 juǎn
+    and 斗 dǒu recur), 20 proper names, 29 classical, idiom or rare
+    (夕发朝至, 宫商角徵羽, three characters the library can't read), 6
+    differences of convention (neutral tones, 薄 báo/bó), 2 with both
+    readings in use (穿着讲究, 粘扣).
+  The sweep reads headwords as whole runs, so it measures (3) and (4)
+  together; inside sentences only (1), (2) and (4) apply. `readDetail` also says which
+  readings a word settled, and `ambiguousChars` which characters have
+  several readings in use and none settled. The library reads every 地 dì, 得 dé and 儿 ér, so a few
   narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
   開心地) and never where it starts a word (看看地圖); 得 is de only after
   a listed verb and before a degree word (跑得很快), never after a pronoun
@@ -325,7 +448,12 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   dictionary data (TSPhrases, TSCharacters, in the reader's chunk) is
   Apache-2.0, its notice in `web/src/script/OPENCC-LICENSE.txt`; the
   CC-CEDICT the sweep downloads is CC BY-SA 4.0 and is never committed or
-  bundled; the stroke data is from
+  bundled, nor is wordfreq's list (data CC BY-SA 4.0); the table derived
+  from the two, `zh-freq.ts`, is therefore under CC BY-SA 4.0 itself, the
+  one share-alike data file in the repository, kept under its own licence
+  apart from the AGPL code (the owner's decision, PR #63; the README's
+  licence section says so, `web/src/script/ZH-FREQ-LICENSE.txt` has the
+  attributions); the stroke data is from
   Make Me a Hanzi under the Arphic Public License (its text ships in the
   package; the card credits it); Unihan is under the Unicode License v3,
   whose notice is in the generated files and
@@ -346,6 +474,111 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   listed neighbours. The fix for one is a test in
   `scripts/tests/script.test.mjs` and an entry in the tables in
   `web/src/script/script.ts`.
+
+### Reading hints (ld-op2)
+
+The reader guesses a reading from the text; the dojo master wrote the line
+and knows which one it meant. A Mandarin GLOSS entry may therefore carry
+its pinyin in square brackets, `GLOSS: 銀行 [yín háng] = bank`, in the
+GLOSS line only: never in a spoken line, never in the text sent to a voice.
+
+**The per-turn rule is switched off by default** (the owner's decision,
+PR #63: as measured below it earned nothing for its tokens). The rule
+(`READINGS_RULE` in `scripts/voice.mjs`: "after each glossed word of two or
+more characters (not a whole sentence, not a single character), add its
+pinyin…", unconditional so the model need not judge which characters
+qualify) goes into a Mandarin session's prompt (adult, kids and drills)
+only when the server runs with `LINGO_READING_HINTS=on`
+(`READING_HINTS_SWITCH`, `wantsReadings(locale)` in `web/server/hints.ts`).
+Off, a Mandarin prompt is byte for byte what it was before there were
+hints, as every other language's always is. Reading, checking, storing and
+showing a hint do not depend on the switch (`readsHints(locale)`: any
+Mandarin session), so another source can feed the same path (ld-668:
+the post-session recap supplying readings for kept
+phrases).
+
+- **Syntax.** `parseGlosses(text, { readings })` takes a square bracket
+  (`[]`, full-width too) at the end of a term that has a Chinese character,
+  when the bracket holds letters and no Chinese character, as `reading`
+  (raw, unchecked); the term is what stands before it. Only a Mandarin
+  session passes `readings`: in every other language, and for round
+  brackets everywhere, the term is kept whole exactly as before
+  (`東京 (Tōkyō)`, `la vuelta (el cambio)`). The stream reader never hands
+  out a GLOSS line, so streaming is unchanged.
+- **Checks** (`validateHint` in `web/src/script/zh.ts`, run by
+  `settleHints` on the server for every Mandarin reply): a phrase of **two
+  or more** Chinese characters (one alone takes no hint: laid over a text
+  it would rewrite other words); tone marks, tone numbers or syllables run
+  together; `v`/`u:` for ü; one syllable per Chinese character, exactly;
+  each a reading that character has (the reader's tables, CC-CEDICT's
+  corrections and the frequency ranks; a wrong tone is not one). 一 and 不
+  in any tone, a neutral tone on the reader's own syllable and erhua keep
+  the app's form; a zh-TW text takes Taiwan's readings. Any reading in use
+  passes, the less common ones included (huán for 還, kōng in 抽空, háng in
+  第五行: choosing between them is what a hint is for, and it overrides the
+  prior's tables and defaults). Only a **marginal** reading (in the
+  library's long list and in no CC-CEDICT word: 說 yuè, 樂 yào) needs a
+  dictionary word in the phrase that reads the character so; and a hint
+  **never overrules a word of the library's dictionary** (銀行 is háng
+  whatever the bracket says). The work is bounded: a hint longer than 8
+  letters a character is refused unread, each character's candidate
+  spellings are distinct and a position that failed is never tried again,
+  so the worst case is linear in the phrase (a test holds the step count;
+  啊 twelve times against thirteen a's once took a minute), and the tone
+  check's route applies its rate limits first and refuses a `reading` over
+  240 characters. A hint that fails is dropped silently, the gloss kept
+  without it.
+- **Kept** only when it differs from what the reader shows, for the phrase
+  alone or where it stands in one of the turn's lines (`hintToKeep`): then
+  the gloss keeps `reading` in the normal form ("nǐ děi qù"). It is stored
+  with the turn (`turns.glosses`, jsonb, no migration), replayed in its
+  brackets (`replayReading` lets only plain syllables back into a prompt,
+  whatever a client's history says), and written to the phrase when the
+  gloss fills the bank (`phrases.reading`, migration 0014; a later gloss
+  without one leaves it).
+- **Shown.** The transcript lays a turn's kept readings over that turn's
+  own lines, only where the phrase stands as a word of its own: between
+  the platform segmenter's word boundaries (很重 is not laid into 很重要;
+  without a segmenter, only between non-Chinese characters), never across
+  a word of the library's dictionary, whose characters keep their reading;
+  the longer phrase wins (`withHints`; `useRuby`'s `hints`). The definition
+  card's term and the character card opened from it lead with the hinted
+  reading (`CharContext.hints`). A bank phrase's stored reading is used the
+  same way by the Phrase bank, Practice (the card, the answer, and the tone
+  check: `/api/pronunciation/score?reading=`, checked again by
+  `validateHint`, ignored when it fails) and the adult picture game's word.
+  A stored reading is checked against its text again whenever it is shown
+  (each syllable must still be a reading of its character, else it is
+  ignored), and editing a phrase's text clears it (`updatePhrase`); a merge
+  folds a pending row, which has no text and no reading, into the row
+  whose text stands, so nothing goes stale there. Nothing is laid over a
+  cloze sentence or a listening card, which hide the words.
+- **Log.** One line per turn that had hints, counts only (given, accepted,
+  kept, dropped by reason), never the text.
+
+**Measured** (2026-11-21, with the rule's first wording, "a word with a
+character of more than one reading"; the unconditional wording now in
+`READINGS_RULE` has not been measured; 16 `claude -p --model sonnet --tools ""` runs, 12
+with the rule over traditional and simplified scenes steered at 行 長 樂 還
+覺 重 著 了 得 地 乾 發 髮 蘋, 4 paired without): 5 of 12 replies carried a
+hint, 7 hints in all (0.6 a reply, 59 glosses); 6 passed, 1 was dropped
+(one syllable for two characters); **none differed from the reader**, so
+none was kept. The model mostly glosses whole sentences, which the rule
+leaves alone, and the words it does hint (銀行, 音樂, 快樂, 便宜) are ones
+the dictionary settles. The hints add about 3 visible tokens a reply; the
+reported output tokens (thinking included) averaged 1,941 with the rule and
+634 without, on 4 pairs, too few to say the rule causes it. As measured the
+rule earns nothing; the smallest alternative is to drop it from the turn
+prompt and have the recap call (one a session, already there) give
+readings for the phrases it keeps, through the same checks into
+`phrases.reading`.
+
+Tests: `scripts/tests/reading-hints.test.mjs` (syntax, streaming, replay,
+checks and their order of authority, the step bound, overlay, what a turn
+keeps, the rule text and its switch),
+`scripts/tests/reading-hints.http.test.mjs` (turn, bank, Practice, other
+languages, kids), `scripts/tests/pronunciation.http.test.mjs` (the tone
+check's `reading`), `scripts/tests/db-migration-0014.test.mjs`.
 
 ### Streaming the reply (ld-erp)
 

@@ -7,7 +7,7 @@
 
 import { BANDS, fromRow, phraseMastery } from "./fsrs.mjs";
 import { normKey } from "./match.mjs";
-import { languageOf, localeFor } from "./voice.mjs";
+import { languageOf, localeFor, replayReading } from "./voice.mjs";
 
 /** The longest target form, meaning and note the bank keeps (a gloss term
  *  is already cut to 200, its meaning to 300, by the turn route). */
@@ -190,7 +190,10 @@ export function glossCaptures(glosses, lines, locale) {
     if (!norm || out.has(norm)) continue;
     if (tooLongToCapture(text, locale)) continue;
     const meaning = oneLine(g?.meaning).slice(0, LIMITS.meaning) || null;
-    out.set(norm, { text, norm, meaning, meaningNorm: meaning ? normKey(meaning) || null : null, example: exampleFor(text, lines, locale) });
+    // A kept reading hint (ld-op2) goes with the phrase, only when the bank
+    // keeps the term whole (the hint counts out to its characters).
+    const reading = typeof g?.reading === "string" && text === oneLine(g.term) && replayReading(g.reading) ? g.reading : null;
+    out.set(norm, { text, norm, meaning, meaningNorm: meaning ? normKey(meaning) || null : null, example: exampleFor(text, lines, locale), ...(reading ? { reading } : {}) });
   }
   return [...out.values()].sort((a, b) => (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
 }

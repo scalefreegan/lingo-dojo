@@ -81,6 +81,7 @@ export async function practiceCandidates(db: Db, profile: LanguageProfileRef): P
     id: p.id,
     text: p.text,
     meaning: p.meaning,
+    reading: p.reading,
     lang: p.lang,
     starred: p.starred,
     suspended: p.suspended,
@@ -136,7 +137,7 @@ function reply(row: ReviewRow, card: CardRow, phrase: PhraseRow, extra: { altern
   return {
     review: { id: Number(row.id), rating: row.rating as Rating, verdict: (row.verdict ?? "self") as PracticeVerdict, note: row.graderNote, answer: row.answer },
     card: { version: cardVersion(state), due: state.due, mastery: masteryBand(state), state: state.state, reps: state.reps, lapses: state.lapses },
-    expected: { text: phrase.text ?? "", meaning: phrase.meaning ?? "" },
+    expected: { text: phrase.text ?? "", meaning: phrase.meaning ?? "", ...(phrase.reading ? { reading: phrase.reading } : {}) },
     cloze:
       s != null && cloze!.blankStart != null && cloze!.blankEnd != null
         ? { before: s.slice(0, cloze!.blankStart), blank: s.slice(cloze!.blankStart, cloze!.blankEnd), after: s.slice(cloze!.blankEnd) }

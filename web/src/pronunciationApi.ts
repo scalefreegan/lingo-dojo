@@ -29,10 +29,11 @@ export { scorableText, scoresTonesHere } from "../shared/tone-text.ts";
 
 /** POST /api/pronunciation/score: the recording against `text`, or null
  *  when the language isn't scored (the page then shows nothing). */
-export async function scorePronunciation(wav: Blob, text: string, signal?: AbortSignal, { allReadings = false }: { allReadings?: boolean } = {}): Promise<PronunciationScoreReply | null> {
+export async function scorePronunciation(wav: Blob, text: string, signal?: AbortSignal, { allReadings = false, reading = null }: { allReadings?: boolean; reading?: string | null } = {}): Promise<PronunciationScoreReply | null> {
   // allReadings: the character card only (one character, judged against
   // every reading it lists); Practice never sends it.
-  const q = new URLSearchParams({ text, ...(allReadings ? { readings: "all" } : {}) });
+  // reading: a bank phrase's stored reading (the server checks it again).
+  const q = new URLSearchParams({ text, ...(allReadings ? { readings: "all" } : {}), ...(reading ? { reading } : {}) });
   try {
     return await req<PronunciationScoreReply>(`/api/pronunciation/score?${q}`, {
       method: "POST",

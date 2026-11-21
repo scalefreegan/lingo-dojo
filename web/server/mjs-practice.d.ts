@@ -17,6 +17,8 @@ declare module "*/scripts/practice.mjs" {
     id: string;
     text: string | null;
     meaning: string | null;
+    /** The stored reading hint (phrases.reading), if any. */
+    reading?: string | null;
     lang?: string;
     starred?: boolean;
     suspended?: boolean;
