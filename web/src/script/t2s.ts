@@ -22,7 +22,13 @@
  * today's tables maps one for one; an entry that ever doesn't is taken
  * character by character through the same table's single-character
  * entries (and a character with no one-character form stays as it is), so
- * no reading can shift onto a neighbour (t2s.test.mjs: alignedStage). */
+ * no reading can shift onto a neighbour (t2s.test.mjs: alignedStage).
+ *
+ * OpenCC's t2s assumes its input is traditional; run over simplified text
+ * it re-maps valid simplified characters (打坏 → 打坯 pī, 沈默 → 沉默, 徵 →
+ * 征). So the reader converts a zh-CN text only when it holds a
+ * traditional-only character (looksTraditional), and never applies a
+ * phrase whose key is already simplified text (PHRASE_SIMPLIFIED). */
 
 import TSPhrases from "opencc-js/dict/TSPhrases";
 import TSCharacters from "opencc-js/dict/TSCharacters";
@@ -38,15 +44,15 @@ export interface Stage {
 /** One stage from OpenCC dictionaries ("萬 万|與 与", a phrase table
  *  first): an earlier table's entry wins over a later one's for the same
  *  key, as in OpenCC's own loading. The first of several candidates is
- *  OpenCC's choice, and ours. */
-export function makeStage(...dicts: string[]): Stage {
+ *  OpenCC's choice, and ours. `skip` leaves an entry out. */
+export function makeStage(dicts: string[], skip: (from: string, to: string) => boolean = () => false): Stage {
   const map = new Map<string, string>();
   let longest = 1;
   const starts = new Set<string>();
   for (const d of dicts) {
     for (const line of d.split("|")) {
       const [from, to] = line.split(" ");
-      if (!from || !to || map.has(from)) continue;
+      if (!from || !to || map.has(from) || skip(from, to)) continue;
       map.set(from, to);
       const cps = [...from];
       longest = Math.max(longest, cps.length);
@@ -84,15 +90,66 @@ export function alignedStage(stage: Stage, cps: readonly string[]): string[] {
   return out;
 }
 
+/** Characters simplified text writes for another traditional one
+ *  (STCharacters keys: 坏 for 壞, 么 for 麼, 岩 for 巖) that some
+ *  converting TSPhrases key holds. Such a key is already simplified text,
+ *  and OpenCC's reading of it as traditional misfires: 打坏 → 打坯 (pī),
+ *  拉坏 → 拉坯. Those 23 entries are never applied. t2s.test.mjs derives
+ *  this list from the tables, so the STCharacters table needn't ship. */
+export const PHRASE_SIMPLIFIED = "坏么麽丑郁岩于";
+/** Characters that are traditional and never simplified: keys of
+ *  TSCharacters or in a TSPhrases key, that are neither a TSCharacters
+ *  candidate, nor in a TSPhrases value, nor a STCharacters key (all
+ *  three are characters simplified text writes: 乾 of 乾隆, 徵 of
+ *  宫商角徵羽, 沈, 瞭 of 瞭望 are). The last set's share here is
+ *  ALSO_SIMPLIFIED, so STCharacters needn't ship (t2s.test.mjs derives
+ *  both). Some 3,200 characters: 見 這 裡 為 們 蘋 …. */
+export const ALSO_SIMPLIFIED = "緼藴輼醖";
+
+const entries = (d: string) =>
+  d.split("|").flatMap((line) => {
+    const [from, ...to] = line.split(" ");
+    return from && to.length ? [[from, to] as const] : [];
+  });
+
+let tradOnly: Set<string> | null = null;
+/** The traditional-only characters (see ALSO_SIMPLIFIED). */
+export function tradOnlyChars(): ReadonlySet<string> {
+  if (!tradOnly) {
+    const simp = new Set<string>(ALSO_SIMPLIFIED);
+    const keys = new Set<string>();
+    for (const [from, to] of entries(TSCharacters)) {
+      keys.add(from);
+      for (const t of to) simp.add(t);
+    }
+    for (const [from, to] of entries(TSPhrases)) {
+      for (const c of from) keys.add(c);
+      for (const t of to) for (const c of t) simp.add(c);
+    }
+    tradOnly = new Set([...keys].filter((c) => !simp.has(c)));
+  }
+  return tradOnly;
+}
+
+/** Whether `text` holds a traditional-only character, so it is
+ *  traditional text (or mixed) and is read through its simplified
+ *  spelling; text with none (any simplified text) is read as it is. */
+export function looksTraditional(text: string): boolean {
+  const set = tradOnlyChars();
+  for (const c of text) if (set.has(c) || set.has(c.normalize("NFC"))) return true;
+  return false;
+}
+
 let ts: Stage | null = null;
-const tsStage = () => (ts ??= makeStage(TSPhrases, TSCharacters));
+const tsStage = () =>
+  (ts ??= makeStage([TSPhrases, TSCharacters], (from, to) => [...from].length > 1 && from !== to && [...from].some((c) => PHRASE_SIMPLIFIED.includes(c))));
 
 // 著 is zhù (write; notable) in these words, else 着 (看著 zhe, 睡著 zháo,
 // 著急 zháo, 著陸 zhuó): Taiwan writes all of them with 著. From CC-CEDICT's
-// zhù words: 著名 著作 著稱 著述 著書 著錄; 顯著 名著 土著 原著 巨著 專著 編著
+// zhù words: 著名 著作 著稱 著述 著書 著錄 著者; 顯著 名著 土著 原著 巨著 專著 編著
 // 論著 譯著 遺著 拙著 卓著 昭著 炳著 較著 知著. Simplified forms too, so a
 // mainland text's 著 (always zhù there) stays 著 in these words.
-const ZHU_NEXT = "名作稱称述書书錄录";
+const ZHU_NEXT = "名作稱称述書书錄录者";
 const ZHU_PREV = "顯显名土編编原巨論论專专譯译遺遗拙卓昭炳較较知";
 /** 著 at `i` of `cps` as the form that reads it in context: 着 or itself. */
 function zheForm(cps: readonly string[], i: number): string {

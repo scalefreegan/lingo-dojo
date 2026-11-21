@@ -21,37 +21,33 @@
 import { customPinyin, pinyin } from "pinyin-pro";
 import { isHan, isPinyin, isTaiwan, particleDe, taiwanize } from "./script.ts";
 import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
-import { mergedWith, simplifyAligned } from "./t2s.ts";
+import { looksTraditional, mergedWith, simplifyAligned } from "./t2s.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
  *  Education's dictionary read them: found by the CC-CEDICT sweep
- *  (scripts/pinyin-sweep.mjs, ld-37t) and each pinned in script.test.mjs.
- *  Deliberately short: the long tail is not chased word by word. Given to
- *  pinyin-pro as its own custom words, so they take part in its word
- *  matching rather than overwrite text after it. */
+ *  (scripts/pinyin-sweep.mjs, ld-37t) and each pinned in t2s.test.mjs.
+ *  Given to pinyin-pro as custom words, which win over its segmentation:
+ *  an entry matches wherever its characters stand in a row, even across
+ *  two words (和面 would read 牛奶和面包 huó, 不当 我不当老师 dàng, 有为
+ *  我有为你 wéi, 倒是 他不倒是 dào). So an entry stays only if no such
+ *  run reads otherwise: each was checked against every CC-CEDICT word that
+ *  holds it or overlaps either end of it, and inside frames of common
+ *  words (我 你 他 不 很 有 是 在 和 的 了 也 都). Dropped for that: 和面,
+ *  不当, 有为, 倒是, 倒立, 假日 (弄虚作假日益), 待会儿 (再等待会儿), 种植
+ *  (这种植物), 炸鸡 (爆炸), 油炸 (汽油炸弹), 受难 (感受难以), 弹珠 (反弹),
+ *  狗血 (狗血压) and 不着 alone (不着痕迹 zhuó); the long tail is ld-zid.
+ *  Deliberately short. */
 export const READING_FIXES: Record<string, string> = {
-  不着: "bù zháo", // 睡不著, 找不著, 用不著 (not the zhe of 看著)
-  不着边际: "bù zhuó biān jì", // …but not here
-  不当: "bù dàng", // 處理不當: improper
-  倒是: "dào shì",
-  颠倒是非: "diān dǎo shì fēi", // …but 倒 is dǎo here
-  倒立: "dào lì",
-  假日: "jià rì",
+  嚣: "xiāo", // the character itself (嚣张, 喧嚣, 叫嚣, 甚嚣尘上): the library has áo
+  睡不着: "shuì bù zháo", // V不着, can't manage to: zháo, never the zhe of 看着
+  找不着: "zhǎo bù zháo",
+  用不着: "yòng bù zháo", // 用不着手机 (not 着手 zhuó shǒu)
+  犯不着: "fàn bù zháo",
+  处理不当: "chǔ lǐ bù dàng", // improper; 不当 alone is often 不 + 当 dāng
+  年轻有为: "nián qīng yǒu wéi", // 有为 alone is often 有 + 为 wèi
   挨饿: "ái è",
   挨打: "ái dǎ",
-  待会儿: "dāi huì ér", // in a moment (儿 then the r of erhua); not 待会 alone, which 招待會 holds
-  嚣张: "xiāo zhāng", // 嚣 alone is read áo
-  喧嚣: "xuān xiāo",
-  叫嚣: "jiào xiāo",
-  种植: "zhòng zhí",
-  炸鸡: "zhá jī",
-  油炸: "yóu zhá",
-  有为: "yǒu wéi", // 年輕有為
-  受难: "shòu nàn",
-  弹珠: "dàn zhū",
-  和面: "huó miàn",
-  狗血: "gǒu xiě",
 };
 customPinyin(READING_FIXES);
 
@@ -76,7 +72,13 @@ export function readCodePoints(text: string, locale: string, { cache: useCache =
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
   if (cps.some(isHan)) {
-    const simp = simplifyAligned(text);
+    // Converted only when it is traditional text: a zh-TW profile's always
+    // is (its 乾杯, 看著, 徵求 hold no traditional-only character, yet need
+    // OpenCC's choice and the 著 rule), a zh-CN one's only when the text
+    // holds a traditional-only character (t2s.ts looksTraditional), so
+    // simplified text reads exactly as the library reads it (打坏 huài,
+    // 沈默 shěn, 徵 zhǐ), whatever the profile.
+    const simp = tw || looksTraditional(text) ? simplifyAligned(text) : cps;
     const items = pinyin(simp.join(""), { type: "all", toneSandhi: false, nonZh: "spaced" });
     // One item per character (nonZh "spaced" keeps every other character
     // its own item too); walk them by their origin so an item that ever

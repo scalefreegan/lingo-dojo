@@ -11,7 +11,18 @@ import assert from "node:assert/strict";
 import { pinyin } from "../../web/node_modules/pinyin-pro/dist/index.mjs";
 import STCharacters from "../../web/node_modules/opencc-js/dist/esm-lib/dict/STCharacters.js";
 import TSCharacters from "../../web/node_modules/opencc-js/dist/esm-lib/dict/TSCharacters.js";
-import { SHARED_FORMS, alignedStage, makeStage, mergedWith, simplifyAligned } from "../../web/src/script/t2s.ts";
+import TSPhrases from "../../web/node_modules/opencc-js/dist/esm-lib/dict/TSPhrases.js";
+import {
+  ALSO_SIMPLIFIED,
+  PHRASE_SIMPLIFIED,
+  SHARED_FORMS,
+  alignedStage,
+  looksTraditional,
+  makeStage,
+  mergedWith,
+  simplifyAligned,
+  tradOnlyChars,
+} from "../../web/src/script/t2s.ts";
 import { READING_FIXES, charReadings, readCodePoints, readOffsets, readingCached, simplified } from "../../web/src/script/zh.ts";
 import { isPinyin, pinyinToZhuyin, readingIn } from "../../web/src/script/script.ts";
 
@@ -25,11 +36,18 @@ test("the reported words read as the dictionaries do, in pinyin and in zhuyin, f
     ["徵求", "zhēng qiú", "ㄓㄥ ㄑㄧㄡˊ"],
   ];
   for (const [w, py, zy] of cases) {
-    for (const l of ["zh-TW", "zh-CN"]) {
-      assert.equal(line(w, l), py, `${w} ${l}`);
-      assert.equal(zhuyin(w, l), zy, `${w} ${l}`);
-    }
+    assert.equal(line(w, "zh-TW"), py, w);
+    assert.equal(zhuyin(w, "zh-TW"), zy, w);
+    // A zh-CN profile converts a text only when it holds a
+    // traditional-only character (蘋 is one; 瞭, 徵 are not: 瞭望, 宫商角徵羽
+    // are simplified too), so beside one in a sentence.
+    const s = `我們${w}這個`;
+    assert.equal(line(s, "zh-CN"), `wǒ men ${py} zhè ge`, s);
+    assert.equal(zhuyin(s, "zh-CN"), `ㄨㄛˇ ˙ㄇㄣ ${zy} ㄓㄜˋ ˙ㄍㄜ`, s);
   }
+  assert.equal(line("蘋果", "zh-CN"), "píng guǒ");
+  // Alone in a zh-CN profile they are simplified text, read as the library reads it.
+  assert.equal(line("徵", "zh-CN"), "zhǐ");
   // The same in a sentence, beside other words.
   assert.equal(line("我想吃蘋果，你瞭解嗎？"), "wǒ xiǎng chī píng guǒ · nǐ liǎo jiě ma ·");
   // 時間 read shí jiàn before (the library lists only jiàn for 間).
@@ -38,8 +56,11 @@ test("the reported words read as the dictionaries do, in pinyin and in zhuyin, f
 
 test("the words the old reader read right still read the same (zh-TW, then zh-CN)", () => {
   // Locked from the reader before ld-37t; Taiwan's 頭髮 fǎ, sandhi off (對不起 duì bù qǐ).
+  // A zh-CN profile reads 乾杯, 睡著, 看著 alone as simplified text (no
+  // traditional-only character: simplified writes 乾 and 著 too), so as
+  // the library reads them; beside one, as traditional (below).
   const locked = {
-    乾淨: "gān jìng", 乾杯: "gān bēi", 頭髮: ["tóu fǎ", "tóu fa"], 發現: "fā xiàn", 睡著: "shuì zháo", 看著: "kàn zhe", 為什麼: "wèi shén me",
+    乾淨: "gān jìng", 乾杯: ["gān bēi", "qián bēi"], 頭髮: ["tóu fǎ", "tóu fa"], 發現: "fā xiàn", 睡著: ["shuì zháo", "shuì zhù"], 看著: ["kàn zhe", "kàn zhù"], 為什麼: "wèi shén me",
     銀行: "yín háng", 音樂: "yīn yuè", 快樂: "kuài lè", 還有: "hái yǒu", 覺得: "jué de", 睡覺: "shuì jiào", 計程車: "jì chéng chē",
     腳踏車: "jiǎo tà chē", 週末: "zhōu mò", 颱風: "tái fēng", 麵包: "miàn bāo", 臺灣: "tái wān", 老闆: "lǎo bǎn", 手錶: "shǒu biǎo",
     遊戲: "yóu xì", 裡面: "lǐ miàn", 謝謝: "xiè xiè", 對不起: "duì bù qǐ", 沒關係: "méi guān xì", 喜歡: "xǐ huan", 電腦: "diàn nǎo",
@@ -57,6 +78,7 @@ test("the words the old reader read right still read the same (zh-TW, then zh-CN
     assert.equal(line(w, "zh-TW"), tw, `${w} zh-TW`);
     assert.equal(line(w, "zh-CN"), cn, `${w} zh-CN`);
   }
+  assert.equal(line("我們乾杯，他睡著了，你看著", "zh-CN"), "wǒ men gān bēi · tā shuì zháo le · nǐ kàn zhe");
 });
 
 test("simplified text reads as before: the conversion leaves it alone", () => {
@@ -68,6 +90,47 @@ test("simplified text reads as before: the conversion leaves it alone", () => {
   for (const [w, r] of Object.entries(simp)) assert.equal(line(w, "zh-CN"), r, w);
   // Simplified characters pass through untouched (none is a key of TSCharacters).
   assert.deepEqual(simplifyAligned("我们去银行吧"), [..."我们去银行吧"]);
+});
+
+test("simplified text is never converted: OpenCC's t2s would re-map valid simplified characters", () => {
+  // As the reader before ld-37t read them (PR #62 review): TSPhrases maps
+  // 打坏 to 打坯 (pī), TSCharacters 徵 to 征 and 沈默 is a phrase for 沉默.
+  const before = {
+    打坏: "dǎ huài", 打坏了: "dǎ huài le", 拉坏: "lā huài", 捏坏: "niē huài", 一坏: "yī huài", 徵: "zhǐ", 沈默: "shěn mò", 沈: "shěn",
+    他把杯子打坏了: "tā bǎ bēi zi dǎ huài le", 么: "me",
+  };
+  for (const [w, r] of Object.entries(before)) {
+    assert.equal(looksTraditional(w), false, w);
+    assert.equal(line(w, "zh-CN"), r, w);
+  }
+  // Mixed with traditional text, a phrase whose key is simplified text is still never applied.
+  assert.equal(simplifyAligned("打坏").join(""), "打坏");
+  assert.equal(simplifyAligned("他們打坏了").join(""), "他们打坏了");
+  assert.equal(line("他們打坏了", "zh-CN"), "tā men dǎ huài le");
+  assert.equal(line("打坏", "zh-TW"), "dǎ huài");
+  // Traditional text is: 壞, 們 are traditional-only.
+  assert.equal(looksTraditional("打壞"), true);
+  assert.equal(line("打壞了", "zh-CN"), "dǎ huài le");
+  // Taiwan writes 沈默 for 沉默: a traditional text reads chén.
+  assert.equal(line("他很沈默", "zh-TW"), "tā hěn chén mò");
+});
+
+test("PHRASE_SIMPLIFIED, ALSO_SIMPLIFIED and the traditional-only set are what OpenCC's tables say", () => {
+  const parse = (d) => d.split("|").map((l) => l.split(" ")).filter((x) => x[0] && x[1]);
+  const ts = parse(TSCharacters);
+  const tp = parse(TSPhrases);
+  const stKeys = new Set(parse(STCharacters).map((x) => x[0]));
+  // Characters simplified text writes for another traditional one, in a converting phrase key.
+  const inKeys = [...new Set(tp.filter(([k, v]) => k !== v).flatMap(([k]) => [...k]).filter((c) => stKeys.has(c)))];
+  assert.deepEqual([...PHRASE_SIMPLIFIED].sort(), inKeys.sort());
+  // Traditional-only: in a key, never in a value nor a STCharacters key.
+  const keys = new Set([...ts.map((x) => x[0]), ...tp.flatMap((x) => [...x[0]])]);
+  const vals = new Set([...ts.flatMap((x) => x.slice(1)), ...tp.flatMap((x) => x.slice(1).flatMap((v) => [...v]))]);
+  const want = [...keys].filter((c) => !vals.has(c) && !stKeys.has(c)).sort();
+  assert.deepEqual([...tradOnlyChars()].sort(), want);
+  assert.deepEqual([...ALSO_SIMPLIFIED].sort(), [...keys].filter((c) => !vals.has(c) && stKeys.has(c)).sort());
+  for (const c of "見這裡為們蘋") assert.ok(tradOnlyChars().has(c), c);
+  for (const c of "瞭徵乾著沈坏么见这里为们苹") assert.equal(tradOnlyChars().has(c), false, c);
 });
 
 test("positions: one reading per code point in mixed text, UTF-16 offsets kept", () => {
@@ -86,7 +149,9 @@ test("positions: one reading per code point in mixed text, UTF-16 offsets kept",
 });
 
 test("alignedStage: phrases first, longest match, and an entry that isn't one for one never shifts a neighbour", () => {
-  const stage = makeStage("甲乙 丙丁|甲乙丙 戊|乙 己|甲 庚|丙 辛", "甲 X");
+  const stage = makeStage(["甲乙 丙丁|甲乙丙 戊|乙 己|甲 庚|丙 辛|丁丁 戊戊", "甲 X"], (from) => from === "丁丁");
+  // A skipped entry is never applied.
+  assert.deepEqual(alignedStage(stage, [..."丁丁"]), ["丁", "丁"]);
   // Longest match: 甲乙丙 → 戊 is not one for one, so each character on its own: 甲 庚, 乙 己, 丙 辛.
   assert.deepEqual(alignedStage(stage, [..."甲乙丙丁"]), ["庚", "己", "辛", "丁"]);
   assert.deepEqual(alignedStage(stage, [..."甲乙x"]), ["丙", "丁", "x"]);
@@ -116,22 +181,41 @@ test("SHARED_FORMS is what OpenCC's tables say, and mergedWith names the charact
 
 test("the correction list: each word reads as the dictionaries do, in both scripts", () => {
   const trad = {
-    不着: "不著", 不着边际: "不著邊際", 不当: "不當", 倒是: "倒是", 颠倒是非: "顛倒是非", 倒立: "倒立", 假日: "假日", 挨饿: "挨餓", 挨打: "挨打",
-    待会儿: "待會兒", 嚣张: "囂張", 种植: "種植", 炸鸡: "炸雞", 油炸: "油炸", 有为: "有為", 受难: "受難", 弹珠: "彈珠", 和面: "和麵", 狗血: "狗血",
-    喧嚣: "喧囂", 叫嚣: "叫囂",
+    嚣: "囂", 睡不着: "睡不著", 找不着: "找不著", 用不着: "用不著", 犯不着: "犯不著", 处理不当: "處理不當", 年轻有为: "年輕有為", 挨饿: "挨餓", 挨打: "挨打",
   };
+  assert.deepEqual(Object.keys(READING_FIXES).sort(), Object.keys(trad).sort());
   for (const [simp, want] of Object.entries(READING_FIXES)) {
-    // The erhua of 待会儿 is shown as r (particleDe).
-    const shown = want.replace(/ ér$/, " r");
-    assert.equal(line(simp, "zh-CN"), shown, simp);
-    assert.ok(trad[simp], `a traditional spelling for ${simp}`);
-    assert.equal(line(trad[simp], "zh-TW"), shown, trad[simp]);
+    assert.equal(line(simp, "zh-CN"), want, simp);
+    assert.equal(line(trad[simp], "zh-TW"), want, trad[simp]);
   }
   // In sentences, and not where the word is not there.
   assert.equal(line("我睡不著"), "wǒ shuì bù zháo");
+  assert.equal(line("他很囂張"), "tā hěn xiāo zhāng");
+  assert.equal(line("用不着手机", "zh-CN"), "yòng bù zháo shǒu jī");
   assert.equal(line("他看著我"), "tā kàn zhe wǒ");
-  assert.equal(line("招待會"), "zhāo dài huì");
-  assert.equal(line("待會兒見"), "dāi huì r jiàn");
+});
+
+test("no correction fires across a word boundary (PR #62 review)", () => {
+  // Each an entry once on the list, matching where its characters only
+  // stand side by side: the reading the library gives on its own stands.
+  const cases = [
+    ["牛奶和麵包", "zh-TW", 2, "hé"], ["牛奶和面包", "zh-CN", 2, "hé"],
+    ["我不當老師", "zh-TW", 2, "dāng"], ["他不当兵", "zh-CN", 2, "dāng"], ["不當回事", "zh-TW", 1, "dāng"],
+    ["我沒有為什麼", "zh-TW", 3, "wèi"], ["我有为你准备", "zh-CN", 2, "wèi"],
+    ["他不倒是", "zh-CN", 2, "dǎo"], ["这种植物", "zh-CN", 1, "zhǒng"], ["弄虚作假日益", "zh-CN", 3, "jiǎ"],
+    ["感受难以言表", "zh-CN", 2, "nán"], ["汽油炸弹", "zh-CN", 2, "zhà"],
+    ["说话不着边际", "zh-CN", 3, "zhuó"],
+  ];
+  for (const [text, locale, at, want] of cases) assert.equal(readCodePoints(text, locale, { cache: false })[at], want, text);
+  // Frames of common words around each kept entry change nothing else.
+  const common = [..."我你他不很有是在和的了也都"];
+  for (const [simp, want] of Object.entries(READING_FIXES)) {
+    const n = [...simp].length;
+    for (const x of common) for (const y of common) {
+      const r = readCodePoints(x + simp + y, "zh-CN", { cache: false });
+      assert.equal(r.slice(1, 1 + n).join(" "), want, x + simp + y);
+    }
+  }
 });
 
 test("the server's cache: false read leaves nothing cached", () => {

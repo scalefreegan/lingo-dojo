@@ -259,15 +259,23 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   宮商角徵羽, 乾淨 干净 but 乾隆); t2s.ts runs them itself so every character
   keeps its place (a table entry that is not one for one is taken character
   by character), and decides Taiwan's 著 by its neighbours (看著 zhe, 睡著
-  zháo, 著名 zhù). Then it applies Taiwan's standard readings for a zh-TW
+  zháo, 著名 zhù). OpenCC assumes traditional input, so simplified text is
+  never converted (it would turn 打坏 into 打坯, pī): a zh-TW profile's text
+  always is, a zh-CN profile's only when it holds a traditional-only
+  character (one OpenCC's tables never write in simplified text: 見 這 們
+  蘋, not 乾 徵 瞭 著), and a phrase whose key is already simplified text
+  (坏, 么 …) is never applied. So a zh-CN profile reads 乾杯 or 看著 alone
+  as simplified text would read them. Then it applies Taiwan's standard readings for a zh-TW
   profile (星期 xīng qí, 垃圾 lè sè). A traditional character that shares
   its simplified form with another keeps a reading of its own (髮 fà, never
   發's fā; 幹 gàn, not 乾's gān); any other reading from the word stands,
   since the library's lists for traditional characters are short (間 lists
   only jiàn: 時間 is shí jiān). A short correction list (`READING_FIXES`:
-  睡不著 bù zháo, 處理不當 bù dàng, 倒是 dào, 假日 jià, 挨餓 ái, 囂張 xiāo,
-  種植 zhòng, 炸雞 zhá, …) fixes everyday words the library misreads in
-  either script, found by the CC-CEDICT sweep (`npm run pinyin:sweep`,
+  囂 xiāo, 睡不著 / 找不著 / 用不著 / 犯不著 zháo, 處理不當 dàng, 年輕有為
+  wéi, 挨餓 / 挨打 ái) fixes everyday words the library misreads in either
+  script; each entry wins over the library's word matching even across two
+  words, so only ones that can't misfire are kept (和面 would read
+  牛奶和面包 huó), found by the CC-CEDICT sweep (`npm run pinyin:sweep`,
   `scripts/pinyin-sweep.mjs`: every traditional headword of CC-CEDICT read
   for zh-TW and zh-CN and its simplified one for zh-CN, compared with the
   dictionary; run by hand, the dictionary downloaded into the gitignored

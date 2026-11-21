@@ -148,7 +148,7 @@ test("the reader: words in context, traditional read through simplified, offsets
   assert.equal(line("我们去银行吧"), "wǒ men qù yín háng ba");
   assert.equal(line("他長得很高，頭髮很長"), "tā zhǎng de hěn gāo · tóu fa hěn cháng");
   assert.equal(line("睡覺了嗎？"), "shuì jiào le ma ·");
-  assert.equal(line("他看著我"), "tā kàn zhe wǒ");
+  assert.equal(line("他看著我", "zh-TW"), "tā kàn zhe wǒ");
   assert.equal(line("乾淨"), "gān jìng");
   assert.equal(line("OK 好"), "· · · hǎo");
   // Tone sandhi is off: each character's own tone.
@@ -233,7 +233,7 @@ test("a traditional character reads as itself, not as the simplified form it sha
   assert.equal(readLine("發現"), "fā xiàn");
   assert.equal(readLine("你在幹嘛"), "nǐ zài gàn ma");
   assert.equal(readLine("乾淨"), "gān jìng");
-  assert.equal(readLine("睡著了"), "shuì zháo le");
+  assert.equal(readLine("睡著了", "zh-TW"), "shuì zháo le");
   // The card: 乾 has qián and leads with gān, never 幹's gàn; 著 has zhù and zhe.
   for (const l of ["zh-CN", "zh-TW"]) {
     const gan = charReadings("乾", l);
