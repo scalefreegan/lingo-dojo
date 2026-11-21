@@ -90,8 +90,8 @@ declare module "*/scripts/assemble.mjs" {
     /** Which tree `content` is (the Time budget splits that mode's parts),
      *  or that and the review block's phrases (none: units using
      *  {{phrase_review}} drop out). */
-    options?: import("../shared/wire.ts").Mode | { mode?: import("../shared/wire.ts").Mode; review?: { text: string; meaning?: string | null }[] },
-  ): import("../shared/wire.ts").AssembleResult;
+    options?: import("../shared/wire.ts").Mode | { mode?: import("../shared/wire.ts").Mode; review?: { text: string; meaning?: string | null }[]; closing?: "separate" },
+  ): import("../shared/wire.ts").AssembleResult & { closing?: string };
   /** The learner's profile under the pack's overrides, as the prompt sees it. */
   export function effectiveProfile(profile: Record<string, unknown> | null | undefined, overrides?: Record<string, unknown> | null): Record<string, unknown>;
 }

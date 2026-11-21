@@ -439,7 +439,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       lastLine: lastMaster?.role === "master" ? lastMaster.lines.map((l) => l.text).join(" ") : "",
     });
     if (process.env.LINGO_DEBUG_RECALL) console.log(`[lingo-dojo] recall: ${recall.phrases.length} phrases read and ranked in ${recall.ms.toFixed(1)} ms; review ${recall.review.length}, retrieval ${recall.retrieval ? "yes" : "none"}`);
-    const { markdown, warnings } = assemble(content, pack, { mode, review: recall.review });
+    // The Final rules (a unit's `closing`) come back apart: they go last in
+    // the system prompt, after the blocks appended below.
+    const { markdown, warnings, closing } = assemble(content, pack, { mode, review: recall.review, closing: "separate" });
     // The session's parts, for the timeline: named to the dojo master, which
     // reports where it is with a STAGE line each turn.
     const plan = sessionPlan(content, pack, mode);
@@ -461,7 +463,8 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       voiceSystemPrompt(markdown, mode, { drill }) +
       (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
       planDirective(plan, { drill }) +
-      (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "");
+      (conversation ? revisitBlock(storedRevisit(conversation.packSnapshot)) : "") +
+      (closing ? `\n\n${closing}\n` : "");
     const ask = async (notes: string[], timeoutSec = TURN_TIMEOUT_SEC) => {
       // Each run reads its own reply; only one run's lines are ever streamed
       // (a rerun happens only when the first sent none: replyStream).

@@ -35,6 +35,8 @@ fs.appendFileSync(path.join(root, "kids/schema.yaml"), recallSlot("Words to brin
 write(root, "units/recycle-due-phrases.md", "---\nid: recycle-due-phrases\nslot: recall\ntitle: Recycle due phrases\nsummary: Bring them back.\ndefault: true\n---\nWork these back into the scene.\n\n{{phrase_review}}\n");
 write(root, "kids/units/recycle-words.md", "---\nid: recycle-words\nslot: recall\ntitle: Bring back old words\nsummary: By ear.\ndefault: true\n---\nSay these again in the story.\n\n{{phrase_review}}\n");
 
+write(root, "units/intro-live-closing.md", "---\nid: intro-live-closing\nslot: intro\ntitle: Live closing\nsummary: s\nclosing: Say only the live rule.\n---\nOpen.\n");
+
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { lostPrevious, settleDigests } = await import("../../web/server/revisit.ts");
@@ -363,4 +365,17 @@ test("a recap that lands late (a Retry) makes the digest stale, whenever its ses
   await settleExtractions();
   assert.equal((await recapOf(sam, early.id)).status, "done");
   assert.equal((await sam.call("GET", "/api/conversations/overview")).body.digest.status, "stale");
+});
+
+test("a closing is the very last thing in the live system prompt, after a revisit's briefing, once", async () => {
+  const sam = await someone();
+  await session(sam);
+  const p = pack({ scenario: "market", units: ["intro-live-closing"] });
+  const b = await start(sam, { p });
+  await play(sam, b, { p, end: false });
+  const system = lastSystem();
+  assert.match(system, /\[LAST TIME IN THIS SCENE\]/);
+  assert.ok(system.trimEnd().endsWith("Say only the live rule."), system.slice(-300));
+  assert.ok(system.indexOf("[END OF LAST TIME]") < system.indexOf("## Final rules"), "after the briefing");
+  assert.equal(system.split("Say only the live rule.").length, 2, "once");
 });

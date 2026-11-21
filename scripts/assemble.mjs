@@ -39,6 +39,9 @@ const ROLE_LABELS = { dojo_master: "You (dojo master)", learner: "Learner" };
 export const QUICK_SCENARIO_TITLE = "Quick scenario";
 /** A random scene's title before its scene is drawn (the preview). */
 export const RANDOM_SCENE_TITLE = "Random scene";
+/** The last section: units' `closing` texts (docs/CONTENT.md). */
+export const CLOSING_TITLE = "## Final rules";
+const CLOSING_LEAD = "These rules come last on purpose: where anything above says otherwise, follow these.";
 const NO_SCENARIO_TITLE = "No scenario";
 
 /** Shown under a required slot the pack left empty. */
@@ -92,7 +95,9 @@ export function effectiveProfile(baseProfile, overrides = {}) {
  *   mode. `review`: the phrases the review block brings back, chosen by the
  *   server from the learner's bank (scripts/recall.mjs selectReview); none
  *   (the default, and the offline export) leaves out every unit that uses
- *   {{phrase_review}}, so the prompt has no empty heading.
+ *   {{phrase_review}}, so the prompt has no empty heading. `closing`:
+ *   "separate" returns the Final rules section as `closing` instead of
+ *   ending `markdown` with it (the live voice prompt).
  * @returns {{ markdown: string, warnings: string[], stats: { words: number, tokens: number, chars: number } }}
  */
 export function assemble(content, rawPack, options = "adult") {
@@ -179,6 +184,8 @@ export function assemble(content, rawPack, options = "adult") {
   }
 
   const slotSections = [];
+  // Units' `closing` texts, in slot order, for the last section (below).
+  const closings = [];
   for (const slot of slots) {
     // A drill has no scene, so a slot about one (its character, a warm-up
     // before it, twists in it) has nothing to act on. Its units are dropped
@@ -207,6 +214,8 @@ export function assemble(content, rawPack, options = "adult") {
       parts.push(`### ${unit.title}`);
       const body = fill(unit.body ?? "", `unit "${unit.id}"`).trimEnd();
       if (body) parts.push(body);
+      const closing = fill(unit.closing ?? "", `closing of unit "${unit.id}"`).trim();
+      if (closing) closings.push(`### ${unit.title}\n\n${closing}`);
     }
     slotSections.push(parts.join("\n\n"));
   }
@@ -234,11 +243,21 @@ export function assemble(content, rawPack, options = "adult") {
   if (budget.minutes != null) sections.push(renderTimeBudget(budgetSplit(sessionPlan(content, pack, mode), budget.minutes), budget.minutes, mode, drill));
   const notes = pack.notes.trim();
   if (notes) sections.push(`## Notes from the learner\n\n${notes}`);
+  // Last of all (the voice adapter follows in a session): a unit whose rule
+  // must beat other units' wording says it here, since a model weighs the
+  // later instruction. Only picked, unskipped units get this far.
+  // `closing: "separate"` (the live voice session) leaves it out of the
+  // markdown and hands it back, so the caller can put it after the blocks it
+  // appends itself (the directives, a revisit's briefing): it is then the last
+  // thing in the system prompt, and is not in it twice.
+  const closingSection = closings.length ? [CLOSING_TITLE, CLOSING_LEAD, ...closings].join("\n\n") : "";
+  const separate = opts.closing === "separate";
+  if (closingSection && !separate) sections.push(closingSection);
 
   const markdown = `${sections.join("\n\n")}\n`;
 
   // 5. Stats.
-  return { markdown, warnings, stats: countStats(markdown) };
+  return { markdown, warnings, stats: countStats(markdown), ...(separate ? { closing: closingSection } : {}) };
 }
 
 /** Words are whitespace-separated runs; tokens are the contract's words × 1.3

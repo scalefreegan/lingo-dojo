@@ -56,6 +56,8 @@ export interface Unit {
   /** CEFR hint for a badge; never a filter. [] when absent. */
   level: string[];
   body: string;
+  /** Text rendered at the very end of the assembled prompt; "" when absent. */
+  closing: string;
   /** Repo-relative file path (absolute when outside the repo). */
   path: string;
 }

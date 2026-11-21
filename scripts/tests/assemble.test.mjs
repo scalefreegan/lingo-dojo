@@ -370,3 +370,71 @@ test("a fractional minutes value is rounded to whole minutes with a warning", ()
   assert.match(budgetOf(markdown), /^The learner has \*\*8 minutes\*\*/);
   assert.match(budgetOf(run({ overrides: { minutes: 0.2 } }).markdown), /^The learner has \*\*1 minute\*\*/);
 });
+
+/* ------------------------- unit `closing` section ------------------------- */
+
+function closingContent() {
+  const root = copyFixture();
+  write(root, "units/intro-closing.md", [
+    "---",
+    "id: intro-closing",
+    "slot: intro",
+    "title: Closing intro",
+    "summary: Says its rule last.",
+    "closing: |",
+    "  Speak only {{target_language}} to {{learner_name}}.",
+    "  Help is in {{native_language}}.",
+    "---",
+    "Open the scene.",
+  ].join("\n"));
+  return loadContent(root);
+}
+
+test("a unit's closing renders last, filled, after the notes and every slot", () => {
+  const c = closingContent();
+  const { markdown, warnings } = run({ units: ["intro-closing", "warmup-vocab", "correct-gently", "debrief-top-three"], notes: "More numbers." }, c);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(h2(markdown).slice(-2), ["Notes from the learner", "Final rules"]);
+  assert.match(markdown, /### Closing intro\n\nSpeak only [^\n]+ to [^\n]+\.\nHelp is in [^\n]+\.\n$/);
+  assert.ok(!markdown.includes("{{"), "filled");
+  assert.ok(markdown.indexOf("Open the scene.") < markdown.indexOf("Speak only"), "the body stays in its slot");
+  assert.equal(markdown.split("Speak only").length, 2, "the closing is not also in the slot section");
+});
+
+
+test("a closing with an unknown placeholder warns like a body", () => {
+  const root = copyFixture();
+  write(root, "units/intro-bad.md", "---\nid: intro-bad\nslot: intro\ntitle: Bad\nsummary: s\nclosing: Say {{nope}}.\n---\nx\n");
+  const { warnings } = run({ units: ["intro-bad"] }, loadContent(root));
+  assert.ok(warnings.some((w) => w.includes("{{nope}}") && w.includes('closing of unit "intro-bad"')));
+});
+
+test("a closing is in the markdown only when its unit is picked; the same content without it has no section", () => {
+  const c = closingContent();
+  const picked = run({ units: ["intro-closing", "warmup-vocab"] }, c).markdown;
+  assert.match(picked, /## Final rules/);
+  assert.match(picked, /Speak only/);
+  const unpicked = run({ units: ["intro-native", "warmup-vocab"] }, c).markdown;
+  assert.ok(!unpicked.includes("Final rules") && !unpicked.includes("Speak only"));
+});
+
+test("closing: 'separate' returns the section apart and leaves it out of the markdown", () => {
+  const c = closingContent();
+  const p = { ...base, units: ["intro-closing", "warmup-vocab"] };
+  const inline = assemble(c, p, { mode: "adult" });
+  const apart = assemble(c, p, { mode: "adult", closing: "separate" });
+  assert.equal(inline.closing, undefined);
+  assert.ok(!apart.markdown.includes("Final rules"));
+  assert.ok(inline.markdown.endsWith(`${apart.closing}\n`), "the same section, last");
+  assert.equal(assemble(c, { ...base }, { mode: "adult", closing: "separate" }).closing, "", "none picked: empty");
+});
+
+test("a closing under the kids frame renders last", () => {
+  const root = copyFixture();
+  write(root, "kids/units/intro-kclosing.md", "---\nid: intro-kclosing\nslot: intro\ntitle: Kid closing\nsummary: s\nclosing: Only {{target_language}}.\n---\nHi.\n");
+  const kids = loadContent(`${root}/kids`);
+  const kp = { ...loadPackFiles(`${FIXTURE}/kids`).packs[0] };
+  kp.units = ["intro-kclosing", ...kp.units.filter((u) => u !== "intro-game")];
+  const { markdown } = assemble(kids, kp, "kids");
+  assert.match(markdown, /## Final rules\n\n[^\n]+\n\n### Kid closing\n\nOnly [^\n]+\.\n$/);
+});

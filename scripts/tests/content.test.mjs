@@ -437,3 +437,18 @@ test("scenarios: an unquoted ': ' line is read back with a warning; a non-string
     'language should be a code like "es-MX"; ignored',
   ]);
 });
+
+test("a unit's closing is loaded as trimmed text, '' when absent, and a non-text one is ignored", () => {
+  const root = copyFixture();
+  write(root, "units/with-closing.md", "---\nid: with-closing\nslot: intro\ntitle: C\nsummary: s\nclosing: |\n  Last words.\n---\nbody\n");
+  write(root, "units/bad-closing.md", "---\nid: bad-closing\nslot: intro\ntitle: B\nsummary: s\nclosing: [a, b]\n---\nbody\n");
+  const c = loadContent(root);
+  assert.equal(c.units.find((u) => u.id === "with-closing").closing, "Last words.");
+  assert.equal(c.units.find((u) => u.id === "bad-closing").closing, "");
+  assert.equal(c.units.find((u) => u.id === "correct-gently").closing, "");
+  write(root, "units/review-closing.md", "---\nid: review-closing\nslot: intro\ntitle: R\nsummary: s\nclosing: \"{{phrase_review}}\"\n---\nbody\n");
+  const c2 = loadContent(root);
+  assert.equal(c2.units.find((u) => u.id === "review-closing").closing, "");
+  assert.ok(JSON.stringify(c2.problems).includes("closing cannot use"));
+  assert.ok(JSON.stringify(c.problems).includes("closing must be text"), JSON.stringify(c.problems));
+});

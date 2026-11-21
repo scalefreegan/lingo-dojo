@@ -467,8 +467,23 @@ function loadUnit(abs, report) {
     default: fm.default === true,
     level: strList(fm.level),
     body,
+    // Rendered at the very end of the assembled prompt (docs/CONTENT.md).
+    closing: closingText(fm.closing, abs, report),
     path: displayPath(abs),
   };
+}
+
+function closingText(v, abs, report) {
+  if (v == null) return "";
+  if (typeof v === "string") {
+    // A unit is dropped when there is no review by testing its body alone,
+    // so the review block belongs in the body, never here.
+    if (!/\{\{\s*phrase_review\s*\}\}/.test(v)) return v.trim();
+    report(abs, "warning", "closing cannot use {{phrase_review}} (use it in the body); ignored");
+    return "";
+  }
+  report(abs, "warning", "closing must be text; ignored");
+  return "";
 }
 
 function loadScenario(abs, report) {
