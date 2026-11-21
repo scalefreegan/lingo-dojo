@@ -11,6 +11,11 @@
 #                writing, nothing frightening.
 #   words        the English words it stands for (the check matches a
 #                word's meaning against these)
+#   group        optional: concepts whose pictures look alike (a boy and a
+#                brother, a ball and catching one) share a group, and a
+#                round never offers two of one group (two right answers)
+#   adults       optional, `true`: never offered or shown to a kids
+#                learner (beer, wine, pills); adult learners get it
 #
 # Edit freely: a new concept is drawn by the next `npm run pictures:stock`;
 # a changed description is not redrawn by itself (delete its file under
@@ -52,23 +57,25 @@ categories:
     - { id: grey, description: a big splash of grey paint, words: [grey, gray] }
 
   Numbers:
-    - { id: one, description: one big red toy block, words: [one] }
-    - { id: two, description: two toy blocks side by side, words: [two] }
-    - { id: three, description: three toy blocks in a row, words: [three] }
-    - { id: four, description: four toy blocks in a row, words: [four] }
-    - { id: five, description: five toy blocks in a row, words: [five] }
+    # One object for all five, so they differ only in count; pebbles, not
+    # blocks (a block invites a printed digit) and no colour of its own.
+    - { id: one, description: exactly one smooth round pebble, words: [one] }
+    - { id: two, description: exactly two smooth round pebbles in a row, words: [two] }
+    - { id: three, description: exactly three smooth round pebbles in a row, words: [three] }
+    - { id: four, description: exactly four smooth round pebbles in a row, words: [four] }
+    - { id: five, description: exactly five smooth round pebbles in a row, words: [five] }
 
   Family and people:
     - { id: mother, description: a smiling young mother, words: [mother, mom, mommy, mum, mummy, mama] }
     - { id: father, description: a smiling young father, words: [father, dad, daddy, papa] }
     - { id: baby, description: a happy baby sitting, words: [baby] }
-    - { id: brother, description: a smiling young boy, his brother beside him, words: [brother] }
-    - { id: sister, description: a smiling young girl, her sister beside her, words: [sister] }
+    - { id: brother, description: two young brothers side by side, words: [brother], group: boy }
+    - { id: sister, description: two young sisters side by side, words: [sister], group: girl }
     - { id: grandmother, description: a smiling grandmother with grey hair and glasses, words: [grandmother, grandma, granny] }
     - { id: grandfather, description: a smiling grandfather with a grey beard, words: [grandfather, grandpa] }
     - { id: family, description: a happy family of four standing together, words: [family] }
-    - { id: boy, description: a smiling boy waving, words: [boy] }
-    - { id: girl, description: a smiling girl waving, words: [girl] }
+    - { id: boy, description: a smiling boy waving, words: [boy], group: boy }
+    - { id: girl, description: a smiling girl waving, words: [girl], group: girl }
     - { id: doctor, description: a friendly doctor with a stethoscope, words: [doctor] }
     - { id: teacher, description: a friendly teacher beside a blackboard, words: [teacher] }
     - { id: police-officer, description: a friendly police officer in uniform, words: [police officer, policeman, policewoman, police] }
@@ -76,20 +83,23 @@ categories:
     - { id: cook, description: a friendly cook in a white chef's hat, words: [cook, chef] }
 
   Body:
-    - { id: head, description: a smiling child pointing at their head, words: [head] }
-    - { id: eyes, description: a smiling child pointing at their eyes, words: [eye, eyes] }
-    - { id: ears, description: a smiling child pointing at their ears, words: [ear, ears] }
-    - { id: nose, description: a smiling child pointing at their nose, words: [nose] }
-    - { id: mouth, description: a smiling child pointing at their open mouth, words: [mouth] }
-    - { id: teeth, description: a big smile showing white teeth, words: [tooth, teeth] }
+    # The part itself, large: a child pointing at each one looks the same
+    # from one card to the next.
+    - { id: head, description: a round smiling head, filling the picture, words: [head] }
+    - { id: eyes, description: a pair of large friendly eyes, words: [eye, eyes] }
+    - { id: ears, description: one large ear, seen from the side, words: [ear, ears] }
+    - { id: nose, description: one large rounded nose, seen from the side, words: [nose] }
+    - { id: mouth, description: a large smiling mouth with closed lips, words: [mouth], group: mouth }
+    - { id: teeth, description: a row of shiny white teeth, words: [tooth, teeth], group: mouth }
     - { id: hand, description: an open hand, palm forward, words: [hand, hands] }
-    - { id: arm, description: a child flexing one arm, words: [arm, arms] }
-    - { id: tummy, description: a child patting a round tummy, words: [tummy, belly, stomach] }
-    - { id: leg, description: a child standing on one leg, words: [leg, legs] }
-    - { id: foot, description: a bare foot with wiggly toes, words: [foot, feet, toes] }
+    - { id: arm, description: one bent arm making a muscle, words: [arm, arms] }
+    - { id: tummy, description: a round tummy with a belly button, words: [tummy, belly, stomach] }
+    - { id: leg, description: one bare leg from hip to ankle, knee bent, words: [leg, legs], group: leg }
+    - { id: foot, description: a bare foot with wiggly toes, words: [foot, feet, toes], group: leg }
 
   Health:
-    - { id: medicine, description: a small bottle of medicine and two pills, words: [medicine, pill, pills, tablet] }
+    - { id: medicine, description: a small brown medicine bottle and a measuring spoon, words: [medicine, syrup] }
+    - { id: pills, description: two white pills on a small plain dish, words: [pill, pills, tablet, tablets], adults: true }
     - { id: bandage, description: a sticking plaster, words: [bandage, plaster, band-aid] }
     - { id: thermometer, description: a thermometer, words: [thermometer, fever] }
     - { id: hospital, description: a hospital building with a red cross, words: [hospital] }
@@ -135,8 +145,8 @@ categories:
     - { id: tea, description: a cup of tea with a teabag, words: [tea] }
     - { id: milk, description: a glass of milk, words: [milk] }
     - { id: juice, description: a glass of orange juice, words: [juice, orange juice] }
-    - { id: beer, description: a glass of beer, words: [beer] }
-    - { id: wine, description: a glass of red wine, words: [wine] }
+    - { id: beer, description: a glass of beer, words: [beer], adults: true }
+    - { id: wine, description: a glass of red wine, words: [wine], adults: true }
 
   At the table:
     - { id: plate, description: an empty white plate, words: [plate, dish] }
@@ -152,7 +162,7 @@ categories:
     - { id: house, description: a little house with a red roof, words: [house, home] }
     - { id: door, description: a wooden front door, words: [door] }
     - { id: window, description: a window with curtains, words: [window] }
-    - { id: bed, description: a bed with a pillow and blanket, words: [bed] }
+    - { id: bed, description: a bed with a pillow and blanket, words: [bed], group: bed }
     - { id: chair, description: a wooden chair, words: [chair] }
     - { id: key, description: a door key, words: [key] }
     - { id: clock, description: a round wall clock, words: [clock] }
@@ -180,18 +190,18 @@ categories:
     - { id: umbrella, description: an open umbrella, words: [umbrella] }
 
   Toys and play:
-    - { id: ball, description: a colourful ball, words: [ball] }
+    - { id: ball, description: a colourful ball, words: [ball], group: ball }
     - { id: teddy-bear, description: a soft teddy bear, words: [teddy bear, teddy] }
     - { id: doll, description: a rag doll, words: [doll] }
     - { id: balloon, description: a red balloon on a string, words: [balloon] }
     - { id: kite, description: a kite flying, words: [kite] }
     - { id: crayons, description: a few colourful crayons, words: [crayon, crayons] }
     - { id: slide, description: a playground slide, words: [slide] }
-    - { id: treasure, description: an open treasure chest full of gold coins, words: [treasure, treasure chest] }
+    - { id: treasure, description: an open wooden treasure chest with jewels and a crown, words: [treasure, treasure chest], group: coins }
     - { id: present, description: a wrapped present with a bow, words: [present, gift] }
 
   School and work:
-    - { id: book, description: a closed book, words: [book] }
+    - { id: book, description: a closed book, words: [book], group: book }
     - { id: pencil, description: a yellow pencil, words: [pencil] }
     - { id: notebook, description: a spiral notebook, words: [notebook, paper] }
     - { id: envelope, description: a closed envelope, words: [envelope, letter] }
@@ -199,7 +209,7 @@ categories:
     - { id: passport, description: a closed passport booklet, words: [passport] }
 
   Money and shopping:
-    - { id: coins, description: a small pile of gold coins, words: [coin, coins, change] }
+    - { id: coins, description: a small pile of gold coins, words: [coin, coins, change], group: coins }
     - { id: banknotes, description: a few green banknotes, words: [money, cash, banknote, note, bill money] }
     - { id: bank-card, description: a bank card, words: [card, bank card, credit card, debit card] }
     - { id: wallet, description: a brown wallet, words: [wallet] }
@@ -243,9 +253,9 @@ categories:
     - { id: rain, description: a grey cloud with raindrops falling, words: [rain, raining, rainy] }
     - { id: snow, description: a snowflake, words: [snow, snowing, snowflake] }
     - { id: rainbow, description: a rainbow, words: [rainbow] }
-    - { id: tree, description: a leafy green tree, words: [tree] }
+    - { id: tree, description: a leafy green tree, words: [tree], group: tree }
     - { id: flower, description: a red flower with a green stem, words: [flower] }
-    - { id: forest, description: a forest of green trees, words: [forest, woods] }
+    - { id: forest, description: a forest of green trees, words: [forest, woods], group: tree }
     - { id: mountain, description: a mountain with a snowy top, words: [mountain, mountains] }
     - { id: river, description: a winding blue river, words: [river] }
     - { id: sea, description: blue sea waves, words: [sea, ocean] }
@@ -254,7 +264,7 @@ categories:
     - { id: run, description: a child running, words: [run, running, to run] }
     - { id: jump, description: a child jumping in the air, words: [jump, jumping, to jump] }
     - { id: walk, description: a child walking, words: [walk, walking, to walk] }
-    - { id: sleep, description: a child asleep in bed, words: [sleep, sleeping, to sleep, asleep] }
+    - { id: sleep, description: a child asleep in bed, words: [sleep, sleeping, to sleep, asleep], group: bed }
     - { id: eat, description: a child eating from a bowl with a spoon, words: [eat, eating, to eat] }
     - { id: drink, description: a child drinking from a cup, words: [drink, drinking, to drink] }
     - { id: swim, description: a child swimming, words: [swim, swimming, to swim] }
@@ -262,7 +272,7 @@ categories:
     - { id: sing, description: a child singing with musical notes around, words: [sing, singing, to sing] }
     - { id: clap, description: a child clapping hands, words: [clap, clapping, to clap] }
     - { id: climb, description: a child climbing a tree, words: [climb, climbing, to climb] }
-    - { id: read, description: a child reading a book, words: [read, reading, to read] }
+    - { id: read, description: a child reading a book, words: [read, reading, to read], group: book }
     - { id: wash-hands, description: a child washing hands with soap bubbles, words: [wash, washing, wash hands, to wash] }
     - { id: brush-teeth, description: a child brushing teeth, words: [brush teeth, brushing teeth] }
-    - { id: catch, description: a child catching a ball, words: [catch, catching, to catch] }
+    - { id: catch, description: a child catching a ball, words: [catch, catching, to catch], group: ball }

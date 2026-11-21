@@ -105,6 +105,11 @@ export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; re
         </span>
       </div>
       {status.problem && <p className={`${fine} text-warn`}>{status.problem}</p>}
+      {status.needKey > 0 && (
+        <p className={`${fine} text-warn`} data-testid="pictures-need-key">
+          {status.needKey} picture{status.needKey === 1 ? " is" : "s are"} in an older style with no shared picture to fit: add an image key (BFL_API_KEY or OPENAI_API_KEY) to redraw {status.needKey === 1 ? "it" : "them"}.
+        </p>
+      )}
       {error && <p className={`${fine} text-err`}>{error}</p>}
     </div>
   );

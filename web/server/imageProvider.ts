@@ -31,16 +31,27 @@ import { voiceKeys } from "../../scripts/voice.mjs";
 //  - the reply is `{ id, polling_url, cost }`, cost in credits (1 credit =
 //    $0.01). The polling_url must be used as given (the guidelines: "you
 //    must use the polling_url returned"), but the key is only ever sent to
-//    an https URL on *.bfl.ai (bflUrl); anything else is refused unsent;
+//    an https URL on *.bfl.ai (bflUrl); anything else is refused unsent.
+//    Every BFL request (submit, polls, download) is made with
+//    `redirect: "error"` (bflFetch): fetch drops `authorization` on a
+//    cross-site redirect but not a custom header like `x-key`, so a 3xx
+//    from a bfl.ai host to anywhere else would carry the key along;
 //  - polled every 0.5 s (GET polling_url, `x-key`): statuses Task not found,
 //    Pending, Reasoning, Generating, Request Moderated, Content Moderated,
 //    No Card Generated, Ready, Error. Ready carries `result.sample`, a
 //    signed URL that expires after 10 minutes and has no CORS, so the
-//    server downloads it at once (no key sent there), capped at
-//    MAX_PICTURE_BYTES and checked by its magic bytes;
+//    server downloads it at once (no key sent there, no redirect
+//    followed), capped at MAX_PICTURE_BYTES and checked by its magic
+//    bytes. Only an https URL on *.bfl.ai is fetched (BFL's delivery hosts
+//    are delivery.*.bfl.ai; the host of the 2026-11-21 real draws wasn't
+//    recorded): anything else, an internal address included, is
+//    ImageFailed with no request made;
 //  - Request Moderated or Content Moderated is a refusal (ImageRefused: the
 //    word is `failed`, never retried by itself). Every other failure,
 //    including a total time over BFL_TIMING.totalMs (60 s), is ImageFailed;
+//    a task that ended without a picture (Error, No Card Generated, Task
+//    not found) or a download that isn't a picture is the word's own
+//    (`perWord`): pictures.ts gives up on a word after two in a row;
 //  - 402: out of credits; 429: over the account's limit (24 requests at
 //    once on most endpoints). Both get a plain log line and the usual
 //    backoff (pictures.ts RETRY_AFTER_MS). GET /v1/credits gives the
@@ -120,9 +131,16 @@ export class ImageRefused extends Error {}
  *  of credits, 429: too many requests): the stock CLI stops on those. */
 export class ImageFailed extends Error {
   status: number | null;
-  constructor(message: string, status: number | null = null) {
+  /** The failure is this prompt's, not the service's or the account's (a
+   *  task that ended with no picture, a server error for this request):
+   *  pictures.ts counts these per word and gives up on a word after
+   *  PICTURE_WORD_FAILURES in a row, so one bad word can't hold up the
+   *  rest. Out of credits, a rate limit, a bad key, the network: false. */
+  perWord: boolean;
+  constructor(message: string, status: number | null = null, perWord = false) {
     super(message);
     this.status = status;
+    this.perWord = perWord;
   }
 }
 
@@ -208,7 +226,9 @@ const openai: ImageProvider = {
         : res.status === 400 && param ? ` (the request's "${param}" was refused: a parameter or value ${IMAGE_MODEL} doesn't take? see OPENAI_IMAGE in imageProvider.ts)`
         : res.status === 400 ? ` (a bad request: check OPENAI_IMAGE in imageProvider.ts against ${IMAGE_MODEL})`
         : "";
-      throw new ImageFailed(`OpenAI answered ${res.status}${type ? ` ${type}` : ""}${code ? ` ${code}` : ""}${param ? ` param=${param}` : ""}${hint}`);
+      // A 5xx is counted against the word (OpenAI answers one for a prompt
+      // it can't draw); a 4xx is the request's or the account's.
+      throw new ImageFailed(`OpenAI answered ${res.status}${type ? ` ${type}` : ""}${code ? ` ${code}` : ""}${param ? ` param=${param}` : ""}${hint}`, res.status, res.status >= 500);
     }
     // The tokens billed, for the cost (no prompt, no key in the line).
     const tokens = body.usage?.output_tokens;
@@ -258,6 +278,14 @@ export function bflUrl(v: unknown, { bflOnly = true } = {}): URL | null {
   if (u.protocol !== "https:" || u.username || u.password) return null;
   if (bflOnly && !u.hostname.toLowerCase().endsWith(".bfl.ai")) return null;
   return u;
+}
+
+/** Every request to BFL: no redirect is ever followed (a 3xx is a failed
+ *  request). fetch drops `authorization` on a cross-site redirect but
+ *  keeps `x-key`, so following one could hand the key to another host;
+ *  and the download must not be bounced to an internal address. */
+export function bflFetch(url: URL | string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, { ...init, redirect: "error" });
 }
 
 /** A body read with a size cap: null past `max` (the download is cut). */
@@ -315,7 +343,7 @@ const bfl: ImageProvider = {
     // Submit.
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await bflFetch(url, {
         method: "POST",
         headers: { "x-key": key, "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ prompt, ...params, seed: PICTURE_THEME.seed }),
@@ -340,7 +368,7 @@ const bfl: ImageProvider = {
     while (!sample) {
       try {
         await sleep(BFL_TIMING.pollMs, undefined, { signal: sig });
-        res = await fetch(poll, { headers: { "x-key": key, Accept: "application/json" }, signal: sig });
+        res = await bflFetch(poll, { headers: { "x-key": key, Accept: "application/json" }, signal: sig });
       } catch (e) {
         throw failed("poll", e);
       }
@@ -352,16 +380,16 @@ const bfl: ImageProvider = {
       const status = typeof got.status === "string" && BFL_STATUSES.has(got.status) ? got.status : "an unknown status";
       if (BFL_WAITING.has(status)) continue;
       if (BFL_REFUSED.has(status)) throw new ImageRefused(`Black Forest Labs refused it (${status})`);
-      if (status !== "Ready") throw new ImageFailed(`Black Forest Labs' task ended with ${status}`);
+      if (status !== "Ready") throw new ImageFailed(`Black Forest Labs' task ended with ${status}`, null, true);
       const result = got.result as { sample?: unknown } | null | undefined;
-      sample = bflUrl(result?.sample, { bflOnly: false });
-      if (!sample) throw new ImageFailed("Black Forest Labs' picture address isn't https");
+      sample = bflUrl(result?.sample);
+      if (!sample) throw new ImageFailed("Black Forest Labs' picture address isn't https on bfl.ai; nothing was fetched");
     }
 
     // Download (no key: a signed URL, valid about 10 minutes).
     let bytes: Buffer | null;
     try {
-      res = await fetch(sample, { signal: sig });
+      res = await bflFetch(sample, { signal: sig });
       if (!res.ok) {
         await res.body?.cancel().catch(() => {});
         throw new ImageFailed(`Black Forest Labs' picture download answered ${res.status}`);
@@ -372,7 +400,7 @@ const bfl: ImageProvider = {
       throw failed("download", e);
     }
     const type = bytes ? sniffPicture(bytes) : null;
-    if (!bytes || !type) throw new ImageFailed("Black Forest Labs' picture wasn't a picture the app keeps (too big, or not JPEG or PNG)");
+    if (!bytes || !type) throw new ImageFailed("Black Forest Labs' picture wasn't a picture the app keeps (too big, or not JPEG or PNG)", null, true);
     return { bytes, type, credits };
   },
 };

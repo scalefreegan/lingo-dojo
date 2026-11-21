@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, JUDGE_BATCH, PICTURE_THEME, cleanDescription, currentThemes, drawnTheme,
-  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockList, restyleTargets, roundChoices, stockIdFrom, stockKey,
+  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
 } from "../pictures.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -399,6 +399,10 @@ test("mergeStock: the file's concepts first, then the admin's own by the same ru
   assert.ok(out.problems.some((p) => /"dog".*pictures\.yaml/.test(p.message)));
   assert.ok(out.problems.some((p) => /hat/.test(p.message)), "a stored description that no longer passes is skipped, not offered");
   assert.deepEqual(mergeStock(base).concepts.map((c) => c.custom), [false]);
+  // The file's look-alike group and adults flag survive the merge (else a
+  // kids learner would be offered beer, and a boy and a brother share a round).
+  const flagged = readStockList({ categories: { Drinks: [{ id: "beer", description: "a glass of beer", words: ["beer"], adults: true }], People: [{ id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" }] } }).concepts;
+  assert.deepEqual(mergeStock(flagged).concepts.map((c) => [c.id, c.adults ?? null, c.group ?? null]), [["beer", true, null], ["boy", null, "boy"]]);
 });
 
 test("readNewConcept: an id from the name, new; a category; a description by cleanDescription with no learner name; English words", () => {
@@ -423,4 +427,69 @@ test("readNewConcept: an id from the name, new; a category; a description by cle
     const r = readNewConcept(body, existing, ["Rosa"]);
     assert.ok(r.error && re.test(r.error), `${JSON.stringify(body)}: ${r.error}`);
   }
+});
+
+/* ------------------------------ PR #60 review ------------------------------ */
+
+test("a round never offers two stock pictures of one look-alike group (a boy and a brother), whichever is asked", () => {
+  const ps = [phrase("der Junge", "boy"), phrase("der Bruder", "brother"), phrase("die Katze", "cat"), phrase("der Ball", "ball"), phrase("das Haus", "house"), phrase("der Baum", "tree")];
+  const st = (id, group) => ({ file: stockKey(PICTURE_THEME.id, id), stockId: id, theme: PICTURE_THEME.id, group });
+  const rows = new Map([ready(ps[0], st("boy", "boy")), ready(ps[1], st("brother", "boy")), ready(ps[2]), ready(ps[3]), ready(ps[4]), ready(ps[5])]);
+  const bank = pictureBank(ps, rows);
+  let checked = 0;
+  for (let i = 0; i < 40; i++) {
+    const v = `${i}:2026-11-${String(10 + (i % 18)).padStart(2, "0")}T00:00:00.000Z`;
+    for (const [asked, other] of [[0, 1], [1, 0]]) {
+      const a = roundChoices(ps[asked], bank, v);
+      assert.ok(a.includes(rows.get(ps[asked].id).id));
+      assert.ok(!a.includes(rows.get(ps[other].id).id), `round ${v}: the look-alike is never a wrong answer`);
+      checked++;
+    }
+  }
+  assert.equal(checked, 80);
+  // Without the group the brother does turn up as a wrong answer: the rule
+  // is what keeps it out.
+  const plain = new Map([...rows].map(([k, r]) => [k, { ...r, group: undefined }]));
+  const plainBank = pictureBank(ps, plain);
+  assert.ok(Array.from({ length: 40 }, (_, i) => roundChoices(ps[0], plainBank, `${i}:`)).some((a) => a.includes(rows.get(ps[1].id).id)));
+});
+
+test("stock concepts: an optional look-alike group and an adults flag; adults-only ones never reach a kids learner", () => {
+  const { concepts, problems } = readStockList({
+    categories: {
+      People: [
+        { id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" },
+        { id: "brother", description: "two young brothers", words: ["brother"], group: "Bad Group" },
+      ],
+      Drinks: [
+        { id: "beer", description: "a glass of beer", words: ["beer"], adults: true },
+        { id: "wine", description: "a glass of wine", words: ["wine"], adults: "yes" },
+        { id: "milk", description: "a glass of milk", words: ["milk"], adults: false },
+      ],
+    },
+  });
+  assert.deepEqual(concepts.map((c) => [c.id, c.group ?? null, c.adults ?? null]), [["boy", "boy", null], ["brother", null, null], ["beer", null, true], ["milk", null, null]]);
+  assert.equal(problems.length, 2, "a bad group is warned about and ignored; a malformed adults flag drops the concept");
+  assert.deepEqual(stockForMode(concepts, "kids").map((c) => c.id), ["boy", "brother", "milk"]);
+  assert.deepEqual(stockForMode(concepts, "adult").map((c) => c.id), ["boy", "brother", "beer", "milk"]);
+});
+
+test("the shared stock list: numbers are counted things with no digits or colours; look-alikes grouped; drinks and pills for adults only", () => {
+  const { concepts } = loadPictureStock(path.join(REPO_ROOT, "content"));
+  const by = Object.fromEntries(concepts.map((c) => [c.id, c]));
+  const nums = ["one", "two", "three", "four", "five"].map((n) => by[n]);
+  for (const [i, c] of nums.entries()) {
+    assert.match(c.description, new RegExp(`^exactly ${["one", "two", "three", "four", "five"][i]} `), c.id);
+    assert.doesNotMatch(c.description, /block|\d|red|blue|yellow|green|orange|purple|pink|black|white|brown|grey/, c.id);
+  }
+  assert.equal(new Set(nums.map((c) => c.description.replace(/^exactly \w+ /, "").replace(/s( in a row)?$/, ""))).size, 1, "one object for all five");
+  for (const [a, b] of [["brother", "boy"], ["sister", "girl"], ["ball", "catch"], ["read", "book"], ["sleep", "bed"], ["coins", "treasure"], ["tree", "forest"], ["mouth", "teeth"], ["leg", "foot"]]) {
+    assert.ok(by[a].group && by[a].group === by[b].group, `${a} and ${b} share a group`);
+  }
+  for (const id of ["head", "eyes", "ears", "nose", "mouth"]) assert.doesNotMatch(by[id].description, /pointing/, id);
+  for (const id of ["beer", "wine", "pills"]) assert.equal(by[id].adults, true, id);
+  assert.doesNotMatch(by.medicine.description, /pill/);
+  const kids = new Set(stockForMode(concepts, "kids").map((c) => c.id));
+  for (const id of ["beer", "wine", "pills"]) assert.ok(!kids.has(id), id);
+  assert.ok(kids.has("milk") && kids.has("medicine"));
 });

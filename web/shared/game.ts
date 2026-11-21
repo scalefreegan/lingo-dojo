@@ -34,6 +34,9 @@ export interface PictureStatus {
    *  the cap (pictures.mjs PICTURE_DAILY_IMAGES). */
   imagesToday: number;
   imagesCap: number;
+  /** Pictures out of the theme that only an image key can redraw (no
+   *  stock picture fits, or none is drawn): 0 when there is a key. */
+  needKey: number;
 }
 
 /** POST /api/pictures/restyle: how many pictures were taken up (moved to

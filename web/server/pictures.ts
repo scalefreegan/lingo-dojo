@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
@@ -12,11 +11,12 @@ import {
 } from "../../scripts/db/pictures.ts";
 import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer } from "../../scripts/db/practice.ts";
 import { isUuid } from "../../scripts/phrases.mjs";
-import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, writePicture } from "../../scripts/picture-store.mjs";
+import { loadPictureStock } from "../../scripts/content.mjs";
+import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
 import { stockList } from "./stockPictures.ts";
 import {
   JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, judgePrompt, parseJudgeReply,
-  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, stockKey,
+  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
 import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RestyleReply, WordPictureItem, WordPicturesReply } from "../shared/game.ts";
@@ -106,6 +106,15 @@ export const SLOT_WAIT: SlotWait = { maxMs: 120_000, everyMs: 2_000 };
 const filling = new Map<string, Promise<void>>();
 /** Per language profile: when a run may start again after a failure. */
 const retryAt = new Map<string, number>();
+/** Per word (picture row and words): its failed draws in a row whose fault
+ *  was the word's own (ImageFailed.perWord). In memory, not in the row or
+ *  the ledger (no migration for it): a restart gives a word two more
+ *  tries, which the daily cap still bounds. */
+const wordFailures = new Map<string, number>();
+/** After this many in a row, a word is given up like a refusal (`failed`;
+ *  Draw again by hand still works), so one bad word doesn't stay first in
+ *  the work list spending a ledger row every retry. */
+export const PICTURE_WORD_FAILURES = 2;
 
 /** Resolves when every run started so far has finished (the tests). */
 export async function settlePictureFills(): Promise<void> {
@@ -113,8 +122,11 @@ export async function settlePictureFills(): Promise<void> {
 }
 
 /** Forget the in-memory backoff (the tests: a restart). */
-export function resetPictureMemory(): void {
+export function resetPictureMemory(what: "all" | "backoff" = "all"): void {
   retryAt.clear();
+  // "backoff": only the 10-minute wait, as if it had passed (the tests of
+  // a word failing twice in a row).
+  if (what === "all") wordFailures.clear();
 }
 
 const profileOf = (ctx: LearnerCtx): LanguageProfileRef => ({ id: ctx.language.id, learnerId: ctx.language.learnerId });
@@ -126,9 +138,13 @@ interface FillTarget {
   userId: string;
   targetLanguage: string;
   nativeLanguage: string;
+  /** The learner's mode: a kids learner is never offered an `adults` stock
+   *  concept (pictures.mjs stockForMode). */
+  mode: string;
 }
 
 const targetOf = (ctx: LearnerCtx): FillTarget => ({
+  mode: ctx.learner.mode,
   profile: profileOf(ctx),
   userId: ctx.user.id,
   targetLanguage: ctx.language.targetVariant || ctx.language.targetLanguage || "the target language",
@@ -138,16 +154,18 @@ const targetOf = (ctx: LearnerCtx): FillTarget => ({
 /* ---------------------------------- stock ---------------------------------- */
 
 /** A stock concept as the check is offered it. */
-type StockConcept = { id: string; description: string; words: string[] };
+type StockConcept = { id: string; description: string; words: string[]; group?: string; adults?: true };
 
-/** The stock concepts drawn in the current theme: the only ones the check
- *  is offered (a concept with no file yet gets a drawing of its own). The
- *  list is content/pictures.yaml's merged with the ones an admin added from
- *  the picture library page (stockPictures.ts, pictures.mjs mergeStock).
- *  Never throws: a broken list is no stock (logged), not a failed run. */
-async function stockOffer(): Promise<StockConcept[]> {
+/** The stock concepts drawn in the current theme that a learner of `mode`
+ *  may be offered: the only ones the check sees (a concept with no file
+ *  yet gets a drawing of its own; an `adults` one never reaches a kids
+ *  learner, so it is never matched for one). The list is
+ *  content/pictures.yaml's merged with the ones an admin added from the
+ *  picture library page (stockPictures.ts, pictures.mjs mergeStock). Never
+ *  throws: a broken list is no stock (logged), not a failed run. */
+async function stockOffer(mode: string): Promise<StockConcept[]> {
   try {
-    return (await stockList()).filter((c) => c.drawn);
+    return stockForMode((await stockList()).filter((c) => c.drawn), mode);
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the stock list couldn't be read:", String((e as Error)?.message || e));
     return [];
@@ -157,12 +175,23 @@ async function stockOffer(): Promise<StockConcept[]> {
 /** Whether any stock picture is drawn in the current theme, read from the
  *  folder alone (no list, no database): the quick, synchronous guard that
  *  lets a run start with no image key. The run itself is offered only the
- *  listed concepts (stockOffer). */
+ *  listed concepts a learner of its mode may have (stockOffer). */
 function anyStockDrawn(): boolean {
   try {
     return fs.readdirSync(stockDir(PICTURE_THEME.id)).some((f) => !f.startsWith("."));
   } catch {
     return false;
+  }
+}
+
+/** Every stock concept of content/pictures.yaml by id (drawn or not), for
+ *  the game's rules: its look-alike group and its adults flag (an added
+ *  concept has neither). Never throws. */
+function stockById(): Map<string, StockConcept> {
+  try {
+    return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+  } catch {
+    return new Map();
   }
 }
 
@@ -173,14 +202,38 @@ function stockPointer(id: string): StockPointer | null {
   return at ? { stockId: id, theme: PICTURE_THEME.id, file: stockKey(PICTURE_THEME.id, id), contentType: at.type } : null;
 }
 
-/** The rows as the game sees them: a word pointing at a stock picture
- *  whose file isn't on disk (removed, or another theme's never drawn here)
- *  has no picture to show, so it leaves the game (and the round's draw)
- *  until the file is there. The background work reads the rows as they are. */
-function playable(rows: Map<string, PictureRow>): Map<string, PictureRow> {
-  const out = new Map<string, PictureRow>();
-  for (const [k, r] of rows) if (!(r.status === "ready" && r.stockId && r.theme && !stockPicture(r.theme, r.stockId))) out.set(k, r);
+/** The rows as the game sees them for a learner of `mode`:
+ *  - a word pointing at a stock picture whose file isn't on disk (removed,
+ *    or another theme's never drawn here) has no picture to show, so it
+ *    leaves the game (and the round's draw) until the file is there;
+ *  - for a kids learner, a word pointing at an `adults` concept leaves it
+ *    too (one matched before the flag was set);
+ *  - a stock row carries its concept's look-alike `group`, so a round
+ *    never offers two of one (pictures.mjs roundChoices).
+ *  The background work reads the rows as they are. */
+function playable(rows: Map<string, PictureRow>, mode: string): Map<string, PictureRow & { group?: string | null }> {
+  const concepts = stockById();
+  const out = new Map<string, PictureRow & { group?: string | null }>();
+  for (const [k, r] of rows) {
+    if (r.status === "ready" && r.stockId) {
+      const c = concepts.get(r.stockId);
+      if (!r.theme || !stockPicture(r.theme, r.stockId)) continue;
+      if (mode === "kids" && c?.adults) continue;
+      out.set(k, c?.group ? { ...r, group: c.group } : r);
+    } else out.set(k, r);
+  }
   return out;
+}
+
+/** A ready picture's file as its URL names it: a word's own file key, or
+ *  for a stock picture the stock key and the file's version (picture-store
+ *  stockVersion), so a stock picture drawn again in the same theme gets a
+ *  new URL instead of the browser's year-old cached copy. */
+function pictureRef(row: PictureRow): string | null {
+  if (row.status !== "ready" || !row.file) return null;
+  if (!row.stockId || !row.theme) return row.file;
+  const v = stockVersion(row.theme, row.stockId);
+  return v ? `${row.file}.${v}` : row.file;
 }
 
 /* ---------------------------------- the run --------------------------------- */
@@ -209,14 +262,14 @@ export function fillPictures(t: FillTarget): boolean {
       const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), t.profile), pictureRows(rawDb(), t.profile)]);
       const work = pictureWork(phrases, rows);
       const canDraw = !imageProvider().problem();
-      const offer = await stockOffer();
+      const offer = await stockOffer(t.mode);
       const judgeRoom = (await pictureCallsSince(rawDb(), t.profile, "judge", since())) < PICTURE_DAILY_JUDGES;
       if (work.judge.length && judgeRoom && (canDraw || offer.length)) {
         if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names, offer))) return;
         continue;
       }
       if (work.restyleCheck.length && (judgeRoom || !offer.length)) {
-        if (!(await restyleCheck(t, work.restyleCheck.slice(0, JUDGE_BATCH), names, offer))) return;
+        if (!(await restyleCheck(t, work.restyleCheck.slice(0, JUDGE_BATCH), names, offer, canDraw))) return;
         continue;
       }
       const imageRoom = (await pictureCallsSince(rawDb(), t.profile, "image", since())) < PICTURE_DAILY_IMAGES;
@@ -347,7 +400,7 @@ async function judge(t: FillTarget, words: Word[], names: string[], offer: Stock
  * drawn again (`restyle: draw`). With no stock drawn there is nothing to
  * ask: all go to drawing, with no call.
  */
-async function restyleCheck(t: FillTarget, words: Word[], names: string[], offer: StockConcept[]): Promise<boolean> {
+async function restyleCheck(t: FillTarget, words: Word[], names: string[], offer: StockConcept[], canDraw: boolean): Promise<boolean> {
   const sent = words.map((w) => ({ ...w, key: pictureKey(w) }));
   const verdicts = offer.length ? await askCheck(t, sent, names, offer) : sent.map(() => undefined);
   if (verdicts === false) return false;
@@ -360,8 +413,13 @@ async function restyleCheck(t: FillTarget, words: Word[], names: string[], offer
     if (stock) {
       const done = await restyleToStock(rawDb(), t.profile, sent[i].id, sent[i].key, stock);
       await dropPictureFile(done?.oldFile);
-    } else {
+    } else if (canDraw) {
       await restyleToDraw(rawDb(), t.profile, sent[i].id, sent[i].key);
+    } else {
+      // No stock picture fits and nothing can draw one: not left waiting
+      // for ever. It keeps its picture, stays counted as out of the theme,
+      // and the status says how many need a key (needKey).
+      await restyleDropped(rawDb(), t.profile, sent[i].id, sent[i].key, "check");
     }
   }
   return answered > 0;
@@ -387,6 +445,7 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
     return true;
   }
   let callId = "";
+  const failKey = `${phraseId}:${phraseKey}:${restyle ? "restyle" : "draw"}`;
   let got: DrawnImage | typeof CAPPED;
   try {
     got = await backgroundSlotWhenFree(t.userId, async () => {
@@ -406,8 +465,23 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
       return true;
     }
     if (callId) await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
+    if (e instanceof ImageFailed && e.perWord) {
+      // The word's own failure (a task that ended with no picture): after
+      // PICTURE_WORD_FAILURES in a row it is given up like a refusal and
+      // the run goes on; before that, the run stops and waits as usual.
+      const n = (wordFailures.get(failKey) ?? 0) + 1;
+      if (n >= PICTURE_WORD_FAILURES) {
+        wordFailures.delete(failKey);
+        if (restyle) await restyleDropped(rawDb(), t.profile, phraseId, phraseKey);
+        else await markFailed(rawDb(), t.profile, phraseId, phraseKey);
+        console.warn(`[lingo-dojo] pictures: ${provider.name} failed ${n} times in a row on a word (${e.message}); ${restyle ? "it keeps its old picture" : "it is left out"}`);
+        return true;
+      }
+      wordFailures.set(failKey, n);
+    }
     throw e instanceof ImageFailed ? e : new Error(String((e as Error)?.message || e));
   }
+  wordFailures.delete(failKey);
   if (got === CAPPED) return true;
   const file = newPictureKey();
   writePicture(file, got.bytes, got.type);
@@ -435,7 +509,7 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
 export async function picturesAfterSession(profile: LanguageProfileRef): Promise<boolean> {
   const owner = await languageProfileOwner(rawDb(), profile);
   if (!owner) return false;
-  return fillPictures({ profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English" });
+  return fillPictures({ mode: owner.mode, profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English" });
 }
 
 /** The status: counts from the rows and the ledger; starts nothing. The
@@ -449,10 +523,12 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
-  const pictured = pictureBank(phrases, playable(rows)).length;
+  const pictured = pictureBank(phrases, playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
-  const stock = (await stockOffer()).length;
+  const stock = (await stockOffer(ctx.learner.mode)).length;
+  const outOfTheme = restyleTargets(phrases, rows, currentThemes(provider.key)).length;
+  const restyling = work.restyleCheck.length + work.restyleDraw.length;
   const needsDraw = work.draw.length > 0 || work.restyleDraw.length > 0 || (work.judge.length > 0 && !stock);
   return {
     pictured,
@@ -464,8 +540,11 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     audio,
     theme: PICTURE_THEME.id,
     stock,
-    outOfTheme: restyleTargets(phrases, rows, currentThemes(provider.key)).length,
-    restyling: work.restyleCheck.length + work.restyleDraw.length,
+    outOfTheme,
+    restyling,
+    // Out of the theme, with no stock picture fitting (or none asked yet)
+    // and no image key to redraw them: Redraw all can't finish these.
+    needKey: provider.problem() && !restyling ? outOfTheme : 0,
     imagesToday: images,
     imagesCap: PICTURE_DAILY_IMAGES,
   };
@@ -487,14 +566,14 @@ const op = async <T>(fn: () => Promise<T>): Promise<T> => {
 async function start(ctx: LearnerCtx): Promise<GameStartReply> {
   const profile = profileOf(ctx);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all);
+  const rows = playable(all, ctx.learner.mode);
   const game = gameRounds(phrases, rows, { now: new Date() });
   fillPictures(targetOf(ctx));
   const byId = new Map([...rows.values()].map((r) => [r.id, r]));
   return {
     rounds: game.rounds.map((r) => ({
       phraseId: r.phraseId, version: r.version, revision: r.revision,
-      choices: (r.choices ?? []).map((id) => ({ id, file: byId.get(id)!.file! })),
+      choices: (r.choices ?? []).map((id) => ({ id, file: pictureRef(byId.get(id)!)! })),
     })),
     status: await statusOf(ctx),
   };
@@ -520,7 +599,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all);
+  const rows = playable(all, ctx.learner.mode);
   const bank = pictureBank(phrases, rows);
   const own = bank.find((x) => x.phrase.id === phrase.id)?.picture ?? rows.get(phrase.id);
   let outcome: typeof RIGHT | typeof WRONG | null = null;
@@ -558,42 +637,28 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
  *  new file, so a new URL); Vary on the page's learner and language, which
  *  the fetch carries, so another learner on this browser never reads it
  *  from the cache. */
-async function servePicture(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string, file: string): Promise<void> {
+async function servePicture(res: ServerResponse, ctx: LearnerCtx, id: string, file: string): Promise<void> {
   const row = isUuid(id) ? await pictureById(rawDb(), profileOf(ctx), id.toLowerCase()) : undefined;
-  if (!row || row.status !== "ready" || row.file !== file || !row.contentType) throw new HttpError(404, "no such picture");
+  if (!row || row.status !== "ready" || pictureRef(row) !== file || !row.contentType) throw new HttpError(404, "no such picture");
   // A word's own file, or the shared stock picture it points at (by the
   // row: the same owner check, the same headers; the URL's file is the
-  // stock key, so another theme's picture is another URL).
+  // stock key and the file's version, so another theme's picture, or one
+  // drawn again, is another URL).
   const pic = row.stockId && row.theme ? readStockPicture(row.theme, row.stockId) : (() => {
-    const bytes = readPicture(row.file, row.contentType);
+    const bytes = readPicture(row.file!, row.contentType!);
     return bytes ? { bytes, type: row.contentType! } : null;
   })();
   if (!pic) throw new HttpError(404, "no such picture");
-  const bytes = pic.bytes;
-  const vary = "Cookie, X-Learner-Id, X-Language-Profile-Id";
-  if (row.stockId) {
-    // A stock picture can be drawn again from the picture library under
-    // the same name (ld-318), so its URL isn't immutable: revalidated by
-    // the bytes' hash, which costs a 304 and no download when unchanged.
-    const etag = `"${createHash("sha256").update(bytes).digest("base64url").slice(0, 22)}"`;
-    const headers = { ETag: etag, "Cache-Control": "private, no-cache", Vary: vary, "X-Content-Type-Options": "nosniff" };
-    if (req.headers["if-none-match"] === etag) {
-      res.writeHead(304, headers);
-      res.end();
-      return;
-    }
-    res.writeHead(200, { ...headers, "Content-Type": pic.type, "Content-Length": bytes.length });
-    res.end(bytes);
-    return;
-  }
+  // Immutable for a stock picture too: a stock redraw from the picture
+  // library (ld-318) changes the file's version, so the URL (pictureRef).
   res.writeHead(200, {
     "Content-Type": pic.type,
-    "Content-Length": bytes.length,
+    "Content-Length": pic.bytes.length,
     "Cache-Control": "private, max-age=31536000, immutable",
-    Vary: vary,
+    Vary: "Cookie, X-Learner-Id, X-Language-Profile-Id",
     "X-Content-Type-Options": "nosniff",
   });
-  res.end(bytes);
+  res.end(pic.bytes);
 }
 
 /** /api/game, mounted with wrap's `learner: true`: kids and adult learners
@@ -632,7 +697,7 @@ export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx:
   }
   if (parts.length === 3 && parts[0] === "pictures") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
-    return servePicture(req, res, ctx, parts[1], parts[2]);
+    return servePicture(res, ctx, parts[1], parts[2]);
   }
   sendJson(res, 404, { error: "no such route" });
 }
@@ -653,7 +718,7 @@ export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx:
 async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
   const profile = profileOf(ctx);
   const provider = imageProvider();
-  const offer = await stockOffer();
+  const offer = await stockOffer(ctx.learner.mode);
   if (provider.problem() && !offer.length) throw new HttpError(400, provider.problem()!);
   const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
   const targets = restyleTargets(phrases, rows, currentThemes(provider.key));
@@ -674,7 +739,7 @@ async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
 }
 
 const pictureView = (row: PictureRow): PhrasePicture => ({
-  id: row.id, status: row.status, description: row.description, file: row.status === "ready" ? row.file : null,
+  id: row.id, status: row.status, description: row.description, file: pictureRef(row),
   stock: !!row.stockId, inTheme: row.status === "ready" && currentThemes(imageProvider().key).has(row.theme ?? ""), restyling: !!row.restyle,
 });
 
@@ -707,7 +772,7 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     // With no key, only the stock pictures can be had: a 400 when there
     // are none either.
     const problem = imageProvider().problem();
-    if (problem && !(await stockOffer()).length) throw new HttpError(400, problem);
+    if (problem && !(await stockOffer(ctx.learner.mode)).length) throw new HttpError(400, problem);
     fillPictures(targetOf(ctx));
     return sendJson(res, 202, { status: await statusOf(ctx) } satisfies GameStatusReply);
   }

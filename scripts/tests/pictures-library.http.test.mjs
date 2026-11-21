@@ -334,7 +334,7 @@ test("a concept of content/pictures.yaml can't be deleted, only redrawn; an adde
   assert.equal((await ada.call("POST", "/api/stock-pictures/admin/kite/remove", {})).status, 404);
 });
 
-test("a word pointing at a stock picture is revalidated, not cached for a year: a redraw reaches the game", async () => {
+test("an admin's stock redraw reaches a word pointing at it: a new URL, the old one a 404", async () => {
   const ada = await someone([ADULT], { admin: true });
   await ada.call("POST", "/api/stock-pictures/admin/missing", { count: 2 });
   await settleStockDraws();
@@ -345,12 +345,14 @@ test("a word pointing at a stock picture is revalidated, not cached for a year: 
   const url = `/api/game/pictures/${w.picture.id}/${w.picture.file}`;
   const first = await ada.call("GET", url);
   assert.equal(first.status, 200);
-  assert.equal(first.headers.get("cache-control"), "private, no-cache");
-  const etag = first.headers.get("etag");
-  assert.equal((await ada.call("GET", url, undefined, { "If-None-Match": etag })).status, 304);
+  assert.equal(first.headers.get("cache-control"), "private, max-age=31536000, immutable");
+  // Drawn again from the page (the stub's picture: a different size, so a
+  // different version even within the same millisecond).
   fs.rmSync(stockFile("dog"));
-  writeStockPicture(PICTURE_THEME.id, "dog", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9]), "image/jpeg", { dir: imagesDir });
-  const changed = await ada.call("GET", url, undefined, { "If-None-Match": etag });
-  assert.equal(changed.status, 200);
-  assert.notEqual(changed.headers.get("etag"), etag);
+  writeStockPicture(PICTURE_THEME.id, "dog", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 9, 9, 9, 9, 9]), "image/jpeg", { dir: imagesDir });
+  const [after] = (await ada.call("GET", "/api/pictures/words")).body.words;
+  assert.notEqual(after.picture.file, w.picture.file);
+  assert.equal((await ada.call("GET", url)).status, 404);
+  const fresh = await ada.call("GET", `/api/game/pictures/${after.picture.id}/${after.picture.file}`);
+  assert.equal(fresh.status, 200);
 });

@@ -142,7 +142,10 @@ and taps its picture.
   when `BFL_API_KEY` is set (768 px JPEG, `safety_tolerance` 0, about
   $0.008 a picture), else OpenAI `gpt-image-2.6-flare` when only
   `OPENAI_API_KEY` is. Both keys only in `.env.local`, never logged or sent
-  to the browser; BFL's key only to an https `*.bfl.ai` URL.
+  to the browser; BFL's key only to an https `*.bfl.ai` URL, and every BFL
+  request (`bflFetch`) refuses redirects (fetch keeps `x-key` across one);
+  the picture is downloaded only from https `*.bfl.ai`. A word whose own
+  draw fails twice in a row (`ImageFailed.perWord`) is marked `failed`.
 - One picture theme (ld-6k7, `PICTURE_THEME` in `scripts/pictures.mjs`: an
   id, the style lines, BFL's seed 7; no reference image, the subject leaks).
   Every picture records the theme it was drawn in (`phrase_pictures.theme`;
@@ -156,7 +159,11 @@ and taps its picture.
   learner's ledger. The check is offered the drawn ones and may answer a
   stock id: the word is ready at once (`stock_id`, `file` = `stockKey`), no
   image call, no ledger row. No per-word removal, redraw or phrase delete
-  ever touches a stock file. Stock access is small functions in
+  ever touches a stock file. A concept may have a look-alike `group` (never
+  two in one round) and `adults: true` (never offered or shown to a kids
+  learner: `stockForMode`). A stock picture's URL carries its file's
+  version (`pictureRef`), so a redraw isn't hidden by the year-long cache.
+  Stock access is small functions in
   `scripts/picture-stock.mjs` (list, draw one, remove one, add a concept).
 - The check's description goes to the provider only through `cleanDescription`: a
   noun phrase of at most 12 words and 80 characters. If any word names a
@@ -197,8 +204,8 @@ docs/DATA.md §The game for adults, and the picture library):
   draws go through the background paid slot, Black Forest Labs, at most
   `PICTURE_DAILY_STOCK` (300) a day install-wide, counted from
   `picture_stock_calls` written as each call starts (`scripts/db/pictureStock.ts`).
-- A word using a stock picture is served `no-cache` with an ETag, since a
-  stock redraw keeps the file's name.
+- An added concept has no `group` or `adults` flag, so kids learners are
+  offered it too (the file's keep theirs through `mergeStock`).
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin
