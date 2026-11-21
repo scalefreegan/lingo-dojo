@@ -124,7 +124,9 @@ const REDRAW_POLLS = 20;
 /** pictures.mjs DESCRIPTION_MAX: the server cuts a longer one at a word. */
 const DESCRIPTION_MAX = 80;
 
-export function PictureSection({ phraseId, onChanged }: { phraseId: string; onChanged?: () => void }) {
+/** `reload`: a counter the bank bumps when a drawing run ends (Draw
+ *  pictures, Redraw all), so the picture is read again. */
+export function PictureSection({ phraseId, onChanged, reload = 0 }: { phraseId: string; onChanged?: () => void; reload?: number }) {
   const [picture, setPicture] = useState<PhrasePicture | null | undefined>(undefined);
   // The blob URL with the file it was made for: a removed or redrawn
   // picture's old one is never shown.
@@ -141,13 +143,18 @@ export function PictureSection({ phraseId, onChanged }: { phraseId: string; onCh
   useEffect(() => {
     const ctrl = new AbortController();
     phrasePicture(phraseId, ctrl.signal).then(
-      (r) => setPicture(r.picture),
+      (r) => {
+        setPicture(r.picture);
+        // A read after a drawing run starts clean: an earlier failure to
+        // load the picture it replaced is no longer true.
+        setError(null);
+      },
       (e) => {
         if (!ctrl.signal.aborted) setError(errText(e));
       },
     );
     return () => ctrl.abort();
-  }, [phraseId]);
+  }, [phraseId, reload]);
 
   const pending = picture?.status === "pending";
   useEffect(() => {
@@ -181,6 +188,7 @@ export function PictureSection({ phraseId, onChanged }: { phraseId: string; onCh
         if (ctrl.signal.aborted) return;
         made = URL.createObjectURL(b);
         setShown({ file, url: made });
+        setError(null);
       },
       (e) => {
         if (!ctrl.signal.aborted) setError(errText(e));

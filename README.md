@@ -93,6 +93,10 @@ open -a "Lingo Dojo"
 The embedded agent uses your Claude Code login. No Anthropic API key is involved.
 Spoken practice needs an ElevenLabs or Azure Speech key in a gitignored `.env.local`
 (see [`docs/VOICE.md`](docs/VOICE.md)); the prompt builder works without one.
+The kids word game draws its pictures with a Black Forest Labs key (`BFL_API_KEY`,
+about $0.008 a picture), or an OpenAI key (`OPENAI_API_KEY`) when that is the only
+one; `npm run pictures:stock` draws the shared stock set once
+([`docs/DATA.md`](docs/DATA.md) §Kids word game).
 
 ### Serving on your tailnet
 
