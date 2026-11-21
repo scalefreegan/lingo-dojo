@@ -11,12 +11,14 @@ import {
   SPEECH_FORMATS as VOICE_SPEECH_FORMATS, ELEVEN_MODELS, MINUTE_CHOICES, SILENCE_MS, SPEAKERS_BY_MODE, TTS_PROVIDERS, VOICE_MODELS, azureSpeechRequest, azureTranscribeRequest, azureVoices,
   azureVoicesRequest, configuredProviders, elevenSpeechRequest, localeFor, elevenTranscribeRequest, voiceFor, elevenVoices, elevenVoicesRequest, envFile,
   ageOf, castFallbacks, castPools, defaultVoice, parseCast, speechVoices, oneLine, replayLine, REPLAY_MAX_CHARS, replayStage, replayCastNotes, retryInOtherVoice, parseChoices, parseGlosses, parseLookup, parseStage, parseVoiceReply, planDirective, replyStream, sessionPlan, clockLine, MAX_CHOICES, MAX_GLOSSES, pickCast, pinnedNarratorGender, narratorDirective, AZURE_VOICE_RE, systemVoices, voiceSlots, elevenLibraryRequest, elevenLibraryLocale, elevenLibrarySearchable, elevenLibrary, elevenAddRequest, transcriptText, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
+  SAY_SLOW_WPM, paceOf, speechPace, elevenStoredSettings, elevenVoiceSettingsRequest,
 } from "../../scripts/voice.mjs";
 import type {
   ErrorCode, VoiceAge, VoiceCastNote, VoiceCastReply, VoiceCastRequest, VoiceChoice,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, SegmentLang, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
+  LibraryAddReply, LibraryAddRequest, LibraryReply, SegmentLang, SpeechPace, SttProvider, TranscribeReply, VoiceGender, VoiceGloss, TtsProvider, VoiceHistoryItem, VoiceSettings, VoiceSettingsReply, VoiceSettingsRequest,
   VoiceLine, VoiceSoundRequest, VoiceSpeakRequest, VoiceSpeaker, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "../shared/wire.ts";
+import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
 import { HttpError, methodNotAllowed, openSse, readJsonBody, sendJson, subPath, type SseSend } from "./sse.ts";
 import { learnerMode, learnerProfile, type Ctx, type LearnerCtx } from "./auth.ts";
 import { readVoiceSettings, updateVoiceSettings } from "./store.ts";
@@ -340,9 +342,11 @@ function cleanHistory(raw: unknown): VoiceHistoryItem[] {
         const line = l as { speaker?: unknown; text?: unknown; segments?: unknown };
         if (typeof line?.speaker !== "string" || typeof line.text !== "string") continue;
         const segments = Array.isArray(line.segments)
-          ? (line.segments as { lang?: unknown; text?: unknown }[])
+          ? (line.segments as { lang?: unknown; text?: unknown; slow?: unknown }[])
               .filter((g) => (g?.lang === "target" || g?.lang === "native") && typeof g.text === "string")
-              .map((g) => ({ lang: g.lang as SegmentLang, text: oneLine(g.text as string).slice(0, 4000) }))
+              // The pace mark goes back in the replay (markedText), so the
+              // dojo master sees what it marked slow and keeps to it.
+              .map((g) => ({ lang: g.lang as SegmentLang, text: oneLine(g.text as string).slice(0, 4000), ...(g.slow === true ? { slow: true as const } : {}) }))
           : [];
         const gender = (line as { gender?: unknown }).gender;
         // The dojo master's own timing marks go back in the replay (timingFor),
@@ -592,11 +596,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
 /** macOS `say` into a WAV the browser can play (it writes AIFF by default,
  *  which Chrome cannot). The text goes in on stdin, never argv, so a line
  *  starting with "-" is still just words. */
-function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buffer> {
+function sayToWav(text: string, voice: string, signal: AbortSignal, speed = 1): Promise<Buffer> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lingo-dojo-say-"));
   const out = path.join(dir, "line.wav");
-  const args = ["--file-format=WAVE", `--data-format=${VOICE_SPEECH_FORMATS.system}`, "-o", out];
-  if (voice) args.unshift("-v", voice);
+  const args = sayArgs(voice, out, speed);
   return new Promise<Buffer>((resolve, reject) => {
     const p = spawn("say", args, { stdio: ["pipe", "ignore", "pipe"], signal });
     let err = "";
@@ -618,6 +621,16 @@ function sayToWav(text: string, voice: string, signal: AbortSignal): Promise<Buf
   }).finally(() => fs.rmSync(dir, { recursive: true, force: true }));
 }
 
+/** `say`'s arguments for one line into `out`. A slower pace is `-r` with a
+ *  fixed words-a-minute (SAY_SLOW_WPM: `say` has no relative rate); the
+ *  normal pace passes no -r, so each voice keeps its own default. */
+export function sayArgs(voice: string, out: string, speed = 1): string[] {
+  const args = ["--file-format=WAVE", `--data-format=${VOICE_SPEECH_FORMATS.system}`, "-o", out];
+  if (speed < 1) args.unshift("-r", String(SAY_SLOW_WPM));
+  if (voice) args.unshift("-v", voice);
+  return args;
+}
+
 async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   const body = await readJsonBody<Partial<VoiceSpeakRequest>>(req);
@@ -629,6 +642,10 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   // The language of this text: target words are said with the target
   // locale's pronunciation, native ones with the learner's — same voice.
   const lang: SegmentLang = body?.lang === "native" ? "native" : "target";
+  // The pace is one of two words. A number, or any other word, is refused:
+  // the provider settings are the server's constants, never the client's.
+  const pace = paceOf(body?.pace);
+  if (!pace) throw new HttpError(400, "pace must be normal or slow");
   const nativeLocale = typeof body?.nativeLocale === "string" && LOCALE_RE.test(body.nativeLocale) ? body.nativeLocale : "";
   const textLocale = lang === "native" && nativeLocale ? nativeLocale : locale;
   const speaker = body?.speaker;
@@ -668,7 +685,7 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
   };
   res.on("close", onClose);
   try {
-    const line = { provider, text, locale: textLocale, model: settings.elevenModel };
+    const line = { provider, text, locale: textLocale, model: settings.elevenModel, pace };
     // The line's calls (a refused cast voice's retry included, one after the
     // other) hold one of the user's paid slots (paid.ts). The Go tab asks for
     // one part at a time (the next once the current one has arrived), so the
@@ -696,7 +713,14 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
       }
       return synthesize({ ...line, voice }, ctrl.signal);
     });
-    res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "no-store" });
+    res.writeHead(200, {
+      "Content-Type": out.type,
+      "Content-Length": out.audio.length,
+      "Cache-Control": "no-store",
+      // The rate the browser plays the clip at, when the voice that said
+      // it couldn't slow down itself (synthesize).
+      ...(out.playbackRate && out.playbackRate !== 1 ? { [PLAYBACK_RATE_HEADER]: String(out.playbackRate) } : {}),
+    });
     res.end(out.audio);
   } finally {
     res.off("close", onClose);
@@ -707,6 +731,46 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
 export interface Speech {
   audio: Buffer;
   type: "audio/mpeg" | "audio/wav";
+  /** Below 1 when the clip was asked for slow and is at normal speed: the
+   *  voice can't slow down (speechPace), or its stored ElevenLabs settings
+   *  couldn't be read. The caller slows the playback. Absent or 1 else. */
+  playbackRate?: number;
+}
+
+/** How long a voice's stored ElevenLabs settings are kept: a turn's slow
+ *  pieces must not mean a read each, and a voice re-tuned in ElevenLabs
+ *  should be heard that way within minutes. A failed read is kept for
+ *  VOICE_LIST_FAIL_MS, so an outage costs one read per half minute. */
+const VOICE_SETTINGS_TTL_MS = 10 * 60_000;
+/** Per ElevenLabs key and voice. Not per app user: the settings belong to
+ *  the one ElevenLabs account every user's speech goes through, so users
+ *  sharing a voice share the read. */
+const voiceSettings = new Map<string, { at: number; ttl: number; value: Promise<Record<string, number | boolean> | null> }>();
+
+/** `voice`'s stored settings, to send back with a speed (scripts/voice.mjs
+ *  elevenSpeechRequest: a speed alone would reset them). A free read, held
+ *  in memory. null when it can't be read or isn't a settings object: the
+ *  clip is then made at normal speed and the browser slows it. */
+async function storedElevenSettings(key: string, voice: string): Promise<Record<string, number | boolean> | null> {
+  const id = `${createHash("sha256").update(key).digest("hex").slice(0, 16)}:${voice}`;
+  let held = voiceSettings.get(id);
+  if (!held || Date.now() - held.at > held.ttl) {
+    if (voiceSettings.size >= 500) voiceSettings.clear();
+    // No request signal: the read is shared by every clip that waits on it.
+    const value = call("elevenlabs", elevenVoiceSettingsRequest({ key, voice }))
+      .then(async (r) => elevenStoredSettings(await r.json()))
+      .catch((e) => {
+        console.warn(`[lingo-dojo] ElevenLabs voice settings unread, slowing in the browser instead: ${String((e as Error)?.message || e).slice(0, 200)}`);
+        return null;
+      });
+    const entry = { at: Date.now(), ttl: VOICE_SETTINGS_TTL_MS, value };
+    void value.then((v) => {
+      if (!v) entry.ttl = VOICE_LIST_FAIL_MS;
+    });
+    voiceSettings.set(id, entry);
+    held = entry;
+  }
+  return held.value;
 }
 
 /** The output format each provider is asked for: scripts/voice.mjs's, the
@@ -724,26 +788,34 @@ export function sttReady(provider: SttProvider): void {
  * another voice). `locale` steers pronunciation; `model` is the ElevenLabs
  * model (the others ignore it). /api/voice/speak and the practice drill's
  * phrase audio (practice.ts, through the audio cache) both come here.
+ * `pace` "slow" asks the provider for its slow setting where it has one
+ * (speechPace: ElevenLabs voice_settings.speed, Azure <prosody rate>,
+ * `say -r`); where it has none the clip comes back at normal speed and the
+ * caller slows the playback. A caller that caches must put speechPace's
+ * `speed` in its audioKey.
  */
 export async function synthesize(
-  { provider, voice, text, locale, model }: { provider: TtsProvider; voice: string; text: string; locale: string; model: string },
+  { provider, voice, text, locale, model, pace = "normal" }: { provider: TtsProvider; voice: string; text: string; locale: string; model: string; pace?: SpeechPace },
   signal: AbortSignal,
 ): Promise<Speech> {
   const keys = keysFor(provider);
+  const { speed, playbackRate } = speechPace(provider, pace, { model, voice });
   if (provider === "elevenlabs") {
-    const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model, locale }), signal);
-    return { audio: Buffer.from(await r.arrayBuffer()), type: "audio/mpeg" };
+    // A slow piece goes with the voice's stored settings or not at all.
+    const stored = speed !== 1 ? await storedElevenSettings(String(keys.elevenlabs), voice) : null;
+    const r = await call(provider, elevenSpeechRequest({ key: keys.elevenlabs, voice, text, model, locale, speed, settings: stored }), signal);
+    return { audio: Buffer.from(await r.arrayBuffer()), type: "audio/mpeg", playbackRate: speed !== 1 && !stored ? speed : playbackRate };
   }
   if (provider === "azure") {
     let request;
     try {
-      request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale });
+      request = azureSpeechRequest({ key: keys.azureKey, region: keys.azureRegion, voice, text, locale, speed });
     } catch (e) {
       throw new HttpError(400, String((e as Error).message));
     }
-    return { audio: Buffer.from(await (await call(provider, request, signal)).arrayBuffer()), type: "audio/mpeg" };
+    return { audio: Buffer.from(await (await call(provider, request, signal)).arrayBuffer()), type: "audio/mpeg", playbackRate };
   }
-  return { audio: await sayToWav(text, voice, signal), type: "audio/wav" };
+  return { audio: await sayToWav(text, voice, signal, speed), type: "audio/wav", playbackRate };
 }
 
 /** The macOS voices for a locale (`say -v '?'`, read once per process). */
@@ -772,6 +844,7 @@ const voiceLists = new Map<string, { at: number; ttl: number; json: Promise<unkn
 /** Forget the cached voice lists (tests stub a provider per case). */
 export function clearVoiceLists(): void {
   voiceLists.clear();
+  voiceSettings.clear();
 }
 
 async function providerVoices(provider: TtsProvider, locale: string): Promise<VoiceChoice[]> {

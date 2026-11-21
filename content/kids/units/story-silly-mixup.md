@@ -9,7 +9,7 @@ level: [First words, Getting going, Chatty]
 Shape the session as a chain of silly mix-ups inside the scenario: the cow
 says "woof", the cake is upside down, the treasure is a sock. Each mix-up is
 fixed by one {{target_language}} word that {{learner_name}} supplies: ask
-what it should be, say the right word slowly twice, let them try it, and
+what it should be, say the right word slowly (inside <slow>…</slow>) twice, let them try it, and
 have the world snap back to normal with a satisfying sound effect the
 instant they try. The helper character falls for every mix-up and is
 amazed each time {{learner_name}} sorts it out. Keep the mix-ups physical
