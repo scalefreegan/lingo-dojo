@@ -38,6 +38,7 @@ const synths = [];
 const voiceLists = [];
 const tts = { delayMs: 0 };
 const noNative = { on: false };
+const refuse = { on: false };
 const stt = { reply: "", status: 200, forms: [] };
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
@@ -47,6 +48,7 @@ globalThis.fetch = async (input, init) => {
   if (url.pathname.startsWith("/v1/text-to-speech/")) {
     const { text, model_id } = JSON.parse(init.body);
     synths.push({ voice, text, model_id });
+    if (refuse.on && voice === "cloned-es") return new Response(JSON.stringify({ detail: { message: "library voices need a paid plan" } }), { status: 402 });
     if (tts.delayMs) await new Promise((r) => setTimeout(r, tts.delayMs));
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
   }
@@ -521,6 +523,33 @@ test("no native voice on the account (ld-pqy): the status warns and still plays,
     assert.equal((await kay.call("GET", `/api/practice?tz=${TZ}&mode=listening`)).body.setup.audioNote, null);
   } finally {
     noNative.on = false;
+    clearVoiceLists();
+  }
+});
+
+test("a refused native voice (ld-pqy): replays make no refused call, and the status warns while the refusal is remembered", async () => {
+  const { clearVoiceLists, clearRefusals } = await import("../../web/server/voice.ts");
+  clearVoiceLists();
+  clearRefusals();
+  refuse.on = true;
+  try {
+    const sam = await someone([ADULT], { voices: false });
+    await sam.call("PUT", "/api/voice/settings", { tts: "elevenlabs", stt: "elevenlabs" });
+    const p = await add(sam, PAIRS.slice(0, 1));
+    const id = p["la vuelta"].id;
+    assert.equal((await sam.call("GET", "/api/practice?tz=" + TZ + "&mode=listening")).body.setup.audioNote, null, "nothing refused yet");
+    const n0 = synths.length;
+    assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).text, "MP3:premade-en-m:la vuelta");
+    assert.deepEqual(synths.slice(n0).map((s) => s.voice), ["cloned-es", "premade-en-m"]);
+    const n1 = synths.length;
+    assert.equal((await sam.call("GET", `/api/practice/audio/${id}`)).text, "MP3:premade-en-m:la vuelta");
+    assert.equal(synths.length, n1, "the replay made no call");
+    const note = (await sam.call("GET", "/api/practice?tz=" + TZ + "&mode=listening")).body.setup;
+    assert.equal(note.audio, null);
+    assert.match(note.audioNote, /refused the native es-\w+ voice.*library voices.*Go tab's voice settings/);
+  } finally {
+    refuse.on = false;
+    clearRefusals();
     clearVoiceLists();
   }
 });

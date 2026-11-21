@@ -1332,6 +1332,19 @@ export function azureTranscribeRequest({ key, region: r, audio, locales, mime = 
 
 /* ----------------------------- reply parsing ------------------------------- */
 
+/** Mandarin and Cantonese share the zh tag in ElevenLabs' labels; what is
+ *  spoken is in the verified locales (cmn-*, yue-*) and the accent. A zh-HK
+ *  session counts only Cantonese voices as native, zh-CN and zh-TW only
+ *  Mandarin ones (a voice with no sign either way is Mandarin: the default
+ *  and by far the common case). Other languages: always true. */
+function sameSpoken(locale, labels, verified) {
+  if (languageOf(locale) !== "zh") return true;
+  const accent = String(labels.accent ?? "").toLowerCase();
+  const locales = verified.map((x) => String(x?.locale ?? "").toLowerCase());
+  const cantonese = /cantonese|hong ?kong/.test(accent) || (locales.some((l) => l.startsWith("yue")) && !locales.some((l) => l.startsWith("cmn")));
+  return (locale === "zh-HK") === cantonese;
+}
+
 /** How well a native voice's region fits `locale` (es-MX, zh-TW): 2 when
  *  its verified languages or its accent label name that very region, 1 when
  *  the accent is unspecified or "standard" (nothing says it is another
@@ -1370,7 +1383,7 @@ export function elevenVoices(json, locale, nativeLocale = "") {
     .map((v) => {
       const labels = v.labels ?? {};
       const verified = Array.isArray(v.verified_languages) ? v.verified_languages : [];
-      const native = String(labels.language ?? "").toLowerCase() === lang;
+      const native = String(labels.language ?? "").toLowerCase() === lang && sameSpoken(locale, labels, verified);
       const region = native ? regionTier(locale, labels, verified) : 0;
       const exact = region === 2;
       return {

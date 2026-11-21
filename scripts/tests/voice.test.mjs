@@ -1525,3 +1525,14 @@ test("elevenVoices + defaultVoice (ld-pqy): region first (cmn-TW never wins zh-C
   ] };
   assert.equal(pick(fr, "fr-FR"), "native");
 });
+
+test("elevenVoices (ld-pqy): Cantonese and Mandarin voices don't count for each other (zh macro tag)", async () => {
+  const { elevenVoices } = await import("../voice.mjs");
+  const v = (id, accent, locale) => ({ voice_id: id, name: id, labels: { language: "zh", accent, gender: "male" }, verified_languages: [{ language: "zh", locale, accent }] });
+  const json = { voices: [v("man", "standard", "cmn-CN"), v("tw", "taiwan mandarin", "cmn-TW"), v("yue", "hong kong", "yue-HK"), v("yue2", "", "yue-HK")] };
+  const natives = (loc) => elevenVoices(json, loc).filter((x) => x.match).map((x) => x.id).sort();
+  assert.deepEqual(natives("zh-HK"), ["yue", "yue2"], "Cantonese: no Mandarin voice");
+  assert.deepEqual(natives("zh-CN"), ["man", "tw"], "Mandarin: no Cantonese voice");
+  assert.deepEqual(natives("zh-TW"), ["man", "tw"]);
+  assert.deepEqual(natives("zh-HK").length && elevenVoices({ voices: [json.voices[0]] }, "zh-HK").filter((x) => x.match), [], "no Cantonese voice: none native");
+});

@@ -891,8 +891,8 @@ async function providerVoices(provider: TtsProvider, locale: string): Promise<Vo
 
 /**
  * The voice to use when the learner saved none for `locale` (scripts/voice.mjs
- * defaultVoice: an ElevenLabs premade voice, else the locale's first of the
- * gender). The provider's list is read through the per-process cache. With
+ * defaultVoice: a native speaker of the locale's language first, in the
+ * locale's own region, else the provider's other voices). The provider's list is read through the per-process cache. With
  * `optional` (macOS on the Go tab, whose `say` without a voice still talks)
  * an empty list is "", else a 400 that says what to do. A provider without
  * its keys is still keysFor's 400: the default replaces "no voice saved",
@@ -942,13 +942,21 @@ export async function practiceVoice(settings: VoiceSettings, locale: string, gen
  * later one is read from disk. If ElevenLabs refuses the native library
  * voice (retryInOtherVoice's statuses: a plan without library access), the
  * clip is made in the premade voice instead and stored under that voice's
- * key; the refusal is not remembered, so a plan that gains access is heard
- * on the next uncached clip. Logged with no text.
+ * key. The refusal is remembered for ten minutes (per key and voice), so
+ * replays and preloads go straight to the premade clip, and a plan that
+ * gains access is heard after that. Logged with no text.
  */
 export async function outsideClip(userId: string, settings: VoiceSettings, locale: string, text: string, signal: AbortSignal): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
   const { provider, voice, model, fallback } = await practiceVoice(settings, locale);
   const keyFor = (v: string) => audioKey({ owner: userId, provider, voice: v, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text });
   const say = (v: string) => paidSlot(userId, () => synthesize({ provider, voice: v, text, locale, model }, signal));
+  const viaFallback = async () => {
+    const key = keyFor(fallback);
+    return { key, ...(await cachedAudio(key, () => say(fallback))) };
+  };
+  // A plan that refused this voice a moment ago will refuse it again: straight
+  // to the premade clip (a cache hit costs no call and holds no paid slot).
+  if (fallback && refusedNow(provider, voice)) return viaFallback();
   try {
     const key = keyFor(voice);
     return { key, ...(await cachedAudio(key, () => say(voice))) };
@@ -956,9 +964,35 @@ export async function outsideClip(userId: string, settings: VoiceSettings, local
     const status = Number(String((e as Error)?.message).match(/answered (\d{3})\b/)?.[1]);
     if (!fallback || !retryInOtherVoice(status)) throw e;
     console.warn(`[lingo-dojo] ElevenLabs refused the native voice ${voice} for ${locale} (${status}): using the premade voice ${fallback}`);
-    const key = keyFor(fallback);
-    return { key, ...(await cachedAudio(key, () => say(fallback))) };
+    rememberRefusal(provider, voice);
+    return viaFallback();
   }
+}
+
+/** Native library voices ElevenLabs refused lately, per key hash and voice:
+ *  for REFUSAL_TTL_MS the premade voice is used without asking again (like
+ *  storedElevenSettings, held in memory; a plan upgrade is heard after it). */
+const REFUSAL_TTL_MS = 10 * 60_000;
+const refusals = new Map<string, number>();
+function refusalId(provider: TtsProvider, voice: string): string {
+  const secret = provider === "elevenlabs" ? keysFor(provider).elevenlabs : "";
+  return `${createHash("sha256").update(String(secret)).digest("hex").slice(0, 16)}:${voice}`;
+}
+function rememberRefusal(provider: TtsProvider, voice: string): void {
+  if (refusals.size >= 500) refusals.clear();
+  refusals.set(refusalId(provider, voice), Date.now() + REFUSAL_TTL_MS);
+}
+function refusedNow(provider: TtsProvider, voice: string): boolean {
+  const id = refusalId(provider, voice);
+  const until = refusals.get(id);
+  if (until === undefined) return false;
+  if (until > Date.now()) return true;
+  refusals.delete(id);
+  return false;
+}
+/** Forget every remembered refusal (tests). */
+export function clearRefusals(): void {
+  refusals.clear();
 }
 
 /**
@@ -974,6 +1008,9 @@ export async function voiceNote(settings: VoiceSettings, locale: string): Promis
   const provider = settings.tts;
   if (provider === "system" || voiceFor(settings.voices[provider]?.[locale] ?? {}, "narrator", null)) return null;
   const plan = await defaultPlanFor(provider, locale, null, true).catch(() => null);
+  if (plan?.native && plan.fallback && refusedNow(provider, plan.voice)) {
+    return `${NAMES[provider]} refused the native ${locale} voice (the plan may not allow library voices), so words are said in a premade voice that isn't native: use a plan that allows library voices, or save a voice in the Go tab's voice settings`;
+  }
   if (!plan || plan.native) return null;
   return `${NAMES[provider]} has no native ${locale} voice on this account, so words are said in another language's voice: add one in the Go tab's voice settings`;
 }

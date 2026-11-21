@@ -94,7 +94,7 @@ globalThis.fetch = async (input, init) => {
 };
 
 const { apiPlugins } = await import("../../web/server/api.ts");
-const { clearVoiceLists } = await import("../../web/server/voice.ts");
+const { clearVoiceLists, clearRefusals } = await import("../../web/server/voice.ts");
 
 const testDb = await freshDb();
 let base, close;
@@ -295,8 +295,9 @@ test("a voice draw the browser gives up on frees its slot at once: its provider 
   }
 });
 
-test("a native voice the plan refuses (ld-pqy): the clip is made in the premade voice, kept under that voice's key, the refusal is not remembered, a real failure still fails", async () => {
+test("a native voice the plan refuses (ld-pqy): the clip is made in the premade voice, kept under that voice's key, the refusal is remembered for ten minutes (one refused call, then cache hits), a real failure still fails", async () => {
   clearVoiceLists();
+  clearRefusals();
   const kim = await someone();
   const warn = [];
   plan.refuse = true;
@@ -309,15 +310,19 @@ test("a native voice the plan refuses (ld-pqy): the clip is made in the premade 
     assert.equal(r.text, "MP3:premade-m:一", "said in the premade voice rather than lost");
     assert.deepEqual(synths.slice(n0).map((s) => s.voice), ["cloned-zh-f", "premade-m"], "the native voice was tried first");
     assert.ok(warn.some((w) => /refused the native voice cloned-zh-f for zh-TW \(402\)/.test(w) && !w.includes("一")), "logged, with no text");
-    // Cached under the premade voice: a replay makes no premade call (the
-    // native voice is asked first each time: its refusal is never cached).
+    // Remembered: a replay is a cache hit with no call at all, and the next
+    // clip goes straight to the premade voice (no second refused call).
     const n1 = synths.length;
     assert.equal((await sound(kim, "一")).text, "MP3:premade-m:一");
-    assert.deepEqual(synths.slice(n1).map((s) => s.voice), ["cloned-zh-f"]);
-    const n1b = synths.length;
-    // The refusal isn't remembered: the next clip tries the native voice again.
+    assert.equal(synths.length, n1, "a replay makes no call");
     await sound(kim, "二");
+    assert.deepEqual(synths.slice(n1).map((s) => s.voice), ["premade-m"]);
+    // Once the memory is gone (ten minutes, or a restart) the native voice is asked again.
+    clearRefusals();
+    const n1b = synths.length;
+    await sound(kim, "三");
     assert.deepEqual(synths.slice(n1b).map((s) => s.voice), ["cloned-zh-f", "premade-m"]);
+    clearRefusals();
     // Anything but a "not this voice" status is not retried (a 500 is a 502).
     const n2 = synths.length;
     plan.refuse = false;

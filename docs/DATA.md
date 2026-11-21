@@ -2120,8 +2120,8 @@ holds; this adds two drills and a mode picker.
     speech, transcription and voice draws, the character card's sounds and
     pronunciation scoring (bead ld-e6q; docs/VOICE.md §Paid calls at once).
   - **No voice picked:** the provider's default voice (docs/VOICE.md
-    §Default voice: an ElevenLabs premade voice, Azure's or macOS's first
-    for the locale); with no macOS voice installed for the locale, a 400
+    §Default voice: a native speaker of the locale's language and region
+    first on every provider, a premade ElevenLabs voice only with none); with no macOS voice installed for the locale, a 400
     (rather than `say` reading the words in the Mac's own language, and
     caching that).
   - **Before a session**, `GET /api/practice` answers `setup: { audio,
