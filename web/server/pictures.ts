@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { failureHint, startClaude } from "../../scripts/claude.mjs";
@@ -11,26 +12,27 @@ import {
 import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer } from "../../scripts/db/practice.ts";
 import { isUuid } from "../../scripts/phrases.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
-import { deletePicture, newPictureKey, readPicture, readStockPicture, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
-import { drawnStock } from "../../scripts/picture-stock.mjs";
+import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
+import { stockList } from "./stockPictures.ts";
 import {
   JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, judgePrompt, parseJudgeReply,
   pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
-import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RestyleReply } from "../shared/game.ts";
-import type { LearnerCtx } from "./auth.ts";
+import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RestyleReply, WordPictureItem, WordPicturesReply } from "../shared/game.ts";
+import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider, type DrawnImage } from "./imageProvider.ts";
 import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts";
 import { audioProblem, phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
-// The kids word game and its pictures (docs/DATA.md §Kids word game). A
-// kids learner hears a word of the language they learn and taps the
-// matching picture; each tap is a quiet review of the word's `listen` card
-// (the same FSRS write adult Practice makes). The child sees stars and
-// cheers, never a score.
+// The word game and its pictures (docs/DATA.md §Kids word game). A learner
+// hears a word of the language they learn and taps the matching picture;
+// each tap is a quiet review of the word's `listen` card (the same FSRS
+// write adult Practice makes). A child sees stars and cheers, never a
+// score; an adult plays it as Practice's Pictures mode (ld-318), and only
+// an adult's answer reply names the word and its meaning.
 //
 //   GET  /api/game                          the pictures' status (no call starts)
 //   POST /api/game/start                    a game's rounds from ready pictures; tops up missing ones in the background
@@ -38,10 +40,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET  /api/game/audio/:phraseId          the word said (Practice's phrase audio and its cache)
 //   GET  /api/game/pictures/:id/:file       a picture (immutable: a redraw is a new file, so a new URL)
 //
-// The grown-up's side, from the Library's Phrase bank (never inside the
-// game, where a child could press it):
+// The grown-up's side, from the Library's Phrase bank and the menu's
+// Picture library (never inside the game, where a child could press it):
 //
 //   GET  /api/pictures                      the status
+//   GET  /api/pictures/words                every current word picture of the language, newest first
 //   POST /api/pictures/fill                 draw pictures for the words waiting (the backlog)
 //   GET  /api/pictures/phrase/:id           a word's picture
 //   POST /api/pictures/phrase/:id/remove    out of the game, file deleted
@@ -49,13 +52,14 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/pictures/phrase/:id/draw      {description?}: a word judged "no clear picture" drawn anyway
 //   POST /api/pictures/restyle              Redraw all in the current style (every picture not in PICTURE_THEME)
 //
-// All mounted with wrap's `learner: true`, and for kids learners only: an
-// adult learner's Practice is unchanged and has no game (a 403 here), and
-// a kids learner's Practice routes stay a 403 (practice.ts).
+// All mounted with wrap's `learner: true`, for kids and adult learners
+// alike; a kids learner's Practice routes stay a 403 (practice.ts). The
+// kids menu has no Picture library, but these routes stay reachable by a
+// kids learner's session (the Phrase bank uses them).
 //
 // Pictures are made ahead of play, in the background, by one run per
 // language profile at a time:
-//  - triggers: a kids session's end (after its recap, extraction.ts, so its
+//  - triggers: a session's end, kids or adult (after its recap, extraction.ts, so its
 //    words are in the bank), the grown-up's Draw pictures or Redraw, and a
 //    game's start (a top-up: the game is built from ready pictures only and
 //    never waits). Never a poll, a count or a page load;
@@ -155,24 +159,45 @@ type StockConcept = { id: string; description: string; words: string[]; group?: 
 /** The stock concepts drawn in the current theme that a learner of `mode`
  *  may be offered: the only ones the check sees (a concept with no file
  *  yet gets a drawing of its own; an `adults` one never reaches a kids
- *  learner, so it is never matched for one). Never throws: a broken list is
- *  no stock (logged), not a failed run. */
-function stockOffer(mode: string): StockConcept[] {
+ *  learner, so it is never matched for one). The list is
+ *  content/pictures.yaml's merged with the ones an admin added from the
+ *  picture library page (stockPictures.ts, pictures.mjs mergeStock). Never
+ *  throws: a broken list is no stock (logged), not a failed run. */
+async function stockOffer(mode: string): Promise<StockConcept[]> {
   try {
-    return stockForMode(drawnStock(), mode);
+    return stockForMode((await stockList()).filter((c) => c.drawn), mode);
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the stock list couldn't be read:", String((e as Error)?.message || e));
     return [];
   }
 }
 
-/** Every stock concept by id (drawn or not), for the game's rules: its
- *  look-alike group and its adults flag. Never throws. */
-function stockById(): Map<string, StockConcept> {
+/** Whether any stock picture is drawn in the current theme, read from the
+ *  folder alone (no list, no database): the quick, synchronous guard that
+ *  lets a run start with no image key. The run itself is offered only the
+ *  listed concepts a learner of its mode may have (stockOffer). */
+function anyStockDrawn(): boolean {
   try {
-    return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+    return fs.readdirSync(stockDir(PICTURE_THEME.id)).some((f) => !f.startsWith("."));
   } catch {
-    return new Map();
+    return false;
+  }
+}
+
+/** Every stock concept by id (drawn or not), from the merged list
+ *  (content/pictures.yaml and the ones added from the picture library), for
+ *  the game's rules: its look-alike group and its adults flag. Never throws:
+ *  a list that can't be read is the file's alone, and if that fails too,
+ *  null (playable then shows a kids learner no stock picture at all). */
+async function stockById(): Promise<Map<string, StockConcept> | null> {
+  try {
+    return new Map((await stockList()).map((c) => [c.id, c as StockConcept]));
+  } catch {
+    try {
+      return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -188,18 +213,21 @@ function stockPointer(id: string): StockPointer | null {
  *    or another theme's never drawn here) has no picture to show, so it
  *    leaves the game (and the round's draw) until the file is there;
  *  - for a kids learner, a word pointing at an `adults` concept leaves it
- *    too (one matched before the flag was set);
+ *    too (one matched before the flag was set), whether the concept is
+ *    pictures.yaml's or added from the picture library; and so does one
+ *    whose concept is gone or unknown (deleted, or the list unreadable):
+ *    for a child, a stock picture nobody can vouch for isn't shown;
  *  - a stock row carries its concept's look-alike `group`, so a round
  *    never offers two of one (pictures.mjs roundChoices).
  *  The background work reads the rows as they are. */
-function playable(rows: Map<string, PictureRow>, mode: string): Map<string, PictureRow & { group?: string | null }> {
-  const concepts = stockById();
+async function playable(rows: Map<string, PictureRow>, mode: string): Promise<Map<string, PictureRow & { group?: string | null }>> {
+  const concepts = await stockById();
   const out = new Map<string, PictureRow & { group?: string | null }>();
   for (const [k, r] of rows) {
     if (r.status === "ready" && r.stockId) {
-      const c = concepts.get(r.stockId);
+      const c = concepts?.get(r.stockId);
       if (!r.theme || !stockPicture(r.theme, r.stockId)) continue;
-      if (mode === "kids" && c?.adults) continue;
+      if (mode === "kids" && (!c || c.adults)) continue;
       out.set(k, c?.group ? { ...r, group: c.group } : r);
     } else out.set(k, r);
   }
@@ -231,7 +259,7 @@ function pictureRef(row: PictureRow): string | null {
 export function fillPictures(t: FillTarget): boolean {
   const id = t.profile.id;
   if (filling.has(id) || (retryAt.get(id) ?? 0) > Date.now()) return false;
-  if (imageProvider().problem() && !stockOffer(t.mode).length) return false;
+  if (imageProvider().problem() && !anyStockDrawn()) return false;
   const run = (async () => {
     // Every learner name on the account (archived ones too), read once a
     // run: no word of one goes to the check's description or the image
@@ -243,7 +271,7 @@ export function fillPictures(t: FillTarget): boolean {
       const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), t.profile), pictureRows(rawDb(), t.profile)]);
       const work = pictureWork(phrases, rows);
       const canDraw = !imageProvider().problem();
-      const offer = stockOffer(t.mode);
+      const offer = await stockOffer(t.mode);
       const judgeRoom = (await pictureCallsSince(rawDb(), t.profile, "judge", since())) < PICTURE_DAILY_JUDGES;
       if (work.judge.length && judgeRoom && (canDraw || offer.length)) {
         if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names, offer))) return;
@@ -482,13 +510,14 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
 }
 
 /**
- * The end of a kids session (extraction.ts, after its recap: the session's
+ * The end of a session (extraction.ts, after its recap: the session's
  * words are in the bank by then): draw pictures for that language's new
- * words in the background. Adults' sessions start nothing.
+ * words in the background. Kids and adults alike (ld-318: adults have the
+ * picture game too), under the same per-language ledger and cap.
  */
 export async function picturesAfterSession(profile: LanguageProfileRef): Promise<boolean> {
   const owner = await languageProfileOwner(rawDb(), profile);
-  if (!owner || owner.mode !== "kids") return false;
+  if (!owner) return false;
   return fillPictures({ mode: owner.mode, profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English" });
 }
 
@@ -503,10 +532,10 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
-  const pictured = pictureBank(phrases, playable(rows, ctx.learner.mode)).length;
+  const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
-  const stock = stockOffer(ctx.learner.mode).length;
+  const stock = (await stockOffer(ctx.learner.mode)).length;
   const outOfTheme = restyleTargets(phrases, rows, currentThemes(provider.key)).length;
   const restyling = work.restyleCheck.length + work.restyleDraw.length;
   const needsDraw = work.draw.length > 0 || work.restyleDraw.length > 0 || (work.judge.length > 0 && !stock);
@@ -525,6 +554,8 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     // Out of the theme, with no stock picture fitting (or none asked yet)
     // and no image key to redraw them: Redraw all can't finish these.
     needKey: provider.problem() && !restyling ? outOfTheme : 0,
+    imagesToday: images,
+    imagesCap: PICTURE_DAILY_IMAGES,
   };
 }
 
@@ -544,7 +575,7 @@ const op = async <T>(fn: () => Promise<T>): Promise<T> => {
 async function start(ctx: LearnerCtx): Promise<GameStartReply> {
   const profile = profileOf(ctx);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all, ctx.learner.mode);
+  const rows = await playable(all, ctx.learner.mode);
   const game = gameRounds(phrases, rows, { now: new Date() });
   fillPictures(targetOf(ctx));
   const byId = new Map([...rows.values()].map((r) => [r.id, r]));
@@ -577,7 +608,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
   const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
-  const rows = playable(all, ctx.learner.mode);
+  const rows = await playable(all, ctx.learner.mode);
   const bank = pictureBank(phrases, rows);
   const own = bank.find((x) => x.phrase.id === phrase.id)?.picture ?? rows.get(phrase.id);
   let outcome: typeof RIGHT | typeof WRONG | null = null;
@@ -604,7 +635,10 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     }),
   );
   if (!own) throw new HttpError(409, "this word has no picture now; skip it");
-  sendJson(res, 200, { right: out.review.rating >= 3, pictureId: own.id, replayed: out.replayed } satisfies GameAnswerReply);
+  // An adult sees the word and its meaning after the tap, like the other
+  // adult drills' answers; a child's game never shows text (ld-318).
+  const word = learnerMode(req, ctx) === "adult" ? { word: { text: phrase.text ?? "", meaning: phrase.meaning ?? null } } : {};
+  sendJson(res, 200, { right: out.review.rating >= 3, pictureId: own.id, replayed: out.replayed, ...word } satisfies GameAnswerReply);
 }
 
 /** A picture's bytes, by its id and file: only this language's, only while
@@ -624,24 +658,21 @@ async function servePicture(res: ServerResponse, ctx: LearnerCtx, id: string, fi
     return bytes ? { bytes, type: row.contentType! } : null;
   })();
   if (!pic) throw new HttpError(404, "no such picture");
-  const bytes = pic.bytes;
+  // Immutable for a stock picture too: a stock redraw from the picture
+  // library (ld-318) changes the file's version, so the URL (pictureRef).
   res.writeHead(200, {
     "Content-Type": pic.type,
-    "Content-Length": bytes.length,
+    "Content-Length": pic.bytes.length,
     "Cache-Control": "private, max-age=31536000, immutable",
     Vary: "Cookie, X-Learner-Id, X-Language-Profile-Id",
     "X-Content-Type-Options": "nosniff",
   });
-  res.end(bytes);
+  res.end(pic.bytes);
 }
 
-function kidsOnly(ctx: LearnerCtx): void {
-  if (ctx.learner.mode !== "kids") throw new HttpError(403, "the word game is for kids learners");
-}
-
-/** /api/game, mounted with wrap's `learner: true`. */
+/** /api/game, mounted with wrap's `learner: true`: kids and adult learners
+ *  alike (ld-318; a kids learner's adult drills stay a 403 in practice.ts). */
 export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  kidsOnly(ctx);
   const parts = subPath(req).split("/").filter(Boolean);
   if (parts.length === 0) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
@@ -696,7 +727,7 @@ export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx:
 async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
   const profile = profileOf(ctx);
   const provider = imageProvider();
-  const offer = stockOffer(ctx.learner.mode);
+  const offer = await stockOffer(ctx.learner.mode);
   if (provider.problem() && !offer.length) throw new HttpError(400, provider.problem()!);
   const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
   const targets = restyleTargets(phrases, rows, currentThemes(provider.key));
@@ -721,22 +752,36 @@ const pictureView = (row: PictureRow): PhrasePicture => ({
   stock: !!row.stockId, inTheme: row.status === "ready" && currentThemes(imageProvider().key).has(row.theme ?? ""), restyling: !!row.restyle,
 });
 
-/** /api/pictures, mounted with wrap's `learner: true`: the grown-up's
- *  side, from the Phrase bank of a kids learner. */
+/** /api/pictures, mounted with wrap's `learner: true`: the managing side,
+ *  from the Phrase bank (a kids learner's grown-up, or an adult learner
+ *  for their own words) and the picture library page's "My word
+ *  pictures". Kids and adult learners alike (ld-318). */
 export async function handlePictures(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  kidsOnly(ctx);
   const parts = subPath(req).split("/").filter(Boolean);
   const profile = profileOf(ctx);
   if (parts.length === 0) {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     return sendJson(res, 200, { status: await statusOf(ctx) } satisfies GameStatusReply);
   }
+  if (parts.length === 1 && parts[0] === "words") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    // Every word of this language (practisable: with words and a meaning,
+    // not suspended) with a verdict or a picture for its words as they are
+    // now; newest first. Reads only.
+    const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+    const words: WordPictureItem[] = [];
+    for (const p of [...phrases].sort((a, b) => +new Date(b.createdAt ?? 0) - +new Date(a.createdAt ?? 0))) {
+      const row = rows.get(p.id);
+      if (row && isCurrent(row, p)) words.push({ phraseId: p.id, text: p.text, meaning: p.meaning, picture: pictureView(row) });
+    }
+    return sendJson(res, 200, { words, status: await statusOf(ctx) } satisfies WordPicturesReply);
+  }
   if (parts.length === 1 && parts[0] === "fill") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     // With no key, only the stock pictures can be had: a 400 when there
     // are none either.
     const problem = imageProvider().problem();
-    if (problem && !stockOffer(ctx.learner.mode).length) throw new HttpError(400, problem);
+    if (problem && !(await stockOffer(ctx.learner.mode)).length) throw new HttpError(400, problem);
     fillPictures(targetOf(ctx));
     return sendJson(res, 202, { status: await statusOf(ctx) } satisfies GameStatusReply);
   }

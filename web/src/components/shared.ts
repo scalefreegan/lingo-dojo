@@ -3,7 +3,7 @@
  * contracts between App's pack actions/status and the tabs that use them. */
 import type { Pack } from "../types";
 
-export type Tab = "scene" | "customize" | "go" | "library" | "practice";
+export type Tab = "scene" | "customize" | "go" | "library" | "practice" | "pictures";
 
 /** What Copy does for a random scene: the preview has no scene, so the
  *  server draws one for the copied prompt (ld-mdz). */

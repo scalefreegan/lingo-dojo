@@ -26,12 +26,14 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { PICTURE_STOCK_FILE, contentRoot, loadPictureStock } from "./content.mjs";
 import { deleteStockPicture, imagesDir, sniffPicture, stockPicture, writeStockPicture, MAX_PICTURE_BYTES } from "./picture-store.mjs";
-import { PICTURE_THEME, STOCK_ID_RE, cleanDescription, picturePrompt, readStockList } from "./pictures.mjs";
+import { PICTURE_THEME, STOCK_ID_RE, cleanDescription, mergeStock, picturePrompt, readStockList } from "./pictures.mjs";
 
-/** The concepts (content/pictures.yaml) with their file in `theme`:
- *  `{ id, category, description, words, drawn: { type } | null }`. */
-export function listStock({ root = contentRoot(), theme = PICTURE_THEME.id, dir = imagesDir() } = {}) {
-  return loadPictureStock(root).concepts.map((c) => {
+/** The concepts (content/pictures.yaml, merged with the admin's own from
+ *  the database, `custom`: pictures.mjs mergeStock) with their file in
+ *  `theme`: `{ id, category, description, words, custom, drawn: { type } |
+ *  null }`. */
+export function listStock({ root = contentRoot(), theme = PICTURE_THEME.id, dir = imagesDir(), custom = [] } = {}) {
+  return mergeStock(loadPictureStock(root).concepts, custom).concepts.map((c) => {
     const at = stockPicture(theme, c.id, { dir });
     return { ...c, drawn: at ? { type: at.type } : null };
   });
@@ -105,8 +107,8 @@ export function addStockConcept({ id, category, description, words }, { root = c
  * 429; `missing`: concepts left to draw). With `dryRun`, draws nothing and
  * lists what it would.
  */
-export async function runStock({ provider, root = contentRoot(), theme = PICTURE_THEME, dir = imagesDir(), limit = Infinity, dryRun = false, creditsEach = 0.8, log = console.log } = {}) {
-  const all = listStock({ root, theme: theme.id, dir });
+export async function runStock({ provider, root = contentRoot(), theme = PICTURE_THEME, dir = imagesDir(), custom = [], limit = Infinity, dryRun = false, creditsEach = 0.8, log = console.log } = {}) {
+  const all = listStock({ root, theme: theme.id, dir, custom });
   const todo = all.filter((c) => !c.drawn);
   const batch = todo.slice(0, Math.max(0, limit));
   log(`Picture theme ${theme.id} (seed ${theme.seed}): ${all.length} stock concepts, ${all.length - todo.length} drawn, ${todo.length} to draw.`);
@@ -167,6 +169,26 @@ export function parseArgs(argv) {
   return out;
 }
 
+/** The admin's own stock concepts (picture_stock_concepts, added from the
+ *  picture library page), read once from DATABASE_URL (the shell's or
+ *  .env.local's, like db:setup), so the CLI draws them too. With no
+ *  database to read, pictures.yaml's alone, said once. */
+async function customFromDatabase() {
+  const [{ default: pg }, { drizzle }, { databaseUrl }, { customStockConcepts }, schema] = await Promise.all([
+    import("pg"), import("drizzle-orm/node-postgres"), import("./db/config.mjs"), import("./db/pictureStock.ts"), import("./db/schema.ts"),
+  ]);
+  let pool = null;
+  try {
+    pool = new pg.Pool({ connectionString: databaseUrl(), max: 1 });
+    return await customStockConcepts(drizzle(pool, { schema }));
+  } catch (e) {
+    console.warn(`The added stock concepts couldn't be read from the database (${String(e?.message || e).split("\n")[0]}); drawing pictures.yaml's only.`);
+    return [];
+  } finally {
+    await pool?.end().catch(() => {});
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.error) {
@@ -179,7 +201,7 @@ async function main() {
     console.error("The stock set is drawn with Black Forest Labs: add BFL_API_KEY to .env.local in the app's folder.");
     process.exit(1);
   }
-  const out = await runStock({ provider, limit: args.limit, dryRun: args.dryRun, creditsEach: BFL_CREDITS_PER_IMAGE });
+  const out = await runStock({ provider, custom: await customFromDatabase(), limit: args.limit, dryRun: args.dryRun, creditsEach: BFL_CREDITS_PER_IMAGE });
   process.exit(out.stopped ? 1 : 0);
 }
 

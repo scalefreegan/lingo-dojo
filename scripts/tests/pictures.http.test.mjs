@@ -117,7 +117,7 @@ const ledger = (who, kind) => q("select kind, outcome from picture_calls where l
 const filesOnDisk = () => (fs.existsSync(imagesDir) ? fs.readdirSync(imagesDir).filter((f) => !f.startsWith(".")) : []);
 const status = async (who) => (await who.call("GET", "/api/game")).body.status;
 
-test("a kids learner reaches the game and the grown-up's routes, never the adult drills; an adult the other way round", async () => {
+test("a kids learner reaches the game and the grown-up's routes, never the adult drills; an adult reaches both (ld-318)", async () => {
   const pip = await someone([KID]);
   const p = await add(pip, WORDS.slice(0, 1));
   assert.equal((await pip.call("GET", "/api/game")).status, 200);
@@ -126,23 +126,21 @@ test("a kids learner reaches the game and the grown-up's routes, never the adult
   for (const [m, url] of [["GET", "/api/practice"], ["GET", "/api/practice/queue"], ["POST", "/api/practice/answer"], ["GET", `/api/practice/audio/${p["der Hund"].id}`]]) {
     assert.equal((await pip.call(m, url, m === "POST" ? {} : undefined)).status, 403, `${m} ${url}`);
   }
-  // The kid's game start may top up (a judge run): settle it, then count
-  // only what the adult's calls start.
   await settlePictureFills();
-  const runs = fake.pictureRuns();
-  const draws = openai.calls.length;
+  // An adult has the picture game too (and its managing routes), beside
+  // the adult drills, which are as they were.
   const sam = await someone([ADULT]);
   await add(sam, [["el perro", "dog"]]);
-  for (const [m, url] of [["GET", "/api/game"], ["POST", "/api/game/start"], ["POST", "/api/game/answer"], ["GET", "/api/pictures"], ["POST", "/api/pictures/fill"], ["GET", `/api/game/audio/${p["der Hund"].id}`]]) {
-    assert.equal((await sam.call(m, url, m === "POST" ? {} : undefined)).status, 403, `adult ${m} ${url}`);
+  for (const [m, url] of [["GET", "/api/game"], ["POST", "/api/game/start"], ["GET", "/api/pictures"], ["GET", "/api/pictures/words"], ["POST", "/api/pictures/fill"]]) {
+    const r = await sam.call(m, url, m === "POST" ? {} : undefined);
+    assert.ok(r.status === 200 || r.status === 202, `adult ${m} ${url}: ${r.status} ${r.text}`);
   }
-  // The adult's Practice is as it was.
+  // A bad body is the answer route's own 400, not a 403.
+  assert.equal((await sam.call("POST", "/api/game/answer", {})).status, 400);
   const queue = await sam.call("GET", "/api/practice/queue?mode=flashcards&tz=0");
   assert.equal(queue.status, 200, queue.text);
   assert.equal(queue.body.items.length, 1);
   await settlePictureFills();
-  assert.equal(fake.pictureRuns(), runs, "the adult started no check");
-  assert.equal(openai.calls.length, draws, "nor any picture");
 });
 
 test("Draw pictures: one check for the words, a picture each for the picturable ones only, stored once; a second trigger draws nothing again", async () => {
@@ -196,7 +194,7 @@ test("the counts and the status never start a call", async () => {
   assert.equal((await status(pip)).waiting, 5);
 });
 
-test("a kids session's end draws its language's pictures in the background; an adult's starts nothing", async () => {
+test("a session's end draws its language's pictures in the background, an adult's as a kid's (ld-318)", async () => {
   const pack = { title: "", created: "", scenario: "", quick_scenario: "", units: [], overrides: {}, notes: "", };
   async function session(who, mode) {
     const r = await who.call("POST", "/api/conversations", { mode, pack, title: "Session" });
@@ -211,14 +209,15 @@ test("a kids session's end draws its language's pictures in the background; an a
   await add(sam, [["el perro", "dog"], ["el gato", "cat"]]);
   const before = fake.pictureRuns();
   await session(sam, "adult");
-  assert.equal(fake.pictureRuns(), before, "an adult's session judges nothing");
-  assert.equal(openai.calls.length, 0);
+  assert.equal(fake.pictureRuns() - before, 1, "an adult's session judges its words");
+  assert.equal(openai.calls.length, 2);
+  assert.equal((await status(sam)).pictured, 2);
 
   const pip = await someone([KID]);
   await add(pip, WORDS.slice(0, 3));
   await session(pip, "kids");
-  assert.equal(fake.pictureRuns() - before, 1);
-  assert.equal(openai.calls.length, 3);
+  assert.equal(fake.pictureRuns() - before, 2);
+  assert.equal(openai.calls.length, 5);
   assert.equal((await status(pip)).pictured, 3, "the pictures are there before the game is opened");
 });
 

@@ -22,7 +22,7 @@ transcript; its summary, kept phrases, corrections and FSRS session reviews
 are stored once per conversation by a claim on `conversations.extraction_status`,
 re-runs replace; `web/server/extraction.ts`, `scripts/db/extraction.ts`,
 pure half `scripts/extraction.mjs`, the card `web/src/components/SessionRecap.tsx`); and the
-Practice tab's flashcards (phase 7a, adults only; kids get the word game below: queue and grading
+Practice tab's flashcards (phase 7a, adults only; kids get the word game below, adults have it as a mode: queue and grading
 rules in `scripts/practice.mjs`, queries in `scripts/db/practice.ts`, the
 routes and the tool-less Haiku grader in `web/server/practice.ts`, the page
 `web/src/components/PracticeView.tsx`), with the listening and speak-it
@@ -182,8 +182,30 @@ and taps its picture.
   (`scripts/picture-store.mjs`). They are served immutably by id and file
   to their own learner only.
 - A game is built only from ready pictures and is preloaded before round
-  1. Adults have no game.
+  1.
 - `LINGO_IMAGE_PROVIDER=stub` draws placeholders for tests and UI checks.
+
+Adults play it too, and the picture library (ld-318, migration 0013,
+docs/DATA.md §The game for adults, and the picture library):
+- Practice's **Pictures** mode (`web/src/components/PictureGameView.tsx`,
+  not in Mixed) on the same `/api/game/*` routes, no longer kids-only; only
+  an adult's answer reply carries `word {text, meaning}`. An adult session's
+  end queues picture work like a kids one, under the same cap; the Phrase
+  bank's picture actions show for adults.
+- The menu's **Picture library** (`web/src/components/PictureLibraryView.tsx`,
+  not in the kids menu, though its routes stay reachable by a kids
+  learner's session): My word pictures (`GET /api/pictures/words`) and the
+  Shared library (`web/server/stockPictures.ts`: `GET /api/stock-pictures`
+  and its versioned files for any logged-in user; every write under
+  `/api/stock-pictures/admin/` is `auth: "admin"`).
+- Concepts an admin adds live in `picture_stock_concepts` (never
+  `content/`), merged after the file's wherever the stock list is read
+  (`mergeStock`); a `content/pictures.yaml` concept can't be deleted. Stock
+  draws go through the background paid slot, Black Forest Labs, at most
+  `PICTURE_DAILY_STOCK` (300) a day install-wide, counted from
+  `picture_stock_calls` written as each call starts (`scripts/db/pictureStock.ts`).
+- An added concept may be **Adults only** (`adults` column): like the file's,
+  never offered to, matched for or shown to a kids learner (`stockForMode` and `playable` read the merged list). If `content/pictures.yaml` later takes an added id, the file's wins and the row shows as `shadowed` (one warning), deletable without its picture.
 
 ## Patterns to copy, not reinvent
 - Sibling apps: `../travel-guide` (Atlas, closest: `web/server/api.ts` same-origin

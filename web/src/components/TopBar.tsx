@@ -118,7 +118,7 @@ export default function TopBar({
         <TabButton label="Library" active={tab === "library"} onClick={() => onTab("library")} className="hidden md:flex" />
         <ThemeToggle />
         <OverflowMenu onNewPack={onNewPack} onReload={onReload} reloading={reloading} ready={ready} libraryActive={tab === "library"} onLibrary={() => onTab("library")}
-          practiceActive={tab === "practice"} onPractice={() => onTab("practice")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
+          practiceActive={tab === "practice"} onPractice={() => onTab("practice")} picturesActive={mode === "kids" ? null : tab === "pictures"} onPictures={() => onTab("pictures")} username={user.username} onManageLearners={onManageLearners} onLogout={onLogout} />
       </div>
     </header>
   );
@@ -222,6 +222,8 @@ function OverflowMenu({
   libraryActive,
   onLibrary,
   practiceActive,
+  picturesActive,
+  onPictures,
   onPractice,
   username,
   onManageLearners,
@@ -235,6 +237,9 @@ function OverflowMenu({
   onLibrary: () => void;
   /** Whether Practice is open; null when the learner has none (kids). */
   practiceActive: boolean | null;
+  /** Whether the picture library is open; null when the learner has none (kids: a grown-up page, ld-318). */
+  picturesActive: boolean | null;
+  onPictures: () => void;
   onPractice: () => void;
   username: string;
   onManageLearners: () => void;
@@ -276,6 +281,21 @@ function OverflowMenu({
                 }}
               >
                 Practice
+              </button>
+            )}
+            {picturesActive !== null && (
+              <button
+                type="button"
+                role="menuitem"
+                aria-current={picturesActive ? "page" : undefined}
+                className={`${menuItemClass} border-b border-line ${picturesActive ? "font-medium text-fg" : ""}`}
+                onClick={() => {
+                  onPictures();
+                  setOpen(false);
+                }}
+                data-testid="menu-pictures"
+              >
+                Picture library
               </button>
             )}
             <button

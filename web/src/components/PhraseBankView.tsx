@@ -71,7 +71,7 @@ function dueLabel(p: PhraseSummary): string {
 }
 
 /** `initialQuery`: a search to open with (a session recap's "In the bank"). */
-export default function PhraseBankView({ initialQuery = "", kids = false }: { initialQuery?: string; kids?: boolean } = {}) {
+export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: string } = {}) {
   const [q, setQ] = useState(initialQuery);
   // Bumped when a word's picture changed in its detail (or the word was
   // deleted): the pictures' status line above reads its counts again.
@@ -170,8 +170,8 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
           refresh();
         }}
       />
-      {/* A kids learner's bank: the word game's pictures (the grown-up's side). */}
-      {kids && <PicturesBar refresh={pictureChanges} onDrawn={onDrawn} />}
+      {/* The word game's pictures: a kids learner's grown-up's side, or an adult's own (ld-318). */}
+      <PicturesBar refresh={pictureChanges} onDrawn={onDrawn} />
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -242,7 +242,6 @@ export default function PhraseBankView({ initialQuery = "", kids = false }: { in
               locale={lang?.locale ?? undefined}
               open={openId === p.id}
               onToggle={() => setOpenId((id) => (id === p.id ? null : p.id))}
-              kids={kids}
               onChanged={refresh}
               onPictureChanged={() => setPictureChanges((n) => n + 1)}
               picturesDrawn={picturesDrawn}
@@ -323,7 +322,6 @@ function PhraseRow({
   p,
   locale,
   open,
-  kids = false,
   onToggle,
   onChanged,
   onPictureChanged,
@@ -333,7 +331,6 @@ function PhraseRow({
   p: PhraseSummary;
   locale?: string;
   open: boolean;
-  kids?: boolean;
   onToggle: () => void;
   onChanged: () => void;
   onPictureChanged?: () => void;
@@ -403,7 +400,7 @@ function PhraseRow({
         </button>
       </div>
       {error && <p className="mt-1 text-sm text-err">{error}</p>}
-      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} kids={kids} onChanged={onChanged} onPictureChanged={onPictureChanged} picturesDrawn={picturesDrawn} onDeleted={onDeleted} />}
+      {open && <PhraseDetailView id={p.id} locale={locale} summary={p} onChanged={onChanged} onPictureChanged={onPictureChanged} picturesDrawn={picturesDrawn} onDeleted={onDeleted} />}
     </li>
   );
 }
@@ -415,7 +412,6 @@ function PhraseDetailView({
   id,
   locale,
   summary,
-  kids = false,
   onChanged,
   onPictureChanged,
   picturesDrawn = 0,
@@ -424,7 +420,6 @@ function PhraseDetailView({
   id: string;
   locale?: string;
   summary: PhraseSummary;
-  kids?: boolean;
   onChanged: () => void;
   onPictureChanged?: () => void;
   picturesDrawn?: number;
@@ -671,7 +666,7 @@ function PhraseDetailView({
           ) : (
             <p className={`${fine} text-fg-3`}>No examples yet: they come from the lines the dojo master glosses it in.</p>
           )}
-          {kids && !detail.pending && <PictureSection phraseId={id} onChanged={onPictureChanged} reload={picturesDrawn} />}
+          {!detail.pending && <PictureSection phraseId={id} onChanged={onPictureChanged} reload={picturesDrawn} />}
           <div className="-ml-2 flex flex-wrap gap-1">
             <Button variant="ghost" className={small} onClick={startEdit} disabled={busy}>
               Edit

@@ -18,6 +18,7 @@ import LibraryTab from "./components/LibraryTab";
 import { onOpenBank } from "./bankLink";
 import KidsGameView from "./components/KidsGameView";
 import PracticeView from "./components/PracticeView";
+import PictureLibraryView from "./components/PictureLibraryView";
 import AgentDrawer from "./components/AgentDrawer";
 import ScriptProvider from "./components/ScriptProvider";
 import type { PackStatus, SaveOutcome, Tab } from "./components/shared";
@@ -30,7 +31,7 @@ const ASSEMBLE_DELAY_MS = 200;
 const TAB_KEY = "lingo-dojo.tab.v1";
 
 function isTab(v: string | null): v is Tab {
-  return v === "scene" || v === "customize" || v === "go" || v === "library" || v === "practice";
+  return v === "scene" || v === "customize" || v === "go" || v === "library" || v === "practice" || v === "pictures";
 }
 
 /** The last tab this language profile was on in this browser — "Scene" the
@@ -581,7 +582,7 @@ export default function App({
 
       {ready && draft && pack ? (
         <main className="flex-1 p-4">
-          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : "max-w-3xl"}`}>
+          <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : tab === "pictures" ? "max-w-5xl" : "max-w-3xl"}`}>
             {tab === "scene" && (
               <SceneTab key={mode} languageId={language.id} content={ready} draft={draft} hidden={hiddenScenes} hiddenRows={hiddenRows} onHide={setSceneHidden}
                 onChange={setDraft} onNext={() => setTab("customize")} />
@@ -623,6 +624,16 @@ export default function App({
               />
             </div>
             {tab === "practice" && (mode === "kids" ? <KidsGameView key={language.id} /> : <PracticeView />)}
+            {/* The picture library (ld-318): adults only; a kids learner's menu
+                doesn't offer it (its routes still answer the session, like the
+                rest of the kids Library); never reached there but by a stale tab. */}
+            {tab === "pictures" && (mode === "kids" ? (
+              <p className="text-sm text-fg-3">
+                The picture library is a grown-up page. <button type="button" className="underline" onClick={() => setTab("library")}>Open the Library</button>
+              </p>
+            ) : (
+              <PictureLibraryView key={language.id} />
+            ))}
             {tab === "library" && (
               <LibraryTab
                 key={mode}

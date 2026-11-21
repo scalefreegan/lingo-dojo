@@ -91,11 +91,11 @@ async function start(profile: LanguageProfileRef, conversationId: string, from: 
       run(profile, claimed.conversation, claim)
         .finally(() => live.delete(claim))
         // A session's words are in the bank now (its glosses, and the
-        // recap's kept words): for a kids learner, pictures for the word
-        // game are drawn ahead of play, in the background (pictures.ts
-        // picturesAfterSession checks the learner; an adult's starts
-        // nothing). Resolves once the drawing run is started (or not), not
-        // when it ends.
+        // recap's kept words): pictures for the word game are drawn ahead
+        // of play, in the background, for kids and adult learners alike
+        // (pictures.ts picturesAfterSession; ld-318), under the language's
+        // daily cap. Resolves once the drawing run is started (or not),
+        // not when it ends.
         .then(() => picturesAfterSession(profile).then(
           () => {},
           (e) => console.error("[lingo-dojo] pictures after a session:", e),
