@@ -58,6 +58,11 @@ export interface Unit {
   body: string;
   /** Text rendered at the very end of the assembled prompt; "" when absent. */
   closing: string;
+  /** Entries as written (`unit-id`, `slot:<slot>`, `tag:<tag>`), validated by
+   *  the loader; [] when absent. Symmetric: see web/shared/unit-rules.ts. */
+  conflicts: string[];
+  /** Entries (`unit-id`, `slot:<slot>`) another picked unit must satisfy. */
+  requires: string[];
   /** Repo-relative file path (absolute when outside the repo). */
   path: string;
 }

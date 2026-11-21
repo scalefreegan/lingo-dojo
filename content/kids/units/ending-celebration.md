@@ -4,6 +4,7 @@ slot: ending
 title: Celebration and high five
 summary: A short, upbeat close naming two or three words learned, with a high five.
 tags: [ending, celebration]
+conflicts: [ending-goodnight]   # cheering and a question vs "no questions, no cheering"
 default: true
 level: [First words, Getting going, Chatty]
 ---

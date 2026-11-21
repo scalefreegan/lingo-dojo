@@ -18,6 +18,7 @@ import YAML from "yaml";
 // Erasable TypeScript, shared with the Scene tab and the server; Node strips
 // the types (the same as scripts/db/*.ts).
 import { readRandomScene } from "../web/shared/scenes.ts";
+import { parseRef } from "../web/shared/unit-rules.ts";
 
 // Paths derive from import.meta.url, never process.cwd(): `npm run dev` runs
 // Vite with cwd web/, the CLI and the tests run from the repo root.
@@ -282,6 +283,7 @@ export function loadContent(root = contentRoot()) {
     }
     units.push(unit);
   }
+  checkUnitRefs(units, slotIds, problems);
 
   const scenarios = [];
   const scenariosDir = path.join(root, "scenarios");
@@ -469,8 +471,50 @@ function loadUnit(abs, report) {
     body,
     // Rendered at the very end of the assembled prompt (docs/CONTENT.md).
     closing: closingText(fm.closing, abs, report),
+    // Valid entries only; unknown targets are checked once every unit is
+    // loaded (checkUnitRefs).
+    conflicts: refList(fm.conflicts, "conflicts", abs, report, ["unit", "slot", "tag"]),
+    requires: refList(fm.requires, "requires", abs, report, ["unit", "slot"]),
     path: displayPath(abs),
   };
+}
+
+/** `conflicts:` / `requires:` (docs/CONTENT.md): a list of `unit-id`,
+ *  `slot:<slot>` or (conflicts only) `tag:<tag>`. A bad entry is a warning
+ *  and skipped, never an error; a bare string is a one-entry list. */
+function refList(v, field, abs, report, kinds) {
+  if (v == null) return [];
+  const arr = Array.isArray(v) ? v : [v];
+  const out = [];
+  arr.forEach((x, i) => {
+    const ref = parseRef(x);
+    if (!ref) return void report(abs, "warning", `${field}[${i}] ${JSON.stringify(x)} is not a unit id, slot:<slot>${kinds.includes("tag") ? " or tag:<tag>" : ""}; skipped`);
+    if (!kinds.includes(ref.kind)) return void report(abs, "warning", `${field}[${i}] "${x}": ${field} takes ${kinds.includes("slot") ? "a unit id or slot:<slot>" : "a unit id"}, not ${ref.kind}:; skipped`);
+    const text = ref.kind === "unit" ? ref.value : `${ref.kind}:${ref.value}`;
+    if (!out.includes(text)) out.push(text);
+  });
+  return out;
+}
+
+/** The half of `conflicts`/`requires` validation that needs the whole library:
+ *  a target that names no unit, slot or tag is a typo that would never fire;
+ *  a unit naming itself does nothing. Removes the entry, with a warning. */
+function checkUnitRefs(units, slotIds, problems) {
+  const ids = new Set(units.map((u) => u.id));
+  const tags = new Set(units.flatMap((u) => u.tags));
+  for (const u of units) {
+    for (const field of ["conflicts", "requires"]) {
+      u[field] = u[field].filter((entry) => {
+        const ref = parseRef(entry);
+        const bad =
+          ref.kind === "unit" ? (ref.value === u.id ? "is the unit itself" : !ids.has(ref.value) && "is not a unit")
+          : ref.kind === "slot" ? !slotIds.has(ref.value) && "is not a slot in schema.yaml"
+          : !tags.has(ref.value) && "is a tag no unit has";
+        if (bad) problems.push({ file: u.path, level: "warning", message: `${field} "${entry}" ${bad}; skipped` });
+        return !bad;
+      });
+    }
+  }
 }
 
 function closingText(v, abs, report) {
