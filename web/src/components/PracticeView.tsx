@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
 import { scorableText, scoresTonesHere } from "../pronunciationApi";
+import { speakItProcessing } from "../../shared/tone-text.ts";
 import { startRecording, type MicProcessing, type Recording } from "../recorder";
 import type {
   PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
@@ -1014,9 +1015,10 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
  * change the grade (stage 1).
  */
 function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
-  // Raw for the tone check where there is one (Mandarin); elsewhere only
-  // the words matter, as in a voice turn.
-  const spoken = useSpokenAnswer(answer, scoresTonesHere(locale) ? "pitch" : "conversation");
+  // Raw for the tone check where there will be one (Mandarin, a phrase it
+  // can score: SpokenTones below asks the same); elsewhere only the words
+  // matter, as in a voice turn.
+  const spoken = useSpokenAnswer(answer, speakItProcessing(locale, item.text));
   const [typing, setTyping] = useState(false);
   // The recording of the answer sent, for its tone check.
   const [take, setTake] = useState<Blob | null>(null);

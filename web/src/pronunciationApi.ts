@@ -24,22 +24,8 @@ export async function modelClip(source: CompareSource, signal?: AbortSignal): Pr
   return source.kind === "sound" ? soundAudio({ text: source.text, locale: source.locale }, signal) : (await phraseAudio(source.phraseId, signal)).blob;
 }
 
-/** Locales the server scores (Mandarin, either script; scripts/
- *  pronunciation.mjs scoresTones is the rule, this only saves a request
- *  the server would refuse). Cantonese is another language with other
- *  tones. */
-export function scoresTonesHere(locale: string | null | undefined): boolean {
-  return /^(zh|cmn)(-(hans|hant))?(-(cn|tw|sg|my))?$/i.test(String(locale ?? ""));
-}
-
-const HAN = /\p{Script=Han}/u;
-/** Text the route takes (pronunciation-app.mjs readScoreText): 1 to 24 Han
- *  characters with punctuation and spaces, nothing else. */
-export function scorableText(text: string | null | undefined): boolean {
-  const t = String(text ?? "").trim();
-  const han = [...t].filter((c) => HAN.test(c)).length;
-  return han > 0 && han <= 24 && [...t].length <= 64 && /^[\p{Script=Han}\p{P}\s]+$/u.test(t);
-}
+// Which locales and texts are scored: pure, in web/shared so node tests them.
+export { scorableText, scoresTonesHere } from "../shared/tone-text.ts";
 
 /** POST /api/pronunciation/score: the recording against `text`, or null
  *  when the language isn't scored (the page then shows nothing). */

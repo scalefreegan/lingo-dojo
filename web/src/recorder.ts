@@ -8,13 +8,18 @@
  * ~40 lines and makes every provider happy; at 16 kHz a minute is ~1.9 MB.
  *
  * The pause detector is deliberately simple — an RMS level against a noise
- * floor measured in the first moments of the recording — because the point
- * is the learner's control, not cleverness: it only arms once they have
- * actually spoken, and then waits the full silence they chose. A long think
- * before the first word never ends the turn. */
+ * floor measured in the first moments of the recording, which then follows
+ * a steady room up slowly — because the point is the learner's control, not
+ * cleverness: it only arms once they have actually spoken, and then waits
+ * the full silence they chose. A long think before the first word never
+ * ends the turn. */
 
-import { noiseFloor, pauseThreshold } from "../shared/pause-threshold.ts";
-import { downmix, encodeWav16k, resampleTo16k } from "./wav16k";
+import { TICK_MS, createPauseDetector } from "../shared/pause-threshold.ts";
+import { makeWavConverter } from "./wavConverter.ts";
+
+/** The conversion's Worker, started on the first recording (wavConverter.ts:
+ *  on this thread instead when it can't start). */
+const convert = makeWavConverter(() => (typeof Worker === "undefined" ? null : new Worker(new URL("./wav16k.worker.ts", import.meta.url), { type: "module" })));
 
 export interface Recording {
   /** Stop and return the WAV, plus whether any speech was heard. `wav` is
@@ -58,12 +63,6 @@ export interface RecordOptions {
   onAutoStop?: (why: "pause" | "max" | "idle") => void;
 }
 
-const TICK_MS = 50;
-/** Floor-measuring window at the start of a recording. */
-const CALIBRATE_MS = 350;
-/** Speech must stay above the threshold this long to count as speech (a
- *  cough or a click does not arm the pause detector). */
-const SPEECH_MIN_MS = 200;
 /** Shorter than this is a slip of the finger, not a turn: MediaRecorder may
  *  not even have written an audio frame yet. */
 const MIN_TURN_MS = 400;
@@ -96,49 +95,22 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
 
   const started = performance.now();
   const samples = new Float32Array(analyser.fftSize);
-  const floorLevels: number[] = [];
-  let calibrated = false;
-  let threshold = 0.02;
-  let loudMs = 0;
-  let spoke = false;
-  let lastLoud = started;
+  // Calibration, the threshold, the floor that follows a steady room and
+  // the caps: all in the pure detector (pause-threshold.ts), tested there.
+  const detector = createPauseDetector({ processing, silenceMs, maxMs, idleMs });
   let fired = false;
-
-  const fire = (why: "pause" | "max" | "idle") => {
-    if (fired) return;
-    fired = true;
-    onAutoStop?.(why);
-  };
 
   const timer = window.setInterval(() => {
     analyser.getFloatTimeDomainData(samples);
     let sum = 0;
     for (const s of samples) sum += s * s;
     const rms = Math.sqrt(sum / samples.length);
-    const now = performance.now();
-    const elapsed = now - started;
     onLevel?.(Math.min(1, rms / 0.2));
-    if (elapsed < CALIBRATE_MS) {
-      floorLevels.push(rms);
-      return;
+    const why = detector.tick(rms, performance.now() - started);
+    if (why && !fired) {
+      fired = true;
+      onAutoStop?.(why);
     }
-    if (!calibrated) {
-      // Three times the room's own level (its quietest tick, so speech in the
-      // window doesn't count), but never so low that hiss counts (the minimum
-      // is lower for "pitch": no auto gain, see pause-threshold.ts).
-      threshold = pauseThreshold(noiseFloor(floorLevels), processing);
-      calibrated = true;
-    }
-    if (rms > threshold) {
-      loudMs += TICK_MS;
-      lastLoud = now;
-      if (loudMs >= SPEECH_MIN_MS) spoke = true;
-    } else {
-      loudMs = Math.max(0, loudMs - TICK_MS / 2);
-    }
-    if (elapsed >= maxMs) fire("max");
-    else if (silenceMs != null && spoke && now - lastLoud >= silenceMs) fire("pause");
-    else if (silenceMs != null && !spoke && elapsed >= idleMs) fire("idle");
   }, TICK_MS);
 
   let done = false;
@@ -162,8 +134,8 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
           // which won't decode: that is "nothing heard", not an error. A
           // decode failure on real speech still surfaces.
           toWav(raw).then(
-            (wav) => resolve({ wav, spoke, ms }),
-            (e) => (!spoke && ms < 1500 ? resolve({ wav: null, spoke, ms }) : reject(e)),
+            (wav) => resolve({ wav, spoke: detector.spoke, ms }),
+            (e) => (!detector.spoke && ms < 1500 ? resolve({ wav: null, spoke: detector.spoke, ms }) : reject(e)),
           );
         };
         if (recorder.state === "inactive") recorder.onstop(new Event("stop"));
@@ -181,7 +153,8 @@ export async function startRecording(opts: RecordOptions): Promise<Recording> {
 /** Any browser-decodable recording → 16 kHz mono 16-bit PCM WAV. Decoded
  *  at the rate the browser's own context runs (44.1 or 48 kHz: its decoder
  *  loses nothing a microphone gives), then downmixed, low-passed and
- *  resampled to 16 kHz in JS (wav16k.ts).
+ *  resampled to 16 kHz in JS (wav16k.ts), in a Worker so a long take
+ *  doesn't freeze the page (wavConverter.ts).
  *
  *  Not by playing the buffer through a 16 kHz OfflineAudioContext, as this
  *  did until 2026-11: Chromium plays a buffer of another rate by
@@ -200,6 +173,5 @@ export async function toWav(blob: Blob): Promise<Blob> {
   }
   const channels: Float32Array[] = [];
   for (let c = 0; c < decoded.numberOfChannels; c++) channels.push(decoded.getChannelData(c));
-  const pcm = resampleTo16k(downmix(channels), decoded.sampleRate);
-  return new Blob([encodeWav16k(pcm)], { type: "audio/wav" });
+  return new Blob([await convert(channels, decoded.sampleRate)], { type: "audio/wav" });
 }
