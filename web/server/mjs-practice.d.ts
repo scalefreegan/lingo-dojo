@@ -150,6 +150,7 @@ declare module "*/scripts/cloze.mjs" {
   export const CLOZE_BATCH: number;
   export const SENTENCES_PER_PHRASE: number;
   export const MAX_GENERATED: number;
+  export const MAX_TRANSLATION: number;
   export const MAX_BLANK_WORDS: number;
   export const MAX_BLANK_CHARS: number;
   export const MIN_CONTEXT_WORDS: number;
@@ -171,16 +172,18 @@ declare module "*/scripts/cloze.mjs" {
   export function findBlank(sentence: string, text: string, locale: string | null | undefined): { start: number; end: number } | null;
   export function clozeable(text: string, locale: string | null | undefined): boolean;
   export function checkSentence(raw: unknown, opts: { text: string; locale: string | null | undefined; max: Level; maxChars?: number }): Checked;
+  export function checkTranslation(raw: unknown, sentence: string): string | null;
+  export function glossTranslation(sentence: string, glosses: unknown): string | null;
   export function checkExample(
     example: { sentence: string },
-    turn: { role: string; fromClient: boolean; lines: unknown } | null,
+    turn: { role: string; fromClient: boolean; lines: unknown; glosses?: unknown } | null,
     opts: { text: string; locale: string | null | undefined; level: string },
-  ): Checked;
+  ): (Checked & { reason?: undefined; translation: string | null }) | (Checked & { reason: string });
   export function clozePrompt(opts: { phrases: { text: string; meaning: string }[]; targetVariant: string; nativeLanguage: string; level: string; locale: string }): { system: string; user: string };
   export function parseClozeReply(
     text: unknown,
     opts: { phrases: { text: string; meaning?: string }[]; locale: string; level: string; nativeLanguage?: string },
-  ): { ok: true; sentences: { sentence: string; start: number; end: number }[][]; dropped: number; error?: undefined } | { ok: false; error: string };
+  ): { ok: true; sentences: { sentence: string; start: number; end: number; translation: string | null }[][]; dropped: number; error?: undefined } | { ok: false; error: string };
   export function pickCloze<T extends { id: string; origin: string }>(items: T[] | null | undefined, seed: string): T | null;
   export function pickSentence<T extends { id: string; origin: string }>(items: T[] | null | undefined, seed: string, gapSeed?: string): T | null;
   export function clozeView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {
@@ -189,12 +192,13 @@ declare module "*/scripts/cloze.mjs" {
     after: string;
     origin: "example" | "generated";
   };
-  export function sentenceView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }): {
+  export function sentenceView(item: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated"; translation?: string | null }): {
     id: string;
     before: string;
     blank: string;
     after: string;
     origin: "example" | "generated";
+    translation: string | null;
   };
   export function gapped(item: { sentence: string | null; blankStart: number | null; blankEnd: number | null }): string;
 }

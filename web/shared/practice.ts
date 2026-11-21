@@ -44,6 +44,12 @@ export interface PracticeSentence {
   blank: string;
   after: string;
   origin: "example" | "generated";
+  /** What the sentence means, in the learner's native language: written
+   *  with a generated sentence, or the session's own gloss of the line.
+   *  Null for none (sentences from before it was kept, a line the session
+   *  glossed only word by word). Shown with the sentence, so only after
+   *  the answer. */
+  translation: string | null;
 }
 /** Which flashcards a flashcard session asks: both directions, or one. */
 export type PracticeDirection = "mixed" | "recognize" | "produce";
