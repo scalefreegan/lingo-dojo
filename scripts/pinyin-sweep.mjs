@@ -146,7 +146,7 @@ export function parseCedict(text) {
   return { words: [...words.values()], skipped };
 }
 
-async function loadCedict() {
+export async function loadCedict() {
   const dir = cedictDir();
   const file = path.join(dir, "cedict_1_0_ts_utf-8_mdbg.txt.gz");
   if (!fs.existsSync(file)) {

@@ -282,7 +282,54 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   `scripts/pinyin-sweep.mjs`: every traditional headword of CC-CEDICT read
   for zh-TW and zh-CN and its simplified one for zh-CN, compared with the
   dictionary; run by hand, the dictionary downloaded into the gitignored
-  `data/cedict/`, nothing of it shipped). The library reads every 地 dì, 得 dé and 儿 ér, so a few
+  `data/cedict/`, nothing of it shipped). A **frequency prior** (ld-op2,
+  `web/src/script/zh-freq.ts`, built by `npm run pinyin:freq`,
+  `scripts/gen-zh-freq.mjs`) settles what no dictionary word does. The
+  library's dictionary holds only the words whose reading is not a
+  character's default, so a character in a one-character segment is read
+  by default; the prior chooses there instead, and never touches a reading
+  a word settled: (1) a character alone (no Chinese character beside it)
+  and the character card lead with its most frequent reading (`RANKS`: 了
+  le, 量 liàng, 只 zhǐ, 誰 shéi), which replaces the library's first only
+  on strong evidence (twice the frequency mass, a reading the character has
+  as a word by itself, and Unihan's kMandarin agreeing: 長 alone stays
+  cháng, 佛 fó); (2) inside a longer run, a character no word settles takes
+  its `FALLBACK` where the words the library doesn't know mostly read it
+  otherwise (妳 nǐ, 誰 shéi; 74 characters, never 地 得 兒 著 了, which
+  have rules); (3) `WORDS`, some 1,300 common words the reader still got
+  wrong, apply only where the word is the whole run of characters (a bank
+  phrase, a gloss, a card: 种植 zhòng zhí, 心脏 xīn zàng), so none can fire
+  across a word boundary; (4) `ANYWHERE`, some 480 of them, apply inside a
+  sentence too (局长来了 zhǎng, 排行榜 háng): unlike `READING_FIXES` they
+  are not the library's custom words but a pass of the reader's own, which
+  applies one only where its edges cut through no word of the library's
+  dictionary and no `BLOCK` word stands across them (the common words it
+  would misread: 局 + 长期, never 局长 + 期). The builder audits each by
+  frequency: for every way to cut the word in two, every word ending with
+  its first part against every word starting with its second; a common
+  word of two or more characters that would be misread goes on its block
+  list, and what is left to chance (one-character words, rare words) must
+  be under 1% of the word's own use (estimated as the two meeting by
+  chance, which undercounts collocations; hence the margin), so 不当 (不 +
+  当), 明了 (说明 + 了), 种植 (这种 + 植物 is listed, but 种 + 植 alone is
+  not rare enough) stay whole-run only. A two-character word ending in a
+  particle is never corrected (穿着 is 穿 + 着 zhe far more often than
+  chuān zhuó, attire, and the word list can't tell them apart), and a
+  spelling several headwords share takes a correction only if none reads
+  worse. Sources: CC-CEDICT's readings weighted by wordfreq's Chinese word
+  list, with Unihan's kHanyuPinlu to split a one-character word's count
+  between its readings; all downloaded into gitignored caches
+  (`data/cedict/`, `data/freq/`), only the derived table committed (69 KB,
+  32 KB gzipped, in the reader's on-demand chunk). Sweep, before → after
+  (110,382 headwords; the common slice of 51,146): zh-TW 3,704 → 2,512
+  (1,407 → 899), traditional read as zh-CN 3,763 → 2,541 (1,451 → 930),
+  simplified 3,919 → 2,658 (1,514 → 962); no headword reads worse in any
+  of the three (the builder drops whatever would make one). The sweep
+  reads headwords as whole runs, so it measures (3) and (4) together;
+  inside sentences only (1), (2) and (4) apply, and what is left is for
+  the dojo master's reading hints (below). `readDetail` also says which
+  readings a word settled, and `ambiguousChars` which characters have
+  several readings in use and none settled. The library reads every 地 dì, 得 dé and 儿 ér, so a few
   narrow rules fix the particles: 地 is de only after listed adverbs (慢慢地,
   開心地) and never where it starts a word (看看地圖); 得 is de only after
   a listed verb and before a degree word (跑得很快), never after a pronoun
@@ -325,7 +372,10 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   dictionary data (TSPhrases, TSCharacters, in the reader's chunk) is
   Apache-2.0, its notice in `web/src/script/OPENCC-LICENSE.txt`; the
   CC-CEDICT the sweep downloads is CC BY-SA 4.0 and is never committed or
-  bundled; the stroke data is from
+  bundled, nor is wordfreq's list (data CC BY-SA 4.0); the table derived
+  from the two, `zh-freq.ts`, is therefore under CC BY-SA 4.0 itself, the
+  one share-alike file in the repository
+  (`web/src/script/ZH-FREQ-LICENSE.txt` has the attributions); the stroke data is from
   Make Me a Hanzi under the Arphic Public License (its text ships in the
   package; the card credits it); Unihan is under the Unicode License v3,
   whose notice is in the generated files and

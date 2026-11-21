@@ -1,0 +1,32 @@
+zh-freq.ts (the Mandarin reader's frequency prior) is a derived table,
+built by scripts/gen-zh-freq.mjs. It holds, for characters with more than
+one reading, their readings in order of use, and for some two thousand
+common words a reading. It holds no definitions and no frequencies.
+
+It is derived from, and licensed like, these sources:
+
+  CC-CEDICT
+    https://www.mdbg.net/chinese/dictionary?page=cc-cedict
+    (c) MDBG and the CC-CEDICT contributors.
+    Creative Commons Attribution-ShareAlike 4.0 International.
+
+  wordfreq, the Chinese word list (large_zh)
+    https://github.com/rspeer/wordfreq
+    (c) Robyn Speer and contributors. The code is Apache-2.0; the data
+    files are Creative Commons Attribution-ShareAlike 4.0 International.
+    That list is itself built from SUBTLEX-CH (Cai & Brysbaert 2010),
+    Wikipedia, OpenSubtitles, Google Books Ngrams, news, web, Twitter and
+    Reddit text, and Jieba's word list; see wordfreq's README for each
+    source's terms.
+
+  Unihan (kHanyuPinlu, kMandarin)
+    https://www.unicode.org/reports/tr38/
+    (c) Unicode, Inc. Unicode License v3 (UNICODE-LICENSE.txt, beside
+    this file).
+
+zh-freq.ts is therefore made available under the Creative Commons
+Attribution-ShareAlike 4.0 International licence:
+https://creativecommons.org/licenses/by-sa/4.0/legalcode
+If you change it and pass it on, do so under the same licence and keep
+this notice. The rest of this repository is under its own licence
+(LICENSE at the root); only this one data file is share-alike.

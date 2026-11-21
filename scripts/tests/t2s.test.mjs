@@ -89,7 +89,7 @@ test("script-neutral text in a zh-CN profile reads as traditional, 著 as simpli
     // Taiwan writes 沈默 for 沉默; a mainland text would write 沉默 (chosen: chén).
     沈默: "chén mò", 沈: "shěn",
     // Simplified characters too, kept where likelier: the note, 幺麽.
-    徵: "zhǐ", 含商咀徵: "hán shāng zuǐ zhǐ", 幺麽: "yāo mó", 什麽: "shén me", 乾隆: "qián lóng", 乾安: "qián ān",
+    徵: "zhǐ", 含商咀徵: "hán shāng jǔ zhǐ", 幺麽: "yāo mó", 什麽: "shén me", 乾隆: "qián lóng", 乾安: "qián ān",
   };
   for (const [w, r] of Object.entries(neutral)) {
     assert.equal(scriptOf(w), "neutral", w);
@@ -243,7 +243,7 @@ test("no correction fires across a word boundary (PR #62 review)", () => {
   // stand side by side: the reading the library gives on its own stands.
   const cases = [
     ["牛奶和麵包", "zh-TW", 2, "hé"], ["牛奶和面包", "zh-CN", 2, "hé"],
-    ["我不當老師", "zh-TW", 2, "dāng"], ["他不当兵", "zh-CN", 2, "dāng"], ["不當回事", "zh-TW", 1, "dāng"],
+    ["我不當老師", "zh-TW", 2, "dāng"], ["他不当兵", "zh-CN", 2, "dāng"], ["不當回事", "zh-TW", 1, "dàng"],
     ["我沒有為什麼", "zh-TW", 3, "wèi"], ["我有为你准备", "zh-CN", 2, "wèi"],
     ["他不倒是", "zh-CN", 2, "dǎo"], ["这种植物", "zh-CN", 1, "zhǒng"], ["弄虚作假日益", "zh-CN", 3, "jiǎ"],
     ["感受难以言表", "zh-CN", 2, "nán"], ["汽油炸弹", "zh-CN", 2, "zhà"],

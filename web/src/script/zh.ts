@@ -11,17 +11,19 @@
  * simplified form by the word where a character has several (蘋, 瞭, 乾,
  * 著, 徵, 間: t2s.ts). A traditional character whose simplified form it
  * shares with another (髮 / 發 → 发) then keeps a reading of its own
- * (ownReading). A few words the library misreads in either script are
+ * (ownReading). What no dictionary word settles is read by a frequency
+ * prior (zh-freq.ts: the common reading, and common words). A few words the library misreads in either script are
  * corrected (READING_FIXES), a zh-TW text then takes Taiwan's standard
  * readings where they differ (script.ts TAIWAN_READINGS), and the
  * particles 地 得 兒 are read by their neighbours (particleDe). Tone sandhi
  * is off: the marks are each character's own tone, as dictionaries and
  * zhuyin textbooks print them (不是 bù shì, 一個 yī gè). */
 
-import { customPinyin, pinyin } from "pinyin-pro";
+import { OutputFormat, customPinyin, pinyin, segment } from "pinyin-pro";
 import { isHan, isPinyin, isTaiwan, particleDe, taiwanize } from "./script.ts";
 import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts";
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
+import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
  *  (it reads the simplified spelling), as CC-CEDICT and the Ministry of
@@ -52,9 +54,104 @@ export const READING_FIXES: Record<string, string> = {
   北斗星: "běi dǒu xīng", // 北斗 alone would also catch 华北斗争 dòu
   北斗七星: "běi dǒu qī xīng",
 };
-customPinyin(READING_FIXES);
 
-const cache = new Map<string, (string | null)[]>();
+/* --------------------------- the frequency prior -------------------------- */
+
+/** The frequency prior (zh-freq.ts, built by scripts/gen-zh-freq.mjs from
+ *  CC-CEDICT weighted by a word-frequency list; ld-op2). The library's
+ *  word dictionary holds only the words whose reading is not a character's
+ *  default, so a character in a one-character segment was settled by no
+ *  word: it is read by default. There the prior chooses instead:
+ *  - `ranks`: a character's readings, most frequent first (行: xíng, háng),
+ *    then the rare ones (`rare`). A character standing alone (no Chinese
+ *    character beside it) takes the first, as does the character card.
+ *  - `fallback`: the reading for a character inside a longer run that no
+ *    dictionary word settled, where the words the library doesn't know
+ *    mostly read it otherwise than its default (量 liàng, not liáng).
+ *  - `words`: common words the reader still gets wrong, applied only where
+ *    the word is the whole run of Chinese characters (a bank phrase, a
+ *    gloss, a card), so none can misfire across a word boundary.
+ *  - `anywhere`: those that are safe inside a sentence too (audited by
+ *    the builder against every word that can overlap one, by frequency),
+ *    keyed by their simplified spelling. Unlike READING_FIXES they are
+ *    not the library's custom words, which match wherever the characters
+ *    stand: one is applied only where it cuts through no word of the
+ *    library's dictionary, and not beside a `block` word, a common word
+ *    that would be misread (种植 not in 这种植物, 局长 not in 局长期).
+ *  A reading that a dictionary word settles is never touched. */
+export interface Prior {
+  ranks: Map<string, string[]>;
+  rare: Map<string, string[]>;
+  fallback: Map<string, string>;
+  words: Map<string, string[]>;
+  anywhere: Map<string, string[]>;
+  /** ">长=zhǎng" → the words that, starting on a word's last 长 (read
+   *  zhǎng there), veto it; "<种=zhòng" → those ending on its first 种. */
+  block: Map<string, Iterable<string>>;
+}
+const pairs = (s: string) => (s ? s.split("|") : []);
+/** A prior from the tables' strings ("量liàng,liáng;liang|…", "量liàng|…",
+ *  "向量=xiàng liàng|…"): what zh-freq.ts holds and the builder writes. */
+export function parsePrior(t: { RANKS: string; FALLBACK: string; WORDS: string; ANYWHERE: string; BLOCK: string }): Prior {
+  const p: Prior = { ranks: new Map(), rare: new Map(), fallback: new Map(), words: new Map(), anywhere: new Map(), block: new Map() };
+  for (const e of pairs(t.RANKS)) {
+    const [ch] = e;
+    const [usual, rare = ""] = e.slice(ch.length).split(";");
+    p.ranks.set(ch, usual.split(","));
+    if (rare) p.rare.set(ch, rare.split(","));
+  }
+  for (const e of pairs(t.FALLBACK)) {
+    const [ch] = e;
+    p.fallback.set(ch, e.slice(ch.length));
+  }
+  for (const e of pairs(t.WORDS)) {
+    const [w, r] = e.split("=");
+    p.words.set(w, r.split(" "));
+  }
+  for (const e of pairs(t.ANYWHERE)) {
+    const [w, r] = e.split("=");
+    p.anywhere.set(w, r.split(" "));
+  }
+  for (const e of pairs(t.BLOCK)) {
+    const at = e.indexOf(":");
+    p.block.set(e.slice(0, at), e.slice(at + 1).split(","));
+  }
+  return p;
+}
+let prior: Prior = parsePrior({ RANKS, FALLBACK, WORDS, ANYWHERE, BLOCK });
+let anywhereLongest = 0;
+const measure = () => (anywhereLongest = Math.max(0, ...[...prior.anywhere.keys()].map((w) => [...w].length)));
+measure();
+customPinyin(READING_FIXES);
+/** The prior in use. */
+export const currentPrior = (): Prior => prior;
+/** Swap the prior (null: none at all): for the builder, which measures the
+ *  reader without it, and the tests. Empties the caches. */
+export function setPrior(p: Prior | null): void {
+  prior = p ?? parsePrior({ RANKS: "", FALLBACK: "", WORDS: "", ANYWHERE: "", BLOCK: "" });
+  measure();
+  cache.clear();
+  exemplarIndexes.clear();
+}
+/** A character's entry in a prior table: its own, else its simplified
+ *  form's where it is simply that form's traditional spelling (the tables
+ *  are sparse for traditional characters): never for one that shares the
+ *  form with another (髮 is not 发's fā, which is 發's). */
+const priorFor = <T>(table: Map<string, T>, ch: string, simp: string): T | undefined =>
+  table.get(ch) ?? (simp === ch || mergedWith(ch, simp).length ? undefined : table.get(simp));
+
+/** A text read: `readings` per code point (null for anything that is not
+ *  a Chinese character with a reading), and `settled`: whether a
+ *  dictionary word or a rule settled that reading (a multi-character
+ *  segment of the library's, a correction, OpenCC's choice of form for 著
+ *  and 乾, a particle rule). An unsettled character was read by default or
+ *  by the prior; when it has more than one reading it is what
+ *  ambiguousChars reports. */
+export interface Detail {
+  readings: (string | null)[];
+  settled: boolean[];
+}
+const cache = new Map<string, Detail>();
 const CACHE_MAX = 4000;
 
 /** Whether `text` is in the cache: for the tests, which check that the
@@ -67,13 +164,19 @@ export function readingCached(text: string, locale: string): boolean {
  *  character, null for anything else. `cache: false` neither reads nor
  *  fills the cache: the server reads a learner's text this way, so no text
  *  it was asked to score outlives the request (server/pronunciation.ts). */
-export function readCodePoints(text: string, locale: string, { cache: useCache = true }: { cache?: boolean } = {}): (string | null)[] {
+export function readCodePoints(text: string, locale: string, opts: { cache?: boolean } = {}): (string | null)[] {
+  return readDetail(text, locale, opts).readings;
+}
+
+/** readCodePoints with what settled each reading (Detail). */
+export function readDetail(text: string, locale: string, { cache: useCache = true }: { cache?: boolean } = {}): Detail {
   const tw = isTaiwan(locale);
   const key = `${tw ? "tw" : "cn"}\u0001${text}`;
   const hit = useCache ? cache.get(key) : undefined;
   if (hit) return hit;
   const cps = [...text];
   const out: (string | null)[] = cps.map(() => null);
+  const settled = cps.map(() => false);
   if (cps.some(isHan)) {
     // A zh-TW profile's text is always read as traditional. A zh-CN one's
     // by its characters (t2s.ts scriptOf): simplified text (one with a
@@ -87,7 +190,8 @@ export function readCodePoints(text: string, locale: string, { cache: useCache =
     // library would make it le (明了 míng le) or a 了 after it liǎo (明了了).
     // So the library sees 瞭 there and the reading is set after.
     const liao = simp.map((s, k) => cps[k] === "瞭" && s === "了");
-    const items = pinyin(simp.map((s, k) => (liao[k] ? "瞭" : s)).join(""), { type: "all", toneSandhi: false, nonZh: "spaced" });
+    const src = simp.map((s, k) => (liao[k] ? "瞭" : s)).join("");
+    const items = pinyin(src, { type: "all", toneSandhi: false, nonZh: "spaced" });
     // One item per character (nonZh "spaced" keeps every other character
     // its own item too); walk them by their origin so an item that ever
     // covers two code points can't shift the rest.
@@ -97,12 +201,104 @@ export function readCodePoints(text: string, locale: string, { cache: useCache =
       if (it.isZh && n === 1 && isHan(cps[i] ?? "") && isPinyin(it.pinyin)) out[i] = liao[i] ? "liǎo" : ownReading(cps[i], simp[i], it.pinyin);
       i += n;
     }
+    // The library's segments: a character in one of two or more was read
+    // as part of a dictionary word (its own, or a correction's).
+    // `joined[k]`: the character at k is in the same segment as the one
+    // before it.
+    const joined = cps.map(() => false);
+    i = 0;
+    for (const seg of segment(src, { format: OutputFormat.AllSegment, toneSandhi: false, nonZh: "spaced" })) {
+      const n = [...seg.origin].length || 1;
+      if (n > 1 && isHan(cps[i] ?? "")) {
+        for (let k = i; k < i + n && k < cps.length; k++) {
+          settled[k] = true;
+          joined[k] = k > i;
+        }
+      }
+      i += n;
+    }
+    applyPrior(cps, simp, liao, joined, out, settled);
     if (tw) taiwanize(text, out);
+    const before = out.slice();
     particleDe(text, out);
+    for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
   }
-  if (!useCache) return out;
+  const detail = { readings: out, settled };
+  if (!useCache) return detail;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
-  cache.set(key, out);
+  cache.set(key, detail);
+  return detail;
+}
+
+/** The prior over one text's readings, in place: each run of Chinese
+ *  characters that is a table word whole takes its reading; else the
+ *  `anywhere` words in it take theirs (anywhereAt), a character alone its
+ *  most frequent reading, and one inside a run that no word settled the
+ *  fallback, where the table has one. */
+function applyPrior(cps: string[], simp: string[], liao: boolean[], joined: boolean[], out: (string | null)[], settled: boolean[]): void {
+  for (let i = 0; i < cps.length; ) {
+    if (!isHan(cps[i])) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < cps.length && isHan(cps[j])) j++;
+    const word = j - i > 1 ? (prior.words.get(cps.slice(i, j).join("")) ?? prior.words.get(simp.slice(i, j).join("")) ?? prior.anywhere.get(simp.slice(i, j).join(""))) : undefined;
+    for (let k = i; k < j; k++) {
+      const hit = word ? null : anywhereAt(simp, joined, k, j);
+      if (hit) {
+        hit.forEach((r, n) => {
+          out[k + n] = r;
+          settled[k + n] = true;
+        });
+        k += hit.length - 1;
+      } else if (word && word.length === j - i) {
+        out[k] = word[k - i];
+        settled[k] = true;
+      } else if (liao[k] || (j - i > 1 && CONTEXT_FORMS.includes(cps[k])) || (simp[k] === cps[k] && NEUTRAL_KEPT.includes(cps[k]))) settled[k] = true;
+      else if (!settled[k] && out[k] != null) {
+        const r = j - i === 1 ? priorFor(prior.ranks, cps[k], simp[k])?.[0] : priorFor(prior.fallback, cps[k], simp[k]);
+        if (r) out[k] = r;
+      }
+    }
+    i = j;
+  }
+}
+
+/** The `anywhere` word starting at `k` of the simplified text (its run
+ *  ends before `end`), longest first, or null: one whose edges fall inside
+ *  no word of the library's dictionary (`joined`), and with no `block`
+ *  word across either of its cuts. */
+function anywhereAt(simp: string[], joined: boolean[], k: number, end: number): string[] | null {
+  if (joined[k]) return null;
+  const is = (w: string, at: number) => at >= 0 && simp.slice(at, at + [...w].length).join("") === w;
+  for (let n = Math.min(anywhereLongest, end - k); n >= 2; n--) {
+    const r = prior.anywhere.get(simp.slice(k, k + n).join(""));
+    if (!r || r.length !== n || joined[k + n]) continue;
+    let blocked = false;
+    for (let cut = 1; cut < n && !blocked; cut++) {
+      const after = prior.block.get(`>${simp.slice(k + cut, k + n).join("")}=${r.slice(cut).join(" ")}`);
+      const before = prior.block.get(`<${simp.slice(k, k + cut).join("")}=${r.slice(0, cut).join(" ")}`);
+      for (const w of after ?? []) if (is(w, k + cut)) blocked = true;
+      for (const w of before ?? []) if (is(w, k + cut - [...w].length)) blocked = true;
+    }
+    if (!blocked) return r;
+  }
+  return null;
+}
+
+/** The characters of `text` whose reading no word settled and that have
+ *  more than one reading in use (the prior's ranks): their code-point
+ *  indices. What the dojo master's reading hints are for (ld-op2). */
+export function ambiguousChars(text: string, locale: string, opts: { cache?: boolean } = {}): number[] {
+  const { readings, settled } = readDetail(text, locale, opts);
+  const cps = [...text];
+  const out: number[] = [];
+  for (let k = 0; k < cps.length; k++) {
+    if (readings[k] == null || settled[k]) continue;
+    const ranks = priorFor(prior.ranks, cps[k], simplified(cps[k]));
+    if (ranks && ranks.length > 1) out.push(k);
+  }
   return out;
 }
 
@@ -128,6 +324,9 @@ const ownReadings = (ch: string) => pinyin(ch, { multiple: true, type: "array", 
 // qián); the library's own list for each lacks some of what they are read
 // as in a word (著 has no zháo), so the word's reading stands.
 const CONTEXT_FORMS = "著乾";
+// Kept as themselves by t2s.ts neutralForm in a text of neither script
+// (徵 the note zhǐ, 麽 mó): that choice is the reading, alone too.
+const NEUTRAL_KEPT = "徵麽";
 
 const toneless = (r: string) => r.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 /** `r` is one of `readings`, or the neutral tone of one (頭髮 tóu fa). */
@@ -147,7 +346,7 @@ function ownReading(ch: string, simp: string, r: string): string {
   if (ch === simp || CONTEXT_FORMS.includes(ch)) return r;
   const own = ownReadings(ch);
   if (!own.length || among(r, own)) return r;
-  return mergedWith(ch, simp).some((o) => among(r, ownReadings(o))) ? own[0] : r;
+  return mergedWith(ch, simp).some((o) => among(r, ownReadings(o))) ? (prior.ranks.get(ch)?.find((x) => own.includes(x)) ?? own[0]) : r;
 }
 
 // The usual reading first where the library's order isn't (乾 is gān far
@@ -176,6 +375,10 @@ export function charReadings(ch: string, locale: string, inContext?: string | nu
   else all = own;
   const list = all.filter((r, k) => all.indexOf(r) === k);
   const first = (r: string) => list.splice(0, list.length, r, ...list.filter((x) => x !== r));
+  // The most frequent reading leads (the prior's ranks: the character's
+  // own, else its simplified form's): the library's order is not by use.
+  const ranks = priorFor(prior.ranks, ch, s);
+  if (ranks) for (const r of ranks.filter((x) => list.includes(x)).reverse()) first(r);
   const usual = USUAL_FIRST[ch];
   if (usual && list.includes(usual)) first(usual);
   if (isTaiwan(locale)) {
