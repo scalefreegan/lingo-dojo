@@ -71,6 +71,13 @@
       "when": 1795015051565,
       "tag": "0009_hidden_scenes",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795223299220,
+      "tag": "0010_cloze_translation",
+      "breakpoints": true
     }
   ]
 }

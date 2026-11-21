@@ -602,6 +602,8 @@ reviews         id (bigserial), card_id, learner_id, language_profile_id, mode
 cloze_items     id, phrase_id, learner_id, language_profile_id, phrase_key,
                 sentence, blank_start, blank_end (all three null: a
                 generated "nothing usable" mark), hint (unused),
+                translation (the sentence's meaning, null for none;
+                only with a sentence; migration 0010),
                 origin (example|generated), example_id, flagged_at,
                 created_at
                 fk (example_id, phrase_id) → phrase_examples, cascade;
@@ -2300,8 +2302,38 @@ this adds **Fill the gap** to the mode picker and to Mixed.
   for its own cards with none that are worth a call (`clozeNeeded`),
   under the same ledger and daily cap; a card without a sentence is asked
   all the same and shows none (no placeholder, no waiting), and the
-  sentence appears in a later session once written. No translation of the
-  sentence (it would need a column). Hidden for kids, like the tab.
+  sentence appears in a later session once written. Hidden for kids, like
+  the tab.
+- **The sentence's translation** (bead `ld-r2x`, migration
+  `0010_cloze_translation`: a nullable `cloze_items.translation`, and a
+  check that only a row with a sentence has one). Shown quietly under the
+  flashcard's sentence, smaller and fainter, so only on the answer side
+  like the sentence itself; nothing when there is none. Where it comes
+  from:
+  - a **generated** sentence: the same call writes it. The prompt asks
+    for `{"sentence", "translation"}` per sentence, the translation a
+    natural one of the whole sentence into the learner's native language,
+    on one line; no extra call, so the ledger and the daily cap
+    (`CLOZE_DAILY_CALLS`) are as before. `cloze.mjs` `checkTranslation`
+    (pure) cleans it like a sentence (one line, control and bidi
+    characters gone) and drops it (null) when it isn't a string, has no
+    letter, runs past `MAX_TRANSLATION` (300 characters), or is the
+    sentence itself; a dropped translation leaves the sentence kept
+    without one. A bare string where an object was asked for is still
+    read as a sentence with no translation.
+  - a **session line**: the turn's own gloss of that line when it has one
+    (`glossTranslation`: the dojo master glosses each whole target
+    sentence with a natural translation, so a gloss of `turns.glosses`
+    whose term is the line, any case and its outer punctuation aside, is
+    its meaning), through the same `checkTranslation`; a line glossed
+    only word by word has none. It is read when the item is made from the
+    example (`checkExample`).
+  Rows from before 0010 stay null: no backfill and no call to fill them
+  (a generated sentence is never asked for again; an example's item is
+  made once). The queue item carries it as `sentence.translation`
+  (`sentenceView`; `null` for none). A gap card's `cloze` never does: it
+  would give the gap away. The bank reader role is still granted nothing
+  on `cloze_items`.
 - **Reader role.** `cloze_items` and `cloze_calls` have no grant to the
   content agent's read-only role and no policy: the agent's bank tools
   don't read them (0005 cleared the default privileges that could have
@@ -3023,7 +3055,7 @@ export), `db-migration-0009.test.mjs`.
 | 4 | Phrase bank (`ld-5p2`): per-language tables (migration 0003), gloss capture, scenario lists, star/add, the bank UI with metrics. **Built** | 3 |
 | 5 | Session extraction (`ld-aeu`): claude pass, FSRS from sessions, the recap card. **Built** | 4 |
 | 6 | Recall (`ld-mey`): the review block (slot, units, placeholder), per-turn retrieval, `LOOKUP`. **Built** (no migration) | 4 |
-| 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), listening, speak-it, audio cache (**built**: `ld-6a0`, see "As built (phase 7b)"), cloze (**built**: `ld-7dr`, migration 0006, see "As built (phase 7c)") | 4 |
+| 7 | Practice: tab and queue, the FSRS service, grader, flashcards (**built**: `ld-7p1`, see "As built (phase 7a)"), listening, speak-it, audio cache (**built**: `ld-6a0`, see "As built (phase 7b)"), cloze (**built**: `ld-7dr`, migration 0006, see "As built (phase 7c)"); a flashcard sentence's translation (`ld-r2x`, migration 0010) | 4 |
 | 8 | Content agent bank MCP with the read-only role and RLS (`ld-t5f`, migration 0005). **Built** | 4 |
 | 9 | Backups | 2 |
 | 10 | Tailscale serve: allowed host, origin test (built); verify login and a voice turn from a second device (owner) | 1 |

@@ -27,6 +27,8 @@ export interface ClozeChoice {
   blankStart: number;
   blankEnd: number;
   origin: "example" | "generated";
+  /** What the sentence means (cloze.mjs sentenceView): null for none. */
+  translation: string | null;
 }
 
 /** The phrase as a cloze item is made for it. */
@@ -47,7 +49,7 @@ export interface ClozeState {
 const usable = (r: ClozeRow): r is ClozeRow & { sentence: string; blankStart: number; blankEnd: number } =>
   r.sentence != null && r.blankStart != null && r.blankEnd != null && r.flaggedAt == null;
 const choice = (r: ClozeRow & { sentence: string; blankStart: number; blankEnd: number }): ClozeChoice => ({
-  id: r.id, sentence: r.sentence, blankStart: r.blankStart, blankEnd: r.blankEnd, origin: r.origin,
+  id: r.id, sentence: r.sentence, blankStart: r.blankStart, blankEnd: r.blankEnd, origin: r.origin, translation: r.translation,
 });
 
 /**
@@ -105,11 +107,11 @@ export async function clozeStates(
     for (const e of examples) {
       const p = byId.get(e.phraseId)!;
       const t = e.turnId ? turnOf.get(e.turnId) : undefined;
-      const c = checkExample(e, t ? { role: t.role, fromClient: t.fromClient, lines: t.lines } : null, { text: p.text, locale: opts.locale, level: opts.level });
+      const c = checkExample(e, t ? { role: t.role, fromClient: t.fromClient, lines: t.lines, glosses: t.glosses } : null, { text: p.text, locale: opts.locale, level: opts.level });
       if (c.reason !== undefined) continue;
       try {
         await mine.insertOrIgnore(clozeItems, {
-          phraseId: p.id, phraseKey: key.get(p.id)!, origin: "example", exampleId: e.id, sentence: c.sentence, blankStart: c.start, blankEnd: c.end,
+          phraseId: p.id, phraseKey: key.get(p.id)!, origin: "example", exampleId: e.id, sentence: c.sentence, blankStart: c.start, blankEnd: c.end, translation: c.translation ?? null,
         });
         made = true;
       } catch (err) {
@@ -141,7 +143,7 @@ export interface Generated {
   phraseId: string;
   /** clozeKey of the phrase as it was sent to the model. */
   phraseKey: string;
-  sentences: { sentence: string; start: number; end: number }[];
+  sentences: { sentence: string; start: number; end: number; translation?: string | null }[];
 }
 
 /**
@@ -170,7 +172,7 @@ export async function storeGenerated(db: Db, profile: LanguageProfileRef, result
       }
       const rows = await mine.insertOrIgnore(
         clozeItems,
-        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, sentence: s.sentence, blankStart: s.start, blankEnd: s.end })),
+        g.sentences.map((s) => ({ phraseId: g.phraseId, phraseKey: g.phraseKey, origin: "generated" as const, sentence: s.sentence, blankStart: s.start, blankEnd: s.end, translation: s.translation ?? null })),
       );
       kept += Array.isArray(rows) ? rows.length : 0;
     } catch (err) {
