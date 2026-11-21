@@ -1844,7 +1844,7 @@ test("timings that are not a list are a timings problem, not a fall back to ener
  * that still look like spans (SPAN_ERRORS). Compared syllable by syllable
  * with the right spans. */
 test("wrong spans: with the guards no new false alarm and no new wrong ok; without them, wrong oks", () => {
-  const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0 };
+  const BARE = { ...TIMING_RULES, jitterMs: 0, lopsided: 0, uncoveredMs: 0 };
   const clipsAt = (gapMs) => [[4, 1, 2], [2, 4, 1], [1, 3, 4], [3, 2, 2], [1, 4], [4, 4, 1, 2]].map((tones, k) => {
     const said = speak(tones, { seed: 11 + k, ms: 240, gapMs });
     const samples = led(said.samples, 500);
@@ -1901,8 +1901,17 @@ test("wrong spans: with the guards no new false alarm and no new wrong ok; witho
   // left 110 ms: no sliver), and spans 100 ms out, run-together syllables
   // still get false alarms and wrong oks. The proof's table has the same
   // rows on the synthesized voices.
+  // Spans all 100 or 150 ms out leave voice hanging off the first or last
+  // span (ld-ne0.12): with that check off they pass wrong tones; with it,
+  // nothing, and no catch on right spans is lost.
+  const noHang = study({ ...TIMING_RULES, uncoveredMs: 0 });
+  for (const key of ["shift-150", "shift-100", "shift100", "shift150"]) {
+    assert.deepEqual([close[key].falseOff, close[key].wrongOk], [0, 0], `${key}, 20 ms apart: ${JSON.stringify(close[key].keys)}`);
+    assert.ok(noHang[key].falseOff + noHang[key].wrongOk > 0, `${key} without the hanging-voice check`);
+  }
+  assert.equal(close.clean.caught, noHang.clean.caught);
   assert.ok(close.swallowNext110.falseOff + close.swallowNext110.wrongOk > 0);
-  assert.ok(close.shift100.falseOff + close.shift100.wrongOk > 0);
+  assert.ok(close.boundary100.falseOff + close.boundary100.wrongOk > 0);
 });
 
 test("lopsided spans: a span that took its neighbour's sound, and the sliver left beside it, are not judged", () => {
@@ -2027,4 +2036,25 @@ test("a recording that starts inside the first syllable: that syllable is not ju
   assert.notEqual(from(TONE_RULES.clippedMs), "clipped");
   // The same speech with a lead-in is read.
   assert.equal(scoreTones({ samples: led(said.samples, 300), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range }).syllables[0].verdict, "ok");
+});
+
+test("voice hanging off the spans: an extra sound Azure timed as an Insertion is covered, an untimed one is not (ld-ne0.12)", () => {
+  // Three syllables said; the first is the learner's "um" before the two
+  // they meant. Azure marks it an Insertion and times the other two.
+  const said = speak([1, 4, 2], { ms: 240, gapMs: 20 });
+  const samples = led(said.samples, 500);
+  const track = trackPitch(samples, RATE);
+  const spans = spansOf(said.timings, 500);
+  const word = (span, error) => ({ text: "字", error, score: 90, startMs: span.startMs, endMs: span.endMs, phonemes: [{ name: "ma 1", score: 90, startMs: span.startMs, endMs: span.endMs, tone: 1 }] });
+  const syllables = expecting(4, 2);
+  const run = (first) => {
+    const azure = { status: "Success", overall: 90, words: [first, word(spans[1], "None"), word(spans[2], "None")] };
+    return mergeAzure({ azure, syllables, track, local: (timings) => scoreTones({ samples, sampleRate: RATE, syllables, timings, track, speaker: said.range }) }).syllables;
+  };
+  const inserted = run(word(spans[0], "Insertion"));
+  assert.ok(!inserted.some((s) => s.reason === "edges"), JSON.stringify(inserted.map((s) => [s.verdict, s.reason])));
+  assert.ok(inserted.some((s) => s.verdict === "ok"), JSON.stringify(inserted.map((s) => [s.verdict, s.reason])));
+  // The same sound that Azure did not time: the spans leave voice hanging.
+  const untimed = run({ ...word(spans[0], "Insertion"), startMs: null, endMs: null, phonemes: [] });
+  assert.ok(untimed.every((s) => s.reason === "edges"), JSON.stringify(untimed.map((s) => [s.verdict, s.reason])));
 });
