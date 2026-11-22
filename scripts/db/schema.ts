@@ -452,7 +452,10 @@ export const phrases = pgTable(
      *  reads the phrase otherwise (web/server/hints.ts). Null for almost
      *  every phrase: the reader's own reading is then the one shown. */
     reading: text("reading"),
-    source: text("source").$type<"gloss" | "extraction" | "manual" | "scenario">().notNull(),
+    /** Where it came from. `picture` (migration 0020, ld-ec9): a word of the
+     *  shared picture pool, made the first time the learner answered it in
+     *  the picture game (scripts/db/picturePool.ts adoptPoolWord). */
+    source: text("source").$type<"gloss" | "extraction" | "manual" | "scenario" | "picture">().notNull(),
     /** Other target forms the grader accepted, so they grade exact next time. */
     alternates: jsonb("alternates").$type<string[]>().notNull().default([]),
     starred: boolean("starred").notNull().default(false),
@@ -469,7 +472,7 @@ export const phrases = pgTable(
     createdAt: createdAt(),
   },
   (t) => [
-    check("phrases_source", sql`${t.source} in ('gloss', 'extraction', 'manual', 'scenario')`),
+    check("phrases_source", sql`${t.source} in ('gloss', 'extraction', 'manual', 'scenario', 'picture')`),
     // Complete: text and norm. Pending: neither, and a meaning key instead.
     check(
       "phrases_complete_or_pending",
@@ -833,6 +836,11 @@ export const phrasePictures = pgTable(
      *  (draw it again in the theme). The old file stays in place, and in the
      *  game, until the new one is ready. Null otherwise. */
     restyle: text("restyle").$type<"check" | "draw">(),
+    /** The picturable check's answer on whether the word and its picture
+     *  are fine to teach a young child (migration 0020, ld-ec9): what lets
+     *  an adult's drawing, once shared into the picture pool, reach kids
+     *  learners. Null: not asked (judged before 0020, or not picturable). */
+    kidsSafe: boolean("kids_safe"),
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
@@ -981,6 +989,20 @@ export const pictureStockConcepts = pgTable(
      *  concepts of one group (pictures.mjs roundChoices), file and added
      *  concepts alike. Null: none. Not named "group", a reserved word in SQL. */
     group: text("look_alike_group"),
+    /** How it came (migration 0020, ld-ec9): `admin`, added from the
+     *  picture library page; `drawing`, a learner's own word picture shared
+     *  into the picture pool (web/server/picturePool.ts), its file copied
+     *  into the stock folder. */
+    origin: text("origin").$type<"admin" | "drawing">().notNull().default("admin"),
+    /** A `drawing`'s source file key (phrase_pictures.file when it was
+     *  shared: 64 hex, random): shared once per file, and unshared when its
+     *  owner removes or redraws that picture. Null for an admin's. */
+    sourceFile: text("source_file").unique("picture_stock_concepts_source_file"),
+    /** A `drawing`'s kids check: true (a kids learner's own word, or an
+     *  adult's the check found fine for a young child), false, or null (not
+     *  asked yet). Anything but true keeps it from kids learners whatever
+     *  `adults` says (pictures.mjs mergeStock). Null for an admin's. */
+    kidsSafe: boolean("kids_safe"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
@@ -990,6 +1012,10 @@ export const pictureStockConcepts = pgTable(
     check("picture_stock_concepts_description", sql`char_length(${t.description}) between 1 and 80`),
     check("picture_stock_concepts_words", sql`cardinality(${t.words}) between 1 and 20`),
     check("picture_stock_concepts_group", sql`${t.group} is null or ${t.group} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
+    check(
+      "picture_stock_concepts_origin",
+      sql`(${t.origin} = 'admin' and ${t.sourceFile} is null and ${t.kidsSafe} is null) or (${t.origin} = 'drawing' and ${t.sourceFile} is not null and ${t.sourceFile} ~ '^[0-9a-f]{64}$')`,
+    ),
   ],
 );
 
@@ -1044,6 +1070,99 @@ export const pictureStockAdults = pgTable(
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
   (t) => [check("picture_stock_adults_id", sql`${t.conceptId} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`)],
+);
+
+/* --------------------------- the shared picture pool --------------------------- */
+
+/**
+ * A stock concept's word in one language of the shared picture pool
+ * (docs/DATA.md §The shared picture pool, migration 0020, bead ld-ec9),
+ * for a concept content/picture-words.yaml has no word for there: an
+ * admin's concept, a learner's shared drawing (its own word, at once), or
+ * one the content agent added to pictures.yaml later. Written once per
+ * (concept, key) by the capped background naming call
+ * (web/server/picturePool.ts) and never replaced; the file's word wins
+ * where both have one. `key` is picture-pool.mjs POOL_LANGS or
+ * POOL_VARIANTS. No foreign key (a file concept is no row); a deleted
+ * added concept takes its rows with it (scripts/db/picturePool.ts).
+ * Install-wide, not personal: never through owned.ts. The reader role
+ * (0005) gets nothing on it.
+ */
+export const picturePoolWords = pgTable(
+  "picture_pool_words",
+  {
+    conceptId: text("concept_id").notNull(),
+    key: text("key").notNull(),
+    text: text("text").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_pool_words_concept", sql`${t.conceptId} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
+    check("picture_pool_words_key", sql`${t.key} ~ '^[a-z]{2}(-[A-Z]{2})?$'`),
+    check("picture_pool_words_text", sql`char_length(${t.text}) between 1 and 40`),
+    primaryKey({ name: "picture_pool_words_pk", columns: [t.conceptId, t.key] }),
+  ],
+);
+
+/**
+ * A stock concept's CEFR level in the shared picture pool (migration 0020),
+ * for a concept content/picture-words.yaml has no level for: set once by
+ * the same background naming call that names it, never replaced (the
+ * file's level wins). Install-wide; the reader role gets nothing on it.
+ */
+export const picturePoolLevels = pgTable(
+  "picture_pool_levels",
+  {
+    conceptId: text("concept_id").primaryKey(),
+    level: text("level").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_pool_levels_concept", sql`${t.conceptId} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
+    check("picture_pool_levels_level", sql`${t.level} in ('A1', 'A2', 'B1', 'B2')`),
+  ],
+);
+
+/**
+ * One background naming call of the shared picture pool (migration 0020):
+ * the ledger its install-wide daily cap (picture-pool.mjs POOL_DAILY_CALLS)
+ * counts, written as the call starts whatever it then gives, pruned past
+ * the window as calls are made. `user_id` is whose background slot it ran
+ * in (provenance). The reader role gets nothing on it.
+ */
+export const picturePoolCalls = pgTable(
+  "picture_pool_calls",
+  {
+    id: id(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Concepts the call was asked about. */
+    concepts: integer("concepts").notNull(),
+    outcome: text("outcome").$type<"ok" | "failed">(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("picture_pool_calls_concepts", sql`${t.concepts} > 0`),
+    check("picture_pool_calls_outcome", sql`${t.outcome} is null or ${t.outcome} in ('ok', 'failed')`),
+    index("picture_pool_calls_created_idx").on(t.createdAt),
+  ],
+);
+
+/**
+ * A learner's drawing an admin took out of the shared pool (migration
+ * 0020): its owner's picture row is still ready, so without this the next
+ * picture run would share it again under the same id, with any Adults only
+ * flag lost. Keyed by the source file: a redraw is a new file and may be
+ * shared. Never deleted by the app. The reader role gets nothing on it.
+ */
+export const pictureSharedRefused = pgTable(
+  "picture_shared_refused",
+  {
+    sourceFile: text("source_file").primaryKey(),
+    /** The admin who removed it (provenance). */
+    refusedBy: uuid("refused_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [check("picture_shared_refused_file", sql`${t.sourceFile} ~ '^[0-9a-f]{64}$'`)],
 );
 
 /* ---------------------------- Mandarin readings ---------------------------- */

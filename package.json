@@ -17,6 +17,7 @@
     "db:import": "node scripts/import.mjs",
     "user": "node scripts/user.mjs",
     "pictures:stock": "node scripts/picture-stock.mjs",
+    "pictures:words": "node scripts/picture-words.mjs",
     "pron:record": "node scripts/pronunciation-record.mjs",
     "pron:proof": "node scripts/pronunciation-proof.mjs --recordings",
     "pinyin:sweep": "node scripts/pinyin-sweep.mjs",

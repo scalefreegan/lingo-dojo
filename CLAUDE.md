@@ -263,6 +263,33 @@ docs/DATA.md §The game for adults, and the picture library):
   from the next one. An unreadable setting fails closed (every file concept
   adults only).
 
+The shared picture pool (ld-ec9, migration 0020, docs/DATA.md §The shared
+picture pool):
+- **What it is.** Every learner's picture game also plays the pool: every
+  drawn stock concept, in their target language, at or below their
+  level. Adults get a "Pool words: up to A1–B2" picker; kids get A1, or
+  A2 at Chatty. Their own words always come first, at any level.
+- **Shared drawings.** A learner's ready drawing in the current theme is
+  shared at the end of a picture run (`shareDrawings` in
+  `web/server/picturePool.ts`). It becomes a `picture_stock_concepts` row
+  with `origin = 'drawing'`, and its file is copied into the stock folder.
+  - It is never shared if it names any learner on the install.
+  - It reaches kids only with `kids_safe` true. That verdict comes from
+    the picturable check, or from the kids check on the judge ledger.
+  - Remove or Draw again unshares it; an admin's removal is kept in
+    `picture_shared_refused`, so it is never shared again.
+- **Words.** Each concept's word per language and its level:
+  - stock concepts: the reviewed `content/picture-words.yaml`
+    (`npm run pictures:words` drafts it);
+  - anything else: the capped install-wide Haiku naming call
+    (`picture_pool_words`, `picture_pool_levels`, ledger
+    `picture_pool_calls`, `POOL_DAILY_CALLS` 20 a day).
+- **Progress.** Pool words are virtual (`poolId`) until first answered.
+  Then `adoptPoolWord` makes a bank phrase with `source = 'picture'` and
+  a stock pointer, so the FSRS listen card works.
+- **Code.** Pure rules in `scripts/picture-pool.mjs`, queries in
+  `scripts/db/picturePool.ts`.
+
 Mandarin readings (ld-4i2, migration 0015, docs/VOICE.md §Uncertain readings,
 docs/DATA.md §Mandarin readings):
 - **The mark.** An adult sees a dotted, labelled mark on a word whose reading

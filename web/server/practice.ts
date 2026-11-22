@@ -72,8 +72,8 @@ async function op<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-const targetLocale = (ctx: LearnerCtx) => localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
-const nativeLocale = (ctx: LearnerCtx) => localeFor(ctx.learner.nativeLanguage, "") ?? "";
+export const targetLocale = (ctx: LearnerCtx) => localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+export const nativeLocale = (ctx: LearnerCtx) => localeFor(ctx.learner.nativeLanguage, "") ?? "";
 
 function languageOf(ctx: LearnerCtx): PracticeStatsReply["language"] {
   return {
@@ -315,7 +315,17 @@ async function phraseAudio(res: ServerResponse, ctx: LearnerCtx, phraseId: strin
 export async function phraseClip(ctx: LearnerCtx, phraseId: string, signal: AbortSignal): Promise<{ key: string; text: string; locale: string; audio: Buffer; type: string; cached: boolean }> {
   if (!isUuid(phraseId)) throw new HttpError(404, "no such phrase");
   const { phrase } = await op(() => practiceCard(rawDb(), ctx.language, phraseId.toLowerCase(), "listen"));
-  const text = (phrase.text ?? "").trim();
+  return wordClip(ctx, phrase.text ?? "", signal);
+}
+
+/**
+ * Words of this language said in the practice voice, disk-cached per user
+ * (outsideClip): a bank phrase's (phraseClip), or a word of the shared
+ * picture pool not yet in the bank (pictures.ts, ld-ec9), so both go
+ * through one voice, one cache and one set of checks.
+ */
+export async function wordClip(ctx: LearnerCtx, words: string, signal: AbortSignal): Promise<{ key: string; text: string; locale: string; audio: Buffer; type: string; cached: boolean }> {
+  const text = words.trim();
   if (!text) throw new HttpError(409, "this phrase has no words to say");
   const locale = targetLocale(ctx);
   if (!locale) throw new HttpError(400, "this language has no voice locale, so its phrases can't be played");

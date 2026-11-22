@@ -820,4 +820,5 @@ const SOURCE: Record<PhraseDetail["source"], string> = {
   extraction: "a session recap",
   manual: "you",
   scenario: "a scene's list",
+  picture: "the picture game's shared pictures",
 };

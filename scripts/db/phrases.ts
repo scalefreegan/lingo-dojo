@@ -106,7 +106,7 @@ const PENDING = sql`${phrases.text} is null`;
 export const AUTO_MEANING = sql`coalesce(${phrases.meaning}, excluded.meaning)`;
 /** Provenance, strongest first: what a phrase keeps when two sources meet
  *  (an upsert of words already here, an absorbed pending row). */
-const STRENGTH = sql`array['manual', 'scenario', 'gloss', 'extraction']`;
+const STRENGTH = sql`array['manual', 'scenario', 'gloss', 'extraction', 'picture']`;
 export const stronger = (a: SQL | string, b: SQL | string) =>
   sql`(${STRENGTH})[least(array_position(${STRENGTH}, ${a}::text), array_position(${STRENGTH}, ${b}::text))]`;
 

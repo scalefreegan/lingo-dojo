@@ -261,6 +261,18 @@ export async function listLearners(db: Db, userId: string, opts: { archived?: bo
   });
 }
 
+/**
+ * Every learner name on the install, archived ones too (the shared picture
+ * pool, ld-ec9): a learner's drawing or word joins the pool every account
+ * sees only when no word of it names any learner anywhere, so this reads
+ * across users on purpose. Names only, never who they belong to; they go
+ * nowhere but the name check (pictures.mjs nameWords).
+ */
+export async function allLearnerNames(db: Db): Promise<string[]> {
+  const rows = await db.selectDistinct({ name: learners.name }).from(learners);
+  return rows.map((r) => r.name);
+}
+
 /** One of this user's live learners, or undefined (someone else's id, an
  *  archived one, or not an id at all). */
 export async function getLearner(db: Db, userId: string, id: unknown): Promise<Learner | undefined> {
@@ -373,9 +385,9 @@ export async function languageProfileRefsOfUser(db: Db, userId: string): Promise
 export async function languageProfileOwner(
   db: Db,
   ref: { id: string; learnerId: string },
-): Promise<{ userId: string; nativeLanguage: string; mode: Learner["mode"]; targetLanguage: string } | undefined> {
+): Promise<{ userId: string; nativeLanguage: string; mode: Learner["mode"]; targetLanguage: string; targetVariant: string } | undefined> {
   const [row] = await db
-    .select({ userId: learners.userId, nativeLanguage: learners.nativeLanguage, mode: learners.mode, targetLanguage: languageProfiles.targetLanguage })
+    .select({ userId: learners.userId, nativeLanguage: learners.nativeLanguage, mode: learners.mode, targetLanguage: languageProfiles.targetLanguage, targetVariant: languageProfiles.targetVariant })
     .from(languageProfiles)
     .innerJoin(learners, eq(learners.id, languageProfiles.learnerId))
     .where(forLearner(db, ref.learnerId).where(languageProfiles, eq(languageProfiles.id, ref.id)));

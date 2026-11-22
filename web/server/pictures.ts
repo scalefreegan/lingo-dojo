@@ -24,7 +24,11 @@ import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider, type DrawnImage } from "./imageProvider.ts";
 import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts";
-import { audioNote, audioProblem, phraseClip } from "./practice.ts";
+import { audioNote, audioProblem, nativeLocale, phraseClip, targetLocale, wordClip } from "./practice.ts";
+import { fillPoolWords, isPoolPhraseId, poolFor, shareDrawings, unshareFile } from "./picturePool.ts";
+import { adoptPoolWord } from "../../scripts/db/picturePool.ts";
+import { POOL_LEVELS, levelCap, readPoolLevel, sharedConceptId } from "../../scripts/picture-pool.mjs";
+import { localeFor } from "../../scripts/voice.mjs";
 import { mandarinLocale, settledForKids } from "./readings.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
@@ -33,10 +37,12 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // each tap is a quiet review of the word's `listen` card (the same FSRS
 // write adult Practice makes). A child sees stars and cheers, never a
 // score; an adult plays it as Practice's Pictures mode (ld-318), and only
-// an adult's answer reply names the word and its meaning.
+// an adult's answer reply names the word and its meaning. The game plays
+// the learner's own pictured words and then the shared picture pool's, in
+// their language and up to a level (ld-ec9, picturePool.ts; gameWords).
 //
 //   GET  /api/game                          the pictures' status (no call starts)
-//   POST /api/game/start                    a game's rounds from ready pictures; tops up missing ones in the background
+//   POST /api/game/start                    {level?}: a game's rounds from ready pictures, own and pool; tops up missing ones in the background
 //   POST /api/game/answer                   {phraseId, version, revision, submitId, pictureId, durationMs?, tz?} → {right, pictureId, replayed}
 //   GET  /api/game/audio/:phraseId          the word said (Practice's phrase audio and its cache)
 //   GET  /api/game/pictures/:id/:file       a picture (immutable: a redraw is a new file, so a new URL)
@@ -143,6 +149,35 @@ async function gameCandidates(profile: LanguageProfileRef, mode: string, languag
   return settledForKids(profile, mode === "kids", mandarinLocale(language), await practiceCandidates(rawDb(), profile));
 }
 
+/** The level the pool reaches for this learner unless the game asks for
+ *  another (picture-pool.mjs levelCap: the profile's level; a kids
+ *  learner's A1, or A2 at Chatty). */
+const defaultCap = (ctx: LearnerCtx) => levelCap(ctx.learner.mode, ctx.language.level);
+/** The cap an answer, an audio or a picture request looks a pool word up
+ *  in: for an adult the widest (the round may have been drawn at any level
+ *  the picker offers); for a kids learner, who has no picker, their own. */
+const lookupCap = (ctx: LearnerCtx) => (ctx.learner.mode === "kids" ? defaultCap(ctx) : POOL_LEVELS[POOL_LEVELS.length - 1]);
+
+/**
+ * What the game plays for this learner (ld-ec9): their own words with a
+ * picture (gameCandidates, the rows as playable shows them) and the shared
+ * picture pool's words for their language up to `cap` (picturePool.ts
+ * poolFor: virtual words, each pointing at a stock picture, never doubling
+ * a word of theirs). A kids learner of Mandarin gets only words whose
+ * reading is settled, the pool's included (settledForKids, ld-0mn).
+ * `own`: how many of the words are the learner's own (with a picture).
+ */
+async function gameWords(ctx: LearnerCtx, cap: string) {
+  const profile = profileOf(ctx);
+  const mode = ctx.learner.mode;
+  const [mine, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+  const pool = await poolFor({ profile, mode, locale: targetLocale(ctx), nativeLocale: nativeLocale(ctx), cap, ownRows: all });
+  const phrases = await settledForKids(profile, mode === "kids", mandarinLocale(ctx.language), [...mine, ...pool.phrases]);
+  const rows = new Map<string, PictureRow & { group?: string | null }>([...(await playable(all, mode)), ...(pool.rows as Map<string, PictureRow & { group?: string | null }>)]);
+  const poolPlayable = phrases.filter((p) => p.pool).length;
+  return { phrases, rows, byLevel: pool.byLevel, pool: poolPlayable, heldForReading: mine.length + pool.phrases.length - phrases.length };
+}
+
 /** What a run needs to know about the language it fills. */
 interface FillTarget {
   profile: LanguageProfileRef;
@@ -152,6 +187,9 @@ interface FillTarget {
   /** The learner's mode: a kids learner is never offered an `adults` stock
    *  concept (pictures.mjs stockForMode). */
   mode: string;
+  /** The target's BCP-47 locale ("" when unknown): the key a shared
+   *  drawing's own word is stored under (picturePool.ts shareDrawings). */
+  locale: string;
 }
 
 const targetOf = (ctx: LearnerCtx): FillTarget => ({
@@ -160,6 +198,7 @@ const targetOf = (ctx: LearnerCtx): FillTarget => ({
   userId: ctx.user.id,
   targetLanguage: ctx.language.targetVariant || ctx.language.targetLanguage || "the target language",
   nativeLanguage: ctx.learner.nativeLanguage || "English",
+  locale: targetLocale(ctx),
 });
 
 /* ---------------------------------- stock ---------------------------------- */
@@ -173,10 +212,14 @@ type StockConcept = { id: string; description: string; words: string[]; group?: 
  *  learner, so it is never matched for one). The list is
  *  content/pictures.yaml's merged with the ones an admin added from the
  *  picture library page (stockPictures.ts, pictures.mjs mergeStock). Never
- *  throws: a broken list is no stock (logged), not a failed run. */
-async function stockOffer(mode: string): Promise<StockConcept[]> {
+ *  throws: a broken list is no stock (logged), not a failed run.
+ *  With the learner's `rows`, their own shared drawings are left out
+ *  (ld-ec9): matching a word to a copy of its own picture would only make
+ *  a stock pointer of it, and Redraw would then unshare what it points at. */
+async function stockOffer(mode: string, rows?: Map<string, PictureRow>): Promise<StockConcept[]> {
   try {
-    return stockForMode((await stockList()).filter((c) => c.drawn), mode);
+    const own = new Set([...(rows?.values() ?? [])].filter((r) => r.file && !r.stockId).map((r) => sharedConceptId(r.file!)));
+    return stockForMode((await stockList()).filter((c) => c.drawn && !own.has(c.id)), mode);
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the stock list couldn't be read:", String((e as Error)?.message || e));
     return [];
@@ -299,7 +342,7 @@ export function fillPictures(t: FillTarget): boolean {
       const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), t.profile), pictureRows(rawDb(), t.profile)]);
       const work = pictureWork(phrases, rows);
       const canDraw = !imageProvider().problem();
-      const offer = await stockOffer(t.mode);
+      const offer = await stockOffer(t.mode, rows);
       const judgeRoom = (await pictureCallsSince(rawDb(), t.profile, "judge", since())) < PICTURE_DAILY_JUDGES;
       if (work.judge.length && judgeRoom && (canDraw || offer.length)) {
         if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names, offer))) return;
@@ -322,6 +365,9 @@ export function fillPictures(t: FillTarget): boolean {
       }
       const left = work.judge.length + work.draw.length + work.restyleCheck.length + work.restyleDraw.length;
       if (left) console.log(`[lingo-dojo] pictures: ${canDraw ? "today's calls for this language are used up" : "no image key"}; ${left} word(s) wait`);
+      // Last, this language's drawings join the shared picture pool
+      // (ld-ec9), and the pool's naming run names what it brought.
+      if (await shareDrawings(t, phrases, rows, SLOT_WAIT)) fillPoolWords(t.userId);
       return;
     }
   })()
@@ -397,7 +443,7 @@ async function askCheck(t: FillTarget, sent: (Word & { key: string })[], names: 
     throw new Error(`the picturable check's reply wasn't usable (${parsed.error})`);
   }
   await pictureCallDone(rawDb(), t.profile, callId, "ok").catch(() => {});
-  return parsed.verdicts as ({ picturable: boolean; description: string | null; stock: string | null } | undefined)[];
+  return parsed.verdicts as ({ picturable: boolean; description: string | null; stock: string | null; kidsSafe?: boolean | null } | undefined)[];
 }
 
 /** One picturable check for words with no verdict; false when the
@@ -417,7 +463,7 @@ async function judge(t: FillTarget, words: Word[], names: string[], offer: Stock
     // A stock match whose file has gone since the offer is drawn instead.
     const stock = v.stock ? stockPointer(v.stock) : null;
     const { oldFile } = await storeVerdict(rawDb(), t.profile, {
-      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, ...(stock ? { stock } : {}),
+      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, kidsSafe: stock ? null : v.kidsSafe, ...(stock ? { stock } : {}),
     });
     await dropPictureFile(oldFile);
     judged++;
@@ -546,7 +592,10 @@ async function draw(t: FillTarget, phraseId: string, phraseKey: string, descript
 export async function picturesAfterSession(profile: LanguageProfileRef): Promise<boolean> {
   const owner = await languageProfileOwner(rawDb(), profile);
   if (!owner) return false;
-  return fillPictures({ mode: owner.mode, profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English" });
+  return fillPictures({
+    mode: owner.mode, profile, userId: owner.userId, targetLanguage: owner.targetLanguage || "the target language", nativeLanguage: owner.nativeLanguage || "English",
+    locale: localeFor(owner.targetLanguage, owner.targetVariant) ?? "",
+  });
 }
 
 /** Ids of the words the game has a picture for, for a learner of `mode`:
@@ -564,17 +613,21 @@ export async function pictureWordIds(profile: LanguageProfileRef, mode: string, 
  *  draw, or words to judge with no stock picture to match them to). */
 async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
   const profile = profileOf(ctx);
-  const [all, rows, images, audio] = await Promise.all([
+  const cap = defaultCap(ctx);
+  const [all, rows, images, audio, game] = await Promise.all([
     practiceCandidates(rawDb(), profile),
     pictureRows(rawDb(), profile),
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
+    gameWords(ctx, cap),
   ]);
   // As gameCandidates: a kids word still uncertain is held back (counted, so
   // the grown-up is told why the game may be short of words).
   const phrases = await settledForKids(profile, ctx.learner.mode === "kids", mandarinLocale(ctx.language), all);
   const note = audio ? null : await audioNote(ctx);
   const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
+  // The shared pool's words the game may add at the default level (ld-ec9).
+  const pool = pictureBank(game.phrases.filter((p) => p.pool), game.rows).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
   const stock = (await stockOffer(ctx.learner.mode)).length;
@@ -583,7 +636,10 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
   const needsDraw = work.draw.length > 0 || work.restyleDraw.length > 0 || (work.judge.length > 0 && !stock);
   return {
     pictured,
-    ready: pictured >= MIN_PICTURED,
+    pool,
+    poolLevel: cap,
+    poolByLevel: game.byLevel,
+    ready: pictured + pool >= MIN_PICTURED,
     drawing: filling.has(profile.id),
     waiting: work.judge.length + work.draw.length,
     limited: images >= PICTURE_DAILY_IMAGES,
@@ -616,12 +672,21 @@ const op = async <T>(fn: () => Promise<T>): Promise<T> => {
 
 /** A game's rounds from the ready pictures only; a top-up of missing ones
  *  starts in the background (never waited for). */
-async function start(ctx: LearnerCtx): Promise<GameStartReply> {
+async function start(req: IncomingMessage, ctx: LearnerCtx): Promise<GameStartReply> {
   const profile = profileOf(ctx);
-  const [phrases, all] = await Promise.all([gameCandidates(profile, ctx.learner.mode, ctx.language), pictureRows(rawDb(), profile)]);
-  const rows = await playable(all, ctx.learner.mode);
-  const game = gameRounds(phrases, rows, { now: new Date() });
+  const body = (await readJsonBody(req)) as { level?: unknown } | null;
+  const asked = readPoolLevel(body?.level);
+  if (asked.error !== undefined) throw new HttpError(400, asked.error);
+  // A kids learner has no level picker: their level is their profile's,
+  // whatever is sent (a level the game never offers them is ignored).
+  const cap = ctx.learner.mode === "kids" ? defaultCap(ctx) : (asked.level ?? defaultCap(ctx));
+  const { phrases, rows } = await gameWords(ctx, cap);
+  // The pool's new words in an order of the language and the day.
+  const game = gameRounds(phrases, rows, { now: new Date(), seed: `${profile.id}:${new Date().toISOString().slice(0, 10)}` });
   fillPictures(targetOf(ctx));
+  // A top-up of the pool's words for concepts the table lacks (the
+  // install-wide naming run: capped, and nothing when nothing is missing).
+  fillPoolWords(ctx.user.id);
   const byId = new Map([...rows.values()].map((r) => [r.id, r]));
   return {
     rounds: game.rounds.map((r) => ({
@@ -630,6 +695,74 @@ async function start(ctx: LearnerCtx): Promise<GameStartReply> {
     })),
     status: await statusOf(ctx),
   };
+}
+
+/** Whether this language's bank has a phrase of that id (any id: a
+ *  malformed one is simply not there). */
+async function bankHas(profile: LanguageProfileRef, id: string): Promise<boolean> {
+  try {
+    await practiceCard(rawDb(), profile, id, "listen");
+    return true;
+  } catch (e) {
+    if (e instanceof PracticeError && e.code === "ENOENT") return false;
+    throw e;
+  }
+}
+
+/** The pool word a game played under `phraseId` for this learner, or
+ *  undefined: looked up in the pool as wide as it goes, for their mode
+ *  (no adults-only or unchecked picture for a kids learner) and, for a
+ *  kids learner of Mandarin, only with a settled reading. */
+async function poolWord(ctx: LearnerCtx, phraseId: string) {
+  const { phrases, rows } = await gameWords(ctx, lookupCap(ctx));
+  const word = phrases.find((p) => p.id === phraseId && p.pool);
+  return word ? { word, row: rows.get(word.id)! } : undefined;
+}
+
+/** A pool picture's row by the id the round gave it, as poolWord finds it.
+ *  Held POOL_PICTURE_MS per language and mode: a game fetches a dozen or so
+ *  pictures at once, and one pool read serves them all. */
+const poolPictures = new Map<string, { at: number; rows: Map<string, PictureRow> }>();
+const POOL_PICTURE_MS = 20_000;
+async function poolPicture(ctx: LearnerCtx, id: string): Promise<PictureRow | undefined> {
+  const key = `${ctx.language.id}:${ctx.learner.mode}`;
+  let held = poolPictures.get(key);
+  if (!held || Date.now() - held.at > POOL_PICTURE_MS) {
+    const { phrases, rows } = await gameWords(ctx, lookupCap(ctx));
+    const byId = new Map<string, PictureRow>();
+    for (const p of phrases) if (p.pool) byId.set(rows.get(p.id)!.id, rows.get(p.id)!);
+    held = { at: Date.now(), rows: byId };
+    poolPictures.set(key, held);
+    // Kept small: one entry per language played in the last moments.
+    for (const [k, v] of poolPictures) if (Date.now() - v.at > POOL_PICTURE_MS) poolPictures.delete(k);
+  }
+  return held.rows.get(id);
+}
+
+/**
+ * A pool word's first answer: it becomes a phrase of the bank, with the id
+ * and picture the round gave it (scripts/db/picturePool.ts adoptPoolWord).
+ * 404 when the pool has no such word for this learner; 409 when its words
+ * changed since the round was drawn (the table edited, say).
+ */
+async function adopt(ctx: LearnerCtx, phraseId: string, revision: string): Promise<void> {
+  const found = await poolWord(ctx, phraseId);
+  if (!found) {
+    // A word the pool gave this learner and no longer does (they added it
+    // themselves since, or it left the pool): the round is stale.
+    if (await isPoolPhraseId(profileOf(ctx).id, phraseId)) throw new HttpError(409, EDITED);
+    throw new HttpError(404, "no such phrase");
+  }
+  const { word, row } = found;
+  if (phraseRevision(word) !== revision) throw new HttpError(409, EDITED);
+  const made = await adoptPoolWord(rawDb(), profileOf(ctx), {
+    phraseId: word.id, lang: targetLocale(ctx), text: word.text!, meaning: word.meaning!,
+    picture: { id: row.id, phraseKey: row.phraseKey, description: row.description!, stock: { stockId: row.stockId!, theme: row.theme!, file: row.file!, contentType: row.contentType! } },
+  });
+  // The learner added these words themselves since the round was drawn:
+  // the round's id is no word of theirs, so it is a stale round (the game
+  // moves on), never an answer to some other phrase.
+  if (made.phraseId !== word.id) throw new HttpError(409, EDITED);
 }
 
 const RIGHT = { rating: 3, verdict: "exact", note: null } as const;
@@ -648,11 +781,15 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   if (r.error !== undefined) throw new HttpError(400, r.error);
   const a = r.value;
   const profile = profileOf(ctx);
+  // A word of the shared pool answered for the first time becomes a word
+  // of the bank (ld-ec9: source `picture`, the id and picture the round
+  // gave it), then is answered like any other.
+  if (!(await bankHas(profile, a.phraseId))) await adopt(ctx, a.phraseId, a.revision);
   const { phrase, card } = await op(() => practiceCard(rawDb(), profile, a.phraseId, "listen"));
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
-  const [phrases, all] = await Promise.all([gameCandidates(profile, ctx.learner.mode, ctx.language), pictureRows(rawDb(), profile)]);
-  const rows = await playable(all, ctx.learner.mode);
+  // The pool as wide as it goes: the round may have been drawn at any level.
+  const { phrases, rows } = await gameWords(ctx, lookupCap(ctx));
   const bank = pictureBank(phrases, rows);
   const own = bank.find((x) => x.phrase.id === phrase.id)?.picture ?? rows.get(phrase.id);
   let outcome: typeof RIGHT | typeof WRONG | null = null;
@@ -691,7 +828,9 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
  *  the fetch carries, so another learner on this browser never reads it
  *  from the cache. */
 async function servePicture(res: ServerResponse, ctx: LearnerCtx, id: string, file: string): Promise<void> {
-  const row = isUuid(id) ? await pictureById(rawDb(), profileOf(ctx), id.toLowerCase()) : undefined;
+  // A row of this language's, else a pool word's picture (ld-ec9: a stock
+  // picture this learner's pool offers, by the id the round gave it).
+  const row = isUuid(id) ? ((await pictureById(rawDb(), profileOf(ctx), id.toLowerCase())) ?? (await poolPicture(ctx, id.toLowerCase()))) : undefined;
   if (!row || row.status !== "ready" || pictureRef(row) !== file || !row.contentType) throw new HttpError(404, "no such picture");
   // A stock picture a kids learner is kept from (Adults only, set before
   // or after the word was matched to it): not served, like playable keeps
@@ -728,7 +867,7 @@ export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx:
   }
   if (parts.length === 1 && parts[0] === "start") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
-    return sendJson(res, 200, (await start(ctx)) satisfies GameStartReply);
+    return sendJson(res, 200, (await start(req, ctx)) satisfies GameStartReply);
   }
   if (parts.length === 1 && parts[0] === "answer") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
@@ -744,7 +883,10 @@ export async function handleGame(req: IncomingMessage, res: ServerResponse, ctx:
     try {
       // Practice's phrase audio, its checks and its cache (404 for a
       // phrase this language can't practise).
-      const out = await phraseClip(ctx, parts[1], ctrl.signal);
+      // A pool word not in the bank yet (ld-ec9) is said by its words, in
+      // the same voice and cache.
+      const pool = isUuid(parts[1]) && !(await bankHas(profileOf(ctx), parts[1].toLowerCase())) ? await poolWord(ctx, parts[1].toLowerCase()) : undefined;
+      const out = pool ? await wordClip(ctx, pool.word.text ?? "", ctrl.signal) : await phraseClip(ctx, parts[1], ctrl.signal);
       res.writeHead(200, { "Content-Type": out.type, "Content-Length": out.audio.length, "Cache-Control": "private, no-store" });
       res.end(out.audio);
       return;
@@ -892,6 +1034,9 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     if ("problem" in changed) {
       throw new HttpError(409, changed.problem === "state" ? `this picture can't be ${action === "remove" ? "removed" : "drawn again"} now` : "this word hasn't been judged for a picture yet");
     }
+    // A picture taken away (or replaced) by its grown-up leaves the shared
+    // pool too (ld-ec9): its copy, words and concept go.
+    await unshareFile(changed.oldFile);
     await dropPictureFile(changed.oldFile);
     // A grown-up's explicit redraw is a trigger (the same caps and ledger).
     if (action === "redraw") fillPictures(targetOf(ctx));

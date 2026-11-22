@@ -1321,7 +1321,7 @@ export interface TranscribeReply {
 // added. Times are ISO strings.
 
 export type MasteryBand = "New" | "Learning" | "Familiar" | "Mastered";
-export type PhraseSource = "gloss" | "extraction" | "manual" | "scenario";
+export type PhraseSource = "gloss" | "extraction" | "manual" | "scenario" | "picture";
 /** The bank view's filters (GET /api/phrases?show=). */
 export type PhraseShow = "all" | "starred" | "new" | "due" | "trouble" | "pending" | "suspended" | "pictures";
 export type PhraseSort = "recent" | "due" | "weakest" | "alpha" | "added";

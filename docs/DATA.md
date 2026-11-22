@@ -3879,6 +3879,206 @@ Tests:
 - `scripts/tests/db-migration-0011.test.mjs` and
   `scripts/tests/db-migration-0012.test.mjs`: the migrations.
 
+### The shared picture pool (ld-ec9, migration 0020)
+
+Every picture the install has is in every learner's picture game, kids
+and adults, in every target language, with the word in that learner's
+language. A brand-new learner, or a new language, has a game at once.
+
+**The pool.** The pool is the drawn stock set: `content/pictures.yaml`,
+the concepts an admin added, and every learner's own drawing shared into
+it. A shared drawing is a `picture_stock_concepts` row with `origin =
+'drawing'`, so the stock rules apply unchanged: the serving route, the
+look-alike groups, Adults only, the Picture library, and matching
+another learner's word to it (no image call). Code: pure rules in
+`scripts/picture-pool.mjs`, queries in `scripts/db/picturePool.ts`, the
+server in `web/server/picturePool.ts`, the game in
+`web/server/pictures.ts` (`gameWords`).
+
+**Sharing** (`shareDrawings`) runs at the end of each language's picture
+run: a session's end, Draw pictures, or a game's start. A poll, a count
+or a page load never runs it. That language's own ready drawings in the
+current theme are shared once per file:
+- The file is copied to `<images>/stock/<theme>/drawn-<16 hex>.<ext>`.
+  The id is from the file's hash, `sharedConceptId`.
+- The concept gets category "Drawn by learners", the cleaned
+  description, and the word's meaning as its English word.
+- The owner's own word is stored at once under its locale's key.
+- A drawing is **never shared** when its description, word or meaning
+  names any learner on the install (`allLearnerNames`, the same
+  accent-folded match as `cleanDescription`; `namesALearner`).
+- A stock pointer is never shared again.
+- A learner is never offered their own shared drawing back as stock
+  (`stockOffer(mode, rows)`).
+
+**Unsharing.** Remove picture and Draw again unshare a drawing
+(`unshareFile`): the concept, its pool words and its stock copy go. This
+is so a picture a grown-up took away isn't still shown to everyone else.
+Deleting the phrase does not unshare: the copy stays in the pool. An
+admin can delete a shared concept from the Shared library like any added
+one; its pool words go with it, and its source file is written to
+`picture_shared_refused` so it is never shared again (`sharedFiles` and
+`shareDrawing` skip it): the owner's picture is still ready, and without
+that their next picture run would bring it back under the same id, with
+any Adults only flag lost. A redraw is a new file, and may be shared.
+
+**Kids.** A shared drawing reaches kids only when
+`picture_stock_concepts.kids_safe` is true. `mergeStock` treats anything
+else as Adults only. Where the verdict comes from:
+- Since 0020, the picturable check also answers `"kidsSafe"` per word.
+  The answer is stored in `phrase_pictures.kids_safe` (`storeVerdict`).
+- A kids learner's drawing is shared with its verdict, or true when it
+  has none.
+- An adult's drawing is shared with its verdict, or null when it has none.
+- A null (a drawing judged before 0020) is asked by one **kids check**
+  (`kidsCheckPrompt`, tool-less Haiku, `KIDS_CHECK_BATCH` = 20 a call) in
+  the owner's background slot. The check is written to the owner
+  language's `picture_calls` as a `judge` row when it starts, under
+  `PICTURE_DAILY_JUDGES`. Its verdict is stored once, only where it was
+  null (`setDrawingKidsSafe`).
+- The admin can't clear Adults only on a drawing that hasn't passed the
+  check (409).
+
+The rules that already held still hold:
+- Adults-only concepts never reach kids (`stockForMode`).
+- A round never shows two of one meaning, one file, or one look-alike
+  group.
+
+**Words per language.** Each concept has one word per pool key:
+- the 17 base keys (`POOL_LANGS`: `en es fr de it pt nl sv ru el ar hi ja
+  ko zh-CN zh-TW zh-HK`; zh-CN is simplified Mandarin, zh-TW traditional
+  Mandarin, zh-HK Cantonese, kept separate);
+- optional regional variants (`POOL_VARIANTS`, e.g. `es-ES`, `pt-PT`,
+  `en-GB`), set only where the common word differs.
+
+A locale finds its word through `wordFor`: the variant first, then its
+key (`poolKey`; any other `zh-*` reads zh-CN). Cantonese never borrows
+the Mandarin word. A word must be plain and in its language's script
+(`checkPoolWord`): at most 40 characters, no slash or bracket, no space
+in Chinese, and no learner's name.
+
+Where the words come from:
+- **Stock concepts:** `content/picture-words.yaml`, the reviewed table
+  (docs/CONTENT.md §`content/picture-words.yaml`), one line per concept with its level and
+  words. It was drafted by `npm run pictures:words` (a local tool-less
+  `claude -p`, Opus, 12 concepts a call; existing words always win; `--dry-run`,
+  `--limit`) and reviewed by hand. `loadContent` warns about a concept
+  missing a word. The table always wins over a stored word.
+- **Drawings and added concepts the table lacks:** the **naming call**
+  (`fillPoolWords`). It is one install-wide run at a time, tool-less
+  Haiku, `POOL_WORDS_BATCH` = 8 concepts a call, in the triggering
+  user's background slot. Each call is written to `picture_pool_calls`
+  as it starts. The cap is `POOL_DAILY_CALLS` = 20 calls in any 24 hours,
+  install-wide, counted again inside the slot. A failed call counts. A
+  concept is tried at most twice a process, and a failed run waits 10
+  minutes. The reply is checked like the table (`parsePoolWordsReply`),
+  and each word and level is stored once (`picture_pool_words`,
+  `picture_pool_levels`, on conflict do nothing).
+
+The pool is triggered by a game's start and by sharing. A concept with no
+word for a learner's language is simply not in their pool yet.
+
+**Levels.** Every concept has a CEFR level: A1, A2, B1 or B2. Stock
+levels are in the table (per concept), and a drawing's level comes from
+the naming call, stored once.
+- By default a learner's game offers pool words at or below their level
+  (`levelCap`). An adult's Pre-A1 counts as A1, and C1 or C2 as B2. A
+  kids learner gets A1 for First words and Getting going, and A2 for
+  Chatty.
+- The adult Pictures home has **Pool words: up to A1 / A2 / B1 / B2**
+  (shown when the pool reaches past the default). It sends `{ level }`
+  with `POST /api/game/start`; any other value is a 400.
+- The kids game has no picker, and a `level` a kids learner sends is
+  ignored: the start, the answer, audio and pictures all use their own
+  cap.
+- The learner's own words are always in, whatever their level.
+- An adult's answers, audio and picture fetches look a pool word up at
+  B2, since a round may have been drawn at any level.
+
+**What the game plays** (`gameWords`): the learner's own pictured words,
+then the pool's words for their language up to the level.
+- A pool word whose text is already a word of theirs (by `normKey`),
+  or dismissed, or whose concept one of their words already points at,
+  is left out. So is a second concept with the same word, and a concept
+  whose pool id is already one of their phrases (a pool word they
+  adopted and edited since keeps that id: `ownPoolIds`, `ownIds`).
+- Order (`gameRounds`): due words, then their own new words, then pool
+  words (the easier level first, shuffled by a seed of the language and
+  the day), then the rest. At most `GAME_ROUNDS` = 8.
+- A kids learner of Mandarin gets a pool word only when its reading is
+  settled (`settledForKids`), as for their own words.
+- The status adds `pool`, `poolLevel` and `poolByLevel`. The game is
+  ready with 3 pictured words, own and pool together.
+
+**Progress.** Pool words are virtual: each has a deterministic id per
+language profile (`poolId`, a v5-layout uuid of the profile and the
+concept). Nothing is stored for a word that is never played. On the
+**first answer** (`adoptPoolWord`), the word becomes a bank phrase with
+`source = 'picture'` (unstarred, no target), and its `phrase_pictures`
+row points at the stock picture with the same id the round showed. The
+answer is then recorded like any other: a quiet `listen` review on the
+FSRS card. A resend replays. After that it is the learner's word (counted
+as theirs, out of the pool), with its flashcards like any bank word. The
+Phrase bank names the source "the picture game's shared pictures". An
+adult's bank gets only the words they actually played.
+A tap on a pool word the pool no longer gives this learner (they added
+the same words themselves since the round was drawn, or it left the
+pool) is a stale round, a 409 with nothing recorded, never an answer to
+another phrase; so is an adoption that finds the words already in the
+bank.
+
+**Audio and pictures.**
+- A pool word's sound is `wordClip`: the native default voice, as for
+  phrases (`outsideClip`), disk-cached per user. The game preloads its
+  rounds as before, so there are at most `GAME_ROUNDS` new clips a game
+  and none on a replay.
+- A pool picture is served by `GET /api/game/pictures/:id/:file` with
+  the learner's own session only: the id must be a pool id of that
+  learner's language and mode (a 20-second cache, `poolPicture`). A kids
+  learner gets a 404 for an adults-only one, even by a guessed id.
+
+**Tables (migration `0020_picture_pool`).** Plain CREATE TABLE and ALTER
+TABLE ADD COLUMN / ADD CONSTRAINT, valid on PostgreSQL 17:
+- `phrases_source` adds `'picture'`.
+- `phrase_pictures.kids_safe boolean` (null: not asked).
+- `picture_stock_concepts` adds:
+  - `origin text not null default 'admin'`;
+  - `source_file text unique`;
+  - `kids_safe boolean`;
+  - the check `picture_stock_concepts_origin`: an admin's concept has
+    neither a source file nor a kids verdict; a drawing has a 64-hex
+    source file.
+- `picture_pool_words (concept_id, key, text, created_at)`, primary key
+  (concept, key), checked id, key (`xx` or `xx-YY`) and 1–40 characters.
+- `picture_pool_levels (concept_id primary key, level in A1–B2)`.
+- `picture_pool_calls (id, user_id → users set null, concepts > 0,
+  outcome ok | failed | null, created_at indexed)`: the naming ledger.
+- `picture_shared_refused (source_file primary key, 64 hex; refused_by
+  → users set null; created_at)`: drawings an admin removed from the pool.
+
+Tests:
+- `scripts/tests/picture-pool.test.mjs`: the pure rules. Levels and the
+  default cap, keys and scripts, the content table complete and clean,
+  the naming reply, the pool's level filter (a beginner never gets a B1
+  or B2 word; the cap widens it), own words first and in whatever their
+  level, round rules with groups, which drawings may be shared, and the
+  kids gating.
+- `scripts/tests/picture-pool.http.test.mjs`: end to end.
+  - A new kids learner's pool is non-empty.
+  - Adoption and replay.
+  - The level picker and its 400.
+  - A user's Spanish drawing reaches another user's German adult with
+    the named word, and another user's kid.
+  - Kids never get an unchecked or unsafe adult drawing; the check runs
+    on the judge ledger and stops at its cap.
+  - A name-bearing drawing is never shared.
+  - Remove unshares; an admin's removal stays (never re-shared).
+  - An adopted word edited and drawn again never comes back into the
+    pool under its id; a word added meanwhile is a stale round (409).
+  - A kids learner's `level` is ignored.
+  - The naming cap and ledger, and a failed call.
+- `scripts/tests/db-migration-0020.test.mjs`: the migration.
+
 ## Mandarin readings (ld-4i2, migration 0015)
 
 The learner's corrections of the reader and the install-wide shared list

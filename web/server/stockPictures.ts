@@ -252,6 +252,7 @@ async function listReply(ctx: Ctx): Promise<StockListReply> {
   const list = (await stockList()).filter((c) => visibleTo(ctx, c));
   const concepts: StockConceptView[] = list.map((c) => ({
     id: c.id, category: c.category, description: c.description, words: c.words, custom: c.custom, adults: c.adults === true, group: c.group ?? null,
+    drawing: c.drawing === true, kidsChecked: c.drawing ? c.kidsChecked === true : null,
     version: c.drawn ? versionOf(c.id) : null, queued: queue.has(c.id), refused: refused.has(c.id),
   }));
   // Shadowed rows are an admin's to clean up; nobody else needs them.
@@ -332,6 +333,9 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
     const id = parts[0];
     const concept = STOCK_ID_RE.test(id) ? (await stockList()).find((c) => c.id === id) : undefined;
     if (!concept) throw new HttpError(404, "no such shared picture");
+    // A learner's shared drawing stays adults only until its kids check said
+    // yes (ld-ec9): clearing the flag can't let it reach kids before that.
+    if (concept.drawing && !concept.kidsChecked && !body.adults) throw new HttpError(409, "This drawing hasn't passed the kids check, so it stays Adults only.");
     if (concept.custom) {
       if (!(await setCustomStockAdults(rawDb(), id, body.adults))) throw new HttpError(404, "no such shared picture");
     } else {
@@ -377,7 +381,7 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
     // Only a concept added from the page; the file's belong to the content
     // agent (a route never writes content/).
     if (!concept.custom) throw new HttpError(409, "This picture comes from the app's own list (content/pictures.yaml): it can be drawn again, not deleted.");
-    if (!(await deleteCustomStockConcept(rawDb(), id))) throw new HttpError(404, "no such shared picture");
+    if (!(await deleteCustomStockConcept(rawDb(), id, ctx.user.id))) throw new HttpError(404, "no such shared picture");
     queue.delete(id);
     // Its picture goes with it. Words that pointed at it leave the word
     // game until each is drawn again (picture-store.mjs: a stock file is
