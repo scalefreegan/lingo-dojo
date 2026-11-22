@@ -127,6 +127,13 @@
       "when": 1795314851497,
       "tag": "0017_kids_reading_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795361640576,
+      "tag": "0018_stock_adults",
+      "breakpoints": true
     }
   ]
 }

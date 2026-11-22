@@ -164,8 +164,9 @@ export interface StockConceptView {
   /** Added from the page (the database): an admin may delete it. The
    *  file's (content/pictures.yaml) are only redrawn. */
   custom: boolean;
-  /** Adults only (pictures.yaml's `adults: true`, or the Add form's box):
-   *  never offered to, matched for or shown to a kids learner. */
+  /** Adults only (pictures.yaml's `adults: true`, the Add form's box, or
+   *  an admin's toggle on the page, which wins over the file's flag): never
+   *  offered to, matched for or shown to a kids learner. */
   adults: boolean;
   /** The picture's version in the current theme (the file URL's
    *  cache-busting part: /api/stock-pictures/file/:id/:version), or null
@@ -212,6 +213,14 @@ export interface AddStockConceptRequest {
   words: string[] | string;
   /** Adults only: never offered to or shown to a kids learner. */
   adults?: boolean;
+}
+
+/** POST /api/stock-pictures/admin/:id/adults (admin): set (true) or clear
+ *  (false) a concept's Adults only flag. An added concept's own flag; for
+ *  one of content/pictures.yaml, an install-wide setting laid over the
+ *  file's (the app never writes content/). Anything but a boolean is a 400. */
+export interface SetStockAdultsRequest {
+  adults: boolean;
 }
 
 /** POST /api/stock-pictures/admin/missing: `count` is the number the page

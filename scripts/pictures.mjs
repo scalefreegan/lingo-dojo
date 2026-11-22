@@ -208,12 +208,21 @@ export const PICTURE_DAILY_STOCK = 300;
  * warning names them all. Each concept says whether it is `custom` (it may
  * be deleted from the page; the file's may not). Both kinds keep their
  * `adults` flag (stockForMode); only the file's have a look-alike `group`.
+ * `adultsOverrides` (rows of picture_stock_adults, `{ id, adults }`) are an
+ * admin's Adults only settings for the file's concepts, made from the page
+ * (the app never writes content/): each replaces its file concept's flag.
+ * They never touch an added concept (its own column is its flag) nor a
+ * shadowed row, and one whose id the file no longer has is ignored.
  * `{ concepts, shadowed, problems }`.
  */
-export function mergeStock(base, custom = []) {
+export function mergeStock(base, custom = [], adultsOverrides = []) {
   const taken = new Set(base.map((c) => c.id));
+  const override = new Map((adultsOverrides ?? []).map((o) => [o.id, o.adults === true]));
   const raw = { categories: {} };
-  for (const c of base) (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, group: c.group, adults: c.adults });
+  for (const c of base) {
+    const adults = override.has(c.id) ? override.get(c.id) : c.adults;
+    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, group: c.group, adults });
+  }
   const problems = [];
   const mine = new Set();
   const shadowed = [];

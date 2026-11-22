@@ -29,11 +29,12 @@ import { deleteStockPicture, imagesDir, sniffPicture, stockPicture, writeStockPi
 import { PICTURE_THEME, STOCK_ID_RE, cleanDescription, mergeStock, picturePrompt, readStockList } from "./pictures.mjs";
 
 /** The concepts (content/pictures.yaml, merged with the admin's own from
- *  the database, `custom`: pictures.mjs mergeStock) with their file in
+ *  the database, `custom`, and an admin's Adults only settings for the
+ *  file's, `adultsOverrides`: pictures.mjs mergeStock) with their file in
  *  `theme`: `{ id, category, description, words, custom, drawn: { type } |
  *  null }`. */
-export function listStock({ root = contentRoot(), theme = PICTURE_THEME.id, dir = imagesDir(), custom = [] } = {}) {
-  return mergeStock(loadPictureStock(root).concepts, custom).concepts.map((c) => {
+export function listStock({ root = contentRoot(), theme = PICTURE_THEME.id, dir = imagesDir(), custom = [], adultsOverrides = [] } = {}) {
+  return mergeStock(loadPictureStock(root).concepts, custom, adultsOverrides).concepts.map((c) => {
     const at = stockPicture(theme, c.id, { dir });
     return { ...c, drawn: at ? { type: at.type } : null };
   });

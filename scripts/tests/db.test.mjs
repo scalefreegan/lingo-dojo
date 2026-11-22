@@ -72,7 +72,7 @@ test("the migration builds every table, with pg_trgm", async (t) => {
   const tables = (await query(`select tablename from pg_tables where schemaname = 'public' order by 1`)).map((r) => r.tablename);
   assert.deepEqual(tables, [
     "agent_messages", "auth_sessions", "cards", "cloze_calls", "cloze_items", "conversations", "hidden_scenes", "language_profiles", "learners",
-    "pack_folders", "pack_revisions", "packs", "phrase_dismissals", "phrase_examples", "phrase_pictures", "phrase_sightings", "phrases", "picture_calls", "picture_stock_calls", "picture_stock_concepts", "reading_check_calls", "reading_corrections", "recent_digests", "reviews",
+    "pack_folders", "pack_revisions", "packs", "phrase_dismissals", "phrase_examples", "phrase_pictures", "phrase_sightings", "phrases", "picture_calls", "picture_stock_adults", "picture_stock_calls", "picture_stock_concepts", "reading_check_calls", "reading_corrections", "recent_digests", "reviews",
     "shared_reading_uses", "shared_reading_votes", "shared_readings", "turns", "user_settings", "users",
   ]);
   assert.equal((await query(`select extname from pg_extension where extname = 'pg_trgm'`)).length, 1);

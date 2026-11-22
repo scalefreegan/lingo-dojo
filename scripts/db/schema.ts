@@ -1013,6 +1013,33 @@ export const pictureStockCalls = pgTable(
   ],
 );
 
+/**
+ * An admin's Adults only setting for a concept of content/pictures.yaml
+ * (docs/DATA.md §Adults only, set from the page; migration 0018, bead
+ * ld-cvd), install-wide. The app never writes content/, so the picture
+ * library's toggle on a file concept lands here; mergeStock lays it over
+ * the file's `adults` flag (an added concept's toggle flips its own
+ * picture_stock_concepts.adults instead, and a row here never applies to
+ * one). A row exists only while it differs from the file: setting a
+ * concept back to the file's value deletes it, so a later edit of the
+ * file is followed again. No foreign key: the file's concepts aren't rows;
+ * a row whose id the file no longer has is ignored. Not personal: no
+ * owner, never through owned.ts; `set_by` is provenance only. The reader
+ * role (0005) gets nothing on it.
+ */
+export const pictureStockAdults = pgTable(
+  "picture_stock_adults",
+  {
+    /** The file concept's id (pictures.mjs STOCK_ID_RE). */
+    conceptId: text("concept_id").primaryKey(),
+    /** The effective flag: true keeps the concept from kids learners. */
+    adults: boolean("adults").notNull(),
+    setBy: uuid("set_by").references(() => users.id, { onDelete: "set null" }),
+    updatedAt: tz("updated_at").notNull().defaultNow(),
+  },
+  (t) => [check("picture_stock_adults_id", sql`${t.conceptId} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`)],
+);
+
 /* ---------------------------- Mandarin readings ---------------------------- */
 
 /**

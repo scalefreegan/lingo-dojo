@@ -412,6 +412,27 @@ test("mergeStock: the file's concepts first, then the admin's own by the same ru
   assert.deepEqual(mergeStock(flagged).concepts.map((c) => [c.id, c.adults ?? null, c.group ?? null]), [["beer", true, null], ["boy", null, "boy"]]);
 });
 
+test("mergeStock's Adults only settings (ld-cvd): laid over the file's flag either way; never an added concept's or a shadowed row's; an unknown id ignored", () => {
+  const base = readStockList({
+    categories: { Drinks: [{ id: "beer", description: "a glass of beer", words: ["beer"], adults: true }], People: [{ id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" }] },
+  }).concepts;
+  const custom = [
+    { id: "kite", category: "Toys", description: "a red kite", words: ["kite"], adults: false },
+    { id: "boy", category: "People", description: "another boy", words: ["lad"], adults: false },
+  ];
+  const flags = (out) => out.concepts.map((c) => [c.id, c.adults === true, c.custom, c.group ?? null]);
+  // Set on a file concept, cleared on another; the group is kept.
+  const out = mergeStock(base, custom, [{ id: "boy", adults: true }, { id: "beer", adults: false }]);
+  assert.deepEqual(flags(out), [["beer", false, false, null], ["boy", true, false, "boy"], ["kite", false, true, null]]);
+  assert.deepEqual(stockForMode(out.concepts, "kids").map((c) => c.id), ["beer", "kite"]);
+  // The shadowed row keeps its own column; only the file's concept is set.
+  assert.deepEqual(out.shadowed.map((c) => [c.id, c.adults]), [["boy", false]]);
+  // An added concept's flag is its column alone, and an id the file lacks is ignored.
+  assert.deepEqual(flags(mergeStock(base, custom, [{ id: "kite", adults: true }, { id: "ghost", adults: true }])), [["beer", true, false, null], ["boy", false, false, "boy"], ["kite", false, true, null]]);
+  // No settings: the file's flags as they are.
+  assert.deepEqual(flags(mergeStock(base, custom)), flags(mergeStock(base, custom, [])));
+});
+
 test("readNewConcept: an id from the name, new; a category; a description by cleanDescription with no learner name; English words", () => {
   const existing = [{ id: "dog" }];
   assert.equal(stockIdFrom("  Ice Cream!  "), "ice-cream");

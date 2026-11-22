@@ -2,7 +2,8 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listLearners } from "../../scripts/db/accounts.ts";
 import {
-  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, stockCallDone, stockCallStarted, stockCallsSince, type CustomConcept,
+  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, setCustomStockAdults, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
+  stockCallStarted, stockCallsSince, type AdultsOverride, type CustomConcept,
 } from "../../scripts/db/pictureStock.ts";
 import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
@@ -26,6 +27,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/stock-pictures/admin/missing         {count}: draw every concept with no picture yet
 //   POST /api/stock-pictures/admin/:id/draw        draw one (again, if it has a picture)
 //   POST /api/stock-pictures/admin/:id/remove      delete a concept added from the page, and its picture
+//   POST /api/stock-pictures/admin/:id/adults      {adults}: set or clear its Adults only flag
 //
 // The first two are mounted with wrap's default "user" (the shared set is
 // nobody's: no learner check); the rest with "admin", so a non-admin gets
@@ -36,6 +38,12 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // be deleted here (a 409), only drawn again; an added row the file later
 // shadows (same id) can, the row alone. An adults-only concept (either
 // kind) is left out of the list and its file for a kids learner's session.
+// Its Adults only flag is set or cleared here too (ld-cvd): an added
+// concept's own column, or for a file concept an install-wide row of
+// picture_stock_adults that mergeStock lays over the file's flag. Every
+// read below goes through stockList, so a flag set takes effect for kids
+// on the next request (no picture served, none offered in a round, none
+// matched), and a flag cleared from the next picturable check on.
 //
 // Drawing: an admin's draw is queued, and one install-wide run draws the
 // queue a picture at a time, each in the asking admin's background paid
@@ -76,10 +84,29 @@ export async function customConcepts(): Promise<CustomConcept[]> {
   }
 }
 
-/** The whole stock list (the file's and the database's) with each one's
- *  file in the current theme. */
+/** An admin's Adults only settings for the file's concepts (migration
+ *  0018); never throws. A read that fails is logged and fails closed: every
+ *  file concept counts as adults only, so a setting that couldn't be read
+ *  never lets a child see a picture an admin kept from kids (an adult
+ *  learner's view doesn't depend on the flag). */
+export async function adultsOverrides(): Promise<AdultsOverride[]> {
+  try {
+    return await stockAdultsOverrides(rawDb());
+  } catch (e) {
+    console.warn("[lingo-dojo] pictures: the stock Adults only settings couldn't be read; every file concept is kept from kids:", String((e as Error)?.message || e));
+    try {
+      return loadPictureStock().concepts.map((c) => ({ id: c.id, adults: true }));
+    } catch {
+      return [];
+    }
+  }
+}
+
+/** The whole stock list (the file's and the database's, with the admin's
+ *  Adults only settings) with each one's file in the current theme. */
 export async function stockList() {
-  return listStock({ custom: await customConcepts() });
+  const [custom, overrides] = await Promise.all([customConcepts(), adultsOverrides()]);
+  return listStock({ custom, adultsOverrides: overrides });
 }
 
 /** The ids whose shadowing was last logged: one warning per change, not
@@ -293,6 +320,23 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
     if (left <= 0) throw new HttpError(429, capSentence());
     const queued = enqueue(missing.slice(0, left), ctx.user.id, false);
     return sendJson(res, 202, { ...(await listReply(ctx)), queued } satisfies StockChangeReply);
+  }
+  if (parts.length === 2 && parts[1] === "adults") {
+    const body = (await readJsonBody(req)) as { adults?: unknown } | null;
+    if (typeof body?.adults !== "boolean") throw new HttpError(400, "adults is true or false.");
+    const id = parts[0];
+    const concept = STOCK_ID_RE.test(id) ? (await stockList()).find((c) => c.id === id) : undefined;
+    if (!concept) throw new HttpError(404, "no such shared picture");
+    if (concept.custom) {
+      if (!(await setCustomStockAdults(rawDb(), id, body.adults))) throw new HttpError(404, "no such shared picture");
+    } else {
+      // A file concept (a shadowed row of the same id included: the file's
+      // is the one in use): the route never writes content/, so the setting
+      // is a row, kept only while it differs from the file's own flag.
+      const fileValue = loadPictureStock().concepts.find((c) => c.id === id)?.adults === true;
+      await setStockAdultsOverride(rawDb(), id, body.adults, fileValue, ctx.user.id);
+    }
+    return sendJson(res, 200, (await listReply(ctx)) satisfies StockChangeReply);
   }
   if (parts.length === 2 && (parts[1] === "draw" || parts[1] === "remove")) {
     const id = parts[0];

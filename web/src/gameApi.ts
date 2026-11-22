@@ -7,7 +7,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, StockChangeReply, StockListReply,
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, StockChangeReply, StockListReply,
   WordPicturesReply,
 } from "./types";
 import { utcOffset } from "./practiceApi";
@@ -75,3 +75,7 @@ export const drawMissingStock = (count: number) => req<StockChangeReply>("/api/s
 
 /** POST /api/stock-pictures/admin/:id/draw | remove (admins). */
 export const changeStockPicture = (id: string, action: "draw" | "remove") => req<StockChangeReply>(`/api/stock-pictures/admin/${encodeURIComponent(id)}/${action}`, json({}));
+/** Set or clear a shared picture's Adults only flag (admin only; a file
+ *  concept's setting is install-wide, kept in the database). */
+export const setStockAdults = (id: string, adults: boolean) =>
+  req<StockChangeReply>(`/api/stock-pictures/admin/${encodeURIComponent(id)}/adults`, json({ adults } satisfies SetStockAdultsRequest));
