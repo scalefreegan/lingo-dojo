@@ -23,12 +23,17 @@ export interface CustomConcept {
   words: string[];
   /** Adults only: never offered to, matched for or shown to a kids learner. */
   adults?: boolean;
+  /** Its look-alike group (migration 0019): never two of one in a round. */
+  group?: string | null;
 }
 
 /** Every added concept, oldest first (the order they join their category). */
 export async function customStockConcepts(db: Db): Promise<CustomConcept[]> {
   const rows = await db
-    .select({ id: pictureStockConcepts.id, category: pictureStockConcepts.category, description: pictureStockConcepts.description, words: pictureStockConcepts.words, adults: pictureStockConcepts.adults })
+    .select({
+      id: pictureStockConcepts.id, category: pictureStockConcepts.category, description: pictureStockConcepts.description, words: pictureStockConcepts.words,
+      adults: pictureStockConcepts.adults, group: pictureStockConcepts.group,
+    })
     .from(pictureStockConcepts)
     .orderBy(asc(pictureStockConcepts.createdAt), asc(pictureStockConcepts.id));
   return rows;
@@ -39,7 +44,7 @@ export async function customStockConcepts(db: Db): Promise<CustomConcept[]> {
 export async function addCustomStockConcept(db: Db, c: CustomConcept, createdBy: string): Promise<boolean> {
   const rows = await db
     .insert(pictureStockConcepts)
-    .values({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true, createdBy })
+    .values({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true, group: c.group ?? null, createdBy })
     .onConflictDoNothing()
     .returning({ id: pictureStockConcepts.id });
   return rows.length === 1;
@@ -56,6 +61,13 @@ export async function deleteCustomStockConcept(db: Db, id: string): Promise<bool
  *  no such row. */
 export async function setCustomStockAdults(db: Db, id: string, adults: boolean): Promise<boolean> {
   const rows = await db.update(pictureStockConcepts).set({ adults }).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
+  return rows.length === 1;
+}
+
+/** Set or clear (null) an added concept's look-alike group (already
+ *  checked: pictures.mjs readStockGroup); false when there is no such row. */
+export async function setCustomStockGroup(db: Db, id: string, group: string | null): Promise<boolean> {
+  const rows = await db.update(pictureStockConcepts).set({ group }).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
   return rows.length === 1;
 }
 

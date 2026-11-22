@@ -2,13 +2,13 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listLearners } from "../../scripts/db/accounts.ts";
 import {
-  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, setCustomStockAdults, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
+  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
   stockCallStarted, stockCallsSince, type AdultsOverride, type CustomConcept,
 } from "../../scripts/db/pictureStock.ts";
 import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
-import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, mergeStock, readNewConcept } from "../../scripts/pictures.mjs";
+import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
 import type { StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
 import type { Ctx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -23,11 +23,12 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //
 //   GET  /api/stock-pictures                       the set, with each picture's state (starts nothing)
 //   GET  /api/stock-pictures/file/:id/:version     a stock picture (any logged-in user)
-//   POST /api/stock-pictures/admin/concepts        {name, category, description, words}: a new concept (in the database)
+//   POST /api/stock-pictures/admin/concepts        {name, category, description, words, adults?, group?}: a new concept (in the database)
 //   POST /api/stock-pictures/admin/missing         {count}: draw every concept with no picture yet
 //   POST /api/stock-pictures/admin/:id/draw        draw one (again, if it has a picture)
 //   POST /api/stock-pictures/admin/:id/remove      delete a concept added from the page, and its picture
 //   POST /api/stock-pictures/admin/:id/adults      {adults}: set or clear its Adults only flag
+//   POST /api/stock-pictures/admin/:id/group       {group}: set or clear (null, "") an added concept's look-alike group
 //
 // The first two are mounted with wrap's default "user" (the shared set is
 // nobody's: no learner check); the rest with "admin", so a non-admin gets
@@ -44,6 +45,10 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // read below goes through stockList, so a flag set takes effect for kids
 // on the next request (no picture served, none offered in a round, none
 // matched), and a flag cleared from the next picturable check on.
+// An added concept's look-alike group is set here too (ld-2nw), in the
+// format of pictures.yaml's `group`, and may name a group of the file's: a
+// round reads the merged list, so from the next round it never offers two
+// concepts of one group. A file concept's group is the file's alone (409).
 //
 // Drawing: an admin's draw is queued, and one install-wide run draws the
 // queue a picture at a time, each in the asking admin's background paid
@@ -246,7 +251,7 @@ function versionOf(id: string): string | null {
 async function listReply(ctx: Ctx): Promise<StockListReply> {
   const list = (await stockList()).filter((c) => visibleTo(ctx, c));
   const concepts: StockConceptView[] = list.map((c) => ({
-    id: c.id, category: c.category, description: c.description, words: c.words, custom: c.custom, adults: c.adults === true,
+    id: c.id, category: c.category, description: c.description, words: c.words, custom: c.custom, adults: c.adults === true, group: c.group ?? null,
     version: c.drawn ? versionOf(c.id) : null, queued: queue.has(c.id), refused: refused.has(c.id),
   }));
   // Shadowed rows are an admin's to clean up; nobody else needs them.
@@ -336,6 +341,20 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
       const fileValue = loadPictureStock().concepts.find((c) => c.id === id)?.adults === true;
       await setStockAdultsOverride(rawDb(), id, body.adults, fileValue, ctx.user.id);
     }
+    return sendJson(res, 200, (await listReply(ctx)) satisfies StockChangeReply);
+  }
+  if (parts.length === 2 && parts[1] === "group") {
+    const body = (await readJsonBody(req)) as { group?: unknown } | null;
+    if (!body || !("group" in body)) throw new HttpError(400, "Send group: a short name, or null for none.");
+    const g = readStockGroup(body.group);
+    if (g.error !== undefined) throw new HttpError(400, g.error);
+    const id = parts[0];
+    const concept = STOCK_ID_RE.test(id) ? (await stockList()).find((c) => c.id === id) : undefined;
+    if (!concept) throw new HttpError(404, "no such shared picture");
+    // The file's groups are the content agent's (a route never writes
+    // content/); a shadowed row is unused, so its group would do nothing.
+    if (!concept.custom) throw new HttpError(409, "This picture comes from the app's own list (content/pictures.yaml): its look-alike group is set there.");
+    if (!(await setCustomStockGroup(rawDb(), id, g.group))) throw new HttpError(404, "no such shared picture");
     return sendJson(res, 200, (await listReply(ctx)) satisfies StockChangeReply);
   }
   if (parts.length === 2 && (parts[1] === "draw" || parts[1] === "remove")) {

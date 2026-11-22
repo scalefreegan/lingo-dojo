@@ -7,7 +7,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, StockChangeReply, StockListReply,
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
   WordPicturesReply,
 } from "./types";
 import { utcOffset } from "./practiceApi";
@@ -79,3 +79,6 @@ export const changeStockPicture = (id: string, action: "draw" | "remove") => req
  *  concept's setting is install-wide, kept in the database). */
 export const setStockAdults = (id: string, adults: boolean) =>
   req<StockChangeReply>(`/api/stock-pictures/admin/${encodeURIComponent(id)}/adults`, json({ adults } satisfies SetStockAdultsRequest));
+/** Set or clear (null) an added shared picture's look-alike group (admin only). */
+export const setStockGroup = (id: string, group: string | null) =>
+  req<StockChangeReply>(`/api/stock-pictures/admin/${encodeURIComponent(id)}/group`, json({ group } satisfies SetStockGroupRequest));

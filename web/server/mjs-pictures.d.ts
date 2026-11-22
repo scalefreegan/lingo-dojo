@@ -46,10 +46,11 @@ declare module "*/scripts/pictures.mjs" {
   export function stockKey(theme: string, id: string): string;
   export function readStockList(raw: unknown): { concepts: StockConcept[]; problems: { level: "error" | "warning"; message: string }[] };
   export const PICTURE_DAILY_STOCK: number;
-  type NewConcept = { id: string; category: string; description: string; words: string[]; adults?: boolean };
-  export function mergeStock(base: StockConcept[], custom?: NewConcept[], adultsOverrides?: { id: string; adults: boolean }[]): { concepts: (StockConcept & { custom: boolean })[]; shadowed: (NewConcept & { adults: boolean })[]; problems: { level: "error" | "warning"; message: string }[] };
+  type NewConcept = { id: string; category: string; description: string; words: string[]; adults?: boolean; group?: string | null };
+  export function mergeStock(base: StockConcept[], custom?: NewConcept[], adultsOverrides?: { id: string; adults: boolean }[]): { concepts: (StockConcept & { custom: boolean })[]; shadowed: (NewConcept & { adults: boolean; group: string | null })[]; problems: { level: "error" | "warning"; message: string }[] };
   export function stockIdFrom(name: unknown): string;
   export function readNewConcept(body: unknown, existing?: { id: string }[], names?: Iterable<string | null | undefined>): { concept: NewConcept; error?: undefined } | { error: string; concept?: undefined };
+  export function readStockGroup(value: unknown): { group: string | null; error?: undefined } | { error: string; group?: undefined };
   export function restyleTargets<R extends PictureLike>(phrases: CandidatePhrase[], rows: Map<string, R>, themes: Set<string>): R[];
   export const PICTURE_DAILY_IMAGES: number;
   export const PICTURE_DAILY_JUDGES: number;

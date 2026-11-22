@@ -168,6 +168,9 @@ export interface StockConceptView {
    *  an admin's toggle on the page, which wins over the file's flag): never
    *  offered to, matched for or shown to a kids learner. */
   adults: boolean;
+  /** Its look-alike group (pictures.yaml's `group`, or an added concept's,
+   *  set from the page), or null: a round never offers two of one group. */
+  group: string | null;
   /** The picture's version in the current theme (the file URL's
    *  cache-busting part: /api/stock-pictures/file/:id/:version), or null
    *  while it isn't drawn. */
@@ -201,7 +204,7 @@ export interface StockListReply {
   /** Concepts added from the page whose id content/pictures.yaml now has
    *  too: the file's wins (and owns the picture), so these are unused; an
    *  admin may delete them (the row only, never the picture). */
-  shadowed: { id: string; category: string; description: string; words: string[]; adults: boolean }[];
+  shadowed: { id: string; category: string; description: string; words: string[]; adults: boolean; group: string | null }[];
 }
 
 /** POST /api/stock-pictures/admin/concepts. `words` is a list or a
@@ -213,6 +216,16 @@ export interface AddStockConceptRequest {
   words: string[] | string;
   /** Adults only: never offered to or shown to a kids learner. */
   adults?: boolean;
+  /** Its look-alike group (pictures.yaml's format: lowercase letters,
+   *  digits and hyphens; blank or absent for none). */
+  group?: string | null;
+}
+
+/** POST /api/stock-pictures/admin/:id/group (admin): set an added concept's
+ *  look-alike group, or clear it (null or ""). A bad name is a 400, a
+ *  concept of content/pictures.yaml a 409 (its group is the file's). */
+export interface SetStockGroupRequest {
+  group: string | null;
 }
 
 /** POST /api/stock-pictures/admin/:id/adults (admin): set (true) or clear

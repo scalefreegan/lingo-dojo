@@ -134,6 +134,13 @@
       "when": 1795361640576,
       "tag": "0018_stock_adults",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795364693893,
+      "tag": "0019_stock_group",
+      "breakpoints": true
     }
   ]
 }

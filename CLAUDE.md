@@ -249,6 +249,11 @@ docs/DATA.md §The game for adults, and the picture library):
   `picture_stock_calls` written as each call starts (`scripts/db/pictureStock.ts`).
 - An added concept may be **Adults only** (`adults` column): like the file's,
   never offered to, matched for or shown to a kids learner (`stockForMode` and `playable` read the merged list). If `content/pictures.yaml` later takes an added id, the file's wins and the row shows as `shadowed` (one warning), deletable without its picture.
+- An added concept may have a **look-alike group** (ld-2nw, migration 0019,
+  `look_alike_group`, the file's `group` format, `readStockGroup`), set in the
+  Add form or from its tile (`POST /api/stock-pictures/admin/:id/group`, admin;
+  a file concept's is a 409), with the groups in use suggested; `mergeStock`
+  passes it on, so a round never offers two of one group, file and added alike.
 - An admin sets or clears any concept's Adults only from its tile (ld-cvd,
   migration 0018, docs/DATA.md §Adults only, set from the page; `POST
   /api/stock-pictures/admin/:id/adults`): an added one's column, a file
