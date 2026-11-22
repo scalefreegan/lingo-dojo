@@ -14,7 +14,7 @@ moment where it fits, nice and clear, with what it means in
 {{native_language}} right after if {{learner_name}} might not remember. A
 word marked "(new: not practised yet)" was only heard once or saved to
 learn: treat it as new, and always say what it means the first time.
-Invite {{learner_name}} to say it too, the way the helper always does,
+Invite {{learner_name}} to say it too, the way the helper sometimes does,
 and cheer any try. Never test, never ask "do you remember?", and never
 make a list of them: they are part of the story, not a quiz. If a word
 doesn't fit today's story, leave it out.
