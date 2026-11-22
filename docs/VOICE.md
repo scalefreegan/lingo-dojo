@@ -702,15 +702,22 @@ uncertain words in context.
       "·" syllable is not), the reader reads it so, and no other table has
       it (common words, standard readings, `UNSETTLED_WORDS`; a
       neutral-tone word only with its neutral tone in: 不由得, 挑剔). zh-TW
-      too only where CC-CEDICT has no other Taiwan reading and the reader
-      reads every traditional spelling so (柏树 Taiwan bó, 不由得 and 挑剔
-      full-toned there: zh-CN only). Left marked by hand: a verb with 着
+      too only where CC-CEDICT has no other Taiwan reading, for the word or
+      for any of its characters in any sense (PR #73 review: CC-CEDICT
+      often gives it on the character's entry only: 識 shì, so 似曾相識
+      xiāng shì; 貯 zhǔ; 行 xìng, conduct, so 品行; 差 chā; unsure is zh-CN
+      only, since in zh-TW a kept mark costs little), and the reader reads
+      every traditional spelling so: 30 words are zh-CN only (柏树 Taiwan
+      bó, 不由得 and 挑剔 full-toned there, 长 zhàng in 长跑 and nine more,
+      劲 jìng in six, 行 xìng in four, 难听, 贮藏, 似曾相识 …), and five
+      marked only in zh-TW are left out (差点儿, 差一点儿, 吃喝玩乐, 素不相识,
+      纵横交错). Left marked by hand: a verb with 着
       (挨着: 挨着打 ái) and `PARSED_OTHERWISE`, words a sentence may parse
       otherwise where the segmenter still bounds them: 得手 (你得手洗衣服
       děi; ICU makes 你|得手|洗衣服), 得力 (你得力挺他), 管教 (他管教数学
       jiāo), 去处 (去处好关系 chǔ), 长足 (猪长足了膘 zhǎng), 空想 (有空想想
-      kòng), 要强 (不要强人所难 qiǎng), 倒卖 (你倒卖了不少 dào). 138 words
-      (3.2 KB; widening the common words to wordfreq's top 80,000 instead
+      kòng), 要强 (不要强人所难 qiǎng), 倒卖 (你倒卖了不少 dào). 133 words
+      (3.1 KB; widening the common words to wordfreq's top 80,000 instead
       would be 8,567 words, 130 KB, with no HSK check).
       `applySettled` runs last, after the corrections, and changes no
       reading: it only sets `settled` on a run between word boundaries of
@@ -724,7 +731,7 @@ uncertain words in context.
       context rules, zh-standard.ts, `UNSETTLED_WORDS` and the neutral
       table all go first; hints are untouched (`withHints` reads `dict`).
       Measured (CC-CEDICT 2026-11-22): the HSK audit's marked words 153 →
-      27 (zh-CN), 167 → 37 (zh-TW, CC-CEDICT's traditional spellings); the
+      27 (zh-CN), 167 → 68 (zh-TW, CC-CEDICT's traditional spellings); the
       sweep 0 changed in every script; on the session corpus, PR #63's
       word, framed and sentence sets, wordfreq's top 20,000 and every HSK
       word alone and in six frames, in both scripts, no reading changed and

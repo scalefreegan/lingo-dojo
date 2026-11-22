@@ -22,7 +22,7 @@
 // reads it so, and no other table has the word (the common words, the
 // standard readings, UNSETTLED_WORDS; a neutral-tone word may be settled,
 // with its neutral tone, where applyNeutral put it in). zh-TW too only
-// where CC-CEDICT has no other Taiwan reading and the reader reads each
+// where CC-CEDICT has no other Taiwan reading (the word's, or one on any of its characters' entries, whatever the sense) and the reader reads each
 // traditional spelling so. Left marked by hand: a verb with 着 and
 // PARSED_OTHERWISE (得手: 你得手洗衣服 děi). It prints every marked word it
 // leaves, and why.
@@ -65,7 +65,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cedictEntries, checkSha256, marked } from "./gen-zh-freq.mjs";
-import { loadCedict, parseCedict } from "./pinyin-sweep.mjs";
+import { cedictSyllables, loadCedict, parseCedict } from "./pinyin-sweep.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const hskFile = () => process.env.LINGO_HSK_FILE || path.join(here, "..", "data", "freq", "hsk", "hsk-words.tsv");
@@ -258,6 +258,28 @@ export const PARSED_OTHERWISE = new Map([
   ["倒卖", "你倒卖了不少 (dào, yet)"],
 ]);
 
+/** Each character's "Taiwan pr." readings on CC-CEDICT's one-character
+ *  entries (識 shì, 貯 zhǔ, 差 chā), by its traditional and its simplified
+ *  form, tone-marked. Pure. */
+export function charTaiwanReadings(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const m = /^(\S) (\S) \[[^\]]*\] \/(.*)\/\s*$/u.exec(line);
+    if (!m) continue;
+    for (const a of m[3].matchAll(/Taiwan pr\. \[([^\]]+)\]/g)) {
+      const syl = cedictSyllables(a[1]);
+      if (!syl || syl.length !== 1) continue;
+      const r = marked(syl[0]);
+      if (!r) continue;
+      for (const ch of new Set([m[1], m[2]])) {
+        const list = out.get(ch) ?? out.set(ch, []).get(ch);
+        if (!list.includes(r)) list.push(r);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * The words to settle (ld-l1d): of the list's words of two or more
  * characters that the reader (without the settled table) marks alone in
@@ -266,7 +288,7 @@ export const PARSED_OTHERWISE = new Map([
  * marked word. Each settled word is [word, reading, traditional spellings
  * or null]. `tables`: words another table already decides, with its name.
  */
-export function settledWords({ rows, readingsOf, cedict, entries, zh, tables }) {
+export function settledWords({ rows, readingsOf, cedict, entries, zh, tables, charTaiwan = new Map() }) {
   const opts = { cache: false, corrections: null };
   const from = new Map();
   for (const e of entries) e.sc.forEach((ch, k) => (from.get(ch) ?? from.set(ch, new Set()).get(ch)).add(e.tc[k]));
@@ -310,11 +332,24 @@ export function settledWords({ rows, readingsOf, cedict, entries, zh, tables }) 
       continue;
     }
     const one = c.readings[0];
-    // Taiwan: no other reading in CC-CEDICT, and the reader reads every
-    // traditional spelling so.
+    // Taiwan: no other reading in CC-CEDICT, for the word or (PR #73
+    // review) for any of its characters, whatever the sense: CC-CEDICT
+    // often gives Taiwan's reading on the character's entry only (識 shì,
+    // so 似曾相識 xiāng shì; 貯 zhǔ; 行 xìng, conduct, so 品行). Unsure is
+    // zh-CN only: in zh-TW a kept mark costs little. And the reader reads
+    // every traditional spelling so.
+    const charWhy = () => {
+      for (const t of [w, ...trads]) {
+        for (const [k, ch] of [...t].entries()) {
+          const other = (charTaiwan.get(ch) ?? []).filter((x) => x !== one[k]);
+          if (other.length) return `${ch} Taiwan pr. ${other.join(" / ")}`;
+        }
+      }
+      return null;
+    };
     const twWhy = c.taiwan.some((x) => x.join(" ") !== one.join(" "))
       ? `Taiwan pr. ${c.taiwan.map((x) => x.join(" ")).join(" / ")}`
-      : trads.map((t) => [t, zh.readCodePoints(t, "zh-TW", opts).join(" ")]).find(([, x]) => x !== one.join(" "))?.join(" read ") ?? null;
+      : charWhy() ?? trads.map((t) => [t, zh.readCodePoints(t, "zh-TW", opts).join(" ")]).find(([, x]) => x !== one.join(" "))?.join(" read ") ?? null;
     const row = [w, one.join(" "), many(w) ? trads : null];
     if (!twWhy) both.push(row);
     else if (markedCn) {
@@ -560,7 +595,7 @@ async function main() {
       ...STANDARD_READINGS.map((s) => [s.word, "a standard reading (zh-standard.ts)"]),
       ...UNSETTLED_WORDS.map((w) => [w, "read two ways, left to a person (UNSETTLED_WORDS)"]),
     ]);
-    writeSettled(settledWords({ rows, readingsOf, cedict, entries, zh, tables }), date);
+    writeSettled(settledWords({ rows, readingsOf, cedict, entries, zh, tables, charTaiwan: charTaiwanReadings(text) }), date);
   }
   if (opt.json) fs.writeFileSync(opt.json, JSON.stringify(tally, null, 1));
 }

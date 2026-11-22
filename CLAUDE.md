@@ -283,12 +283,12 @@ docs/DATA.md §Mandarin readings):
   source); a hand choice, the shared list and the context rules still win.
 - **Settled words** (ld-l1d): an HSK 3.0 word beyond the 20,000 that
   CC-CEDICT reads exactly one way, the list prints that way and the reader
-  reads that way is not marked (干杯, 难听, 长跑; 138 words in the generated
+  reads that way is not marked (干杯, 难听, 长跑; 133 words in the generated
   `web/src/script/zh-settled.ts`, CC BY-SA 4.0, `npm run pinyin:hsk-audit
   -- --write-settled`). `applySettled` runs last and changes no reading: it
   settles only a whole word whose every syllable already matches, never
   under a correction, a suggestion or a doubt, and in zh-TW only where the
-  reading is the same. Words a sentence may parse otherwise (得手: 你得手洗衣服
+  reading is the same (no Taiwan pr. on the word or any of its characters). Words a sentence may parse otherwise (得手: 你得手洗衣服
   děi; `PARSED_OTHERWISE`) and a verb with 着 stay marked.
 - **The correction.** The character card's **This reading is wrong** or
   **This is right** (`ReadingFix.tsx`) saves the learner's choice per

@@ -27,7 +27,7 @@ function without(fn) {
 }
 const rows = (s) => s.split("|").filter(Boolean).map((e) => e.split("~")[0].split("="));
 
-test("the bead's words are read as before and no longer marked, alone and in a sentence, in both scripts", () => {
+test("the bead's words are read as before and no longer marked, alone and in a sentence; in zh-TW where Taiwan reads them the same", () => {
   const cases = [
     ["干杯", "gān bēi"], ["我们干杯吧", "wǒ men gān bēi ba"], ["这首歌难听死了", "zhè shǒu gē nán tīng sǐ le"],
     ["他每天长跑", "tā měi tiān cháng pǎo"], ["公园里的柏树很高", "gōng yuán lǐ de bǎi shù hěn gāo"],
@@ -38,18 +38,28 @@ test("the bead's words are read as before and no longer marked, alone and in a s
     assert.equal(without(() => read(t)), r, `${t}: the same reading without the table`);
     assert.notDeepEqual(without(() => marked(t)), [], `${t}: marked without the table`);
   }
-  for (const t of ["乾杯", "難聽", "長跑", "我們乾杯吧"]) assert.deepEqual(marked(t, "zh-TW"), [], t);
+  for (const t of ["乾杯", "我們乾杯吧", "荷花", "停泊"]) assert.deepEqual(marked(t, "zh-TW"), [], t);
 });
 
-test("zh-TW only where its reading is the same: 柏樹 (Taiwan bó), 不由得 and 挑剔 (full tones there) stay marked", () => {
+test("zh-TW only where its reading is the same: a Taiwan reading of the word or of any of its characters keeps the mark there", () => {
+  // CC-CEDICT gives Taiwan's reading on the character's entry: 識 shì
+  // (相識 xiāng shì), 貯 zhǔ, 行 xìng (品行, conduct), 差 chā, 長 zhàng.
+  for (const [cn, tw] of [["似曾相识", "似曾相識"], ["贮藏", "貯藏"], ["品行", "品行"], ["长跑", "長跑"], ["难听", "難聽"]]) {
+    assert.deepEqual(marked(cn), [], cn);
+    assert.notDeepEqual(marked(tw, "zh-TW"), [], tw);
+  }
+  // Marked only in zh-TW before, and Taiwan may read them otherwise: not in the table at all.
+  const all = new Set([...rows(SETTLED_WORDS), ...rows(SETTLED_CN)].map(([w]) => w));
+  for (const w of ["素不相识", "差点儿", "差一点儿"]) assert.ok(!all.has(w), w);
+  for (const t of ["素不相識", "差點兒", "差一點兒"]) assert.notDeepEqual(marked(t, "zh-TW"), [], t);
   assert.deepEqual(marked("柏树"), []);
   assert.deepEqual(marked("柏樹", "zh-TW"), ["柏樹"]);
   for (const t of ["不由得", "挑剔"]) {
     assert.deepEqual(marked(t), [], t);
     assert.deepEqual(marked(t, "zh-TW"), [t], t);
   }
-  const cn = rows(SETTLED_CN).map(([w]) => w);
-  assert.deepEqual(new Set(cn), new Set(["不由得", "柏树", "挑剔"]));
+  const cn = new Set(rows(SETTLED_CN).map(([w]) => w));
+  for (const w of ["不由得", "柏树", "挑剔", "似曾相识", "贮藏", "品行"]) assert.ok(cn.has(w), w);
 });
 
 test("no reading moves: session lines and the everyday sentences read the same with the table on and off, in both scripts", () => {
@@ -57,10 +67,15 @@ test("no reading moves: session lines and the everyday sentences read the same w
   for (const loc of ["zh-CN", "zh-TW"]) {
     for (const t of lines) assert.equal(read(t, loc), without(() => read(t, loc)), t);
   }
-  // And it only takes marks away.
-  for (const t of lines) {
-    const off = without(() => marked(t));
-    for (const w of marked(t)) assert.ok(off.includes(w), `${t}: ${w} marked only with the table`);
+  // And no character is uncertain only with the table (a mark may change
+  // shape around a word it settles: 不敢当啊 is marked 当啊 without it, and
+  // nothing with it; never a new uncertain character).
+  const unsure = (t, loc) => zh.uncertainWords(t, loc, { cache: false, corrections: null }).flatMap((w) => w.unsure);
+  for (const loc of ["zh-CN", "zh-TW"]) {
+    for (const t of lines) {
+      const off = without(() => unsure(t, loc));
+      for (const k of unsure(t, loc)) assert.ok(off.includes(k), `${t}: character ${k} uncertain only with the table`);
+    }
   }
 });
 
