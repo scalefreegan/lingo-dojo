@@ -528,6 +528,13 @@ const DEGREE_BEFORE = "很太最更较挺真好超蛮极过";
 const HEADED = "警馆局处院校部科厅队组班站社团营舰厂署司州省市县区镇乡村";
 /** Weather, an illness, a fight: what a 场 cháng counts (一场雨). */
 const SPELLS = "雨雪病梦风灾战仗架震";
+/** What ends a subject or an adverb, after which 只 is zhǐ, only (我只,
+ *  他们只, 自己只, 也只, 就只): not after a verb, where 只 is a measure
+ *  word with 一 dropped (我买了只会说话的鸟 zhī). */
+const ONLY_AFTER = "我你他她它们己咱也都就还却但而又才便总";
+/** The last character of a word for a person (老师, 医生, 护士, 自己,
+ *  我们): a verb 量 liáng or 数 shǔ follows one (让医生量). */
+const PERSON_END = "我你他她它们己咱人师生士妈爸哥姐弟妹员夫子";
 /** Verbs and modals 只 zhǐ, only, comes before (只会, 只想, 只用). */
 const ONLY_BEFORE = "会想用要能是有好得在说看做吃给剩管顾怕知不";
 /** Characters an erhua 儿 follows, and no 儿 the child in CC-CEDICT does
@@ -541,13 +548,15 @@ const ERHUA_AFTER = "意孩活特伙鸟今们人地明贝妇范子昨盖馅哥�
  * where `when(prev, next, at)` holds of its neighbours (simplified, "" for
  * none or a non-Chinese character). A rule reads a character only where no
  * dictionary word, table word, rule or correction settled it, and settles
- * it: each is a short test of a neighbour, never a list of words.
+ * it: each is a short test of a neighbour, never a list of words. A rule
+ * holds only where it is sure: anywhere else the character stays as read
+ * and marked, never traded for an unmarked wrong reading (PR #69 review).
  */
 interface ContextRule {
   id: string;
   ch: string;
   reading: string;
-  when: (prev: string, next: string, at: { k: number; simp: string[]; starts: boolean[] | null }) => boolean;
+  when: (prev: string, next: string, at: { k: number; cps: string[]; simp: string[]; starts: boolean[] | null }) => boolean;
 }
 export const CONTEXT_RULES: ContextRule[] = [
   // 更 before what it grades (更好, 更大, 更何况): gèng. gēng (to change,
@@ -557,11 +566,12 @@ export const CONTEXT_RULES: ContextRule[] = [
   // 太重): its adjective reading, not 难 nàn, 长 zhǎng, 强 qiǎng, 差 chā,
   // 累 lěi, 重 chóng.
   { id: "nan", ch: "难", reading: "nán", when: (prev) => prev !== "" && (DEGREE_BEFORE + "不").includes(prev) },
-  { id: "chang", ch: "长", reading: "cháng", when: (prev) => prev !== "" && (DEGREE_BEFORE + "多").includes(prev) },
+  // 多长 only closing a question (有多长, 多长啊): 多长了一颗牙 is zhǎng.
+  { id: "chang", ch: "长", reading: "cháng", when: (prev, next) => prev !== "" && (DEGREE_BEFORE.includes(prev) || (prev === "多" && (next === "" || "啊呀呢吗的".includes(next)))) },
   // 长 cháng before 时 (长时间, 长时期); zhǎng, the head, after an
   // institution (警长, 馆长, 组长) where no word of length follows.
   { id: "changShi", ch: "长", reading: "cháng", when: (_, next) => next === "时" },
-  { id: "zhang3", ch: "长", reading: "zhǎng", when: (prev, next) => prev !== "" && HEADED.includes(prev) && !"期久度短远寿".includes(next || "\0") },
+  { id: "zhang3", ch: "长", reading: "zhǎng", when: (prev, next) => prev !== "" && HEADED.includes(prev) && !"期久度短远寿达年".includes(next || "\0") },
   { id: "qiang", ch: "强", reading: "qiáng", when: (prev) => prev !== "" && DEGREE_BEFORE.includes(prev) },
   { id: "cha", ch: "差", reading: "chà", when: (prev) => prev !== "" && DEGREE_BEFORE.includes(prev) },
   { id: "lei", ch: "累", reading: "lèi", when: (prev) => prev !== "" && (DEGREE_BEFORE + "不").includes(prev) },
@@ -586,9 +596,12 @@ export const CONTEXT_RULES: ContextRule[] = [
     id: "zhi1",
     ch: "只",
     reading: "zhī",
-    when: (prev, next) => prev !== "" && ((NUMERALS + "只").includes(prev) || ("这那哪每".includes(prev) && !"是有能会要不在好得想".includes(next || "\0"))),
+    when: (prev, next) => prev !== "" && ((NUMERALS + "只").includes(prev) || ("这那哪每".includes(prev) && next !== "" && !(ONLY_BEFORE + "说让证适需够算限对使令表靠为").includes(next))),
   },
-  { id: "zhi3", ch: "只", reading: "zhǐ", when: (prev, next) => next !== "" && ONLY_BEFORE.includes(next) && !(NUMERALS + "只这那哪每").includes(prev || "\0") },
+  // zhǐ only at a clause's start or after a subject or an adverb (我只会,
+  // 他们只想, 也只能); after anything else (a verb, 了: 买了只会说话的鸟)
+  // it may be the measure word, and stays marked.
+  { id: "zhi3", ch: "只", reading: "zhǐ", when: (prev, next) => next !== "" && ONLY_BEFORE.includes(next) && (prev === "" || ONLY_AFTER.includes(prev)) },
   // 为 wéi, to be or to act as, after a verb of naming or becoming outside
   // a dictionary word (定为, 转为, 题为, 实为, 结为, 化为), the verb a word
   // by itself for the segmenter: not where it ends a longer word (一定|为你,
@@ -596,16 +609,31 @@ export const CONTEXT_RULES: ContextRule[] = [
   { id: "wei2", ch: "为", reading: "wéi", when: (prev, _, { k, starts }) => prev !== "" && "转定题实图结化译选".includes(prev) && !!starts && starts[k - 1] && starts[k] },
   // 数 shù, several, before a number or a counted thing (数千, 数十年, 数个,
   // 数名, 数次); not before 日 (数日子 shǔ, to count the days).
-  { id: "shu", ch: "数", reading: "shù", when: (_, next) => next !== "" && "十百千万亿个名次年月".includes(next) },
+  // Not after a person or 来 / 去 / 再 / 先, where it is the verb (我数十下 shǔ).
+  { id: "shu", ch: "数", reading: "shù", when: (prev, next) => next !== "" && "十百千万亿个名次年月".includes(next) && !(PERSON_END + "来去再先要会能").includes(prev || "\0") },
   // 儿 closing a word after one of ERHUA_AFTER, outside a dictionary
   // word: erhua's r (男孩儿, 一下儿, 聊天儿, 玩意儿, 哥们儿, 今儿个). Not
   // after any character: 儿 is the child in as many (男儿, 健儿, 育儿,
-  // 幸运儿, 混血儿), nor before another word (托儿所, 生儿育女).
-  { id: "er", ch: "儿", reading: "r", when: (prev, next) => prev !== "" && ERHUA_AFTER.includes(prev) && (next === "" || "们个".includes(next)) },
-  // 量 at the end of a run, after a character (销售量, 工作量): liàng, an
-  // amount, but not after a verb of measuring (丈量, 称量, 车载斗量);
-  // before 一下 (量一下体温): liáng, to measure.
-  { id: "liang4", ch: "量", reading: "liàng", when: (prev, next) => prev !== "" && next === "" && !"丈称斗掂比".includes(prev) },
+  // 幸运儿, 混血儿), nor before another word (托儿所, 生儿育女), nor before
+  // 们 (这些孩儿们: hái ér, the children, as often as háir).
+  { id: "er", ch: "儿", reading: "r", when: (prev, next) => prev !== "" && ERHUA_AFTER.includes(prev) && (next === "" || next === "个") },
+  // 量 at the end of a run, after a word of two or more characters (销售量,
+  // 工作量, 词汇量): liàng, an amount. Not after a single-character word
+  // (你帮我量, 医生来量), a person (你自己量, 让老师量), a word after 让 / 请
+  // / 帮 … (让护士量), nor a verb of measuring (丈量, 称量, 车载斗量): there
+  // it is the verb liáng, or may be, and stays marked. Before 一下
+  // (量一下体温): liáng, to measure.
+  {
+    id: "liang4",
+    ch: "量",
+    reading: "liàng",
+    when: (prev, next, { k, simp, starts }) => {
+      if (prev === "" || next !== "" || !starts || starts[k - 1] || "丈称斗掂比".includes(prev) || PERSON_END.includes(prev)) return false;
+      let j = k - 1;
+      while (j > 0 && !starts[j]) j--;
+      return !"让请帮叫给由被替".includes(simp[j - 1] ?? "\0");
+    },
+  },
   { id: "liang2", ch: "量", reading: "liáng", when: (_, next, { k, simp }) => next === "一" && simp[k + 2] === "下" },
   // 冲着, facing: chòng. 载有, carrying: zài. 处以, to sentence to: chǔ.
   { id: "chong", ch: "冲", reading: "chòng", when: (_, next) => next === "着" },
@@ -614,8 +642,10 @@ export const CONTEXT_RULES: ContextRule[] = [
   // 降 jiàng, to fall, before 到 / 至 / 低 (降到, 降至); xiáng (to
   // surrender) lives in dictionary words: 投降, 降服.
   { id: "jiang", ch: "降", reading: "jiàng", when: (_, next) => next !== "" && "到至低".includes(next) },
-  // 干 gàn, to do, before 过 or 得 (干过, 干得好).
-  { id: "gan", ch: "干", reading: "gàn", when: (_, next) => "过得".includes(next || "\0") },
+  // 干 gàn, to do, before 过 (干过); before 得 only where the text writes
+  // 幹 (幹得好): simplified 干 is 乾 dry too (衣服干得很快 gān), and stays
+  // marked. Never 乾.
+  { id: "gan", ch: "干", reading: "gàn", when: (_, next, { k, cps }) => cps[k] !== "乾" && (next === "过" || (next === "得" && cps[k] === "幹")) },
   // 行 xíng, all right, closing a phrase after 就 / 都 / 才 / 也 (就行, 都行,
   // 才行, 就行了).
   { id: "xing", ch: "行", reading: "xíng", when: (prev, next) => prev !== "" && "就都才也".includes(prev) && (next === "" || "了吗吧啊呢".includes(next)) },
@@ -642,7 +672,7 @@ function contextRules(cps: string[], simp: string[], dict: boolean[], starts: bo
   for (let k = 0; k < cps.length; k++) {
     if (settled[k] || dict[k] || doubt[k] || out[k] == null) continue;
     for (const r of CONTEXT_RULES) {
-      if (r.ch !== simp[k] || rulesOff.has(r.id) || !r.when(han(k - 1), han(k + 1), { k, simp, starts })) continue;
+      if (r.ch !== simp[k] || rulesOff.has(r.id) || !r.when(han(k - 1), han(k + 1), { k, cps, simp, starts })) continue;
       out[k] = r.reading;
       settled[k] = true;
       break;

@@ -378,3 +378,28 @@ test("context rules settle common phrases CC-CEDICT has no entry for, by a neigh
   }
   assert.ok(on.cn.per100 < 1 && on.tw.per100 < 1, `${on.cn.per100} / ${on.tw.per100}`);
 });
+
+test("a context rule settles only where it is sure: where the other reading may be meant, the word stays marked (PR #69 review, ld-7xi)", () => {
+  // 量 the verb after a person, a pronoun, 来 or 自己: liáng, marked; an amount after a longer word: liàng.
+  for (const t of ["你帮我量", "体温让医生来量", "这件衣服你自己量", "让老师量"]) {
+    assert.ok(line(t).endsWith("liáng"), t);
+    assert.ok(marked(t).length, t);
+  }
+  assert.equal(line("工作量"), "gōng zuò liàng");
+  // Simplified 干 before 得 may be 乾, dry: marked; 幹 written out is gàn.
+  for (const t of ["衣服干得很快", "天气干得很", "嘴唇干得裂开了"]) {
+    assert.ok(marked(t).some((w) => w.includes("干")), t);
+    assert.ok(!line(t).includes("gàn"), t);
+  }
+  assert.equal(line("你幹得很好", "zh-TW"), "nǐ gàn de hěn hǎo");
+  assert.ok(marked("衣服乾得很快", "zh-TW").length);
+  // 只 after a verb or 了 may be the measure word with 一 dropped.
+  assert.ok(marked("我买了只会说话的鸟").some((w) => w.includes("只")));
+  assert.deepEqual(marked("我只会说中文"), []);
+  assert.ok(marked("这只说明问题").some((w) => w.includes("只")));
+  // 儿们: the children as often as erhua.
+  assert.ok(marked("这些孩儿们").some((w) => w.includes("儿")));
+  // 数 after a person is the verb; 多长 before 了 may be zhǎng.
+  assert.ok(marked("我数十下").length);
+  assert.ok(marked("他又多长了一颗牙").length);
+});

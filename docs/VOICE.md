@@ -718,34 +718,46 @@ uncertain words in context.
       default or the prior and nothing settling it. Each rule reads one
       character by a neighbour and settles it, never where a dictionary
       word, a table word, an earlier rule or a doubt settled it, and a
-      person's correction still outranks it:
+      person's correction still outranks it. A rule holds only where it is
+      sure: where the other reading may be meant, the word stays as read
+      and marked, never traded for an unmarked wrong reading (PR #69
+      review: the kids' voice would speak it):
       - 更 gèng before a character; after a degree word
         (很太最更较挺真好超蛮极过) 难 nán (and after 不), 长 cháng (and after
-        多), 强 qiáng, 差 chà, 累 lèi (and after 不), 重 zhòng; 长 cháng
+        多 closing a question: 有多长, not 多长了一颗牙), 强 qiáng, 差 chà, 累 lèi (and after 不), 重 zhòng; 长 cháng
         before 时 (长时间), zhǎng after an institution (警长, 馆长; not
-        before 期久度短远寿, and not 所: 一无所长);
+        before 期久度短远寿达年, and not 所: 一无所长);
       - a measure word after a numeral or 这那哪每各此该本首某何多: 场
         chǎng (not before weather, an illness or a fight a character or
         two on, 一场雨, 一场大雪, 一场战争: cháng in the dictionaries,
         left marked; HSK 3.0 lists 场 chǎng only), 种 zhǒng, 片 piàn, 处
         chù, 扇 shàn, 圈 quān, 曲 qǔ, 只 zhī (after 这那哪每 only when no
-        verb follows: 这只是 zhǐ); 只 zhǐ before a verb or modal (只会,
-        只想, 只不过), never before a noun (只身, 独具只眼 zhī);
+        verb follows: 这只是, 这只说明 stay marked); 只 zhǐ before a verb or
+        modal (只会, 只想, 只不过) only at a clause's start or after a subject
+        or an adverb (我只, 他们只, 也只): after a verb or 了 it may be the
+        measure word with 一 dropped (我买了只会说话的鸟 zhī), marked; never
+        before a noun (只身, 独具只眼 zhī);
       - 为 wéi after 转定题实图结化译选 standing as a word by itself (被定为,
         转为; not 一定|为你, 决定|为我们);
-      - 数 shù before 十百千万亿个名次年月 (数千, 数十年; not 数日子 shǔ);
+      - 数 shù before 十百千万亿个名次年月 (数千, 数十年), not after a person or
+        来去再先 (我数十下 shǔ), nor before 日 (数日子);
       - 儿 r closing a word after one of `ERHUA_AFTER` (男孩儿, 一下儿,
-        哥们儿, 今儿个): characters an erhua 儿 follows and no 儿 the child
+        哥们儿, 今儿个; not before 们: 这些孩儿们 stays marked): characters an erhua 儿 follows and no 儿 the child
         does in CC-CEDICT (not 男儿, 健儿, 幸运儿, 托儿所);
-      - 量 liàng closing a run (销售量; not 丈量, 称量, 车载斗量), liáng
-        before 一下; 冲着 chòng, 载有 zài, 处以 chǔ, 降 jiàng before 到至低,
-        干 gàn before 过得, 行 xíng closing a phrase after 就都才也 (就行了).
+      - 量 liàng closing a run after a word of two or more characters
+        (销售量, 工作量), not after a person, a pronoun or one-character
+        word, nor a word after 让请帮叫给由被替, where it is the verb
+        (你帮我量, 医生来量, 你自己量, 让老师量 stay liáng, marked), nor 丈量,
+        称量, 车载斗量; liáng before 一下; 冲着 chòng, 载有 zài, 处以 chǔ, 降
+        jiàng before 到至低, 干 gàn before 过 (never 乾), and before 得 only
+        where the text writes 幹 (simplified 干得 may be 乾, dry: 衣服干得很快
+        stays marked), 行 xíng closing a phrase after 就都才也 (就行了).
       Measured, each rule kept only if it broke nothing: on CC-CEDICT's
       headwords, compared strictly (儿 r is not ér), 只 zhǐ fixed 2, 儿 r
-      272, 量 liàng 48 (both scripts), none broken (the first versions
+      270, 量 liàng 24 (both scripts; 48 before the review narrowed it), none broken (the first versions
       broke 22 只 idioms, 135 儿 words and 8 量 verbs, and were narrowed
       until none did); the other rules never touch a headword (a dictionary
-      word settles them). The sweep: 24 fixed, 0 broken. PR #63's sets:
+      word settles them). The sweep: 13 fixed, 0 broken (24 before the review). PR #63's sets:
       words 263 → 264 (冲着; framed 259 → 260), sentences 70 → 72 (只不过是
       ×2), none worse. On Tatoeba's 89,325 Mandarin sentences (CC BY 2.0,
       a gitignored download) they read or settle about 2,500 characters; a sample of each

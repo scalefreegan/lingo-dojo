@@ -36,6 +36,27 @@ test("wordAgrees: exact, or by the app's deliberate choices only", () => {
   assert.equal(wordAgrees(app("lè sè"), [["la1", "ji1"]], [..."垃圾"], { ...opts, tw: true }).how, "taiwan");
 });
 
+test("the HSK 3.0 audit's --import takes only the pinned CSV: its repository, commit and SHA-256 are recorded, and any other file is refused before anything is written (PR #69 review, ld-7xi)", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const m = await import("../pinyin-hsk-audit.mjs");
+  assert.match(m.HSK_CSV_REPO, /shawkynasr\/HSK-official-Query-System$/);
+  assert.match(m.HSK_CSV_COMMIT, /^[0-9a-f]{40}$/);
+  assert.ok(m.HSK_CSV_URL.includes(m.HSK_CSV_COMMIT));
+  assert.match(m.HSK_CSV_SHA256, /^[0-9a-f]{64}$/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hsk-"));
+  try {
+    const csv = path.join(dir, "vocab.csv");
+    const out = path.join(dir, "hsk-words.tsv");
+    fs.writeFileSync(csv, "No.,级别,词语,拼音,词性\n1,一级,爱,ài,动\n");
+    assert.throws(() => m.importCsv(csv, out), /SHA-256/);
+    assert.ok(!fs.existsSync(out));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the HSK 3.0 audit's parsing (scripts/pinyin-hsk-audit.mjs, run by hand; no list here): printed rows into words, pinyin into one syllable a character, the conventions (ld-7xi)", async () => {
   const { rowWords, syllabify, wordVerdict } = await import("../pinyin-hsk-audit.mjs");
   const inv = new Set(["xi", "an", "xian", "chu", "lai", "fu", "qin", "yi", "dian", "jie", "er", "lian", "san", "nan", "hai", "bu", "ke", "qi", "dao", "shi"]);

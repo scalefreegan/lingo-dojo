@@ -14,7 +14,8 @@
 // row a line) and nothing from it is committed but the readings we decide
 // (zh-standard.ts, each with the note "HSK 3.0 level N"). The working file
 // is made once by `--import` from a text copy of the list (the CSV of the
-// MIT-licensed HSK-official-Query-System, which the Center for Language
+// MIT-licensed HSK-official-Query-System, 词汇.csv pinned by commit and
+// SHA-256 in HSK_CSV_*, which the Center for Language
 // Education and Cooperation's own query system serves), checked against the
 // scanned PDF by hand: rows re-read from the page images at random, and
 // every row this audit finds in disagreement.
@@ -44,7 +45,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cedictEntries, marked } from "./gen-zh-freq.mjs";
+import { cedictEntries, checkSha256, marked } from "./gen-zh-freq.mjs";
 import { loadCedict, parseCedict } from "./pinyin-sweep.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -199,10 +200,20 @@ function args(argv) {
   return out;
 }
 
+/** The text copy `--import` takes: 词汇.csv of the MIT-licensed
+ *  shawkynasr/HSK-official-Query-System at this commit, checked by its
+ *  SHA-256 (another copy or a later edit is refused: re-check it against
+ *  the PDF, then pin it here). */
+export const HSK_CSV_REPO = "https://github.com/shawkynasr/HSK-official-Query-System";
+export const HSK_CSV_COMMIT = "60153c5aa1476c33aee9f161792785377d3369e2";
+export const HSK_CSV_URL = `https://raw.githubusercontent.com/shawkynasr/HSK-official-Query-System/${HSK_CSV_COMMIT}/%E8%AF%8D%E6%B1%87.csv`;
+export const HSK_CSV_SHA256 = "f79d832ffe2a4015d5a24d6aa9c6f734e90053a02456fa0fc37eeefb65c630cc";
+
 /** The query system's CSV (No.,级别,词语,拼音,词性; alphabetical over the
  *  whole list) as the working file: rows by level in the printed order,
  *  each with its number in its level, as the PDF prints them. */
-function importCsv(csv, file) {
+export function importCsv(csv, file) {
+  checkSha256(csv, HSK_CSV_SHA256);
   const rows = fs.readFileSync(csv, "utf8").split(/\r?\n/).filter(Boolean).slice(1).map((l) => l.split(","));
   const by = new Map();
   for (const r of rows) {
