@@ -249,6 +249,14 @@ docs/DATA.md §The game for adults, and the picture library):
   `picture_stock_calls` written as each call starts (`scripts/db/pictureStock.ts`).
 - An added concept may be **Adults only** (`adults` column): like the file's,
   never offered to, matched for or shown to a kids learner (`stockForMode` and `playable` read the merged list). If `content/pictures.yaml` later takes an added id, the file's wins and the row shows as `shadowed` (one warning), deletable without its picture.
+- An admin sets or clears any concept's Adults only from its tile (ld-cvd,
+  migration 0018, docs/DATA.md §Adults only, set from the page; `POST
+  /api/stock-pictures/admin/:id/adults`): an added one's column, a file
+  one's install-wide row in `picture_stock_adults` (kept only while it
+  differs from the file; `mergeStock`'s `adultsOverrides`, never a shadowed
+  row's). Set: kept from kids at once; cleared: offered to kids' checks
+  from the next one. An unreadable setting fails closed (every file concept
+  adults only).
 
 Mandarin readings (ld-4i2, migration 0015, docs/VOICE.md §Uncertain readings,
 docs/DATA.md §Mandarin readings):

@@ -7,7 +7,8 @@
 // everyone else on every write); a concept added from the page lives in
 // the database, merges into the stock list and reaches the picturable
 // check; a concept of content/pictures.yaml can't be deleted; stock draws
-// are queued, each in the ledger as it starts, under an install-wide cap.
+// are queued, each in the ledger as it starts, under an install-wide cap;
+// an admin sets or clears any concept's Adults only flag (ld-cvd).
 // The real plugin on an in-process PGlite with a stand-in `claude` and the
 // stub image provider (placeholder PNGs): nothing here reaches a model or a
 // provider. Every name here is made up.
@@ -67,6 +68,7 @@ beforeEach(async () => {
   fake.picture("!auto");
   await q("delete from picture_stock_concepts");
   await q("delete from picture_stock_calls");
+  await q("delete from picture_stock_adults");
   fs.writeFileSync(
     path.join(root, "pictures.yaml"),
     ["categories:", "  Animals:", "    - { id: dog, description: a friendly brown dog, words: [dog, puppy] }", "    - { id: cat, description: a fluffy orange cat, words: [cat, kitten] }", ""].join("\n"),
@@ -202,6 +204,7 @@ const WRITES = (id = "dog") => [
   ["POST", "/api/stock-pictures/admin/missing", { count: 2 }],
   ["POST", `/api/stock-pictures/admin/${id}/draw`, {}],
   ["POST", `/api/stock-pictures/admin/${id}/remove`, {}],
+  ["POST", `/api/stock-pictures/admin/${id}/adults`, { adults: true }],
 ];
 
 test("the stock set: any logged-in user browses it; every write is a 403 for a non-admin, a 401 logged out", async () => {
@@ -221,6 +224,7 @@ test("the stock set: any logged-in user browses it; every write is a 403 for a n
   assert.deepEqual(stockFiles(), [], "nothing was drawn");
   assert.deepEqual(await q("select id from picture_stock_concepts"), []);
   assert.deepEqual(await q("select id from picture_stock_calls"), []);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), [], "no Adults only setting was made");
 });
 
 test("an admin draws every missing stock picture (after confirming the count), each in the ledger as it starts; the file is served to a logged-in user", async () => {
@@ -465,4 +469,181 @@ test("an added concept pictures.yaml later takes the id of: the file's wins, the
   assert.deepEqual(await q("select id from picture_stock_concepts"), []);
   assert.ok(fs.existsSync(stockFile("kite")), "the picture is the file's concept's now: kept");
   assert.equal((await ada.call("POST", "/api/stock-pictures/admin/kite/remove", {})).status, 409, "then it is the file's alone: not deletable");
+});
+
+/* ------------------------- the Adults only toggle (ld-cvd) ------------------------- */
+
+const setAdults = (who, id, adults) => who.call("POST", `/api/stock-pictures/admin/${id}/adults`, { adults });
+const flagOf = (reply, id) => reply.body.concepts.find((c) => c.id === id)?.adults;
+const kidIds = async (who) => (await who.call("GET", "/api/stock-pictures")).body.concepts.map((c) => c.id).sort();
+/** Point a learner's word (by meaning) at a stock concept, as a check would have. */
+const pointAt = (who, meaning, id) =>
+  q(
+    "update phrase_pictures pp set status = 'ready', stock_id = $2, theme = $3, file = $4 from phrases p where p.id = pp.phrase_id and pp.language_profile_id = $1 and p.meaning = $5",
+    [who.languageId, id, PICTURE_THEME.id, stockKey(PICTURE_THEME.id, id), meaning],
+  );
+
+test("Adults only on a file concept: set, it is kept from kids at once (list, file, game, the check); cleared, kids get it from the next check; the row only while it differs from the file", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/missing", { count: 2 })).status, 202);
+  await settleStockDraws();
+  const dogVersion = (await ada.call("GET", "/api/stock-pictures")).body.concepts.find((c) => c.id === "dog").version;
+  const pip = await someone([KID]);
+  await add(pip, [["der Hund", "dog"], ["die Katze", "cat"], ["der Ball", "ball"], ["das Haus", "house"]]);
+  await drawAll(pip);
+  const before = (await pip.call("GET", "/api/game")).body.status.pictured;
+  assert.equal(before, 4);
+  assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
+
+  // On: install-wide, a row for the file's concept (content/ untouched).
+  const yaml = fs.readFileSync(path.join(root, "pictures.yaml"), "utf8");
+  const on = await setAdults(ada, "dog", true);
+  assert.equal(on.status, 200, on.text);
+  assert.equal(flagOf(on, "dog"), true);
+  assert.deepEqual(
+    await q("select a.concept_id, a.adults, u.username from picture_stock_adults a join users u on u.id = a.set_by"),
+    [{ concept_id: "dog", adults: true, username: `user${n - 1}` }],
+    "set by the admin",
+  );
+  assert.equal(fs.readFileSync(path.join(root, "pictures.yaml"), "utf8"), yaml, "the app never writes content/");
+  // At once for kids: not listed, its file not served, a word pointing at it out of the game and its rounds.
+  assert.deepEqual(await kidIds(pip), ["cat"]);
+  assert.equal((await pip.call("GET", `/api/stock-pictures/file/dog/${dogVersion}`)).status, 404);
+  assert.equal((await ada.call("GET", `/api/stock-pictures/file/dog/${dogVersion}`)).status, 200, "an adult's session still gets it");
+  const st = (await pip.call("GET", "/api/game")).body.status;
+  assert.equal(st.pictured, before - 1, "the kid's dog word leaves the game");
+  const dogWord = (await q("select p.id from phrases p where p.language_profile_id = $1 and p.meaning = 'dog'", [pip.languageId]))[0].id;
+  const dogPicture = (await q("select id from phrase_pictures where phrase_id = $1", [dogWord]))[0].id;
+  const { rounds } = (await pip.call("POST", "/api/game/start")).body;
+  assert.ok(rounds.length > 0);
+  for (const r of rounds) {
+    assert.notEqual(r.phraseId, dogWord);
+    assert.ok(!r.choices.some((c) => c.id === dogPicture), "never offered as a choice");
+  }
+  // Not matched: a kids word judged now is not offered dog.
+  const bo = await someone([KID]);
+  await add(bo, [["der Welpe", "puppy"]]);
+  await drawAll(bo);
+  assert.doesNotMatch(fake.pictureArgs().join("\n"), /dog: dog/, "not offered to a kids check");
+  assert.match(fake.pictureArgs().join("\n"), /cat: cat/);
+  // An adult's check is still offered it.
+  const sam = await someone([ADULT]);
+  await add(sam, [["el perro", "dog"]]);
+  await drawAll(sam);
+  assert.match(fake.pictureArgs().join("\n"), /dog: dog/);
+
+  // Off: back to the file's flag, so the row goes; kids see it again.
+  const off = await setAdults(ada, "dog", false);
+  assert.equal(off.status, 200, off.text);
+  assert.equal(flagOf(off, "dog"), false);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), []);
+  assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
+  assert.equal((await pip.call("GET", `/api/stock-pictures/file/dog/${dogVersion}`)).status, 200);
+  assert.equal((await pip.call("GET", "/api/game")).body.status.pictured, before);
+  // Eligible from the next check: a kids word judged now is offered and matched to it.
+  await add(bo, [["der Köter", "dog"]]);
+  await drawAll(bo);
+  assert.match(fake.pictureArgs().join("\n"), /dog: dog/);
+  const matched = await q("select pp.stock_id from phrase_pictures pp join phrases p on p.id = pp.phrase_id where pp.language_profile_id = $1 and p.text = 'der Köter'", [bo.languageId]);
+  assert.deepEqual(matched.map((r) => r.stock_id), ["dog"]);
+});
+
+test("Adults only cleared on a file concept the file flags: a row saying false; set again, the row goes; an added concept flips its own column, no row", async () => {
+  fs.writeFileSync(path.join(root, "pictures.yaml"), ADULTS_YAML);
+  const ada = await someone([ADULT], { admin: true });
+  const pip = await someone([KID]);
+  assert.deepEqual(await kidIds(pip), ["dog"]);
+  const off = await setAdults(ada, "beer", false);
+  assert.equal(off.status, 200, off.text);
+  assert.equal(flagOf(off, "beer"), false);
+  assert.deepEqual(await q("select concept_id, adults from picture_stock_adults"), [{ concept_id: "beer", adults: false }]);
+  assert.deepEqual(await kidIds(pip), ["beer", "dog"]);
+  assert.equal(flagOf(await setAdults(ada, "beer", false), "beer"), false, "setting it again is the same");
+  assert.equal(flagOf(await setAdults(ada, "beer", true), "beer"), true);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), [], "the file's own flag again: no row");
+  assert.deepEqual(await kidIds(pip), ["dog"]);
+
+  // An added concept: its own column, both ways.
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" })).status, 201);
+  await settleStockDraws();
+  assert.deepEqual(await kidIds(pip), ["dog", "kite"]);
+  assert.equal(flagOf(await setAdults(ada, "kite", true), "kite"), true);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: true }]);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), [], "never a row for an added concept");
+  assert.deepEqual(await kidIds(pip), ["dog"]);
+  await add(pip, [["der Drachen", "kite"], ["der Hund", "dog"], ["der Ball", "ball"]]);
+  await drawAll(pip);
+  await pointAt(pip, "kite", "kite");
+  const pictured = (await pip.call("GET", "/api/game")).body.status.pictured;
+  assert.equal(flagOf(await setAdults(ada, "kite", false), "kite"), false);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: false }]);
+  assert.deepEqual(await kidIds(pip), ["dog", "kite"]);
+  assert.equal((await pip.call("GET", "/api/game")).body.status.pictured, pictured + 1, "the kid's kite word is back in the game");
+
+  // Bad requests: not a boolean, an unknown concept.
+  for (const body of [{}, { adults: "yes" }, { adults: 1 }, null]) assert.equal((await ada.call("POST", "/api/stock-pictures/admin/kite/adults", body)).status, 400, JSON.stringify(body));
+  assert.equal((await setAdults(ada, "nothing-here", true)).status, 404);
+  assert.equal((await setAdults(ada, "Bad_Id", true)).status, 404);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), []);
+});
+
+test("Adults only on a non-admin: a 403 for adults and kids sessions alike, nothing changed", async () => {
+  const sam = await someone([ADULT]);
+  const pip = await someone([KID]);
+  assert.equal((await sam.call("POST", "/api/stock-pictures/admin/missing", { count: 2 })).status, 403);
+  for (const who of [sam, pip]) {
+    assert.equal((await setAdults(who, "dog", true)).status, 403);
+    assert.equal((await setAdults(who, "cat", false)).status, 403);
+  }
+  assert.equal((await client(base).call("POST", "/api/stock-pictures/admin/dog/adults", { adults: true })).status, 401);
+  assert.deepEqual(await q("select concept_id from picture_stock_adults"), []);
+  assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
+});
+
+test("Adults only on a shadowed id: the file's concept is set (a row), the shadowed row's column untouched; deleting the row keeps the setting", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" })).status, 201);
+  await settleStockDraws();
+  fs.appendFileSync(path.join(root, "pictures.yaml"), "  Toys:\n    - { id: kite, description: a blue kite in the sky, words: [kite] }\n");
+  const pip = await someone([KID]);
+  const warn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.deepEqual(await kidIds(pip), ["cat", "dog", "kite"]);
+    const on = await setAdults(ada, "kite", true);
+    assert.equal(on.status, 200, on.text);
+    const k = on.body.concepts.find((c) => c.id === "kite");
+    assert.deepEqual([k.custom, k.adults], [false, true], "the file's concept, now adults only");
+    assert.deepEqual(on.body.shadowed.map((c) => [c.id, c.adults]), [["kite", false]], "the shadowed row is unchanged");
+    assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: false }]);
+    assert.deepEqual(await q("select concept_id, adults from picture_stock_adults"), [{ concept_id: "kite", adults: true }]);
+    assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
+    // The shadowed row goes; the file's concept keeps the admin's setting.
+    assert.equal((await ada.call("POST", "/api/stock-pictures/admin/kite/remove", {})).status, 200);
+    assert.deepEqual(await q("select id from picture_stock_concepts"), []);
+    assert.equal(flagOf(await ada.call("GET", "/api/stock-pictures"), "kite"), true);
+    assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test("Adults only settings that can't be read fail closed: a kids session gets no file concept, an adult's every one", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  const pip = await someone([KID]);
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" })).status, 201);
+  await settleStockDraws();
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...a) => warned.push(a.join(" "));
+  await q("alter table picture_stock_adults rename to picture_stock_adults_away");
+  try {
+    assert.deepEqual(await kidIds(pip), ["kite"], "only the added concept, whose flag is its own column");
+    assert.deepEqual(await kidIds(ada), ["cat", "dog", "kite"]);
+  } finally {
+    await q("alter table picture_stock_adults_away rename to picture_stock_adults");
+    console.warn = warn;
+  }
+  assert.ok(warned.some((w) => /Adults only settings couldn't be read/.test(w)));
+  assert.deepEqual(await kidIds(pip), ["cat", "dog", "kite"]);
 });

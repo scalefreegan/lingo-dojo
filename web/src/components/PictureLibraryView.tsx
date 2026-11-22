@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
-import { addStockConcept, changeStockPicture, drawMissingStock, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
+import { addStockConcept, changeStockPicture, drawMissingStock, setStockAdults, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
 import type { StockConceptView, StockListReply, WordPictureItem, WordPicturesReply } from "../types";
 import { PictureSection, PicturesBar } from "./WordPictures";
 import { Badge, Button, Card, inputClass } from "./ui";
@@ -343,6 +343,13 @@ function SharedLibrary() {
               <StockTile key={c.id} c={c} canEdit={list.canEdit} busy={busy} blocked={!!list.problem || left === 0} onAct={(action) => {
                 if (action === "remove" && !window.confirm(`Delete the shared picture "${label(c.id)}"? Words that use it leave the word game until each is drawn again.`)) return;
                 if (action === "draw" && c.version && !window.confirm(`Draw "${label(c.id)}" again, in the current style? About $${list.costEach.toFixed(3)}.`)) return;
+                if (action === "adults") {
+                  // Setting it is the safe direction (kids lose it at once);
+                  // clearing it lets kids' words be matched to it, so ask.
+                  if (c.adults && !window.confirm(`Let kids learners see "${label(c.id)}"? Their words can be matched to it from the next picture check.`)) return;
+                  void act(() => setStockAdults(c.id, !c.adults));
+                  return;
+                }
                 void act(() => changeStockPicture(c.id, action));
               }} />
             ))}
@@ -355,7 +362,7 @@ function SharedLibrary() {
 
 const label = (id: string) => id.replace(/-/g, " ");
 
-function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; canEdit: boolean; busy: boolean; blocked: boolean; onAct: (action: "draw" | "remove") => void }) {
+function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; canEdit: boolean; busy: boolean; blocked: boolean; onAct: (action: "draw" | "remove" | "adults") => void }) {
   const url = useBlobUrl(c.version ? `${c.id}/${c.version}` : null, (signal) => stockPictureBlob(c.id, c.version!, signal));
   return (
     <li className="flex flex-col gap-1" data-testid="stock-tile" data-concept={c.id}>
@@ -369,8 +376,8 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
       <span className="truncate text-sm font-medium text-fg" title={c.words.join(", ")}>
         {label(c.id)}
       </span>
-      {(c.custom || c.adults) && (
-        <span className="flex flex-wrap gap-1">
+      {(c.custom || c.adults || canEdit) && (
+        <span className="flex flex-wrap items-center gap-1">
           {c.custom && <Badge title="Added from this page">Added</Badge>}
           {c.adults && (
             <span data-testid="stock-adults">
@@ -378,6 +385,20 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
                 Adults only
               </Badge>
             </span>
+          )}
+          {canEdit && (
+            <Button
+              variant="ghost"
+              className={`${small} -ml-1`}
+              disabled={busy}
+              aria-pressed={c.adults}
+              aria-label={c.adults ? `Let kids see ${label(c.id)}` : `Make ${label(c.id)} adults only`}
+              title={c.adults ? "Clear Adults only: kids learners can have this picture" : "Adults only: never shown to kids learners"}
+              onClick={() => onAct("adults")}
+              data-testid="stock-adults-toggle"
+            >
+              {c.adults ? "Allow kids" : "Set adults only"}
+            </Button>
           )}
         </span>
       )}

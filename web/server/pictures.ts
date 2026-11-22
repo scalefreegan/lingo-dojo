@@ -13,10 +13,10 @@ import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer }
 import { isUuid } from "../../scripts/phrases.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
 import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
-import { stockList } from "./stockPictures.ts";
+import { adultsOverrides, stockList } from "./stockPictures.ts";
 import {
   JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, judgePrompt, parseJudgeReply,
-  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, stockForMode, stockKey,
+  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
 import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RestyleReply, WordPictureItem, WordPicturesReply } from "../shared/game.ts";
@@ -205,7 +205,8 @@ async function stockById(): Promise<Map<string, StockConcept> | null> {
     return new Map((await stockList()).map((c) => [c.id, c as StockConcept]));
   } catch {
     try {
-      return new Map(loadPictureStock().concepts.map((c: StockConcept) => [c.id, c]));
+      // With the admin's Adults only settings still laid over the file's.
+      return new Map(mergeStock(loadPictureStock().concepts, [], await adultsOverrides()).concepts.map((c) => [c.id, c as StockConcept]));
     } catch {
       return null;
     }

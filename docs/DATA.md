@@ -3453,6 +3453,9 @@ warning and the file alone when it can't).
     alone (the picture stays); an added one's row and its current-theme
     file are deleted.
   - `concepts` also takes `adults` (true or false; anything else is a 400).
+  - `:id/adults` `{adults}` (true or false; anything else is a 400, an
+    unknown id a 404): sets or clears the concept's Adults only flag
+    (§Adults only, set from the page), and answers the list.
 
 **Drawing.** Queued draws are drawn by one install-wide run, a picture at
 a time, each in the asking admin's background paid slot (the same slot as
@@ -3483,6 +3486,41 @@ learner:
   the session's active learner is a kids learner.
 The shared-library grid shows an "Adults only" badge on both kinds. Added
 concepts have no look-alike `group`.
+
+#### Adults only, set from the page (ld-cvd)
+
+An admin sets or clears any concept's flag from its tile: **Set adults only**
+beside the badges, or **Allow kids** beside the Adults only badge (a
+confirm first: clearing it lets kids' words be matched to it).
+`POST /api/stock-pictures/admin/:id/adults` `{adults}` (auth `admin`):
+
+- An added concept: its own `picture_stock_concepts.adults` is set.
+- A concept of `content/pictures.yaml` (the app never writes `content/`):
+  migration `0018_stock_adults` adds `picture_stock_adults (concept_id
+  text primary key, adults boolean not null, set_by → users ON DELETE SET
+  NULL, updated_at)`, install-wide (no owner, not through `owned.ts`;
+  queries only in `scripts/db/pictureStock.ts`; the reader role gets
+  nothing). A row is kept only while it differs from the file's own flag:
+  setting a concept back to the file's value deletes it, so a later edit
+  of the file is followed again. `mergeStock(base, custom,
+  adultsOverrides)` lays the rows over the file's flags; a row never
+  touches an added concept or a shadowed row (on a shadowed id the toggle
+  sets the file's concept, which is the one in use, and deleting the
+  shadowed row keeps the setting), and a row whose id the file no longer
+  has is ignored.
+- Every reader goes through the server's `stockList` (`listStock` with
+  both), so the effective flag is what `stockForMode` (the check's offer),
+  `playable` (the game's rows and rounds), `visibleTo` (the list) and the
+  file route read, on the next request:
+  - set: a kids session at once gets no listing, a 404 for the file, no
+    word pointing at it in the game or a round's choices, and the check
+    is not offered it;
+  - cleared: a kids session sees and plays it again, and the check offers
+    it from the next picturable check (words already judged keep their
+    verdicts).
+- Fails closed: if the settings can't be read, every file concept counts
+  as Adults only (kids get none of them for that read; an adult's view
+  doesn't depend on the flag), logged.
 
 **Deleting an added concept** deletes its file; words pointing at it leave
 the game until each is drawn again (nothing re-points them; bead filed).
@@ -3783,7 +3821,10 @@ Tests:
 - `scripts/tests/pictures-library.http.test.mjs`: the adult game, My word
   pictures, the stock routes (admin only writes, the ledger and cap, added
   concepts merged and checked, file concepts not deletable, a redraw's new
-  URL).
+  URL, the Adults only toggle both ways on file, added and shadowed
+  concepts, its 403 and failing closed).
+- `scripts/tests/db-migration-0018.test.mjs`: migration
+  `0018_stock_adults` (`picture_stock_adults`; ld-cvd).
 - `scripts/tests/db-migration-0013.test.mjs`: the migration.
 - `scripts/tests/db-migration-0014.test.mjs`: migration
   `0014_phrase_reading` (`phrases.reading`, one nullable text column, no

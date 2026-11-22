@@ -13,7 +13,7 @@
 
 import { asc, eq, gt, lt, sql } from "drizzle-orm";
 import type { Db } from "./owned.ts";
-import { pictureStockCalls, pictureStockConcepts } from "./schema.ts";
+import { pictureStockAdults, pictureStockCalls, pictureStockConcepts } from "./schema.ts";
 
 /** A concept as pictures.mjs mergeStock takes it. */
 export interface CustomConcept {
@@ -50,6 +50,39 @@ export async function addCustomStockConcept(db: Db, c: CustomConcept, createdBy:
 export async function deleteCustomStockConcept(db: Db, id: string): Promise<boolean> {
   const rows = await db.delete(pictureStockConcepts).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
   return rows.length === 1;
+}
+
+/** Set or clear an added concept's Adults only flag; false when there is
+ *  no such row. */
+export async function setCustomStockAdults(db: Db, id: string, adults: boolean): Promise<boolean> {
+  const rows = await db.update(pictureStockConcepts).set({ adults }).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
+  return rows.length === 1;
+}
+
+/** An admin's Adults only setting for a content/pictures.yaml concept, as
+ *  pictures.mjs mergeStock takes it (`adultsOverrides`). */
+export interface AdultsOverride {
+  id: string;
+  adults: boolean;
+}
+
+/** Every Adults only setting an admin made on a file concept (migration 0018). */
+export async function stockAdultsOverrides(db: Db): Promise<AdultsOverride[]> {
+  return db.select({ id: pictureStockAdults.conceptId, adults: pictureStockAdults.adults }).from(pictureStockAdults).orderBy(asc(pictureStockAdults.conceptId));
+}
+
+/** Set a file concept's Adults only flag to `adults`, install-wide. `fileValue`
+ *  is the file's own flag: the same value deletes the row (the file is
+ *  followed again), another one is stored. */
+export async function setStockAdultsOverride(db: Db, id: string, adults: boolean, fileValue: boolean, setBy: string): Promise<void> {
+  if (adults === fileValue) {
+    await db.delete(pictureStockAdults).where(eq(pictureStockAdults.conceptId, id));
+    return;
+  }
+  await db
+    .insert(pictureStockAdults)
+    .values({ conceptId: id, adults, setBy })
+    .onConflictDoUpdate({ target: pictureStockAdults.conceptId, set: { adults, setBy, updatedAt: sql`now()` } });
 }
 
 /** Stock draws started since `since`, install-wide: what the daily cap counts. */
