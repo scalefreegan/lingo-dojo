@@ -1,5 +1,5 @@
 {
-  "id": "5f053468-37e0-442a-aa89-c8fbaf52ba77",
+  "id": "24fca0bc-2e5c-4e3c-914a-7170203e0c9a",
   "prevId": "b6f18be6-8cdb-4ddd-8eeb-fe809ba8b746",
   "version": "7",
   "dialect": "postgresql",
@@ -2991,6 +2991,57 @@
         "picture_pool_words_text": {
           "name": "picture_pool_words_text",
           "value": "char_length(\"picture_pool_words\".\"text\") between 1 and 40"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.picture_shared_refused": {
+      "name": "picture_shared_refused",
+      "schema": "",
+      "columns": {
+        "source_file": {
+          "name": "source_file",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "refused_by": {
+          "name": "refused_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "picture_shared_refused_refused_by_users_id_fk": {
+          "name": "picture_shared_refused_refused_by_users_id_fk",
+          "tableFrom": "picture_shared_refused",
+          "tableTo": "users",
+          "columnsFrom": [
+            "refused_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "picture_shared_refused_file": {
+          "name": "picture_shared_refused_file",
+          "value": "\"picture_shared_refused\".\"source_file\" ~ '^[0-9a-f]{64}$'"
         }
       },
       "isRLSEnabled": false

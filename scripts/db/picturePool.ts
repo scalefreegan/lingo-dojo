@@ -17,7 +17,7 @@ import { normKey } from "../match.mjs";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { absorbPending } from "./phrases.ts";
 import type { StockPointer } from "./pictures.ts";
-import { phraseDismissals, phrasePictures, phrases, picturePoolCalls, picturePoolLevels, picturePoolWords, pictureStockConcepts } from "./schema.ts";
+import { phraseDismissals, phrasePictures, phrases, picturePoolCalls, picturePoolLevels, picturePoolWords, pictureSharedRefused, pictureStockConcepts } from "./schema.ts";
 
 /** The stored words and levels by concept: what the file lacks. */
 export interface StoredPool {
@@ -70,10 +70,21 @@ export async function poolCallDone(db: Db, id: string, outcome: "ok" | "failed")
 
 /* --------------------------------- drawings -------------------------------- */
 
-/** The source files already shared (picture_stock_concepts.source_file). */
+/** The source files never to share (again): the ones shared already
+ *  (picture_stock_concepts.source_file) and the ones an admin took out of
+ *  the pool (picture_shared_refused). */
 export async function sharedFiles(db: Db): Promise<Set<string>> {
-  const rows = await db.select({ f: pictureStockConcepts.sourceFile }).from(pictureStockConcepts).where(isNotNull(pictureStockConcepts.sourceFile));
-  return new Set(rows.map((r) => r.f!));
+  const [rows, refused] = await Promise.all([
+    db.select({ f: pictureStockConcepts.sourceFile }).from(pictureStockConcepts).where(isNotNull(pictureStockConcepts.sourceFile)),
+    db.select({ f: pictureSharedRefused.sourceFile }).from(pictureSharedRefused),
+  ]);
+  return new Set([...rows.map((r) => r.f!), ...refused.map((r) => r.f)]);
+}
+
+/** An admin took the drawing made from `sourceFile` out of the pool: it is
+ *  never shared again (sharedFiles, shareDrawing). Idempotent. */
+export async function refuseSharedFile(db: Db, sourceFile: string, by: string | null): Promise<void> {
+  await db.insert(pictureSharedRefused).values({ sourceFile, refusedBy: by }).onConflictDoNothing();
 }
 
 /**
@@ -87,6 +98,9 @@ export async function shareDrawing(
   d: { id: string; category: string; description: string; words: string[]; sourceFile: string; kidsSafe: boolean | null; createdBy: string; key: string | null; text: string | null },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
+    // Refused meanwhile (an admin removed it while the run read the list).
+    const [refused] = await tx.select({ f: pictureSharedRefused.sourceFile }).from(pictureSharedRefused).where(eq(pictureSharedRefused.sourceFile, d.sourceFile));
+    if (refused) return false;
     const rows = await tx
       .insert(pictureStockConcepts)
       .values({ id: d.id, category: d.category, description: d.description, words: d.words, origin: "drawing", sourceFile: d.sourceFile, kidsSafe: d.kidsSafe, createdBy: d.createdBy })
@@ -142,6 +156,15 @@ export async function takenNorms(db: Db, profile: LanguageProfileRef): Promise<S
     db.select({ key: phraseDismissals.key }).from(phraseDismissals).where(mine.where(phraseDismissals, eq(phraseDismissals.kind, "text"))),
   ]);
   return new Set([...own.map((r) => r.norm!), ...gone.map((r) => r.key)]);
+}
+
+/** Which of `ids` (this profile's pool ids, picture-pool.mjs poolId) are
+ *  phrases of its bank: pool words adopted, edited or not (poolWords
+ *  leaves their concepts out). */
+export async function ownPoolIds(db: Db, profile: LanguageProfileRef, ids: string[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  const rows = await db.select({ id: phrases.id }).from(phrases).where(forLanguageProfile(db, profile).where(phrases, inArray(phrases.id, ids)));
+  return new Set(rows.map((r) => r.id));
 }
 
 /**

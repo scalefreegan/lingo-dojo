@@ -96,7 +96,7 @@ beforeEach(async () => {
   fake.picture("!auto");
   fake.poolWords("!auto");
   fake.kidsCheck("!auto");
-  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls"]) await q(`delete from ${t}`);
+  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls", "picture_shared_refused"]) await q(`delete from ${t}`);
   fs.writeFileSync(
     path.join(root, "pictures.yaml"),
     ["categories:", "  Things:", ...STOCK.map(([id, d, w, extra]) => `    - { id: ${id}, description: ${d}, words: [${w}]${extra ? `, ${extra}` : ""} }`), ""].join("\n"),
@@ -121,10 +121,10 @@ beforeEach(async () => {
 });
 
 let n = 0;
-async function someone(learner = KID, { name } = {}) {
+async function someone(learner = KID, { name, admin = false } = {}) {
   const user = `pool${++n}`;
   const l = { ...learner, ...(name ? { name } : {}) };
-  await addUser(testDb.db, user, undefined, { learners: [l] });
+  await addUser(testDb.db, user, undefined, { admin, learners: [l] });
   const c = client(base);
   await c.login(user);
   await c.pick(l.name);
@@ -351,4 +351,76 @@ test("the naming call: one install-wide run, in the ledger as it starts, never p
   await kid.call("GET", "/api/pictures");
   await settled();
   assert.equal(fake.poolWordsRuns(), calls);
+});
+
+test("a drawing an admin removes from the pool stays out: the owner's next run never shares it again, for kids or adults", async () => {
+  const sam = await someone({ ...ADULT, name: "Sam" });
+  await sam.call("POST", "/api/phrases", { text: "la cometa", meaning: "kite", starred: false });
+  await sam.call("POST", "/api/pictures/fill");
+  await settled();
+  const [c] = await q("select id, source_file from picture_stock_concepts");
+  await q("update picture_stock_concepts set adults = true where id = $1", [c.id]);
+  const ada = await someone({ ...A1_ADULT, name: "Ada" }, { admin: true });
+  const rm = await ada.call("POST", `/api/stock-pictures/admin/${c.id}/remove`);
+  assert.equal(rm.status, 200, rm.text);
+  assert.deepEqual((await q("select source_file from picture_shared_refused")).map((r) => r.source_file), [c.source_file]);
+  // The owner's picture is still theirs and ready; their runs go on.
+  assert.equal((await q("select status from phrase_pictures where file = $1", [c.source_file]))[0].status, "ready");
+  await sam.call("POST", "/api/game/start", {});
+  await settled();
+  resetPictureMemory();
+  await sam.call("POST", "/api/pictures/fill");
+  await settled();
+  assert.equal((await q("select count(*)::int n from picture_stock_concepts"))[0].n, 0, "never shared again (so never without its Adults only)");
+  assert.equal(stockPicture(PICTURE_THEME.id, c.id), null);
+  const kid = await someone(KID, { name: "Kit" });
+  for (const who of [kid, ada]) {
+    const rounds = (await who.call("POST", "/api/game/start", who === ada ? { level: "B2" } : {})).body.rounds;
+    assert.ok(!rounds.some((x) => x.phraseId === poolId("phrase", who.languageId, c.id)));
+    assert.equal((await who.call("GET", `/api/game/pictures/${poolId("picture", who.languageId, c.id)}/x`)).status, 404);
+  }
+});
+
+test("a pool word adopted, then edited and drawn again, is the learner's word: its concept never comes back into the pool under its id", async () => {
+  const lee = await someone(A1_ADULT);
+  const start = async () => (await lee.call("POST", "/api/game/start", {})).body.rounds;
+  const round = (await start()).find((x) => conceptOf(lee, x.phraseId) === "dog");
+  assert.equal((await answer(lee, round, rightPicture(lee, round))).status, 200);
+  let s = await status(lee);
+  assert.deepEqual([s.pictured, s.pool], [1, 3]);
+  const edit = await lee.call("PATCH", `/api/phrases/${round.phraseId}`, { text: "el perrito", meaning: "puppy" });
+  assert.equal(edit.status, 200, edit.text);
+  // Edited, its stock picture no longer fits: judged and drawn again.
+  assert.equal((await lee.call("POST", "/api/pictures/fill")).status, 202);
+  await settled();
+  const [row] = await q("select id, status, stock_id from phrase_pictures where phrase_id = $1", [round.phraseId]);
+  assert.deepEqual([row.status, row.stock_id], ["ready", null], "its own drawing now");
+  s = await status(lee);
+  assert.deepEqual([s.pictured, s.pool], [1, 3], "the dog's concept stays out: its pool id is the learner's phrase");
+  const rounds = await start();
+  assert.equal(rounds.filter((x) => x.phraseId === round.phraseId).length, 1);
+  assert.deepEqual(rounds.filter((x) => x.phraseId !== round.phraseId).map((x) => conceptOf(lee, x.phraseId)).sort(), ["apple", "ball", "cat"], "the pool's: the dog's id is theirs");
+  const own = rounds.find((x) => x.phraseId === round.phraseId);
+  assert.ok(own.choices.some((c) => c.id === row.id), "its round shows its own picture");
+  const r = await answer(lee, own, row.id);
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual([r.body.right, r.body.word.text], [true, "el perrito"]);
+});
+
+test("a pool word the learner added themselves since the round was drawn: the tap is a stale round (409), never another phrase's answer", async () => {
+  const lee = await someone(A1_ADULT);
+  const round = (await lee.call("POST", "/api/game/start", {})).body.rounds.find((x) => conceptOf(lee, x.phraseId) === "cat");
+  assert.equal((await lee.call("POST", "/api/phrases", { text: "el gato", meaning: "cat", starred: false })).status, 201);
+  const r = await answer(lee, round, rightPicture(lee, round));
+  assert.equal(r.status, 409, r.text);
+  assert.equal((await q("select count(*)::int n from phrases where language_profile_id = $1", [lee.languageId]))[0].n, 1);
+  assert.equal((await q("select count(*)::int n from reviews where language_profile_id = $1", [lee.languageId]))[0].n, 0, "nothing recorded");
+});
+
+test("a kids learner has no level choice: a level sent with the game's start is ignored, and an above-level word is not reachable", async () => {
+  const kid = await someone(KID);
+  const r = await kid.call("POST", "/api/game/start", { level: "B2" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.body.rounds.map((x) => conceptOf(kid, x.phraseId)).sort(), ["apple", "ball", "cat", "dog"]);
+  assert.equal((await kid.call("GET", `/api/game/pictures/${poolId("picture", kid.languageId, "passport")}/x`)).status, 404);
 });

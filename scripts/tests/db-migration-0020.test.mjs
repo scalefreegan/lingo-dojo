@@ -60,6 +60,11 @@ test("0020 on a 0019 database: the rows there are an admin's concepts; a drawing
   await assert.rejects(query(`insert into picture_pool_calls (concepts) values (0)`), /picture_pool_calls_concepts/);
   await assert.rejects(query(`insert into picture_pool_calls (concepts, outcome) values (1, 'maybe')`), /picture_pool_calls_outcome/);
 
+  // A drawing an admin removed from the pool: once per file, a file's shape.
+  await query(`insert into picture_shared_refused (source_file) values ($1)`, [FILE]);
+  await assert.rejects(query(`insert into picture_shared_refused (source_file) values ($1)`, [FILE]), /picture_shared_refused_pkey/);
+  await assert.rejects(query(`insert into picture_shared_refused (source_file) values ('nope')`), /picture_shared_refused_file/);
+
   // A phrase may come from the picture game; kids_safe on a picture row is a plain nullable column.
   const [{ constraint }] = await query(`select pg_get_constraintdef(oid) as constraint from pg_constraint where conname = 'phrases_source'`);
   assert.match(constraint, /'picture'/);

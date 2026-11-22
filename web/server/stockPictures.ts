@@ -381,7 +381,7 @@ export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse
     // Only a concept added from the page; the file's belong to the content
     // agent (a route never writes content/).
     if (!concept.custom) throw new HttpError(409, "This picture comes from the app's own list (content/pictures.yaml): it can be drawn again, not deleted.");
-    if (!(await deleteCustomStockConcept(rawDb(), id))) throw new HttpError(404, "no such shared picture");
+    if (!(await deleteCustomStockConcept(rawDb(), id, ctx.user.id))) throw new HttpError(404, "no such shared picture");
     queue.delete(id);
     // Its picture goes with it. Words that pointed at it leave the word
     // game until each is drawn again (picture-store.mjs: a stock file is

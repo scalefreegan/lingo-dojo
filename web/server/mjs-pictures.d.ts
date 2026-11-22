@@ -169,6 +169,7 @@ declare module "*/scripts/picture-pool.mjs" {
     locale: string;
     nativeLocale?: string;
     taken?: Set<string>;
+    ownIds?: Set<string>;
     ownRows?: Map<string, { stockId?: string | null }>;
     cap?: string;
     profileId: string;

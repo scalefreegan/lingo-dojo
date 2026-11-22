@@ -1147,6 +1147,24 @@ export const picturePoolCalls = pgTable(
   ],
 );
 
+/**
+ * A learner's drawing an admin took out of the shared pool (migration
+ * 0020): its owner's picture row is still ready, so without this the next
+ * picture run would share it again under the same id, with any Adults only
+ * flag lost. Keyed by the source file: a redraw is a new file and may be
+ * shared. Never deleted by the app. The reader role gets nothing on it.
+ */
+export const pictureSharedRefused = pgTable(
+  "picture_shared_refused",
+  {
+    sourceFile: text("source_file").primaryKey(),
+    /** The admin who removed it (provenance). */
+    refusedBy: uuid("refused_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [check("picture_shared_refused_file", sql`${t.sourceFile} ~ '^[0-9a-f]{64}$'`)],
+);
+
 /* ---------------------------- Mandarin readings ---------------------------- */
 
 /**

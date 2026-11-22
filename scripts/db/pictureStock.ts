@@ -14,7 +14,7 @@
 import { asc, eq, gt, lt, sql } from "drizzle-orm";
 import type { Db } from "./owned.ts";
 import { loadPictureStock } from "../content.mjs";
-import { forgetPoolWords } from "./picturePool.ts";
+import { forgetPoolWords, refuseSharedFile } from "./picturePool.ts";
 import { pictureStockAdults, pictureStockCalls, pictureStockConcepts } from "./schema.ts";
 
 /** The ids content/pictures.yaml has (a shadowed added row shares one). */
@@ -67,9 +67,12 @@ export async function addCustomStockConcept(db: Db, c: CustomConcept, createdBy:
 
 /** Delete an added concept; false when there is no such row (a concept of
  *  content/pictures.yaml is never a row, so it can't be deleted here). */
-export async function deleteCustomStockConcept(db: Db, id: string): Promise<boolean> {
+export async function deleteCustomStockConcept(db: Db, id: string, by: string | null = null): Promise<boolean> {
   return db.transaction(async (tx) => {
-    const rows = await tx.delete(pictureStockConcepts).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
+    const rows = await tx.delete(pictureStockConcepts).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id, sourceFile: pictureStockConcepts.sourceFile });
+    // A learner's shared drawing stays out: its owner's picture is still
+    // ready, and the next picture run would share it again (ld-ec9).
+    if (rows[0]?.sourceFile) await refuseSharedFile(tx, rows[0].sourceFile, by);
     // Its words in the picture pool go with it (picturePool.ts), unless the
     // file has a concept of that id (a shadowed row): the file's then own them.
     if (rows.length === 1 && !shadowedIds().has(id)) await forgetPoolWords(tx, id);

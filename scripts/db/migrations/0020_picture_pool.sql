@@ -27,12 +27,20 @@ CREATE TABLE "picture_pool_words" (
 	CONSTRAINT "picture_pool_words_text" CHECK (char_length("picture_pool_words"."text") between 1 and 40)
 );
 --> statement-breakpoint
+CREATE TABLE "picture_shared_refused" (
+	"source_file" text PRIMARY KEY NOT NULL,
+	"refused_by" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "picture_shared_refused_file" CHECK ("picture_shared_refused"."source_file" ~ '^[0-9a-f]{64}$')
+);
+--> statement-breakpoint
 ALTER TABLE "phrases" DROP CONSTRAINT "phrases_source";--> statement-breakpoint
 ALTER TABLE "phrase_pictures" ADD COLUMN "kids_safe" boolean;--> statement-breakpoint
 ALTER TABLE "picture_stock_concepts" ADD COLUMN "origin" text DEFAULT 'admin' NOT NULL;--> statement-breakpoint
 ALTER TABLE "picture_stock_concepts" ADD COLUMN "source_file" text;--> statement-breakpoint
 ALTER TABLE "picture_stock_concepts" ADD COLUMN "kids_safe" boolean;--> statement-breakpoint
 ALTER TABLE "picture_pool_calls" ADD CONSTRAINT "picture_pool_calls_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "picture_shared_refused" ADD CONSTRAINT "picture_shared_refused_refused_by_users_id_fk" FOREIGN KEY ("refused_by") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "picture_pool_calls_created_idx" ON "picture_pool_calls" USING btree ("created_at");--> statement-breakpoint
 ALTER TABLE "picture_stock_concepts" ADD CONSTRAINT "picture_stock_concepts_source_file" UNIQUE("source_file");--> statement-breakpoint
 ALTER TABLE "phrases" ADD CONSTRAINT "phrases_source" CHECK ("phrases"."source" in ('gloss', 'extraction', 'manual', 'scenario', 'picture'));--> statement-breakpoint

@@ -5,13 +5,13 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { allLearnerNames } from "../../scripts/db/accounts.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import {
-  poolCallDone, poolCallStarted, poolCallsSince, setDrawingKidsSafe, shareDrawing, sharedFiles, storePoolWords, storedPool, takenNorms, uncheckedDrawings, unshareDrawing,
+  ownPoolIds, poolCallDone, poolCallStarted, poolCallsSince, setDrawingKidsSafe, shareDrawing, sharedFiles, storePoolWords, storedPool, takenNorms, uncheckedDrawings, unshareDrawing,
   type StoredPool,
 } from "../../scripts/db/picturePool.ts";
 import { pictureCallDone, pictureCallStarted, pictureCallsSince, type PictureRow } from "../../scripts/db/pictures.ts";
 import { POOL_WORDS_FILE, contentRoot, loadPoolWords } from "../../scripts/content.mjs";
 import {
-  KIDS_CHECK_BATCH, POOL_DAILY_CALLS, POOL_LANGS, POOL_WORDS_BATCH, SHARED_CATEGORY, checkPoolWord, kidsCheckPrompt, parseKidsCheckReply, parsePoolWordsReply, poolKey,
+  KIDS_CHECK_BATCH, POOL_DAILY_CALLS, POOL_LANGS, POOL_WORDS_BATCH, SHARED_CATEGORY, checkPoolWord, kidsCheckPrompt, parseKidsCheckReply, parsePoolWordsReply, poolId, poolKey,
   poolWords, poolWordsPrompt, shareable, sharedConceptId, sharedWords,
 } from "../../scripts/picture-pool.mjs";
 import { PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, stockForMode } from "../../scripts/pictures.mjs";
@@ -109,6 +109,14 @@ async function drawnConcepts() {
   }
 }
 
+/** Whether `id` is this language profile's pool id of some drawn concept,
+ *  whatever the learner's mode, level or bank: a round's word the pool no
+ *  longer offers (added to the bank meanwhile, the concept removed) is a
+ *  stale round, not an unknown word. */
+export async function isPoolPhraseId(profileId: string, id: string): Promise<boolean> {
+  return (await drawnConcepts()).some((c) => poolId("phrase", profileId, c.id) === id);
+}
+
 /** One learner's pool words (picture-pool.mjs poolWords): the drawn
  *  concepts a learner of `mode` may see (stockForMode: no adults-only
  *  concept, and no drawing whose kids check hasn't said yes, for a kids
@@ -116,13 +124,18 @@ async function drawnConcepts() {
 export async function poolFor(input: { profile: LanguageProfileRef; mode: string; locale: string; nativeLocale: string; cap: string; ownRows: Map<string, PictureRow> }) {
   const drawn = stockForMode(await drawnConcepts(), input.mode);
   const types = new Map(drawn.map((c) => [c.id, c.drawn!.type]));
-  const [stored, taken] = await Promise.all([storedPool(rawDb()), takenNorms(rawDb(), input.profile)]);
+  const [stored, taken, ownIds] = await Promise.all([
+    storedPool(rawDb()),
+    takenNorms(rawDb(), input.profile),
+    ownPoolIds(rawDb(), input.profile, drawn.map((c) => poolId("phrase", input.profile.id, c.id))),
+  ]);
   return poolWords({
     concepts: drawn,
     entry: (id: string) => entryOf(stored, id),
     locale: input.locale,
     nativeLocale: input.nativeLocale || "en-US",
     taken,
+    ownIds,
     ownRows: input.ownRows,
     cap: input.cap,
     profileId: input.profile.id,

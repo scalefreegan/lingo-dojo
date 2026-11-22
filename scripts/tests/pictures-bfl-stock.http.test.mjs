@@ -124,7 +124,7 @@ beforeEach(async () => {
   // Drawings are shared install-wide (ld-ec9): each test starts with none.
   await settlePoolWords();
   resetPoolMemory();
-  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls"]) await q(`delete from ${t}`);
+  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls", "picture_shared_refused"]) await q(`delete from ${t}`);
   resetPictureMemory();
   Object.assign(BFL_TIMING, REAL_TIMING, { pollMs: 5 });
   Object.assign(bfl, { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2, sample: null, fail: null, failing: new Set() });

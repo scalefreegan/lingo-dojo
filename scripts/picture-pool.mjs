@@ -347,13 +347,16 @@ export function poolId(kind, profileId, conceptId) {
  *    picture rows: a concept one of their words already points at, or
  *    whose word they already have, is theirs, not the pool's; a word two
  *    concepts share is the first's;
+ *  - `ownIds`: the learner's phrase ids (scripts/db/picturePool.ts
+ *    ownPoolIds): a pool word they adopted keeps its id whatever it is
+ *    edited to, so that concept is never a pool word for them again;
  *  - `cap`: the level the pool reaches (levelCap, or the game's choice).
  * Each pool word is a phrase-shaped record (`pool: { conceptId, level }`,
  * no cards: never played) with a ready row pointing at the stock picture
  * (`stockId`, `file` = stockKey), ids from poolId. `byLevel` counts the
  * words at each level before the cap (the game's level picker).
  */
-export function poolWords({ concepts, entry, locale, nativeLocale = "en-US", taken: takenNorms = new Set(), ownRows = new Map(), cap = "A1", profileId, theme, contentTypeOf = () => "image/png" }) {
+export function poolWords({ concepts, entry, locale, nativeLocale = "en-US", taken: takenNorms = new Set(), ownIds = new Set(), ownRows = new Map(), cap = "A1", profileId, theme, contentTypeOf = () => "image/png" }) {
   const taken = new Set(takenNorms);
   const pointed = new Set();
   for (const r of ownRows.values()) if (r?.stockId) pointed.add(r.stockId);
@@ -361,7 +364,9 @@ export function poolWords({ concepts, entry, locale, nativeLocale = "en-US", tak
   const rows = new Map();
   const byLevel = Object.fromEntries(POOL_LEVELS.map((l) => [l, 0]));
   for (const c of concepts) {
-    if (pointed.has(c.id)) continue;
+    // Adopted once and edited since (its words no longer the pool's): the
+    // id is the learner's phrase now, never a pool word again.
+    if (pointed.has(c.id) || ownIds.has(poolId("phrase", profileId, c.id))) continue;
     const e = entry(c.id);
     const text = e ? wordFor(e.words, locale) : null;
     if (!e || !text) continue;

@@ -192,6 +192,9 @@ test("pool ids are the same on every read and differ per language profile; a lea
   assert.match(poolId("picture", PROFILE, "dog"), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   const own = pool({ taken: new Set([normKey("der Hund")]), ownRows: new Map([["x", { stockId: "cat" }]]) });
   assert.deepEqual(own.phrases.map((p) => p.pool.conceptId), ["boy", "brother"]);
+  // A pool word adopted and edited since keeps its id: that concept is no pool word again.
+  assert.ok(!pool({ ownIds: new Set([poolId("phrase", PROFILE, "dog")]) }).phrases.some((p) => p.pool.conceptId === "dog"));
+  assert.ok(pool({ ownIds: new Set([poolId("phrase", OTHER, "dog")]) }).phrases.some((p) => p.pool.conceptId === "dog"));
 });
 
 const phrase = (id, text, meaning, extra = {}) => ({ id, text, meaning, lang: "de-DE", starred: false, suspended: false, lastSeenAt: null, createdAt: NOW, alternates: [], cards: [], ...extra });

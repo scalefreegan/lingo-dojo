@@ -276,7 +276,8 @@ picture pool):
   - It is never shared if it names any learner on the install.
   - It reaches kids only with `kids_safe` true. That verdict comes from
     the picturable check, or from the kids check on the judge ledger.
-  - Remove or Draw again unshares it.
+  - Remove or Draw again unshares it; an admin's removal is kept in
+    `picture_shared_refused`, so it is never shared again.
 - **Words.** Each concept's word per language and its level:
   - stock concepts: the reviewed `content/picture-words.yaml`
     (`npm run pictures:words` drafts it);

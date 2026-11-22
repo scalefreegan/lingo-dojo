@@ -3916,7 +3916,11 @@ current theme are shared once per file:
 is so a picture a grown-up took away isn't still shown to everyone else.
 Deleting the phrase does not unshare: the copy stays in the pool. An
 admin can delete a shared concept from the Shared library like any added
-one; its pool words go with it.
+one; its pool words go with it, and its source file is written to
+`picture_shared_refused` so it is never shared again (`sharedFiles` and
+`shareDrawing` skip it): the owner's picture is still ready, and without
+that their next picture run would bring it back under the same id, with
+any Adults only flag lost. A redraw is a new file, and may be shared.
 
 **Kids.** A shared drawing reaches kids only when
 `picture_stock_concepts.kids_safe` is true. `mergeStock` treats anything
@@ -3984,16 +3988,20 @@ the naming call, stored once.
 - The adult Pictures home has **Pool words: up to A1 / A2 / B1 / B2**
   (shown when the pool reaches past the default). It sends `{ level }`
   with `POST /api/game/start`; any other value is a 400.
-- The kids game has no picker.
+- The kids game has no picker, and a `level` a kids learner sends is
+  ignored: the start, the answer, audio and pictures all use their own
+  cap.
 - The learner's own words are always in, whatever their level.
-- Answers, audio and picture fetches look a pool word up at B2, since a
-  round may have been drawn at any level.
+- An adult's answers, audio and picture fetches look a pool word up at
+  B2, since a round may have been drawn at any level.
 
 **What the game plays** (`gameWords`): the learner's own pictured words,
 then the pool's words for their language up to the level.
 - A pool word whose text is already a word of theirs (by `normKey`),
   or dismissed, or whose concept one of their words already points at,
-  is left out. So is a second concept with the same word.
+  is left out. So is a second concept with the same word, and a concept
+  whose pool id is already one of their phrases (a pool word they
+  adopted and edited since keeps that id: `ownPoolIds`, `ownIds`).
 - Order (`gameRounds`): due words, then their own new words, then pool
   words (the easier level first, shuffled by a seed of the language and
   the day), then the rest. At most `GAME_ROUNDS` = 8.
@@ -4013,6 +4021,11 @@ FSRS card. A resend replays. After that it is the learner's word (counted
 as theirs, out of the pool), with its flashcards like any bank word. The
 Phrase bank names the source "the picture game's shared pictures". An
 adult's bank gets only the words they actually played.
+A tap on a pool word the pool no longer gives this learner (they added
+the same words themselves since the round was drawn, or it left the
+pool) is a stale round, a 409 with nothing recorded, never an answer to
+another phrase; so is an adoption that finds the words already in the
+bank.
 
 **Audio and pictures.**
 - A pool word's sound is `wordClip`: the native default voice, as for
@@ -4040,6 +4053,8 @@ TABLE ADD COLUMN / ADD CONSTRAINT, valid on PostgreSQL 17:
 - `picture_pool_levels (concept_id primary key, level in A1–B2)`.
 - `picture_pool_calls (id, user_id → users set null, concepts > 0,
   outcome ok | failed | null, created_at indexed)`: the naming ledger.
+- `picture_shared_refused (source_file primary key, 64 hex; refused_by
+  → users set null; created_at)`: drawings an admin removed from the pool.
 
 Tests:
 - `scripts/tests/picture-pool.test.mjs`: the pure rules. Levels and the
@@ -4057,7 +4072,10 @@ Tests:
   - Kids never get an unchecked or unsafe adult drawing; the check runs
     on the judge ledger and stops at its cap.
   - A name-bearing drawing is never shared.
-  - Remove unshares.
+  - Remove unshares; an admin's removal stays (never re-shared).
+  - An adopted word edited and drawn again never comes back into the
+    pool under its id; a word added meanwhile is a stale round (409).
+  - A kids learner's `level` is ignored.
   - The naming cap and ledger, and a failed call.
 - `scripts/tests/db-migration-0020.test.mjs`: the migration.
 
