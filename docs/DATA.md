@@ -3880,8 +3880,9 @@ The rules:
 
 A kids learner's uncertain readings are settled, not only marked
 (docs/VOICE.md §Kids: marks and resolving). Migration
-`0017_kids_reading_checks` was generated, not hand-edited: one plain
-CREATE TABLE and an index, nothing PostgreSQL 18 only.
+`0017_kids_reading_checks` was generated, not hand-edited: a plain
+CREATE TABLE and its index, and a nullable column with a check on
+`reading_corrections`; nothing PostgreSQL 18 only.
 
 ```
 reading_check_calls   the ledger of a kids session's background reading checks
@@ -3890,6 +3891,9 @@ reading_check_calls   the ledger of a kids session's background reading checks
   settled        how many answers passed the checks and were stored; null
                  while it runs or when it got no reply
   created_at     (indexed with language_profile_id: the daily cap)
+reading_corrections.checked_by   session | recap: which model call settled a
+                 `recap` row; null for a hand choice (cleared when one
+                 replaces it) and for rows from before 0017
 ```
 
 The rules:
@@ -3901,16 +3905,20 @@ The rules:
   `forLanguageProfile`.
 - An accepted answer goes to `reading_corrections` as a recap's does
   (`saveRecapReading`: source `recap`, never over a hand choice) and casts
-  **no shared vote**. For a kids learner, every `recap` row settles the
-  word (`splitMine` with `kids`); for an adult, nothing changed.
+  **no shared vote**. For a kids learner it is stored `confirmed`, agreeing
+  or not, so it settles the word, with `checked_by`; for an adult, nothing
+  changed. Older kids `suggested` rows stay suggestions (still waiting).
+  The grown-up sees these rows (`checked` in `GET /api/readings/waiting`)
+  and may remove one (`POST /api/readings/back`, `removeRecapReading`:
+  source `recap` only).
 - A kids learner's word still uncertain (with that learner's corrections
   and the shared list) is kept out of the picture game's rounds, answers,
   status and the bank's picture filter (`settledForKids`), and listed by
   `GET /api/readings/waiting`. Its `phrase_pictures` row is drawn as
   usual.
 - A kids learner's grown-up may write `reading_corrections` by hand
-  (`POST /api/readings`, no longer a 403): the account's own choice, and
-  its shared vote, like an adult's.
+  (`POST /api/readings`, no longer a 403): that learner's own, with no
+  shared vote, even on an admin's login.
 - Tests: `scripts/tests/db-migration-0017.test.mjs`,
   `scripts/tests/kids-readings.http.test.mjs`.
 

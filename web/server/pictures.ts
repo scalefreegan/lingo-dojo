@@ -547,12 +547,15 @@ export async function pictureWordIds(profile: LanguageProfileRef, mode: string, 
  *  draw, or words to judge with no stock picture to match them to). */
 async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
   const profile = profileOf(ctx);
-  const [phrases, rows, images, audio] = await Promise.all([
-    gameCandidates(profile, ctx.learner.mode, ctx.language),
+  const [all, rows, images, audio] = await Promise.all([
+    practiceCandidates(rawDb(), profile),
     pictureRows(rawDb(), profile),
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
+  // As gameCandidates: a kids word still uncertain is held back (counted, so
+  // the grown-up is told why the game may be short of words).
+  const phrases = await settledForKids(profile, ctx.learner.mode === "kids", mandarinLocale(ctx.language), all);
   const note = audio ? null : await audioNote(ctx);
   const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
@@ -579,6 +582,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     needKey: provider.problem() && !restyling ? outOfTheme : 0,
     imagesToday: images,
     imagesCap: PICTURE_DAILY_IMAGES,
+    heldForReading: all.length - phrases.length,
   };
 }
 

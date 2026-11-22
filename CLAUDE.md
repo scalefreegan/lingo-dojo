@@ -215,8 +215,11 @@ Settled readings and kids readings (ld-0mn, migration 0017, docs/VOICE.md
 - Kids see the marks ("pronunciation being checked") with nothing to
   press; the grown-up's side is the Phrase bank (`grownUp` in the
   `ScriptContext`): the control, and **Words waiting for a pronunciation
-  check** (`GET /api/readings/waiting`). `POST /api/readings` takes a kids
-  learner's grown-up.
+  check** and **Checked by the program** (`GET /api/readings/waiting`;
+  Back to waiting is `POST /api/readings/back`). `POST /api/readings`
+  takes a kids learner's grown-up, with no shared vote. A recap's or the
+  check's answer with a toneless syllable stands only where the word has
+  that neutral tone (`neutralsHold`).
 - A kids Mandarin session's uncertain words (the dojo master's lines only)
   are checked in the background, one tool-less Haiku call per batch
   (`web/server/sessionReadings.ts`), validated like the recap's, stored as

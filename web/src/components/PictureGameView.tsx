@@ -395,6 +395,8 @@ export default function PictureGameView({
  *  are waiting and nothing stands in the way. */
 function NotReady({ status, busy, onDraw }: { status: PictureStatus; busy: boolean; onDraw: () => void }) {
   const lines: string[] = [`The picture game needs at least 3 words with pictures; ${status.pictured === 0 ? "none has one" : `${status.pictured} ${status.pictured === 1 ? "has" : "have"} one`} so far.`];
+  if (status.heldForReading > 0)
+    lines.push(`${status.heldForReading} word${status.heldForReading === 1 ? " is" : "s are"} waiting for a pronunciation check in the Phrase bank; ${status.heldForReading === 1 ? "it joins" : "they join"} the game once checked.`);
   if (status.problem) lines.push(status.problem);
   else if (status.drawing) lines.push("Pictures are being drawn now.");
   else if (status.limited) lines.push("Today's pictures for this language are drawn; more tomorrow.");

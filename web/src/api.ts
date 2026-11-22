@@ -629,6 +629,10 @@ export function getWaitingWords(): Promise<WaitingWordsReply> {
   return req<WaitingWordsReply>("/api/readings/waiting");
 }
 
+export function sendBackToWaiting(word: string): Promise<{ ok: true }> {
+  return req<{ ok: true }>("/api/readings/back", json({ word }));
+}
+
 export function saveReading(body: ReadingSaveRequest): Promise<ReadingSaveReply> {
   return req<ReadingSaveReply>("/api/readings", json(body));
 }

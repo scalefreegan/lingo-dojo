@@ -48,9 +48,23 @@ export interface WaitingWord {
   phraseId: string;
 }
 
+/** A word whose reading a model settled for a kids learner (ld-0mn): the
+ *  grown-up sees it and may confirm it, correct it, or send it back to
+ *  waiting (POST /api/readings/back). */
+export interface CheckedWord {
+  word: string;
+  /** One tone-marked syllable per character, space separated. */
+  reading: string;
+  /** session: the background check during a session; recap: the recap. */
+  by: "session" | "recap";
+  /** When it was settled (ISO). */
+  at: string;
+}
+
 /** GET /api/readings/waiting: a kids learner's (an adult's is empty). */
 export interface WaitingWordsReply {
   words: WaitingWord[];
+  checked: CheckedWord[];
 }
 
 /** POST /api/readings */

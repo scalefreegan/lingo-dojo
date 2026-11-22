@@ -87,9 +87,9 @@ const CHILD_SAYS = "我的秘密叫长着";
 const pack = { title: "", created: "", scenario: "errand", quick_scenario: "", units: [], overrides: {}, notes: "" };
 
 let n = 0;
-async function someone(learner = KID_CN) {
+async function someone(learner = KID_CN, { admin = false } = {}) {
   const name = `kr${++n}`;
-  await addUser(testDb.db, name, undefined, { learners: [learner] });
+  await addUser(testDb.db, name, undefined, { learners: [learner], admin });
   const c = client(base);
   await c.login(name);
   await c.pick(learner.name);
@@ -109,7 +109,7 @@ async function turns(who, mode = "kids", count = 2) {
   }
   return c;
 }
-const rows = (who) => q("select word, reading, kind, source from reading_corrections where language_profile_id = $1 order by word", [who.languageId]);
+const rows = (who) => q("select word, reading, kind, source, checked_by from reading_corrections where language_profile_id = $1 order by word", [who.languageId]);
 const ledger = (who) => q("select words, settled from reading_check_calls where language_profile_id = $1 order by created_at", [who.languageId]);
 const speak = (c, text) => c.call("POST", "/api/voice/speak", { speaker: "narrator", gender: "female", text, locale: "zh-CN" });
 const promptOf = () => {
@@ -140,8 +140,8 @@ test("a kids session's uncertain words: one background check, the dojo master's 
   assert.match(all, /--model claude-haiku-5-5/);
 
   assert.deepEqual(await rows(bo), [
-    { word: "倒车", reading: "dào chē", kind: "suggested", source: "recap" },
-    { word: "得去", reading: "děi qù", kind: "suggested", source: "recap" },
+    { word: "倒车", reading: "dào chē", kind: "confirmed", source: "recap", checked_by: "session" },
+    { word: "得去", reading: "děi qù", kind: "confirmed", source: "recap", checked_by: "session" },
   ]);
   assert.deepEqual(await ledger(bo), [{ words: 2, settled: 2 }]);
   assert.equal((await q("select count(*)::int as n from shared_readings"))[0].n, 0, "no shared suggestion");
@@ -235,4 +235,59 @@ test("settled by the session's check, the word enters the game too; an adult's g
   const { who: lin, ids: adultIds } = await withPictures(ADULT_CN);
   assert.ok((await inGame(lin)).has(adultIds["倒车"]), "an adult plays an uncertain word, as before");
   assert.deepEqual((await lin.call("GET", "/api/readings/waiting")).body.words, []);
+});
+
+test("the grown-up sees what the program settled, and can confirm it, correct it or send it back to waiting (PR #68 review)", async () => {
+  const { who: bo, ids } = await withPictures(KID_CN);
+  assert.equal((await bo.call("GET", "/api/game")).body.status.heldForReading, 1, "the game says a word is held back");
+  fake.readings(JSON.stringify({ readings: [{ word: "倒车", pinyin: "dào chē" }, { word: "得去", pinyin: "děi qù" }] }));
+  await turns(bo, "kids", 1);
+  let r = await bo.call("GET", "/api/readings/waiting");
+  assert.deepEqual(r.body.words, []);
+  assert.deepEqual(r.body.checked.map((c) => [c.word, c.reading, c.by]).sort(), [["倒车", "dào chē", "session"], ["得去", "děi qù", "session"]]);
+  assert.ok(r.body.checked.every((c) => !Number.isNaN(Date.parse(c.at))));
+  assert.equal((await bo.call("GET", "/api/game")).body.status.heldForReading, 0);
+  assert.ok((await inGame(bo)).has(ids["倒车"]));
+
+  // Back to waiting: uncertain again, listed, out of the game.
+  const back = await bo.call("POST", "/api/readings/back", { word: "倒车" });
+  assert.equal(back.status, 200, back.text);
+  r = await bo.call("GET", "/api/readings/waiting");
+  assert.deepEqual(r.body.words.map((w) => w.word), ["倒车"]);
+  assert.deepEqual(r.body.checked.map((c) => c.word), ["得去"]);
+  assert.ok(!(await inGame(bo)).has(ids["倒车"]));
+  assert.equal((await bo.call("POST", "/api/readings/back", { word: "倒车" })).status, 404, "nothing left to send back");
+
+  // This is right: a hand choice now, off the program's list; a hand choice
+  // is never sent back.
+  assert.equal((await bo.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "confirmed" })).status, 200);
+  assert.deepEqual((await bo.call("GET", "/api/readings/waiting")).body.checked, []);
+  assert.equal((await bo.call("POST", "/api/readings/back", { word: "得去" })).status, 404);
+  assert.equal((await bo.call("POST", "/api/readings/back", { word: "x" })).status, 400);
+
+  // An adult has no such lists.
+  const lin = await someone(ADULT_CN);
+  assert.deepEqual((await lin.call("GET", "/api/readings/waiting")).body, { words: [], checked: [] });
+});
+
+test("a kids recap suggestion from before the change is not settled: it waits, out of the game", async () => {
+  const { who: bo, ids } = await withPictures(KID_CN);
+  await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ((select learner_id from language_profiles where id = $1), $1, '倒车', '倒车', 'dào chē', 'suggested', 'recap')", [bo.languageId]);
+  const r = await bo.call("GET", "/api/readings/waiting");
+  assert.deepEqual(r.body.words.map((w) => w.word), ["倒车"]);
+  assert.deepEqual(r.body.checked, []);
+  assert.ok(!(await inGame(bo)).has(ids["倒车"]));
+});
+
+test("a kids learner's hand choice casts no shared vote, even on an admin's login (PR #68 review)", async () => {
+  const bo = await someone(KID_CN, { admin: true });
+  const r = await bo.call("POST", "/api/readings", { word: "倒车", reading: "dào chē", kind: "corrected" });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.shared, null);
+  assert.deepEqual(await rows(bo), [{ word: "倒车", reading: "dào chē", kind: "corrected", source: "user", checked_by: null }]);
+  assert.equal((await q("select count(*)::int as n from shared_readings"))[0].n, 0);
+  assert.equal((await q("select count(*)::int as n from shared_reading_votes"))[0].n, 0);
+  // An adult admin's is active at once, as before.
+  const ada = await someone(ADULT_CN, { admin: true });
+  assert.equal((await ada.call("POST", "/api/readings", { word: "倒车", reading: "dào chē", kind: "corrected" })).body.shared, "active");
 });

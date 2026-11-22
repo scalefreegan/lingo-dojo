@@ -1,5 +1,5 @@
 {
-  "id": "d2dc250c-d062-4f50-ace7-36a206e5c137",
+  "id": "00e86439-5f50-419d-bd7a-0594eb78c4ca",
   "prevId": "9f5e9bad-f164-478b-a5cc-c01ded3123e9",
   "version": "7",
   "dialect": "postgresql",
@@ -3113,6 +3113,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "checked_by": {
+          "name": "checked_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -3161,6 +3167,10 @@
         "reading_corrections_kind": {
           "name": "reading_corrections_kind",
           "value": "\"reading_corrections\".\"kind\" in ('corrected', 'confirmed', 'suggested')"
+        },
+        "reading_corrections_checked_by": {
+          "name": "reading_corrections_checked_by",
+          "value": "\"reading_corrections\".\"checked_by\" is null or (\"reading_corrections\".\"source\" = 'recap' and \"reading_corrections\".\"checked_by\" in ('session', 'recap'))"
         },
         "reading_corrections_source": {
           "name": "reading_corrections_source",

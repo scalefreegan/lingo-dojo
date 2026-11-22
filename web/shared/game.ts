@@ -37,6 +37,10 @@ export interface PictureStatus {
    *  the cap (pictures.mjs PICTURE_DAILY_IMAGES). */
   imagesToday: number;
   imagesCap: number;
+  /** A kids learner's words kept out of the game until their Mandarin
+   *  reading is checked (ld-0mn: the Phrase bank's "Words waiting for a
+   *  pronunciation check"); 0 otherwise. */
+  heldForReading: number;
   /** Pictures out of the theme that only an image key can redraw (no
    *  stock picture fits, or none is drawn): 0 when there is a key. */
   needKey: number;

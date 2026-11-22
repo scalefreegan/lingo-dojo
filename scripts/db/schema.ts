@@ -1042,11 +1042,16 @@ export const readingCorrections = pgTable(
     reading: text("reading").notNull(),
     kind: text("kind").$type<"corrected" | "confirmed" | "suggested">().notNull(),
     source: text("source").$type<"user" | "recap">().notNull(),
+    /** Which model call settled a `recap` row (migration 0017, ld-0mn): a
+     *  kids session's background check or the recap; null for a hand choice
+     *  and for rows from before 0017 (a recap's). */
+    checkedBy: text("checked_by").$type<"session" | "recap">(),
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
   (t) => [
     check("reading_corrections_kind", sql`${t.kind} in ('corrected', 'confirmed', 'suggested')`),
+    check("reading_corrections_checked_by", sql`${t.checkedBy} is null or (${t.source} = 'recap' and ${t.checkedBy} in ('session', 'recap'))`),
     check("reading_corrections_source", sql`${t.source} in ('user', 'recap')`),
     check("reading_corrections_by_hand", sql`${t.source} = 'user' or ${t.kind} <> 'corrected'`),
     check("reading_corrections_word", sql`char_length(${t.word}) between 2 and 8 and char_length(${t.key}) between 2 and 8`),

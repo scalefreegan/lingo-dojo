@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MAX_RECAP_READINGS, extractionPrompt, parseRecapReadings } from "../extraction.mjs";
 
-const { judgeRecapReadings, uncertainInTranscript, sharedChanges, splitMine } = await import("../../web/server/readings.ts");
+const { judgeRecapReadings, neutralsHold, uncertainInTranscript, sharedChanges, splitMine } = await import("../../web/server/readings.ts");
 const zh = await import("../../web/src/script/zh.ts");
 
 const BASE = { transcript: "Learner: 你好\nDojo master: 你得去银行。", nativeLanguage: "English", targetVariant: "Taiwanese Mandarin", duePhrases: ["你好"] };
@@ -115,4 +115,30 @@ test("judgeRecapReadings: each answer checked like a hint; agrees, differs, drop
   // zh-TW: the answer in Taiwan's readings.
   const tw = uncertainInTranscript([{ role: "master", lines: [{ text: "你得去銀行。", segments: [] }] }], "zh-TW", null);
   assert.equal(judgeRecapReadings(tw, [{ word: "得去", pinyin: "děi qù" }], "zh-TW").judged[0].verdict, "differs");
+});
+
+test("a toneless syllable settles nothing unless the word has that neutral tone there (PR #68 review)", () => {
+  const ask = (word, reading) => [{ word, key: zh.correctionKey(word), sentence: word, at: 0, reading }];
+  const judge = (word, reading, said, locale = "zh-CN") => judgeRecapReadings(ask(word, reading), [{ word, pinyin: said }], locale).judged[0];
+  // A wrong reading hidden behind a missing tone: dropped.
+  for (const [word, reading, said, locale] of [
+    ["長長", ["cháng", "cháng"], "zhǎng zhang", "zh-TW"],
+    ["还钱", ["huán", "qián"], "hai qian", "zh-CN"],
+    ["长长", ["cháng", "cháng"], "zhang chang", "zh-CN"],
+    ["长长", ["cháng", "cháng"], "zhang3 chang5", "zh-CN"],
+  ]) {
+    const j = judge(word, reading, said, locale);
+    assert.deepEqual([j.verdict, j.answer], ["dropped", null], `${word} ${said}`);
+  }
+  // The same word with its tones: kept.
+  assert.equal(judge("長長", ["cháng", "cháng"], "zhǎng cháng", "zh-TW").answer, "zhǎng cháng");
+  // A neutral tone the word has: from the word lists (看看, 妈妈, even where
+  // the line read the second syllable toned), the reader's own reading in
+  // the line (便宜), or the character itself (问得 de).
+  assert.equal(judge("看看", ["kàn", "kàn"], "kàn kan").answer, "kàn kan");
+  assert.equal(judge("妈妈", ["mā", "mā"], "mā ma").answer, "mā ma");
+  assert.equal(judge("便宜", ["pián", "yi"], "pián yi").answer, "pián yi");
+  assert.equal(judge("问得", ["wèn", "dé"], "wèn de").answer, "wèn de");
+  assert.ok(neutralsHold("便宜", "pian2 yi", ["pián", "yi"], "zh-CN"));
+  assert.ok(!neutralsHold("得去", "dei qù", ["dé", "qù"], "zh-CN"), "děi hidden behind no tone");
 });

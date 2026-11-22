@@ -97,10 +97,6 @@ let shared: SharedReadingEntry[] = [];
 let mine: MyReading[] = [];
 let mineFor: string | null = null;
 let correctionsVersion = 0;
-/** Whether the shown learner is a kids one: a checked model answer for a
- *  child (the session's background check or the recap, ld-0mn) settles the
- *  word, since a child has no one but the grown-up to check it by hand. */
-let mineKids = false;
 let sharedLoad: Promise<void> | null = null;
 let mineLoad: { id: string; p: Promise<void> } | null = null;
 
@@ -113,13 +109,13 @@ function applyCorrections(): void {
         // As the server splits them (web/server/readings.ts splitMine): only a
         // choice made by hand ranks as the learner's own; a recap's agreement
         // only clears the mark, below the shared list.
-        // For a kids learner, every checked model answer settles the word
-        // (`checked`), as the server reads them (readings.ts splitMine).
+        // A kids learner's checked model answers are stored `confirmed`
+        // (ld-0mn), so they settle the word here too.
         {
           shared,
           mine: own.filter((r) => r.source === "user" && r.kind !== "suggested"),
-          suggested: mineKids ? [] : own.filter((r) => r.kind === "suggested"),
-          checked: own.filter((r) => r.source === "recap" && (mineKids || r.kind === "confirmed")),
+          suggested: own.filter((r) => r.kind === "suggested"),
+          checked: own.filter((r) => r.source === "recap" && r.kind === "confirmed"),
         },
         String(correctionsVersion),
       ),
@@ -130,11 +126,7 @@ function applyCorrections(): void {
 
 /** Fetch the shared list (once a page) and `languageId`'s own readings
  *  (again when it changes). A failure leaves the reader's own readings. */
-export function loadReadings(languageId: string | null, kids = false): void {
-  if (kids !== mineKids) {
-    mineKids = kids;
-    applyCorrections();
-  }
+export function loadReadings(languageId: string | null): void {
   sharedLoad ??= getSharedReadings().then(
     (r) => {
       shared = r.entries;
@@ -172,7 +164,7 @@ export function loadReadings(languageId: string | null, kids = false): void {
 export function reloadMyReadings(languageId: string | null): void {
   if (!languageId || mineLoad?.id !== languageId) return;
   mineLoad = null;
-  loadReadings(languageId, mineKids);
+  loadReadings(languageId);
 }
 
 /** A reading the learner just saved: laid over the reader at once. */
@@ -226,8 +218,8 @@ export function useRuby(text: string, locale: string | null | undefined, hints?:
   const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
   const version = useCorrectionsVersion();
   useEffect(() => {
-    if (reader) loadReadings(languageId, kids);
-  }, [reader, languageId, kids]);
+    if (reader) loadReadings(languageId);
+  }, [reader, languageId]);
   // By value: callers build the list inline.
   const key = (hints ?? []).filter((h) => h.reading).map((h) => `${h.term}\u0001${h.reading}`).join("\u0002");
   const read = useMemo(() => {

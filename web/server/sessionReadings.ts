@@ -19,10 +19,11 @@ import { correctionsFor, judgeRecapReadings, rereadPhrases, uncertainInTranscrip
 // lines are read, as the recap reads them) go to one tool-less
 // `claude -p --model haiku` call per batch, in the background:
 //  - each answer is checked exactly like a recap's (readings.ts
-//    judgeRecapReadings: validateHint, a toneless syllable kept neutral)
-//    and an accepted one is stored as the recap stores its own
-//    (reading_corrections, source "recap": not a hand choice), which for a
-//    kids learner settles the word (readings.ts splitMine); the voice says
+//    judgeRecapReadings: validateHint, neutralsHold for a toneless
+//    syllable) and an accepted one is stored as a kids recap stores its own
+//    (reading_corrections, source "recap", kind "confirmed", checked_by
+//    "session"), which settles the word (readings.ts splitMine), listed for
+//    the grown-up as "Checked by the program"; the voice says
 //    it so from the next line on (spokenFor), the marks clear, and the
 //    word may enter the picture game;
 //  - it votes for nothing on the shared list (a kids recap doesn't either);
@@ -89,7 +90,7 @@ export interface CheckTarget {
  */
 export function checkTurnReadings(t: CheckTarget): void {
   const p = (async () => {
-    const fixes = await correctionsFor(t.profile, { kids: true });
+    const fixes = await correctionsFor(t.profile);
     const found = uncertainInTranscript([{ role: "master", lines: t.lines as never }], t.locale, fixes, Infinity);
     if (!found.length) return;
     if (conversations.size > 500) conversations.clear();
@@ -145,8 +146,9 @@ async function checkBatch(t: CheckTarget, batch: RecapWord[]): Promise<"done" | 
       let settled = 0;
       for (const j of judged) {
         if (j.verdict === "dropped" || !j.answer) continue;
-        // As a recap's: never over the grown-up's hand choice; no shared vote.
-        const wrote = await saveRecapReading(db, t.profile, { key: j.key, word: j.word, reading: j.answer, kind: j.verdict === "differs" ? "suggested" : "confirmed" });
+        // As a kids recap's: `confirmed` (it settles the word, readings.ts
+        // splitMine), never over the grown-up's hand choice; no shared vote.
+        const wrote = await saveRecapReading(db, t.profile, { key: j.key, word: j.word, reading: j.answer, kind: "confirmed", checkedBy: "session" });
         if (!wrote) continue;
         settled++;
         if (j.verdict === "differs") await rereadPhrases(t.profile, t.locale, j.word);

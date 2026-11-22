@@ -791,6 +791,14 @@ uncertain words in context.
     written without a tone keeps the character's neutral reading where it
     has one (问得 "wèn de" differs from the reader's wèn dé and never
     confirms it).
+  - A syllable written without a tone is accepted only where the word has
+    that neutral tone there (`neutralsHold`, PR #68 review): the character
+    has it (的, 着, 得 de), it is the reader's own reading in the line
+    (便宜 pián yi), or the word read alone has it (the dictionary, the
+    common words, doubled characters: 看看 kàn kan, 妈妈 mā ma). Else the
+    answer is dropped: 長長 "zhǎng zhang", 还钱 "hai qian" and 长长 "zhang
+    chang" settle nothing. This holds for every recap, adult or kids, and
+    for the kids session check.
   - An answer that **differs** from the reader becomes this learner's
     suggestion: shown, still marked, and never replacing a choice made by
     hand. It also becomes the shared list's suggestion and updates the
@@ -901,20 +909,33 @@ readings are shown and, above all, resolved.
   `grownUp`, so a mark there is a button that opens the character card
   with the correction control, worded for the grown-up ("please check it
   before your child learns it"). `POST /api/readings` takes a kids
-  learner's grown-up's choice (it was a 403): it is the account's own hand
-  choice, and counts as that user's vote like an adult's.
+  learner's grown-up's choice (it was a 403). It stays that learner's own,
+  like a kids recap's: it casts **no shared vote**, even on an admin's
+  login (PR #68 review).
 - **Words waiting for a pronunciation check**, a section of the kids Phrase
   bank (`GET /api/readings/waiting`, `learner: true`): the bank's words
   still uncertain, each in its phrase with the control. Such a word is
   **kept out of the picture game** (and so out of a kids learner's
   Practice) until it is settled by the session's check, the recap, the
   grown-up or an admin's shared entry (`settledForKids` in
-  `web/server/readings.ts`; its picture is still drawn meanwhile).
-- **For a kids learner every checked answer settles the word**
-  (`splitMine` with `kids`): a recap's or the session check's answer,
-  agreeing or differing, is `checked`, below the shared list and the
-  grown-up's hand. The adult rule (a differing answer stays a marked
-  suggestion) is unchanged.
+  `web/server/readings.ts`; its picture is still drawn meanwhile). The
+  picture game's not-ready note says how many words are held back
+  (`heldForReading` in the game's status).
+- **For a kids learner a checked answer settles the word**: a recap's or
+  the session check's answer, agreeing or differing, is stored `confirmed`
+  (`checked`, below the shared list and the grown-up's hand), with which
+  call settled it (`checked_by`: `session` or `recap`). The adult rule (a
+  differing answer stays a marked suggestion) is unchanged. A kids recap's
+  `suggested` rows from before this change are not settled after the fact:
+  they stay waiting.
+- **Checked by the program**, next to the waiting words in the kids Phrase
+  bank (`checked` in `GET /api/readings/waiting`): each word the program
+  settled, its reading, during a session or by a recap, and when. **This
+  is right** makes it the grown-up's own (a hand choice); **This reading
+  is wrong** opens the control; **Back to waiting** (`POST
+  /api/readings/back`) removes the program's reading, so the word is
+  uncertain again, listed as waiting and out of the game. A hand choice is
+  never removed there.
 - **Settled during the session** (`web/server/sessionReadings.ts`). After
   each turn of a kids Mandarin session with a saved conversation, the dojo
   master's new uncertain words (never what the child said) go to **one
@@ -941,9 +962,10 @@ readings are shown and, above all, resolved.
   | bedtime TW | 1 (長長) | 1 | 0: "zhǎng zhang" (the second is cháng) |
 
   11 asked, 11 settled, 10 right against CC-CEDICT and standard usage. The
-  wrong one passed the checks because a toneless syllable is allowed its
-  neutral reading (as the recap's rule says); its first syllable, the one
-  that matters, is right. Latency 2.2–4.9 s; about 3,300 input tokens
+  wrong one passed the checks then because a toneless syllable was
+  allowed any reading of its character; with `neutralsHold` (above) the
+  same 11 answers, judged again, keep the 10 right ones and drop only
+  長長. Latency 2.2–4.9 s; about 3,300 input tokens
   (mostly cached), 38–548 output; about $0.002 for all six. Haiku held up,
   so Sonnet was not needed.
 

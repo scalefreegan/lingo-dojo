@@ -32,7 +32,7 @@ import { logHints, readsHints, settleHints, wantsReadings } from "./hints.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
 import { audioKey, cachedAudio } from "../../scripts/audio-cache.mjs";
 import { paidSlot } from "./paid.ts";
-import { isKids, spokenFor } from "./readings.ts";
+import { spokenFor } from "./readings.ts";
 import { checkTurnReadings } from "./sessionReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 
@@ -715,7 +715,7 @@ async function handleSpeak(req: IncomingMessage, res: ServerResponse, ctx: Ctx):
     // the line shown and stored is the browser's, unchanged). The session's
     // active language: /speak is not learner-scoped, and a page showing
     // another learner only hears that learner's settled words.
-    const said = lang === "target" ? await spokenFor(ctx.language, textLocale, text, isKids(ctx.learner)) : text;
+    const said = lang === "target" ? await spokenFor(ctx.language, textLocale, text) : text;
     const line = { provider, text: said, locale: textLocale, model: settings.elevenModel, pace };
     // The line's calls (a refused cast voice's retry included, one after the
     // other) hold one of the user's paid slots (paid.ts). The Go tab asks for
@@ -962,12 +962,12 @@ export async function practiceVoice(settings: VoiceSettings, locale: string, gen
  * replays and preloads go straight to the premade clip, and a plan that
  * gains access is heard after that. Logged with no text.
  */
-export async function outsideClip(userId: string, settings: VoiceSettings, locale: string, text: string, signal: AbortSignal, profile: LanguageProfileRef | null = null, kids = false): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
+export async function outsideClip(userId: string, settings: VoiceSettings, locale: string, text: string, signal: AbortSignal, profile: LanguageProfileRef | null = null): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
   const { provider, voice, model, fallback } = await practiceVoice(settings, locale);
   // What the voice is given (readings.ts spokenFor: a Mandarin word settled
   // for this learner said through stand-ins), and so what the cache key is
   // made of: a clip made before the word was settled is never served for it.
-  const said = await spokenFor(profile, locale, text, kids);
+  const said = await spokenFor(profile, locale, text);
   const keyFor = (v: string) => audioKey({ owner: userId, provider, voice: v, model, format: SPEECH_FORMATS[provider], locale, speed: 1, text: said });
   const say = (v: string) => paidSlot(userId, () => synthesize({ provider, voice: v, text: said, locale, model }, signal));
   const viaFallback = async () => {
@@ -1106,7 +1106,7 @@ export function isSoundText(text: string): boolean {
  */
 export async function soundClip(ctx: LearnerCtx, text: string, locale: string, signal: AbortSignal): Promise<{ key: string; audio: Buffer; type: string; cached: boolean }> {
   const settings = await readVoiceSettings(ctx.user.id);
-  const out = await outsideClip(ctx.user.id, settings, locale, text, signal, ctx.language, isKids(ctx.learner));
+  const out = await outsideClip(ctx.user.id, settings, locale, text, signal, ctx.language);
   console.log(`[lingo-dojo] sound audio: ${out.cached ? "hit" : "miss"} ${out.key.slice(0, 12)}`);
   return out;
 }

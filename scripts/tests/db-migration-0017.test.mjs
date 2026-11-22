@@ -24,7 +24,7 @@ const upTo = (marker, what) => {
   return disk.slice(0, i + 1);
 };
 
-test("0017 on a 0016 database: reading_check_calls, counts only, gone with the language", async (t) => {
+test("0017 on a 0016 database: reading_check_calls, counts only, gone with the language; checked_by on a recap row only", async (t) => {
   const { query } = await fresh(t);
   await applyMigrations(query, upTo('CREATE TABLE "shared_reading_votes"', "0016"));
   const [u] = await query(`insert into users (username, password_hash) values ('ada', 'scrypt$x') returning id`);
@@ -43,6 +43,12 @@ test("0017 on a 0016 database: reading_check_calls, counts only, gone with the l
   await assert.rejects(call(l.id, 0), /reading_check_calls_counts/);
   await assert.rejects(call(l.id, 1, -1), /reading_check_calls_counts/);
   await assert.rejects(call(other.id, 1), /reading_check_calls_profile_fk/, "the language must be the learner's");
+  // reading_corrections.checked_by: which model call settled a recap row; never on a hand choice.
+  const fix = (key, source, by) => query(`insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source, checked_by) values ($1, $2, $3, $3, 'dào chē', 'confirmed', $4, $5)`, [l.id, p.id, key, source, by]);
+  await fix("倒车", "recap", "session");
+  await fix("得去", "recap", null);
+  await assert.rejects(fix("长着", "user", "session"), /reading_corrections_checked_by/);
+  await assert.rejects(fix("长着", "recap", "agent"), /reading_corrections_checked_by/);
   await query(`delete from language_profiles where id = $1`, [p.id]);
   assert.equal((await query(`select count(*)::int as n from reading_check_calls`))[0].n, 0, "gone with the language");
 });
