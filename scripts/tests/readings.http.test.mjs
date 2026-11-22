@@ -3,7 +3,7 @@
 // and rereads their bank; a non-admin's goes to the shared list as a
 // suggestion, an admin's in active; the admin view, its writes (403 for
 // anyone else), its count and its export (no personal data); every
-// reading checked; a kids learner can't write; a stale page is a 409. The
+// reading checked; a kids learner's grown-up writes (ld-0mn); a stale page is a 409. The
 // real plugin on an in-process PGlite. Every name here is made up.
 //   node --test scripts/tests/readings.http.test.mjs
 
@@ -226,11 +226,11 @@ test("the export: active words and readings only, YAML or JSON, nothing personal
   assert.deepEqual(view.body.changed30d, { changed: 4, sessions: 1 }, "a recap made again replaces its count");
 });
 
-test("a kids learner can't correct; a language that isn't Mandarin can't; a stale page is a 409", async () => {
+test("a kids learner's grown-up corrects by hand (ld-0mn); a language that isn't Mandarin can't; a stale page is a 409", async () => {
   const bo = await someone(KID_ZH);
   const r = await bo.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "corrected" });
-  assert.equal(r.status, 403);
-  assert.deepEqual((await bo.call("GET", "/api/readings")).body, { readings: [] });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual((await bo.call("GET", "/api/readings")).body, { readings: [{ word: "得去", reading: "děi qù", kind: "corrected", source: "user" }] });
   const sam = await someone(ADULT);
   assert.equal((await sam.call("POST", "/api/readings", { word: "得去", reading: "děi qù", kind: "corrected" })).status, 400);
   const mei = await someone(TW);

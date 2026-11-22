@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { UNSURE_LABEL, rubyPieces, useCheck, useCorrectionsVersion, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
+import { rubyPieces, unsureLabel, useCheck, useCorrectionsVersion, useRuby, useRubyMode, useScript, useZhReader } from "../script/ruby.tsx";
 import { hintFor, isHan, readMarked, scriptFor } from "../script/script.ts";
 
 /* The reading-aid pieces the transcript, History and the phrase bank use:
@@ -38,11 +38,11 @@ export function MarkedText({ before, marked, after, locale, markClassName, readi
   // The uncertain words over the whole sentence, cut to each part.
   const unsure = useMemo(() => {
     void version;
-    return reader && locale && mode !== "off" && !kids ? reader.unsureOffsets(before + marked + after, locale) : null;
-  }, [before, marked, after, reader, locale, mode, kids, version]);
+    return reader && locale && mode !== "off" ? reader.unsureOffsets(before + marked + after, locale) : null;
+  }, [before, marked, after, reader, locale, mode, version]);
   const pieces = (p: { text: string; readings: (string | null)[] | null }, from: number) => {
     const spans = unsure?.filter((u) => u.end > from && u.start < from + p.text.length).map((u) => ({ ...u, start: u.start - from, end: u.end - from })) ?? null;
-    return rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings, unsure: spans });
+    return rubyPieces(p.text, 0, p.text.length, { mode, readings: p.readings, unsure: spans, ...(kids ? { kids } : {}) });
   };
   return (
     <>
@@ -91,7 +91,7 @@ export function RubyToggle({ locale, className = "" }: { locale: string | null |
  *  glossed words, and its characters are reached through the definition
  *  card, so the two never compete for one tap. */
 export function CharTerm({ text, locale, className = "", reading }: { text: string; locale: string | null | undefined; className?: string; reading?: string | null }) {
-  const { openChar } = useScript();
+  const { openChar, kids, grownUp } = useScript();
   // `reading`: the gloss's or the bank phrase's own reading for this text;
   // the card opened from a character leads with it.
   const hints = hintFor(text, reading);
@@ -111,11 +111,11 @@ export function CharTerm({ text, locale, className = "", reading }: { text: stri
           key={at}
           type="button"
           className="ld-char"
-          aria-label={unsure ? `${ch}: character details, ${UNSURE_LABEL}` : `${ch}: character details`}
-          title={unsure ? "Character details (reading uncertain)" : "Character details"}
+          aria-label={unsure ? `${ch}: character details, ${unsureLabel(kids)}` : `${ch}: character details`}
+          title={unsure ? `Character details (${unsureLabel(kids)})` : "Character details"}
           onClick={(e) => {
             e.stopPropagation();
-            openChar(ch, locale, { text, at: offset, ...(hints ? { hints } : {}) });
+            openChar(ch, locale, { text, at: offset, ...(hints ? { hints } : {}), ...(kids && grownUp ? { grownUp: true } : {}) });
           }}
         >
           {rubyPieces(text, at, at + ch.length, ruby)}

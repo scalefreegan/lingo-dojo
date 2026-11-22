@@ -8,7 +8,7 @@ import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminR
 import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type CorrectionEntry, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
 import { spokenText } from "../src/script/zh-speech.ts";
-import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
+import type { Ctx, LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { readsHints } from "./hints.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -30,8 +30,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // /api/readings is mounted with wrap's `learner: true`: the page must name
 // the session's learner and language (else 409 stale_learner), and what it
 // writes is that language's (forLanguageProfile in scripts/db/readings.ts).
-// A kids learner gets no control (no marks are shown to a child): a write
-// for one is a 403. Nothing unchecked is stored: every reading passes
+// A kids learner's readings are corrected by the grown-up (ld-0mn): the
+// control is on the grown-up's side only (the Phrase bank, and the
+// character card opened from it), never in the child's own views; the
+// server can't tell the two apart, and needn't: it is the same account's
+// choice by hand either way. Nothing unchecked is stored: every reading passes
 // zh.ts validateCorrection (two to eight Chinese characters, each syllable
 // a reading the character really has).
 
@@ -316,7 +319,6 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
     return sendJson(res, 200, { readings: rows.map(wire) } satisfies MyReadingsReply);
   }
   if (req.method !== "POST") return methodNotAllowed(res, "GET, POST");
-  if (learnerMode(req, ctx) === "kids") throw new HttpError(403, "a kids learner's readings are not corrected by hand");
   if (!locale) throw new HttpError(400, "readings are corrected for Mandarin only");
   const body = (await readJsonBody(req)) as { word?: unknown; reading?: unknown; kind?: unknown } | null;
   const kind = body?.kind;

@@ -25,6 +25,11 @@ export interface ScriptState {
   /** The language profile shown (whose own readings are laid over the
    *  reader's); null outside a learner's page. */
   languageId: string | null;
+  /** A kids learner's grown-up side (the Phrase bank, ld-0mn): an
+   *  uncertain reading's mark opens the character card with its correction
+   *  control there, and only there; a child's own views show the mark
+   *  alone. (An adult gets the control wherever the mark is.) */
+  grownUp?: boolean;
 }
 
 /** Where a character on the card was tapped: its text and offset. */
@@ -34,6 +39,9 @@ export interface CharContext {
   /** The dojo master's readings for phrases of `text` (zh.ts ReadingHint),
    *  so the card leads with what the learner saw over the character. */
   hints?: readonly { term: string; reading: string }[];
+  /** Opened from a kids learner's grown-up side: the card offers the
+   *  correction control even in kids mode. */
+  grownUp?: boolean;
 }
 
 const NONE: ScriptState = { stored: null, setMode: () => undefined, kids: false, openChar: () => undefined, languageId: null };
@@ -89,6 +97,10 @@ let shared: SharedReadingEntry[] = [];
 let mine: MyReading[] = [];
 let mineFor: string | null = null;
 let correctionsVersion = 0;
+/** Whether the shown learner is a kids one: a checked model answer for a
+ *  child (the session's background check or the recap, ld-0mn) settles the
+ *  word, since a child has no one but the grown-up to check it by hand. */
+let mineKids = false;
 let sharedLoad: Promise<void> | null = null;
 let mineLoad: { id: string; p: Promise<void> } | null = null;
 
@@ -101,7 +113,14 @@ function applyCorrections(): void {
         // As the server splits them (web/server/readings.ts splitMine): only a
         // choice made by hand ranks as the learner's own; a recap's agreement
         // only clears the mark, below the shared list.
-        { shared, mine: own.filter((r) => r.source === "user" && r.kind !== "suggested"), suggested: own.filter((r) => r.kind === "suggested"), checked: own.filter((r) => r.source === "recap" && r.kind === "confirmed") },
+        // For a kids learner, every checked model answer settles the word
+        // (`checked`), as the server reads them (readings.ts splitMine).
+        {
+          shared,
+          mine: own.filter((r) => r.source === "user" && r.kind !== "suggested"),
+          suggested: mineKids ? [] : own.filter((r) => r.kind === "suggested"),
+          checked: own.filter((r) => r.source === "recap" && (mineKids || r.kind === "confirmed")),
+        },
         String(correctionsVersion),
       ),
     );
@@ -111,7 +130,11 @@ function applyCorrections(): void {
 
 /** Fetch the shared list (once a page) and `languageId`'s own readings
  *  (again when it changes). A failure leaves the reader's own readings. */
-export function loadReadings(languageId: string | null): void {
+export function loadReadings(languageId: string | null, kids = false): void {
+  if (kids !== mineKids) {
+    mineKids = kids;
+    applyCorrections();
+  }
   sharedLoad ??= getSharedReadings().then(
     (r) => {
       shared = r.entries;
@@ -149,7 +172,7 @@ export function loadReadings(languageId: string | null): void {
 export function reloadMyReadings(languageId: string | null): void {
   if (!languageId || mineLoad?.id !== languageId) return;
   mineLoad = null;
-  loadReadings(languageId);
+  loadReadings(languageId, mineKids);
 }
 
 /** A reading the learner just saved: laid over the reader at once. */
@@ -160,12 +183,16 @@ export function noteMyReading(languageId: string, r: MyReading): void {
   applyCorrections();
 }
 
+// The snapshots twice: also as the server snapshot, so the pieces render
+// to static markup (scripts/tests/kids-marks.test.mjs).
+const versionNow = () => correctionsVersion;
+const readerNow = () => zh;
 /** The version of the corrections (a dependency for reads). */
-export const useCorrectionsVersion = () => useSyncExternalStore(subscribe, () => correctionsVersion);
+export const useCorrectionsVersion = () => useSyncExternalStore(subscribe, versionNow, versionNow);
 
 /** The reader once it's loaded, when `wanted`; null before that. */
 export function useZhReader(wanted: boolean): ZhReader | null {
-  const mod = useSyncExternalStore(subscribe, () => zh);
+  const mod = useSyncExternalStore(subscribe, readerNow, readerNow);
   useEffect(() => {
     if (wanted && !zh) void loadZh().catch(() => undefined);
   }, [wanted]);
@@ -178,9 +205,11 @@ export interface Ruby {
    *  null as a whole when no reading is shown (off, not Chinese, loading). */
   readings: (string | null)[] | null;
   /** The uncertain words (zh.ts unsureOffsets): UTF-16 [start, end) in the
-   *  text. Null for a kids learner (a child sees no marks) and wherever no
-   *  reading is shown. */
+   *  text. Null wherever no reading is shown. A kids learner sees them too
+   *  (ld-0mn), worded for the grown-up (`kids`). */
   unsure?: { start: number; end: number; word: string }[] | null;
+  /** Kids mode: the mark says "pronunciation being checked". */
+  kids?: boolean;
   /** The text and locale the offsets are in, for the character card a
    *  marked character opens (rubyPieces' `check`). */
   text?: string;
@@ -197,8 +226,8 @@ export function useRuby(text: string, locale: string | null | undefined, hints?:
   const reader = useZhReader(mode !== "off" && scriptFor(locale)?.id === "zh");
   const version = useCorrectionsVersion();
   useEffect(() => {
-    if (reader) loadReadings(languageId);
-  }, [reader, languageId]);
+    if (reader) loadReadings(languageId, kids);
+  }, [reader, languageId, kids]);
   // By value: callers build the list inline.
   const key = (hints ?? []).filter((h) => h.reading).map((h) => `${h.term}\u0001${h.reading}`).join("\u0002");
   const read = useMemo(() => {
@@ -206,25 +235,32 @@ export function useRuby(text: string, locale: string | null | undefined, hints?:
     const list = key ? key.split("\u0002").map((e) => ({ term: e.split("\u0001")[0], reading: e.split("\u0001")[1] })) : null;
     // `version`: the corrections changed (zh.ts emptied its cache), so read again.
     void version;
-    return { readings: reader.readOffsets(text, locale, list), unsure: kids ? null : reader.unsureOffsets(text, locale) };
-  }, [reader, text, locale, key, kids, version]);
+    return { readings: reader.readOffsets(text, locale, list), unsure: reader.unsureOffsets(text, locale) };
+  }, [reader, text, locale, key, version]);
   if (mode === "off" || !read) return { mode, readings: null };
-  return { mode, readings: read.readings, unsure: read.unsure, text, locale: locale ?? undefined };
+  return { mode, readings: read.readings, unsure: read.unsure, text, locale: locale ?? undefined, ...(kids ? { kids } : {}) };
 }
 
 /** The callback rubyPieces' `check` takes: the character card on a marked
  *  character, read in the whole text (so it leads with the word's reading
  *  and offers "This reading is wrong" for the word). */
 export function useCheck(ruby: Ruby, hints?: readonly { term: string; reading: string }[] | null): ((ch: string, at: number) => void) | undefined {
-  const { openChar } = useScript();
+  const { openChar, kids, grownUp } = useScript();
   const { text, locale } = ruby;
   if (!ruby.unsure?.length || text == null || !locale) return undefined;
-  return (ch, at) => openChar(ch, locale, { text, at, ...(hints ? { hints } : {}) });
+  // A child's own views show the mark and nothing to press (ld-0mn): the
+  // control is the grown-up's, in the Phrase bank.
+  if (kids && !grownUp) return undefined;
+  return (ch, at) => openChar(ch, locale, { text, at, ...(hints ? { hints } : {}), ...(kids ? { grownUp: true } : {}) });
 }
 
 /** The words an uncertain reading marks are said to be (the mark itself
  *  is a dotted underline under the reading, never colour alone). */
 export const UNSURE_LABEL = "reading uncertain";
+/** The same for a kids learner (ld-0mn): a child sees the dotted line,
+ *  and it tells the grown-up what is going on. */
+export const UNSURE_LABEL_KIDS = "pronunciation being checked";
+export const unsureLabel = (kids: boolean | undefined) => (kids ? UNSURE_LABEL_KIDS : UNSURE_LABEL);
 
 /** text[start, end) with each read character in a <ruby>; plain text where
  *  there are no readings. Keys are offsets, unique within one text.
@@ -256,7 +292,7 @@ export function rubyPieces(text: string, start: number, end: number, ruby: Ruby,
       plain = "";
       const span = spanAt(i);
       const piece = (
-        <ruby key={i} className={span ? "ld-ruby ld-ruby-unsure" : "ld-ruby"}>
+        <ruby key={i} className={span ? "ld-ruby ld-ruby-unsure" : "ld-ruby"} {...(span && ruby.kids ? { title: "Pronunciation being checked" } : {})}>
           {ch}
           <rt aria-hidden="true" data-rt={readingIn(mode, r)} />
         </ruby>
@@ -269,8 +305,8 @@ export function rubyPieces(text: string, start: number, end: number, ruby: Ruby,
             key={i}
             type="button"
             className="ld-unsure"
-            aria-label={`${c}: ${UNSURE_LABEL} in ${span.word}, check it`}
-            title="Reading uncertain: check it"
+            aria-label={`${c}: ${unsureLabel(ruby.kids)} in ${span.word}, check it`}
+            title={ruby.kids ? "Pronunciation being checked: check it" : "Reading uncertain: check it"}
             onClick={(e) => {
               e.stopPropagation();
               check(c, at);
@@ -283,7 +319,7 @@ export function rubyPieces(text: string, start: number, end: number, ruby: Ruby,
       if (span && !check && i + ch.length >= Math.min(span.end, end)) {
         out.push(
           <span key={`u${i}`} className="sr-only select-none">
-            {` (${UNSURE_LABEL})`}
+            {` (${unsureLabel(ruby.kids)})`}
           </span>,
         );
       }

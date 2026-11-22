@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
 import { hanChars, scriptFor } from "../script/script.ts";
+import { ScriptContext, useScript } from "../script/ruby.tsx";
 import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
 import { PictureSection, PicturesBar } from "./WordPictures";
@@ -73,6 +74,19 @@ function dueLabel(p: PhraseSummary): string {
 
 /** `initialQuery`: a search to open with (a session recap's "In the bank"). */
 export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: string } = {}) {
+  // A kids learner's Phrase bank is the grown-up's side (ld-0mn): here an
+  // uncertain reading's mark opens the character card with its correction
+  // control, which a child's own views (the transcript, the game) never offer.
+  const script = useScript();
+  const grownUpScript = useMemo(() => (script.kids ? { ...script, grownUp: true } : script), [script]);
+  return (
+    <ScriptContext.Provider value={grownUpScript}>
+      <PhraseBank initialQuery={initialQuery} />
+    </ScriptContext.Provider>
+  );
+}
+
+function PhraseBank({ initialQuery }: { initialQuery: string }) {
   const [q, setQ] = useState(initialQuery);
   // Bumped when a word's picture changed in its detail (or the word was
   // deleted): the pictures' status line above reads its counts again.
