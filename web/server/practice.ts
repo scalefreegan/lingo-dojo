@@ -320,7 +320,7 @@ export async function phraseClip(ctx: LearnerCtx, phraseId: string, signal: Abor
   const locale = targetLocale(ctx);
   if (!locale) throw new HttpError(400, "this language has no voice locale, so its phrases can't be played");
   const settings = await readVoiceSettings(ctx.user.id);
-  const out = await outsideClip(ctx.user.id, settings, locale, text, signal);
+  const out = await outsideClip(ctx.user.id, settings, locale, text, signal, ctx.language);
   console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${out.key.slice(0, 12)}`);
   return { text, locale, ...out };
 }

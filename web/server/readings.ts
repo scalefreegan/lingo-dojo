@@ -7,6 +7,7 @@ import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
 import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type CorrectionEntry, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
+import { spokenText } from "../src/script/zh-speech.ts";
 import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { readsHints } from "./hints.ts";
@@ -69,6 +70,22 @@ export function splitMine<T extends { kind: string; source: string }>(mine: read
     checked: mine.filter((r) => r.source === "recap" && r.kind === "confirmed"),
     shared,
   };
+}
+
+/**
+ * What a voice is given for `text` (target-language text in `locale`):
+ * for Mandarin, the words this learner's readings settle swapped for
+ * stand-ins that can only be said that way (zh-speech.ts spokenText,
+ * docs/VOICE.md §Saying the settled reading); anything else as it is. The
+ * text shown, stored and transcribed never changes: only what goes to the
+ * provider, and the audio cache's key, which is computed over this.
+ * Logged with counts only, never the text.
+ */
+export async function spokenFor(profile: LanguageProfileRef | null, locale: string, text: string): Promise<string> {
+  if (!profile || !text || !readsHints(locale)) return text;
+  const out = spokenText(text, locale, await correctionsFor(profile));
+  if (out.swaps.length) console.log(`[lingo-dojo] speech: ${out.swaps.length} character(s) of settled words said by a stand-in`);
+  return out.text;
 }
 
 /**
