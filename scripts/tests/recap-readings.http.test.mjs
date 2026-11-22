@@ -173,7 +173,10 @@ test("a kids learner's recap may settle readings, and shows none; it casts no sh
   const recap = await recapOf(bo, c.id);
   assert.equal(recap.status, "done");
   assert.deepEqual(recap.readings, []);
-  assert.deepEqual((await bo.call("GET", "/api/readings")).body.readings.map((r) => [r.word, r.kind]), [["倒車", "suggested"]]);
+  // Settled for the child (ld-0mn): stored confirmed, listed for the
+  // grown-up as checked by the recap.
+  assert.deepEqual((await bo.call("GET", "/api/readings")).body.readings.map((r) => [r.word, r.kind]), [["倒車", "confirmed"]]);
+  assert.deepEqual((await bo.call("GET", "/api/readings/waiting")).body.checked.map((r) => [r.word, r.reading, r.by]), [["倒車", "dào chē", "recap"]]);
   // The child's own marks only: nothing on the shared list, no vote.
   assert.equal((await q(`select count(*)::int as n from shared_readings`))[0].n, 0);
   assert.equal((await q(`select count(*)::int as n from shared_reading_votes where user_id = $1`, [bo.userId]))[0].n, 0);

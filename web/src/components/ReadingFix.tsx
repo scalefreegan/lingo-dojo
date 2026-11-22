@@ -15,7 +15,8 @@ import { Button } from "./ui";
  * "This is right" confirms the reading shown: the mark goes.
  *
  * Used on the character card (the word the tapped character is in) and
- * the recap's "Readings to check". Never shown to a kids learner. */
+ * the recap's "Readings to check". For a kids learner, only on the
+ * grown-up's side (ld-0mn): never in the child's own views. */
 
 export interface ReadingFixProps {
   word: string;
@@ -29,10 +30,16 @@ export interface ReadingFixProps {
   /** Start with the choices open. */
   open?: boolean;
   onSaved?: (reading: string[]) => void;
+  /** Shown on a kids learner's grown-up side (the Phrase bank, or the card
+   *  opened from it: ld-0mn). A child's own views never show it. */
+  grownUp?: boolean;
+  /** Said after the reading in place of the usual note (the Phrase bank's
+   *  "Checked by the program": which call settled it, and when). */
+  note?: string;
 }
 
-export function ReadingFix({ word, reading, locale, unsure, suggested = false, open = false, onSaved }: ReadingFixProps) {
-  const { kids, languageId, stored } = useScript();
+export function ReadingFix({ word, reading, locale, unsure, suggested = false, open = false, onSaved, grownUp = false, note }: ReadingFixProps) {
+  const { kids, languageId, stored, grownUp: grownUpSide } = useScript();
   const id = useId();
   const chars = [...word];
   const [choosing, setChoosing] = useState(open);
@@ -57,7 +64,7 @@ export function ReadingFix({ word, reading, locale, unsure, suggested = false, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [word, key, locale]);
 
-  if (kids || chars.length < 2) return null;
+  if ((kids && !grownUp && !grownUpSide) || chars.length < 2) return null;
 
   async function save(kind: "corrected" | "confirmed", syllables: string[]) {
     setState({ busy: true, note: null, error: null });
@@ -88,7 +95,7 @@ export function ReadingFix({ word, reading, locale, unsure, suggested = false, o
           {word}
         </span>{" "}
         reads <span className="font-medium text-fg">{reading.map(show).join(" ")}</span>
-        {unsure && (suggested ? " (suggested after your session: please check it)" : " (the program isn't sure)")}
+        {note ? ` ${note}` : unsure && (suggested ? " (suggested after your session: please check it)" : kids ? " (the program isn't sure: please check it before your child learns it)" : " (the program isn't sure)")}
       </p>
       {!choosing && (
         <div className="flex flex-wrap gap-2">

@@ -24,6 +24,9 @@ export interface CorrectionRow {
   reading: string;
   kind: CorrectionKind;
   source: "user" | "recap";
+  /** Which model call settled a recap row: "session" (a kids session's
+   *  background check) or "recap"; null for a hand choice or an older row. */
+  checkedBy: "session" | "recap" | null;
   updatedAt: Date;
 }
 
@@ -31,7 +34,7 @@ export interface CorrectionRow {
  *  far past what a learner corrects by hand. */
 export const MAX_CORRECTIONS = 5000;
 
-const row = (r: typeof readingCorrections.$inferSelect): CorrectionRow => ({ key: r.key, word: r.word, reading: r.reading, kind: r.kind, source: r.source, updatedAt: r.updatedAt });
+const row = (r: typeof readingCorrections.$inferSelect): CorrectionRow => ({ key: r.key, word: r.word, reading: r.reading, kind: r.kind, source: r.source, checkedBy: r.checkedBy ?? null, updatedAt: r.updatedAt });
 
 /** This language's corrections, by key. */
 export async function listCorrections(db: Db, profile: LanguageProfileRef): Promise<CorrectionRow[]> {
@@ -45,7 +48,7 @@ export async function saveCorrection(db: Db, profile: LanguageProfileRef, c: { k
   const [r] = await forLanguageProfile(db, profile).upsert(
     readingCorrections,
     { key: c.key, word: c.word, reading: c.reading, kind: c.kind, source: "user" },
-    { target: [readingCorrections.key], set: { word: c.word, reading: c.reading, kind: c.kind, source: "user", updatedAt: sql`now()` } },
+    { target: [readingCorrections.key], set: { word: c.word, reading: c.reading, kind: c.kind, source: "user", checkedBy: null, updatedAt: sql`now()` } },
   );
   return row(r);
 }
@@ -56,12 +59,22 @@ export async function saveCorrection(db: Db, profile: LanguageProfileRef, c: { k
  * choice the learner made by hand: that row stays as it is, and false says
  * so. A recap made again replaces its own earlier rows.
  */
-export async function saveRecapReading(db: Db, profile: LanguageProfileRef, c: { key: string; word: string; reading: string; kind: "suggested" | "confirmed" }): Promise<boolean> {
+export async function saveRecapReading(db: Db, profile: LanguageProfileRef, c: { key: string; word: string; reading: string; kind: "suggested" | "confirmed"; checkedBy?: "session" | "recap" }): Promise<boolean> {
   const mine = forLanguageProfile(db, profile);
-  const made = await mine.insertOrIgnore(readingCorrections, { key: c.key, word: c.word, reading: c.reading, kind: c.kind, source: "recap" }, { target: [readingCorrections.key] });
+  const checkedBy = c.checkedBy ?? "recap";
+  const made = await mine.insertOrIgnore(readingCorrections, { key: c.key, word: c.word, reading: c.reading, kind: c.kind, source: "recap", checkedBy }, { target: [readingCorrections.key] });
   if (made.length) return true;
-  const updated = await mine.update(readingCorrections, { word: c.word, reading: c.reading, kind: c.kind, updatedAt: sql`now()` }, sql`${readingCorrections.key} = ${c.key} and ${readingCorrections.source} = 'recap'`);
+  const updated = await mine.update(readingCorrections, { word: c.word, reading: c.reading, kind: c.kind, checkedBy, updatedAt: sql`now()` }, sql`${readingCorrections.key} = ${c.key} and ${readingCorrections.source} = 'recap'`);
   return updated.length > 0;
+}
+
+/** Undo what a model settled for this learner (ld-0mn: the grown-up's
+ *  "Back to waiting"): the word's `recap` row is removed, so the word is
+ *  uncertain again. A hand choice is never removed here. True when a row
+ *  went. */
+export async function removeRecapReading(db: Db, profile: LanguageProfileRef, key: string): Promise<boolean> {
+  const gone = await forLanguageProfile(db, profile).remove(readingCorrections, sql`${readingCorrections.key} = ${key} and ${readingCorrections.source} = 'recap'`);
+  return gone.length > 0;
 }
 
 /** The bank's phrases of this language whose words hold `word` (either

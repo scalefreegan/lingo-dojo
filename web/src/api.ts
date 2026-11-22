@@ -24,7 +24,7 @@ import type {
   LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
-import type { MyReadingsReply, ReadingSaveReply, ReadingSaveRequest, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
+import type { MyReadingsReply, WaitingWordsReply, ReadingSaveReply, ReadingSaveRequest, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
  *  `code` the reason beside it for the few errors the client acts on. */
@@ -623,6 +623,14 @@ export function getSharedReadings(): Promise<SharedReadingsReply> {
 
 export function getMyReadings(): Promise<MyReadingsReply> {
   return req<MyReadingsReply>("/api/readings");
+}
+
+export function getWaitingWords(): Promise<WaitingWordsReply> {
+  return req<WaitingWordsReply>("/api/readings/waiting");
+}
+
+export function sendBackToWaiting(word: string): Promise<{ ok: true }> {
+  return req<{ ok: true }>("/api/readings/back", json({ word }));
 }
 
 export function saveReading(body: ReadingSaveRequest): Promise<ReadingSaveReply> {
