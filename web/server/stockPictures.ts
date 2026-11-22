@@ -80,11 +80,20 @@ const stockProblem = (): string | null => (stockProvider().problem() ? STOCK_KEY
 /** The admin's own concepts from the database; never throws (a read that
  *  fails is the file's concepts alone, logged): a broken read is no reason
  *  to fail a word's picturable check. */
+/** Whether fillDrawingGroups has run once in this process (ld-44x). */
+let drawingGroupsFilled = false;
+
 export async function customConcepts(): Promise<CustomConcept[]> {
   try {
     // Drawings shared before 0021 get their look-alike group first, once
-    // (free; after that a read that finds nothing): ld-44x.
-    await fillDrawingGroups(rawDb(), lookAlikeOf).catch((e) => console.warn("[lingo-dojo] pictures: shared drawings' look-alike groups weren't filled:", String((e as Error)?.message || e)));
+    // (free), ld-44x. One pass that succeeds leaves none to fill: the app
+    // shares a drawing already marked, so later reads skip it.
+    if (!drawingGroupsFilled) {
+      await fillDrawingGroups(rawDb(), lookAlikeOf).then(
+        () => (drawingGroupsFilled = true),
+        (e) => console.warn("[lingo-dojo] pictures: shared drawings' look-alike groups weren't filled:", String((e as Error)?.message || e)),
+      );
+    }
     return await customStockConcepts(rawDb());
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the added stock concepts couldn't be read:", String((e as Error)?.message || e));
@@ -154,6 +163,7 @@ export async function settleStockDraws(): Promise<void> {
 
 /** Forget the queue's memory (the tests: a restart). */
 export function resetStockMemory(): void {
+  drawingGroupsFilled = false;
   queue.clear();
   refused.clear();
   stopped = null;

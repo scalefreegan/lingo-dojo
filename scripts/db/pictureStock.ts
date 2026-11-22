@@ -11,7 +11,7 @@
 //
 // Erasable TypeScript only, like pictures.ts: the tests import it as is.
 
-import { and, asc, eq, gt, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { Db } from "./owned.ts";
 import { loadPictureStock } from "../content.mjs";
 import { forgetPoolWords, refuseSharedFile } from "./picturePool.ts";
@@ -97,22 +97,33 @@ export async function setCustomStockGroup(db: Db, id: string, group: string | nu
 
 /**
  * The one-off fill of a look-alike group for learners' drawings shared
- * before 0021 (ld-44x): each `drawing` concept whose group was never
- * written (`look_alike_set` false) gets `groupOf(description)` (pictures.mjs
- * lookAlikeOf: free, no call), and is marked written, so it is filled once
- * and an admin's later clear sticks. Idempotent (only unwritten rows, each
- * update guarded by the flag); after the first pass it is one read that
- * finds nothing. Returns how many it filled.
+ * before 0021 (ld-44x), for each `drawing` concept never marked written
+ * (`look_alike_set` false):
+ *  - one that already has a group (an admin set it from the picture
+ *    library before 0021) keeps it and is only marked;
+ *  - one with none gets `groupOf(description)` (pictures.mjs lookAlikeOf:
+ *    free, no call) and is marked.
+ * So each is filled once, an admin's group is never overwritten, and an
+ * admin's later clear sticks. Idempotent and safe beside another read
+ * doing the same (every update is guarded by the flag, the second also by
+ * a null group); after the first pass it is a read that finds nothing.
+ * Returns how many rows it marked.
  */
 export async function fillDrawingGroups(db: Db, groupOf: (description: string) => string | null): Promise<number> {
   const unset = and(eq(pictureStockConcepts.origin, "drawing"), eq(pictureStockConcepts.groupSet, false)) as SQL;
-  const rows = await db.select({ id: pictureStockConcepts.id, description: pictureStockConcepts.description }).from(pictureStockConcepts).where(unset);
-  let n = 0;
+  const kept = await db
+    .update(pictureStockConcepts)
+    .set({ groupSet: true })
+    .where(and(unset, isNotNull(pictureStockConcepts.group)) as SQL)
+    .returning({ id: pictureStockConcepts.id });
+  let n = kept.length;
+  const none = and(unset, isNull(pictureStockConcepts.group)) as SQL;
+  const rows = await db.select({ id: pictureStockConcepts.id, description: pictureStockConcepts.description }).from(pictureStockConcepts).where(none);
   for (const r of rows) {
     const done = await db
       .update(pictureStockConcepts)
       .set({ group: groupOf(r.description), groupSet: true })
-      .where(and(eq(pictureStockConcepts.id, r.id), unset) as SQL)
+      .where(and(eq(pictureStockConcepts.id, r.id), none) as SQL)
       .returning({ id: pictureStockConcepts.id });
     n += done.length;
   }

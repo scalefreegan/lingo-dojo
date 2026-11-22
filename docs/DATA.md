@@ -3613,10 +3613,11 @@ look-alike `group`, and `roundChoices` skips a second of one:
   sticks. `picture_stock_concepts.look_alike_set` (0021, false for the
   rows there) says the group was written on purpose: by sharing, by an
   admin, or by the one-off fill of the drawings shared before 0021
-  (`fillDrawingGroups` in `scripts/db/pictureStock.ts`, run on each read of
-  the added concepts: `lookAlikeOf` for every `drawing` row not yet
-  written, then marked; free, idempotent, and after the first pass a read
-  that finds nothing).
+  (`fillDrawingGroups` in `scripts/db/pictureStock.ts`, run on the first
+  read of the added concepts in a process: a `drawing` row not yet marked
+  that already has a group, an admin's from before 0021, keeps it and is
+  only marked; one with none gets `lookAlikeOf` and is marked; free,
+  idempotent, every update guarded by the flag).
 - **Small banks:** a word whose round could offer only its own picture (a
   bank of only a car, a taxi and a truck) is left out of the game
   (`gameRounds`, `isRound`): one picture to tap is no evidence. A game
