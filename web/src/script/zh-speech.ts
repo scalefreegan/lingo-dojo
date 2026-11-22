@@ -1,6 +1,6 @@
 import { HOMOPHONES_CN, HOMOPHONES_TW } from "./zh-homophones.ts";
 import { isHan, isTaiwan } from "./script.ts";
-import { charReadings, knownReadings, readDetail, type Corrections, type FixKind } from "./zh.ts";
+import { charReadings, currentPrior, readDetail, simplified, type Corrections, type FixKind } from "./zh.ts";
 
 /* Saying the settled reading (ld-0mn, docs/VOICE.md §Saying the settled
  * reading). A voice reads Chinese characters itself: a reading a person
@@ -44,18 +44,18 @@ export function standIn(reading: string, locale: string): string | null {
   return (isTaiwan(locale) ? TW : CN).get(reading.normalize("NFC")) ?? null;
 }
 
-/** Whether a voice may say `ch` otherwise than `reading`: it has another
- *  reading, and `reading` is not both its most frequent one and the one the
- *  reader gives it here without any correction (`own`). A voice can choose
- *  wrong either way (同行 settled tóng háng: 行's usual reading is xíng, and
- *  a voice said xíng in 我们一起同行), but 同 tóng, the usual reading the
- *  reader gives too, is left as written: a swap that changes nothing
- *  heard only costs the line some of its naturalness. */
+/** Whether a voice may say `ch` otherwise than `reading`: the character
+ *  has two everyday readings (the prior's usual ranks: 长 cháng / zhǎng, 行
+ *  xíng / háng; a voice said 长着 zhǎng even where a person settled cháng),
+ *  or `reading` is not its usual one (还 huán, 便 pián), or the reader's own
+ *  rules read it otherwise here (`own`: 还钱 is huán by the giveBack rule,
+ *  and a voice said huán too). 同 tóng, whose only other reading is rare,
+ *  read tóng by the reader, is left as written: a swap that changes
+ *  nothing heard only costs the line some of its naturalness. */
 function atRisk(ch: string, reading: string, own: string | null, locale: string): boolean {
-  const list = charReadings(ch, locale);
-  const { usual, rare } = knownReadings(ch, locale);
-  if (new Set([...list, ...usual, ...rare]).size < 2) return false;
-  return reading !== list[0] || reading !== own;
+  const ranks = currentPrior().ranks;
+  const usual = ranks.get(ch) ?? ranks.get(simplified(ch)) ?? charReadings(ch, locale).slice(0, 1);
+  return usual.length >= 2 || usual[0] !== reading || own !== reading;
 }
 
 /**
