@@ -3876,6 +3876,52 @@ The rules:
     list's paths.
   - `scripts/tests/recap-readings.http.test.mjs`: the recap's writes.
 
+### Kids: resolving uncertain readings (ld-0mn, migration 0017)
+
+A kids learner's uncertain readings are settled, not only marked
+(docs/VOICE.md §Kids: marks and resolving). Migration
+`0017_kids_reading_checks` was generated, not hand-edited: a plain
+CREATE TABLE and its index, and a nullable column with a check on
+`reading_corrections`; nothing PostgreSQL 18 only.
+
+```
+reading_check_calls   the ledger of a kids session's background reading checks
+  id, learner_id, language_profile_id   (composite FK → language_profiles, cascade)
+  words          how many words the call asked about (> 0)
+  settled        how many answers passed the checks and were stored; null
+                 while it runs or when it got no reply
+  created_at     (indexed with language_profile_id: the daily cap)
+reading_corrections.checked_by   session | recap: which model call settled a
+                 `recap` row; null for a hand choice (cleared when one
+                 replaces it) and for rows from before 0017
+```
+
+The rules:
+- A row is written **as each call starts**, so the cap
+  (`READING_CHECK_DAILY`, 20 calls per language profile in 24 hours) counts
+  every call made, a failed one too, and survives a restart. Rows older
+  than two days are pruned as a new one is written. Words and readings are
+  never here; queries only in `scripts/db/readingChecks.ts`, through
+  `forLanguageProfile`.
+- An accepted answer goes to `reading_corrections` as a recap's does
+  (`saveRecapReading`: source `recap`, never over a hand choice) and casts
+  **no shared vote**. For a kids learner it is stored `confirmed`, agreeing
+  or not, so it settles the word, with `checked_by`; for an adult, nothing
+  changed. Older kids `suggested` rows stay suggestions (still waiting).
+  The grown-up sees these rows (`checked` in `GET /api/readings/waiting`)
+  and may remove one (`POST /api/readings/back`, `removeRecapReading`:
+  source `recap` only).
+- A kids learner's word still uncertain (with that learner's corrections
+  and the shared list) is kept out of the picture game's rounds, answers,
+  status and the bank's picture filter (`settledForKids`), and listed by
+  `GET /api/readings/waiting`. Its `phrase_pictures` row is drawn as
+  usual.
+- A kids learner's grown-up may write `reading_corrections` by hand
+  (`POST /api/readings`, no longer a 403): that learner's own, with no
+  shared vote, even on an admin's login.
+- Tests: `scripts/tests/db-migration-0017.test.mjs`,
+  `scripts/tests/kids-readings.http.test.mjs`.
+
 ## Docs to update as phases land
 
 - `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user

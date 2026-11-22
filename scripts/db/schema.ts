@@ -1042,17 +1042,52 @@ export const readingCorrections = pgTable(
     reading: text("reading").notNull(),
     kind: text("kind").$type<"corrected" | "confirmed" | "suggested">().notNull(),
     source: text("source").$type<"user" | "recap">().notNull(),
+    /** Which model call settled a `recap` row (migration 0017, ld-0mn): a
+     *  kids session's background check or the recap; null for a hand choice
+     *  and for rows from before 0017 (a recap's). */
+    checkedBy: text("checked_by").$type<"session" | "recap">(),
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
   (t) => [
     check("reading_corrections_kind", sql`${t.kind} in ('corrected', 'confirmed', 'suggested')`),
+    check("reading_corrections_checked_by", sql`${t.checkedBy} is null or (${t.source} = 'recap' and ${t.checkedBy} in ('session', 'recap'))`),
     check("reading_corrections_source", sql`${t.source} in ('user', 'recap')`),
     check("reading_corrections_by_hand", sql`${t.source} = 'user' or ${t.kind} <> 'corrected'`),
     check("reading_corrections_word", sql`char_length(${t.word}) between 2 and 8 and char_length(${t.key}) between 2 and 8`),
     check("reading_corrections_reading", sql`char_length(${t.reading}) between 2 and 80`),
     primaryKey({ name: "reading_corrections_pk", columns: [t.languageProfileId, t.key] }),
     foreignKey({ name: "reading_corrections_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * The ledger of a kids session's background reading checks (docs/DATA.md
+ * §Kids: resolving uncertain readings, migration 0017, bead ld-0mn): one
+ * row per tool-less model call, written as the call starts, so it counts
+ * toward the language's daily cap whatever it then gives (a failure too)
+ * and the cap survives a restart. Words and readings are never here: the
+ * answers go to reading_corrections. Queries only in
+ * scripts/db/readingChecks.ts.
+ */
+export const readingCheckCalls = pgTable(
+  "reading_check_calls",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** How many words the call asked about. */
+    words: integer("words").notNull(),
+    /** How many answers passed the checks and settled a word; null while
+     *  it runs, or when it got no reply. */
+    settled: integer("settled"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("reading_check_calls_counts", sql`${t.words} > 0 and ${t.settled} >= 0`),
+    foreignKey({ name: "reading_check_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    // The daily cap counts one language's recent calls.
+    index("reading_check_calls_profile_idx").on(t.languageProfileId, t.createdAt),
   ],
 );
 

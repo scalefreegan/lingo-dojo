@@ -151,7 +151,9 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
   const radicalMeaning = loaded?.radicalMeaning ?? "";
   // The word a correction from here is about (null: opened from no text,
   // or the character stands in no word of two characters or more).
-  const unit = zh && fromText && fromAt >= 0 && !kids ? (void version, zh.wordAt(fromText, locale, fromAt)) : null;
+  // A kids learner's card has it only when opened from the grown-up's side
+  // (the Phrase bank, ld-0mn), never from the child's own views.
+  const unit = zh && fromText && fromAt >= 0 && (!kids || from?.grownUp) ? (void version, zh.wordAt(fromText, locale, fromAt)) : null;
 
   // The bank's phrases with this character or its counterpart (a phrase
   // saved in the other script still teaches it), through the bank's own
@@ -268,7 +270,7 @@ export default function CharCard({ ch, locale, from, onClose }: { ch: string; lo
                 {/* Keyed by the word only: a saved reading changes `reading`, and
                     the note saying what became of it (shared, or the day's
                     suggestions used up) must stay. */}
-                <ReadingFix key={unit.word} word={unit.word} reading={unit.reading} locale={locale} unsure={unit.unsure} suggested={unit.suggested} />
+                <ReadingFix key={unit.word} word={unit.word} reading={unit.reading} locale={locale} unsure={unit.unsure} suggested={unit.suggested} grownUp={!!from?.grownUp} />
               </section>
             )}
             {/* A part's failure (Hear it shows its own); with the chart open, above the chart. */}

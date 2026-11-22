@@ -25,6 +25,7 @@ import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider, type DrawnImage } from "./imageProvider.ts";
 import { BackgroundBusy, backgroundSlotWhenFree, type SlotWait } from "./paid.ts";
 import { audioNote, audioProblem, phraseClip } from "./practice.ts";
+import { mandarinLocale, settledForKids } from "./readings.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 
 // The word game and its pictures (docs/DATA.md §Kids word game). A learner
@@ -131,6 +132,16 @@ export function resetPictureMemory(what: "all" | "backoff" = "all"): void {
 
 const profileOf = (ctx: LearnerCtx): LanguageProfileRef => ({ id: ctx.language.id, learnerId: ctx.language.learnerId });
 const since = () => new Date(Date.now() - DAY_MS);
+
+/** The words the game may play for this learner: the language's practice
+ *  candidates, and for a kids learner of Mandarin only those whose every
+ *  reading is settled (readings.ts settledForKids, ld-0mn): a word the
+ *  reader is still guessing waits for the in-session check, the recap, the
+ *  grown-up or an admin before a child hears and learns it. Pictures are
+ *  still drawn for it meanwhile (the background work reads every word). */
+async function gameCandidates(profile: LanguageProfileRef, mode: string, language: { targetLanguage: string; targetVariant: string }) {
+  return settledForKids(profile, mode === "kids", mandarinLocale(language), await practiceCandidates(rawDb(), profile));
+}
 
 /** What a run needs to know about the language it fills. */
 interface FillTarget {
@@ -526,8 +537,8 @@ export async function picturesAfterSession(profile: LanguageProfileRef): Promise
  *  With picture chip and the line always agree. Reads the rows once and
  *  stats one stock file per stock-picture row (playable), the same as the
  *  status line does on every poll. */
-export async function pictureWordIds(profile: LanguageProfileRef, mode: string): Promise<Set<string>> {
-  const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+export async function pictureWordIds(profile: LanguageProfileRef, mode: string, language: { targetLanguage: string; targetVariant: string }): Promise<Set<string>> {
+  const [phrases, rows] = await Promise.all([gameCandidates(profile, mode, language), pictureRows(rawDb(), profile)]);
   return new Set(pictureBank(phrases, await playable(rows, mode)).map((x: { phrase: { id: string } }) => x.phrase.id));
 }
 
@@ -536,12 +547,15 @@ export async function pictureWordIds(profile: LanguageProfileRef, mode: string):
  *  draw, or words to judge with no stock picture to match them to). */
 async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
   const profile = profileOf(ctx);
-  const [phrases, rows, images, audio] = await Promise.all([
+  const [all, rows, images, audio] = await Promise.all([
     practiceCandidates(rawDb(), profile),
     pictureRows(rawDb(), profile),
     pictureCallsSince(rawDb(), profile, "image", since()),
     audioProblem(ctx),
   ]);
+  // As gameCandidates: a kids word still uncertain is held back (counted, so
+  // the grown-up is told why the game may be short of words).
+  const phrases = await settledForKids(profile, ctx.learner.mode === "kids", mandarinLocale(ctx.language), all);
   const note = audio ? null : await audioNote(ctx);
   const pictured = pictureBank(phrases, await playable(rows, ctx.learner.mode)).length;
   const work = pictureWork(phrases, rows);
@@ -568,6 +582,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     needKey: provider.problem() && !restyling ? outOfTheme : 0,
     imagesToday: images,
     imagesCap: PICTURE_DAILY_IMAGES,
+    heldForReading: all.length - phrases.length,
   };
 }
 
@@ -586,7 +601,7 @@ const op = async <T>(fn: () => Promise<T>): Promise<T> => {
  *  starts in the background (never waited for). */
 async function start(ctx: LearnerCtx): Promise<GameStartReply> {
   const profile = profileOf(ctx);
-  const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+  const [phrases, all] = await Promise.all([gameCandidates(profile, ctx.learner.mode, ctx.language), pictureRows(rawDb(), profile)]);
   const rows = await playable(all, ctx.learner.mode);
   const game = gameRounds(phrases, rows, { now: new Date() });
   fillPictures(targetOf(ctx));
@@ -619,7 +634,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   const { phrase, card } = await op(() => practiceCard(rawDb(), profile, a.phraseId, "listen"));
   const stale = cardVersion(card ? { reps: card.reps, last_review: card.last_review } : null) !== a.version;
   if (!stale && phraseRevision(phrase) !== a.revision) throw new HttpError(409, EDITED);
-  const [phrases, all] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+  const [phrases, all] = await Promise.all([gameCandidates(profile, ctx.learner.mode, ctx.language), pictureRows(rawDb(), profile)]);
   const rows = await playable(all, ctx.learner.mode);
   const bank = pictureBank(phrases, rows);
   const own = bank.find((x) => x.phrase.id === phrase.id)?.picture ?? rows.get(phrase.id);

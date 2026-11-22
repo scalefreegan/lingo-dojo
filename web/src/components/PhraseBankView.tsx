@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ApiError, addPhrase, deletePhrase, getPhrase, getWaitingWords, listPhrases, sendBackToWaiting, updatePhrase, type PhraseQuery } from "../api";
+import type { WaitingWordsReply } from "../../shared/readings.ts";
+import { ReadingFix } from "./ReadingFix";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
 import { hanChars, scriptFor } from "../script/script.ts";
+import { ScriptContext, reloadMyReadings, useScript } from "../script/ruby.tsx";
 import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
 import { PictureSection, PicturesBar } from "./WordPictures";
@@ -73,6 +76,19 @@ function dueLabel(p: PhraseSummary): string {
 
 /** `initialQuery`: a search to open with (a session recap's "In the bank"). */
 export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: string } = {}) {
+  // A kids learner's Phrase bank is the grown-up's side (ld-0mn): here an
+  // uncertain reading's mark opens the character card with its correction
+  // control, which a child's own views (the transcript, the game) never offer.
+  const script = useScript();
+  const grownUpScript = useMemo(() => (script.kids ? { ...script, grownUp: true } : script), [script]);
+  return (
+    <ScriptContext.Provider value={grownUpScript}>
+      <PhraseBank initialQuery={initialQuery} />
+    </ScriptContext.Provider>
+  );
+}
+
+function PhraseBank({ initialQuery }: { initialQuery: string }) {
   const [q, setQ] = useState(initialQuery);
   // Bumped when a word's picture changed in its detail (or the word was
   // deleted): the pictures' status line above reads its counts again.
@@ -173,6 +189,14 @@ export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: s
       />
       {/* The word game's pictures: a kids learner's grown-up's side, or an adult's own (ld-318). */}
       <PicturesBar refresh={pictureChanges} onDrawn={onDrawn} />
+      <WaitingWords
+        locale={lang?.locale ?? undefined}
+        reload={reload + picturesDrawn}
+        onSettled={() => {
+          setPictureChanges((n) => n + 1);
+          refresh();
+        }}
+      />
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -263,6 +287,111 @@ export default function PhraseBankView({ initialQuery = "" }: { initialQuery?: s
         </Button>
       )}
     </div>
+  );
+}
+
+/**
+ * A kids learner's words whose reading the program isn't sure of (ld-0mn):
+ * kept out of the picture game until settled, listed here, on the
+ * grown-up's side, each in its phrase with the correction control. The
+ * session's background check and the recap settle most of them; this is
+ * for the rest. Nothing for an adult (their marks work as before).
+ */
+function WaitingWords({ locale, reload, onSettled }: { locale: string | undefined; reload: number; onSettled: () => void }) {
+  const { kids, languageId } = useScript();
+  const [reply, setReply] = useState<WaitingWordsReply | null>(null);
+  const [mine, setMine] = useState(0);
+  const [backError, setBackError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!kids) return;
+    let gone = false;
+    getWaitingWords().then(
+      (r) => !gone && setReply(r),
+      () => !gone && setReply(null),
+    );
+    return () => {
+      gone = true;
+    };
+  }, [kids, reload, mine]);
+  if (!kids || !locale || !reply) return null;
+  const changed = () => {
+    setMine((n) => n + 1);
+    reloadMyReadings(languageId);
+    onSettled();
+  };
+  const words = reply.words;
+  return (
+    <>
+      {words.length > 0 && (
+        <section aria-labelledby="waiting-words" className="flex flex-col gap-2 rounded-lg border border-line p-3" data-testid="waiting-words">
+          <h3 id="waiting-words" className="text-sm font-medium text-fg">
+            Words waiting for a pronunciation check <span className="font-normal text-fg-3">{words.length}</span>
+          </h3>
+          <p className={`${fine} text-fg-2`}>
+            The program isn't sure how these are said, so they stay out of the picture game until they are checked: by the check during a session, the recap after it, or you here.
+          </p>
+          <ul className="flex flex-col gap-3">
+            {words.map((w) => (
+              <li key={w.word} className="flex flex-col gap-1">
+                <span className="text-base text-accent" lang={locale}>
+                  <RubyText text={w.text} locale={locale} />
+                </span>
+                <ReadingFix
+                  word={w.word}
+                  reading={w.reading}
+                  locale={locale}
+                  unsure
+                  grownUp
+                  onSaved={changed}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {reply.checked.length > 0 && (
+        <details className="rounded-lg border border-line p-3" data-testid="checked-words">
+          <summary className="cursor-pointer text-sm font-medium text-fg">
+            Checked by the program <span className="font-normal text-fg-3">{reply.checked.length}</span>
+          </summary>
+          <p className={`${fine} mt-2 text-fg-2`}>
+            Readings the program settled from the lines they were in, so your child plays these words. If one is wrong, correct it, or send it back to waiting.
+          </p>
+          {backError && (
+            <p role="alert" className={`${fine} text-warn`}>
+              {backError}
+            </p>
+          )}
+          <ul className="mt-2 flex flex-col gap-3">
+            {reply.checked.map((c) => (
+              <li key={c.word} className="flex flex-col gap-1">
+                <ReadingFix
+                  word={c.word}
+                  reading={c.reading.split(" ")}
+                  locale={locale}
+                  unsure
+                  grownUp
+                  note={`(checked ${c.by === "session" ? "during a session" : "by a recap"}, ${new Date(c.at).toLocaleDateString()})`}
+                  onSaved={changed}
+                />
+                <div>
+                  <Button
+                    variant="ghost"
+                    className="px-2 py-1 text-sm"
+                    onClick={() => {
+                      setBackError(null);
+                      sendBackToWaiting(c.word).then(changed, (e: unknown) => setBackError(e instanceof ApiError ? e.message : "Couldn't send it back. Is the dev server still running?"));
+                    }}
+                  >
+                    Back to waiting
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </>
   );
 }
 

@@ -1,13 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { localeFor } from "../../scripts/voice.mjs";
 import { MAX_RECAP_READINGS, parseRecapReadings } from "../../scripts/extraction.mjs";
-import { listCorrections, phrasesWith, saveCorrection, saveRecapReading, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
+import { listCorrections, phrasesWith, removeRecapReading, saveCorrection, saveRecapReading, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
 import { SharedFullError, SharedLimitError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
-import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
+import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply, WaitingWordsReply } from "../shared/readings.ts";
+import { practiceCandidates } from "../../scripts/db/practice.ts";
 import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type CorrectionEntry, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
-import { learnerMode, type Ctx, type LearnerCtx } from "./auth.ts";
+import { spokenText } from "../src/script/zh-speech.ts";
+import type { Ctx, LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { readsHints } from "./hints.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -18,6 +20,8 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   GET  /api/readings/shared            → {version, entries}: the shared list's active entries
 //                                          (any logged-in user; ETag = version, 304 when unchanged)
 //   GET  /api/readings                   → {readings}: the active language's own
+//   GET  /api/readings/waiting           → {words, checked}: a kids learner's words waiting for a check, and those the program settled (ld-0mn)
+//   POST /api/readings/back {word}       → {ok}: a word the program settled back to waiting (ld-0mn)
 //   POST /api/readings {word, reading, kind}
 //                                        → {reading, shared, phrases}: "This reading is wrong"
 //                                          (kind corrected) or "This is right" (confirmed)
@@ -29,8 +33,11 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 // /api/readings is mounted with wrap's `learner: true`: the page must name
 // the session's learner and language (else 409 stale_learner), and what it
 // writes is that language's (forLanguageProfile in scripts/db/readings.ts).
-// A kids learner gets no control (no marks are shown to a child): a write
-// for one is a 403. Nothing unchecked is stored: every reading passes
+// A kids learner's readings are corrected by the grown-up (ld-0mn): the
+// control is on the grown-up's side only (the Phrase bank, and the
+// character card opened from it), never in the child's own views; the
+// server can't tell the two apart, and needn't: it is the same account's
+// choice by hand either way. Nothing unchecked is stored: every reading passes
 // zh.ts validateCorrection (two to eight Chinese characters, each syllable
 // a reading the character really has).
 
@@ -60,7 +67,12 @@ export async function correctionsFor(profile: LanguageProfileRef | null, opts: {
  * hand (source "user") ranks as their own; a recap's agreement with the
  * reader only clears the mark (`checked`, below the shared list), its
  * differing answer is a suggestion. The browser splits them the same way
- * (script/ruby.tsx).
+ * (script/ruby.tsx). A kids learner's checked model answers (the session's
+ * background check, the recap) are stored `confirmed` whether or not they
+ * agree with the reader (ld-0mn: a child has no one but the grown-up to
+ * check a suggestion, who sees them listed as "Checked by the program"),
+ * so they settle the word here; a kids recap's `suggested` rows from
+ * before that stay suggestions, still waiting.
  */
 export function splitMine<T extends { kind: string; source: string }>(mine: readonly T[], shared: readonly CorrectionEntry[]) {
   return {
@@ -69,6 +81,56 @@ export function splitMine<T extends { kind: string; source: string }>(mine: read
     checked: mine.filter((r) => r.source === "recap" && r.kind === "confirmed"),
     shared,
   };
+}
+
+/** Whether `ref`'s learner is a kids one, from what a route holds. */
+export const isKids = (learner: { mode?: string } | null | undefined): boolean => learner?.mode === "kids";
+
+/**
+ * The words of `texts` (target-language texts in `locale`) whose reading
+ * is still uncertain for this learner (zh.ts uncertainWords, read with
+ * their corrections and the shared list): each once by its key, in order,
+ * with the text it is in. Empty for a language other than Mandarin.
+ */
+export async function uncertainIn(profile: LanguageProfileRef, locale: string | null, texts: readonly { id: string; text: string }[]): Promise<{ id: string; text: string; word: string; key: string; at: number; reading: string[] }[]> {
+  if (!locale || !readsHints(locale) || !texts.length) return [];
+  const fixes = await correctionsFor(profile);
+  const out: { id: string; text: string; word: string; key: string; at: number; reading: string[] }[] = [];
+  for (const t of texts) {
+    for (const w of uncertainWords(t.text, locale, { cache: false, corrections: fixes })) {
+      out.push({ id: t.id, text: t.text, word: w.word, key: correctionKey(w.word), at: [...t.text].slice(0, w.start).join("").length, reading: w.reading });
+    }
+  }
+  return out;
+}
+
+/**
+ * A kids learner's phrases with every reading settled (ld-0mn): a word
+ * still uncertain is kept out of the picture game (and so out of a kids
+ * learner's Practice, which is the game) until the in-session check, the
+ * recap, the grown-up or an admin's shared entry settles it. Anything
+ * else (an adult, another language) is returned as it is.
+ */
+export async function settledForKids<T extends { id: string; text: string | null }>(profile: LanguageProfileRef, kids: boolean, locale: string | null, phrases: T[]): Promise<T[]> {
+  if (!kids || !locale || !readsHints(locale)) return phrases;
+  const waiting = new Set((await uncertainIn(profile, locale, phrases.filter((p) => p.text).map((p) => ({ id: p.id, text: p.text! })))).map((w) => w.id));
+  return waiting.size ? phrases.filter((p) => !waiting.has(p.id)) : phrases;
+}
+
+/**
+ * What a voice is given for `text` (target-language text in `locale`):
+ * for Mandarin, the words this learner's readings settle swapped for
+ * stand-ins that can only be said that way (zh-speech.ts spokenText,
+ * docs/VOICE.md §Saying the settled reading); anything else as it is. The
+ * text shown, stored and transcribed never changes: only what goes to the
+ * provider, and the audio cache's key, which is computed over this.
+ * Logged with counts only, never the text.
+ */
+export async function spokenFor(profile: LanguageProfileRef | null, locale: string, text: string): Promise<string> {
+  if (!profile || !text || !readsHints(locale)) return text;
+  const out = spokenText(text, locale, await correctionsFor(profile));
+  if (out.swaps.length) console.log(`[lingo-dojo] speech: ${out.swaps.length} character(s) of settled words said by a stand-in`);
+  return out.text;
 }
 
 /**
@@ -228,6 +290,31 @@ function keptNeutral(word: string, raw: string, reading: string[], locale: strin
 }
 
 /**
+ * Whether every syllable written without a tone stands for a neutral tone
+ * the word really has there (PR #68 review): validateHint reads a toneless
+ * syllable as any reading of its character, so "zhǎng zhang" (長長) or
+ * "hai qian" (还钱) would settle a wrong reading. A toneless syllable passes
+ * only where the character itself has that neutral reading (的 de, 着 zhe,
+ * 得 de), where it is the reader's own reading at that place in the line
+ * (便宜 pián yi), or where the word read alone (the library's dictionary,
+ * the common words, the doubled-character rule) has it (看看 kàn kan,
+ * 妈妈 mā ma). A syllable with a tone (a mark, or a digit 1–4) is
+ * validateHint's to judge.
+ */
+export function neutralsHold(word: string, raw: string, line: readonly string[], locale: string): boolean {
+  const sylls = raw.normalize("NFD").toLowerCase().split(/[\s'’-]+/u).filter(Boolean);
+  const toneless = (s: string) => !TONED.test(s) || /[50]$/.test(s);
+  const chars = [...word.normalize("NFC")];
+  if (sylls.length !== chars.length) return !sylls.some(toneless);
+  const alone = readDetail(word, locale, { cache: false, corrections: null }).readings;
+  return sylls.every((s, k) => {
+    if (!toneless(s)) return true;
+    const bare = s.replace(/[05]$/, "").normalize("NFC");
+    return charReadings(chars[k], locale).includes(bare) || line[k] === bare || alone[k] === bare;
+  });
+}
+
+/**
  * The recap's `readings` judged (pure, before anything is written): each
  * answer for a word it was asked about passes zh.ts validateHint (one
  * syllable per character, each a reading that character has, never
@@ -242,7 +329,7 @@ export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, lo
     const base = { word: w.word, key: w.key, sentence: w.sentence, at: w.at, reader: w.reading.join(" ") };
     const raw = answers.get(w.word);
     const v = raw == null ? null : validateHint(w.word, raw, locale);
-    if (!v || !v.ok) {
+    if (!v || !v.ok || !neutralsHold(w.word, raw!, w.reading, locale)) {
       stats.dropped++;
       return { ...base, answer: null, verdict: "dropped" };
     }
@@ -266,11 +353,14 @@ export function judgeRecapReadings(asked: readonly RecapWord[], raw: unknown, lo
  * a suggested word reread. Then the
  * session's count of readings the shared list changed.
  */
-export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: string | null, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[]): Promise<void> {
+export async function settleRecapReadings(profile: LanguageProfileRef, ownerId: string | null, conversationId: string, locale: string, judged: readonly JudgedReading[], turns: readonly TurnLike[], { kids = false }: { kids?: boolean } = {}): Promise<void> {
   const db = rawDb();
   for (const j of judged) {
     if (j.verdict === "dropped" || !j.answer) continue;
-    const kind = j.verdict === "differs" ? "suggested" : "confirmed";
+    // A kids learner's checked answer settles the word (splitMine), listed
+    // for the grown-up as "Checked by the program"; an adult's differing
+    // one is a suggestion to check.
+    const kind = j.verdict === "differs" && !kids ? "suggested" : "confirmed";
     const wrote = await saveRecapReading(db, profile, { key: j.key, word: j.word, reading: j.answer, kind });
     if (j.verdict !== "differs") continue;
     const v = validateCorrection(j.word, j.answer, locale);
@@ -292,14 +382,30 @@ export function logRecapReadings(conversationId: string, s: ReturnType<typeof ju
 
 /** /api/readings, mounted with wrap's `learner: true`. */
 export async function handleReadings(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
+  const sub = subPath(req);
   const locale = mandarinLocale(ctx.language);
+  if (sub === "waiting") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return sendJson(res, 200, { words: await waitingWords(ctx, locale), checked: await checkedWords(ctx, locale) } satisfies WaitingWordsReply);
+  }
+  if (sub === "back") {
+    // "Back to waiting" (ld-0mn): the grown-up undoes what a model settled;
+    // the word is uncertain again, so out of the game until checked.
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    if (!locale) throw new HttpError(400, "readings are corrected for Mandarin only");
+    const body = (await readJsonBody(req)) as { word?: unknown } | null;
+    const word = typeof body?.word === "string" ? body.word : "";
+    if (!/^\p{Script=Han}{2,8}$/u.test(word)) throw new HttpError(400, "a word is two to eight Chinese characters");
+    if (!(await removeRecapReading(rawDb(), ctx.language, correctionKey(word)))) throw new HttpError(404, "the program settled no reading for that word");
+    await rereadPhrases(ctx.language, locale, word);
+    return sendJson(res, 200, { ok: true });
+  }
+  if (sub) return sendJson(res, 404, { error: "no such route" });
   if (req.method === "GET") {
     const rows = locale ? await listCorrections(rawDb(), ctx.language) : [];
     return sendJson(res, 200, { readings: rows.map(wire) } satisfies MyReadingsReply);
   }
   if (req.method !== "POST") return methodNotAllowed(res, "GET, POST");
-  if (learnerMode(req, ctx) === "kids") throw new HttpError(403, "a kids learner's readings are not corrected by hand");
   if (!locale) throw new HttpError(400, "readings are corrected for Mandarin only");
   const body = (await readJsonBody(req)) as { word?: unknown; reading?: unknown; kind?: unknown } | null;
   const kind = body?.kind;
@@ -321,7 +427,10 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   // reader's own reading changes nothing for anyone else.
   const own = readCodePoints(v.word, locale, { cache: false, corrections: null }).filter(Boolean).join(" ");
   let shared: ReadingSaveReply["shared"] = null;
-  if (kind === "corrected" || reading !== own) {
+  // A kids learner's choice stays that learner's own, like a kids recap's
+  // (PR #68 review): it casts no vote, even on an admin's login, where it
+  // would be active for everyone at once.
+  if (!isKids(ctx.learner) && (kind === "corrected" || reading !== own)) {
     const entry: SharedEntry = { word: v.word, key, reading, scope: correctionScope(v.word, v.reading, locale) };
     shared = await propose(rawDb(), entry, ctx.user.isAdmin ? "admin" : "user", ctx.user.id).catch((e) => {
       // Past the day's cap the learner is told (their own reading is kept).
@@ -332,6 +441,33 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   }
   const phrases = await rereadPhrases(ctx.language, locale, v.word);
   return sendJson(res, 200, { reading: wire(row), shared, phrases } satisfies ReadingSaveReply);
+}
+
+/** The words of a kids learner's bank still waiting for a pronunciation
+ *  check (ld-0mn): what settledForKids keeps out of the game, each once
+ *  (by its key), with the first phrase it is in. Empty for an adult (their
+ *  marks and controls are as before) and for another language. */
+export async function waitingWords(ctx: LearnerCtx, locale: string | null): Promise<WaitingWordsReply["words"]> {
+  if (!isKids(ctx.learner) || !locale) return [];
+  const phrases = (await practiceCandidates(rawDb(), ctx.language)).filter((p) => p.text);
+  const seen = new Set<string>();
+  const out: WaitingWordsReply["words"] = [];
+  for (const w of await uncertainIn(ctx.language, locale, phrases.map((p) => ({ id: p.id, text: p.text! })))) {
+    if (seen.has(w.key)) continue;
+    seen.add(w.key);
+    out.push({ word: w.word, reading: w.reading, text: w.text, at: w.at, phraseId: w.id });
+  }
+  return out;
+}
+
+/** What a model settled for a kids learner (ld-0mn), for the grown-up to
+ *  see and undo: the `recap` rows that settle a word (`confirmed`), newest
+ *  first, with which call settled it. Empty for an adult. */
+export async function checkedWords(ctx: LearnerCtx, locale: string | null): Promise<WaitingWordsReply["checked"]> {
+  if (!isKids(ctx.learner) || !locale) return [];
+  const rows = (await listCorrections(rawDb(), ctx.language)).filter((r) => r.source === "recap" && r.kind === "confirmed");
+  rows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  return rows.map((r) => ({ word: r.word, reading: r.reading, by: r.checkedBy ?? "recap", at: r.updatedAt.toISOString() }));
 }
 
 /** /api/readings/shared (any logged-in user). */

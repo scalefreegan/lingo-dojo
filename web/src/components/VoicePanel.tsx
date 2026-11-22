@@ -7,6 +7,7 @@ import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
 import { SessionTimeline } from "./SessionTimeline";
 import { RubyToggle } from "./Ruby";
+import { reloadMyReadings } from "../script/ruby.tsx";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript } from "./Transcript";
 import {
@@ -1193,6 +1194,16 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}), ...(notes.length ? { castNotes: notes } : {}) },
       ]);
       if (r.plan?.length) setPlan(r.plan);
+      // A kids session's uncertain words are checked in the background as
+      // they appear (ld-0mn, server/sessionReadings.ts): read this
+      // language's readings again now (the last turn's check) and once more
+      // when this turn's has likely finished, so a settled word loses its
+      // mark while the session goes on.
+      if (mode === "kids") {
+        const languageId = getPageLearner()?.languageId ?? null;
+        reloadMyReadings(languageId);
+        window.setTimeout(() => reloadMyReadings(languageId), 15_000);
+      }
       // Someone new in the scene (or back in it): give their tag a voice of
       // the right age before they speak. Every slot's latest note across
       // the session is checked, not only this turn's, so a redraw that was
