@@ -27,6 +27,7 @@ import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 import { COMMON_WORDS } from "./zh-words.ts";
 import { NEUTRAL_WORDS } from "./zh-neutral.ts";
+import { SETTLED_CN, SETTLED_WORDS } from "./zh-settled.ts";
 import { STANDARD_READINGS, UNSETTLED_WORDS } from "./zh-standard.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
@@ -270,6 +271,29 @@ export function useNeutralWords(on: boolean): void {
   cache.clear();
 }
 
+/** The settled words (zh-settled.ts, ld-l1d), by simplified spelling: HSK
+ *  3.0 words beyond the common words that CC-CEDICT reads one way, the
+ *  list prints that way, and the reader reads that way alone. Each with its
+ *  reading, its traditional spellings where a character stands for
+ *  several, and whether it holds in zh-CN only. */
+type SettledWord = { reading: string[]; trad: string[][] | null; cnOnly: boolean };
+const settledWords = new Map<string, SettledWord>();
+for (const [list, cnOnly] of [[SETTLED_WORDS, false], [SETTLED_CN, true]] as const) {
+  for (const e of list.split("|").filter(Boolean)) {
+    const [w, rest] = e.split("=");
+    const [r, t] = rest.split("~");
+    settledWords.set(w, { reading: r.split(" "), trad: t ? t.split(",").map((x) => [...x]) : null, cnOnly });
+  }
+}
+const SETTLED_MAX = Math.max(1, ...[...settledWords.keys()].map((w) => [...w].length));
+/** Off for scripts/pinyin-hsk-audit.mjs --write-settled, which measures
+ *  the reader without the table, and for tests of the reader without it. */
+let settledOn = true;
+export function useSettledWords(on: boolean): void {
+  settledOn = on;
+  cache.clear();
+}
+
 /** Off only for scripts/gen-zh-words.mjs, which compares the reader
  *  without the list to CC-CEDICT. */
 let commonOn = true;
@@ -510,6 +534,8 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     fixed.forEach((f, k) => {
       if (f) neutral[k] = false;
     });
+    // Last, so it only ever confirms a reading everything before it chose.
+    if (settledOn && prior === SHIPPED) applySettled(cps, simp, joined, starts, out, settled, tw, doubt, fixed);
   }
   const detail = { readings: out, settled, dict, joined, starts, fixed, doubt, neutral };
   if (!useCache) return detail;
@@ -571,6 +597,59 @@ function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: 
     else doubt[i] = true;
   }
 }
+
+const wholeCache = new Map<string, boolean>();
+/** Whether the segmenter reads `word` alone as one word (cached). */
+function wholeAlone(word: string): boolean {
+  let v = wholeCache.get(word);
+  if (v === undefined) {
+    v = segmenter ? [...segmenter.segment(word)].length === 1 : false;
+    wholeCache.set(word, v);
+  }
+  return v;
+}
+
+/**
+ * The settled words over one text's readings, in place (ld-l1d): an HSK
+ * 3.0 word beyond the common words (干杯, 难听, 长跑, 柏树) that CC-CEDICT
+ * reads one way, the list prints that way and the reader reads that way
+ * alone is settled (never marked) where it stands as a whole word: both
+ * its ends word boundaries of the segmenter (one of its words, or a run
+ * of them where it splits the word even alone: 长|跑), cutting no word of
+ * the library's dictionary, and every syllable already read as the table
+ * reads it. It changes no reading. It runs last and leaves a word alone
+ * where anything else had a say: a person's correction, the shared list's
+ * or the recap's reading (`fixed`), a doubt (giveBack's 还, the 东西 rule),
+ * a context rule's or the neutral table's other syllable (the reading no
+ * longer matches). A word in traditional characters must be one of its
+ * spellings; a cnOnly word (Taiwan reads it otherwise, or the reader does
+ * in zh-TW) is never settled in zh-TW. No segmenter, nothing settled.
+ */
+function applySettled(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[], tw: boolean, doubt: boolean[], fixed: (FixKind | null)[]): void {
+  if (!starts) return;
+  const edge = (k: number) => k >= cps.length || (starts[k] && !joined[k]);
+  for (let i = 0; i < cps.length; ) {
+    let hit = 0;
+    if (isHan(cps[i]) && edge(i)) {
+      for (let e = Math.min(cps.length, i + SETTLED_MAX); e >= i + 2 && !hit; e--) {
+        if (!edge(e)) continue;
+        const key = simp.slice(i, e).join("");
+        const w = settledWords.get(key);
+        if (!w || w.reading.length !== e - i || (w.cnOnly && tw) || unsettledWords.has(key)) continue;
+        if (w.trad && !w.trad.some((t) => t.every((x, n) => cps[i + n] === x || cps[i + n] === simp[i + n]))) continue;
+        // A word the segmenter keeps whole by itself (得手) but splits here
+        // is another parse (你得|手…): left to the reader.
+        let ok = !(wholeAlone(cps.slice(i, e).join("")) && starts.slice(i + 1, e).some(Boolean));
+        for (let k = i; k < e && ok; k++) ok = isHan(cps[k]) && out[k] === w.reading[k - i] && !doubt[k] && !fixed[k];
+        if (!ok) continue;
+        for (let k = i; k < e; k++) settled[k] = true;
+        hit = e - i;
+      }
+    }
+    i += hit || 1;
+  }
+}
+
 /** Before 东西 a cue that it is "a thing": a verb or measure taking an object. */
 const THING_STRONG = "买卖拿带吃喝找偷丢没好坏些件样点个么";
 /** A weaker cue (的 要 有 also open 公园的东西门, 我要东西对称). */

@@ -6,12 +6,26 @@
 // prints, then with CC-CEDICT. Run by hand, offline from the app; no test
 // needs it:
 //
-//   npm run pinyin:hsk-audit [-- --import <query-system.csv>] [--json <out>] [--show 60] [--write-neutral]
+//   npm run pinyin:hsk-audit [-- --import <query-system.csv>] [--json <out>] [--show 60] [--write-neutral] [--write-settled]
 //
 // `--write-neutral` (ld-azb) writes web/src/script/zh-neutral.ts: the words
 // where the list prints a neutral tone, CC-CEDICT has it too, and the
 // reader (without that table) shows the full tone, each with the reader's
 // reading and the neutral syllable. Only those facts are kept, never the list.
+//
+// `--write-settled` (ld-l1d) writes web/src/script/zh-settled.ts: the
+// words the reader marks uncertain alone (in either script) though it
+// reads them right, settled (zh.ts applySettled): CC-CEDICT reads the word
+// exactly one way (its entries, "also pr." and "Taiwan pr." readings), the
+// list prints that reading in every row it has the word (each syllable as
+// printed, or 一 / 不 in their changed tone), the reader without the table
+// reads it so, and no other table has the word (the common words, the
+// standard readings, UNSETTLED_WORDS; a neutral-tone word may be settled,
+// with its neutral tone, where applyNeutral put it in). zh-TW too only
+// where CC-CEDICT has no other Taiwan reading (the word's, or one on any of its characters' entries, whatever the sense) and the reader reads each
+// traditional spelling so. Left marked by hand: a verb with 着 and
+// PARSED_OTHERWISE (得手: 你得手洗衣服 děi). It prints every marked word it
+// leaves, and why.
 //
 // The list has no stated licence, so it is a reference only: its rows live
 // in a gitignored working file (data/freq/hsk/hsk-words.tsv, or
@@ -51,7 +65,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { cedictEntries, checkSha256, marked } from "./gen-zh-freq.mjs";
-import { loadCedict, parseCedict } from "./pinyin-sweep.mjs";
+import { cedictSyllables, loadCedict, parseCedict } from "./pinyin-sweep.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const hskFile = () => process.env.LINGO_HSK_FILE || path.join(here, "..", "data", "freq", "hsk", "hsk-words.tsv");
@@ -229,10 +243,157 @@ function writeNeutral(words, date) {
   console.log(`${rows.length} neutral-tone words → ${path.relative(process.cwd(), out)}`);
 }
 
+/** Words of one CC-CEDICT reading that a sentence often parses otherwise,
+ *  its character of two readings in the other one, and where the segmenter
+ *  may still bound the word (checked by hand over the two-character
+ *  candidates, ld-l1d): never settled, so the mark stays. */
+export const PARSED_OTHERWISE = new Map([
+  ["得力", "你得力挺他 (děi, must)"],
+  ["得手", "你得手洗衣服 (děi, must)"],
+  ["管教", "他管教数学 (jiāo, to teach)"],
+  ["去处", "去处好关系 (chǔ, to get along)"],
+  ["长足", "猪长足了膘 (zhǎng, to grow)"],
+  ["空想", "有空想想 (kòng, free time)"],
+  ["要强", "不要强人所难 (qiǎng, to force)"],
+  ["倒卖", "你倒卖了不少 (dào, yet)"],
+]);
+
+/** Each character's "Taiwan pr." readings on CC-CEDICT's one-character
+ *  entries (識 shì, 貯 zhǔ, 差 chā), by its traditional and its simplified
+ *  form, tone-marked. Pure. */
+export function charTaiwanReadings(text) {
+  const out = new Map();
+  for (const line of text.split("\n")) {
+    const m = /^(\S) (\S) \[[^\]]*\] \/(.*)\/\s*$/u.exec(line);
+    if (!m) continue;
+    for (const a of m[3].matchAll(/Taiwan pr\. \[([^\]]+)\]/g)) {
+      const syl = cedictSyllables(a[1]);
+      if (!syl || syl.length !== 1) continue;
+      const r = marked(syl[0]);
+      if (!r) continue;
+      for (const ch of new Set([m[1], m[2]])) {
+        const list = out.get(ch) ?? out.set(ch, []).get(ch);
+        if (!list.includes(r)) list.push(r);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The words to settle (ld-l1d): of the list's words of two or more
+ * characters that the reader (without the settled table) marks alone in
+ * either script, those it reads right by both sources. `both`: settled in
+ * zh-CN and zh-TW; `cn`: zh-CN only; `left`: [word, why] for every other
+ * marked word. Each settled word is [word, reading, traditional spellings
+ * or null]. `tables`: words another table already decides, with its name.
+ */
+export function settledWords({ rows, readingsOf, cedict, entries, zh, tables, charTaiwan = new Map() }) {
+  const opts = { cache: false, corrections: null };
+  const from = new Map();
+  for (const e of entries) e.sc.forEach((ch, k) => (from.get(ch) ?? from.set(ch, new Set()).get(ch)).add(e.tc[k]));
+  const many = (w) => [...w].some((ch) => (from.get(ch)?.size ?? 0) > 1);
+  const both = [];
+  const cn = [];
+  const left = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const w = r.word;
+    if (r.chars.length < 2 || seen.has(w)) continue;
+    seen.add(w);
+    const c = cedict.get(w);
+    const trads = (c?.trads ?? []).filter((t) => [...t].length === r.chars.length);
+    const markedCn = zh.uncertainWords(w, "zh-CN", opts).length > 0;
+    const markedTw = trads.some((t) => zh.uncertainWords(t, "zh-TW", opts).length > 0);
+    if (!markedCn && !markedTw) continue;
+    const app = zh.readCodePoints(w, "zh-CN", opts);
+    const why = (() => {
+      if (tables.has(w)) return tables.get(w);
+      if (!c?.readings.length) return "no CC-CEDICT entry";
+      // A verb and 着 is made anew in any sentence, in either sense of the
+      // verb: CC-CEDICT's one entry (挨着 āi zhe, next to) says nothing of
+      // 挨着打 (ái, to suffer).
+      if (/[着著]$/.test(w)) return "a verb with 着: its other sense is as productive (挨着打 ái)";
+      if (PARSED_OTHERWISE.has(w)) return `a sentence may parse it otherwise: ${PARSED_OTHERWISE.get(w)}`;
+      if (c.readings.length > 1) return `CC-CEDICT reads it ${c.readings.length} ways: ${c.readings.map((x) => x.join(" ")).join(" / ")}`;
+      const one = c.readings[0];
+      // Every row the list has for the word prints CC-CEDICT's reading (一 /
+      // 不 in their changed tone are how it prints them, not another reading;
+      // "·", a syllable often read neutral, is).
+      for (const syl of readingsOf.get(w) ?? []) {
+        const v = wordVerdict(one, syl, r.chars);
+        if (!v.ok || !["exact", "sandhi"].includes(v.how) || syl.some((s) => s.light)) return `HSK prints ${syl.map((s) => (s.light ? "·" : "") + s.syl).join(" ")}, CC-CEDICT ${one.join(" ")}`;
+      }
+      if (app.join(" ") !== one.join(" ")) return `the reader reads ${app.join(" ")}, CC-CEDICT ${one.join(" ")}`;
+      return null;
+    })();
+    if (why) {
+      left.push([w, why]);
+      continue;
+    }
+    const one = c.readings[0];
+    // Taiwan: no other reading in CC-CEDICT, for the word or (PR #73
+    // review) for any of its characters, whatever the sense: CC-CEDICT
+    // often gives Taiwan's reading on the character's entry only (識 shì,
+    // so 似曾相識 xiāng shì; 貯 zhǔ; 行 xìng, conduct, so 品行). Unsure is
+    // zh-CN only: in zh-TW a kept mark costs little. And the reader reads
+    // every traditional spelling so.
+    const charWhy = () => {
+      for (const t of [w, ...trads]) {
+        for (const [k, ch] of [...t].entries()) {
+          const other = (charTaiwan.get(ch) ?? []).filter((x) => x !== one[k]);
+          if (other.length) return `${ch} Taiwan pr. ${other.join(" / ")}`;
+        }
+      }
+      return null;
+    };
+    const twWhy = c.taiwan.some((x) => x.join(" ") !== one.join(" "))
+      ? `Taiwan pr. ${c.taiwan.map((x) => x.join(" ")).join(" / ")}`
+      : charWhy() ?? trads.map((t) => [t, zh.readCodePoints(t, "zh-TW", opts).join(" ")]).find(([, x]) => x !== one.join(" "))?.join(" read ") ?? null;
+    const row = [w, one.join(" "), many(w) ? trads : null];
+    if (!twWhy) both.push(row);
+    else if (markedCn) {
+      cn.push(row);
+      if (markedTw) left.push([trads.join(","), `zh-TW: ${twWhy}`]);
+    } else left.push([trads.join(","), `zh-TW: ${twWhy}`]);
+  }
+  return { both, cn, left };
+}
+
+/** web/src/script/zh-settled.ts (ld-l1d): CC BY-SA 4.0 like zh-words.ts. */
+function writeSettled({ both, cn, left }, date) {
+  const out = path.join(here, "..", "web", "src", "script", "zh-settled.ts");
+  const line = (rows) => rows.map(([w, r, t]) => `${w}=${r}${t ? `~${t.join(",")}` : ""}`).sort().join("|");
+  console.log(`\nsettled, both scripts (${both.length}): ${both.map(([w, r]) => `${w} ${r}`).join(" · ")}`);
+  console.log(`settled, zh-CN only (${cn.length}): ${cn.map(([w, r]) => `${w} ${r}`).join(" · ")}`);
+  console.log(`left marked (${left.length}):`);
+  for (const [w, why] of left) console.log(`  ${w}: ${why}`);
+  const body = [
+    "/* Settled words (zh.ts applySettled, ld-l1d): generated by",
+    " * scripts/pinyin-hsk-audit.mjs --write-settled, do not edit.",
+    " * Words of the official HSK 3.0 word list (GF 0025—2021, Ministry of",
+    " * Education of the PRC; no stated licence, so a reference only: nothing",
+    " * but a word's reading, as a fact, is kept here, and no definition, level",
+    " * or order) that the reader marks uncertain though it reads them right:",
+    ` * CC-CEDICT (${date}; MDBG, CC BY-SA 4.0) reads each exactly one way, the`,
+    " * list prints that reading, and the reader reads it so. Each word with",
+    ' * that reading ("~": its traditional spellings, where a character stands',
+    " * for several). SETTLED_CN: zh-CN only. Derived from CC-CEDICT: this",
+    " * table is under CC BY-SA 4.0, see ZH-FREQ-LICENSE.txt. */",
+    "",
+    `export const SETTLED_WORDS = ${JSON.stringify(line(both))};`,
+    `export const SETTLED_CN = ${JSON.stringify(line(cn))};`,
+    "",
+  ].join("\n");
+  fs.writeFileSync(out, body);
+  console.log(`${both.length + cn.length} settled words (${(body.length / 1024).toFixed(1)} KB) → ${path.relative(process.cwd(), out)}`);
+}
+
 function args(argv) {
-  const out = { import: null, json: null, show: 60, writeNeutral: false };
+  const out = { import: null, json: null, show: 60, writeNeutral: false, writeSettled: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--import") out.import = argv[++i];
+    else if (argv[i] === "--write-settled") out.writeSettled = true;
     else if (argv[i] === "--json") out.json = argv[++i];
     else if (argv[i] === "--show") out.show = Number(argv[++i]);
     else if (argv[i] === "--write-neutral") out.writeNeutral = true;
@@ -290,6 +451,7 @@ async function main() {
   const zh = await import("../web/src/script/zh.ts");
   // The table being written is measured against, never by itself.
   if (opt.writeNeutral) zh.useNeutralWords(false);
+  if (opt.writeSettled) zh.useSettledWords(false);
   const { TAIWAN_READINGS } = await import("../web/src/script/script.ts");
   const { STANDARD_READINGS } = await import("../web/src/script/zh-standard.ts");
   const { text, date } = await loadCedict();
@@ -333,7 +495,7 @@ async function main() {
 
   /** word → the reader's reading with the neutral syllables put in. */
   const neutralWords = new Map();
-  const tally = { rows: rows.length, unsplit, single: { n: 0, agree: 0, differ: [] }, multi: { n: 0, exact: 0, convention: {}, two: [], differ: [] }, tw: { n: 0, agree: 0, taiwan: [], differ: [] }, marked: [], neutral: { listNeutral: 0, readerNeutral: 0, listNeutralCedictWithList: 0, readerNeutralCedictWithList: 0 } };
+  const tally = { rows: rows.length, unsplit, single: { n: 0, agree: 0, differ: [] }, multi: { n: 0, exact: 0, convention: {}, two: [], differ: [] }, tw: { n: 0, agree: 0, taiwan: [], differ: [] }, marked: [], markedTw: [], neutral: { listNeutral: 0, readerNeutral: 0, listNeutralCedictWithList: 0, readerNeutralCedictWithList: 0 } };
   for (const r of rows) {
     const app = zh.readCodePoints(r.word, "zh-CN", { cache: false, corrections: null });
     const v = wordVerdict(app, r.syl, r.chars);
@@ -348,6 +510,8 @@ async function main() {
     tally.multi.n++;
     // Marked uncertain (zh.ts uncertainWords), whatever it reads.
     if (zh.uncertainWords(r.word, "zh-CN", { cache: false, corrections: null }).length) tally.marked.push(line);
+    // And in zh-TW, in any of CC-CEDICT's traditional spellings.
+    if ((c?.trads ?? []).some((t) => [...t].length === r.chars.length && zh.uncertainWords(t, "zh-TW", { cache: false, corrections: null }).length)) tally.markedTw.push(line);
     if (v.ok) {
       // Which way the neutral tone goes: the list's or the reader's.
       r.syl.forEach((h, k) => {
@@ -402,7 +566,7 @@ async function main() {
   console.log(`words of 2+ characters, zh-CN: ${m.n}: agree ${agree} (${pct(agree, m.n)}; exactly ${m.exact}, by convention ${agree - m.exact}: ${Object.entries(m.convention).map(([k, v]) => `${k} ${v}`).join(", ")}), printed both ways ${m.two.length}, differ ${m.differ.length}`);
   const byLevel = {};
   for (const x of tally.marked) byLevel[x.level] = (byLevel[x.level] ?? 0) + 1;
-  console.log(`  marked uncertain, zh-CN: ${tally.marked.length} (${Object.entries(byLevel).map(([k, v]) => `level ${k} ${v}`).join(", ")})`);
+  console.log(`  marked uncertain, zh-CN: ${tally.marked.length} (${Object.entries(byLevel).map(([k, v]) => `level ${k} ${v}`).join(", ")}); zh-TW (CC-CEDICT's traditional spellings): ${tally.markedTw.length}`);
   const nt = tally.neutral;
   console.log(`  the neutral-tone convention, by syllable: the list neutral, the reader full ${nt.listNeutral} (CC-CEDICT neutral too ${nt.listNeutralCedictWithList}); the reader neutral, the list full ${nt.readerNeutral} (CC-CEDICT full too ${nt.readerNeutralCedictWithList})`);
   console.log(`single characters, zh-CN: ${tally.single.n}: agree ${tally.single.agree}, differ ${tally.single.differ.length} (the list's other sense, or the reader's most frequent reading)`);
@@ -416,7 +580,23 @@ async function main() {
   show("printed both ways, the reader has the other", m.two);
   show("zh-TW differs where zh-CN agrees", tally.tw.differ);
   show("marked uncertain, zh-CN", tally.marked);
+  show("marked uncertain, zh-TW", tally.markedTw);
   if (opt.writeNeutral) writeNeutral(neutralWords, date);
+  if (opt.writeSettled) {
+    const { COMMON_WORDS } = await import("../web/src/script/zh-words.ts");
+    const { UNSETTLED_WORDS } = await import("../web/src/script/zh-standard.ts");
+    const keys = (s) => s.split("|").filter(Boolean).map((e) => e.split("=")[0]);
+    // A neutral-tone word (zh-neutral.ts) is no exception: settled only
+    // where applyNeutral has put CC-CEDICT's neutral tone in (不由得 bù yóu
+    // de, 挑剔 tiāo ti), so the reading is the same, and never in zh-TW,
+    // where the reader keeps the full tone.
+    const tables = new Map([
+      ...keys(COMMON_WORDS).map((w) => [w, "a common word (zh-words.ts)"]),
+      ...STANDARD_READINGS.map((s) => [s.word, "a standard reading (zh-standard.ts)"]),
+      ...UNSETTLED_WORDS.map((w) => [w, "read two ways, left to a person (UNSETTLED_WORDS)"]),
+    ]);
+    writeSettled(settledWords({ rows, readingsOf, cedict, entries, zh, tables, charTaiwan: charTaiwanReadings(text) }), date);
+  }
   if (opt.json) fs.writeFileSync(opt.json, JSON.stringify(tally, null, 1));
 }
 

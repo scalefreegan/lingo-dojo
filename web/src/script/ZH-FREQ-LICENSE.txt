@@ -17,6 +17,14 @@ chooses them by checking each against the official HSK 3.0 word list (GF
 the list is a reference only, kept out of the repository, and nothing of
 it is in this table but the fact that it prints the word's neutral tone.
 
+zh-settled.ts (the settled words, ld-l1d) is a derived table too, built
+by scripts/pinyin-hsk-audit.mjs --write-settled from CC-CEDICT's
+readings. It holds some hundred and forty words, each with its reading
+(and, for some, their traditional spellings). It chooses them by checking
+each against the same HSK 3.0 word list, a reference only in the same
+way: nothing of it is in this table but the fact that it prints the
+word's reading as CC-CEDICT does.
+
 They are derived from, and licensed like, these sources (zh-words.ts
 from the first two; it picks its words with zh-freq.ts's readings):
 
@@ -39,9 +47,9 @@ from the first two; it picks its words with zh-freq.ts's readings):
     (c) Unicode, Inc. Unicode License v3 (UNICODE-LICENSE.txt, beside
     this file).
 
-zh-freq.ts, zh-words.ts and zh-neutral.ts are therefore made available under the Creative Commons
+zh-freq.ts, zh-words.ts, zh-neutral.ts and zh-settled.ts are therefore made available under the Creative Commons
 Attribution-ShareAlike 4.0 International licence:
 https://creativecommons.org/licenses/by-sa/4.0/legalcode
 If you change it and pass it on, do so under the same licence and keep
 this notice. The rest of this repository is under its own licence
-(LICENSE at the root); only these three data files are share-alike.
+(LICENSE at the root); only these four data files are share-alike.
