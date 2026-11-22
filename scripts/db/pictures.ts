@@ -64,13 +64,16 @@ export async function pictureOf(db: Db, profile: LanguageProfileRef, phraseId: s
 export async function storeVerdict(
   db: Db,
   profile: LanguageProfileRef,
-  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer; kidsSafe?: boolean | null },
+  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer; kidsSafe?: boolean | null; lookAlike?: string | null },
 ): Promise<{ row?: PictureRow; oldFile: string | null }> {
   if ((v.status === "ready") !== !!v.stock) throw new Error("a ready verdict is a stock picture's, and only it");
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, v.phraseId));
   if (before?.phraseKey === v.phraseKey) return { oldFile: null };
-  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, ...NO_FILE, ...(v.stock ?? {}) };
+  // The check's look-alike group (ld-44x) is only for a drawing of the
+  // word's own: a stock match plays under its concept's.
+  const lookAlike = v.status === "pending" ? (v.lookAlike ?? null) : null;
+  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, lookAlike, ...NO_FILE, ...(v.stock ?? {}) };
   try {
     if (!before) {
       const [row] = await mine.insertOrIgnore(phrasePictures, { phraseId: v.phraseId, ...values }, { target: [phrasePictures.phraseId] });
@@ -232,7 +235,9 @@ export async function drawAnyway(
   if (before.status !== "none") return { problem: "state" };
   const [row] = await mine.update(
     phrasePictures,
-    { status: "pending", description, updatedAt: sql`now()` },
+    // A description of their own: the check's look-alike group was for
+    // none (a `none` verdict has none), and the new one's words decide.
+    { status: "pending", description, lookAlike: null, updatedAt: sql`now()` },
     and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "none")) as SQL,
   );
   return row ? { row } : { problem: "state" };
@@ -256,7 +261,7 @@ export async function pictureFileInUse(db: Db, file: string): Promise<boolean> {
 export async function markNone(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
   await forLanguageProfile(db, profile).update(
     phrasePictures,
-    { status: "none", description: null, updatedAt: sql`now()` },
+    { status: "none", description: null, lookAlike: null, updatedAt: sql`now()` },
     and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "pending")) as SQL,
   );
 }

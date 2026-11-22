@@ -267,6 +267,9 @@ export async function shareDrawings(t: ShareFrom, phrases: CandidatePhrase[], ro
         // A kids learner's own word reaches kids unless its check said no;
         // an adult's only once a check said yes.
         kidsSafe: t.mode === "kids" ? (row.kidsSafe ?? true) : (row.kidsSafe ?? null),
+        // The check's look-alike group goes with it (ld-44x); with none,
+        // mergeStock keys the shared drawing by its description's words.
+        group: row.lookAlike ?? null,
         createdBy: t.userId,
         key, text: key ? checkPoolWord(key, phrase.text ?? "", names) : null,
       });

@@ -12,8 +12,13 @@
 #   words        the English words it stands for (the check matches a
 #                word's meaning against these)
 #   group        optional: concepts whose pictures look alike (a boy and a
-#                brother, a ball and catching one) share a group, and a
-#                round never offers two of one group (two right answers)
+#                brother, a ball and catching one, a parcel and a
+#                suitcase), or that one word could name (a bag and a
+#                backpack), share a group, and a round never offers two of
+#                one group (two right answers). Keep groups tight: only
+#                what a learner could really take for the other. A
+#                learner's own drawing joins one too (the picturable check
+#                names it, else scripts/pictures.mjs LOOK_ALIKE_RULES)
 #   adults       optional, `true`: never offered or shown to a kids
 #                learner (beer, wine, pills); adult learners get it
 #
@@ -35,7 +40,7 @@ categories:
     - { id: duck, description: a yellow duck, words: [duck, duckling] }
     - { id: rabbit, description: a grey rabbit with long ears, words: [rabbit, bunny] }
     - { id: frog, description: a green frog sitting, words: [frog] }
-    - { id: bear, description: a friendly brown bear sitting, words: [bear] }
+    - { id: bear, description: a friendly brown bear sitting, words: [bear], group: bear }
     - { id: lion, description: a friendly lion cub with a fluffy golden mane, words: [lion] }
     - { id: elephant, description: a grey elephant with a curled trunk, words: [elephant] }
     - { id: monkey, description: a cheerful brown monkey, words: [monkey] }
@@ -85,15 +90,15 @@ categories:
   Body:
     # The part itself, large: a child pointing at each one looks the same
     # from one card to the next.
-    - { id: head, description: a round smiling head, filling the picture, words: [head] }
+    - { id: head, description: a round smiling head, filling the picture, words: [head], group: head }
     - { id: eyes, description: a pair of large friendly eyes, words: [eye, eyes] }
     - { id: ears, description: one large ear, seen from the side, words: [ear, ears] }
     - { id: nose, description: one large rounded nose, seen from the side, words: [nose] }
     - { id: mouth, description: a large smiling mouth with closed lips, words: [mouth], group: mouth }
     - { id: teeth, description: a row of shiny white teeth, words: [tooth, teeth], group: mouth }
-    - { id: hand, description: an open hand, palm forward, words: [hand, hands] }
+    - { id: hand, description: an open hand, palm forward, words: [hand, hands], group: leg }
     - { id: arm, description: one bent arm making a muscle, words: [arm, arms] }
-    - { id: tummy, description: a round tummy with a belly button, words: [tummy, belly, stomach] }
+    - { id: tummy, description: a round tummy with a belly button, words: [tummy, belly, stomach], group: head }
     - { id: leg, description: one bare leg from hip to ankle, knee bent, words: [leg, legs], group: leg }
     - { id: foot, description: a bare foot with wiggly toes, words: [foot, feet, toes], group: leg }
 
@@ -103,10 +108,10 @@ categories:
     - { id: bandage, description: a sticking plaster, words: [bandage, plaster, band-aid] }
     - { id: thermometer, description: a thermometer, words: [thermometer, fever] }
     - { id: hospital, description: a hospital building with a red cross, words: [hospital] }
-    - { id: pharmacy, description: a small pharmacy shop with a green cross, words: [pharmacy, chemist, drugstore] }
+    - { id: pharmacy, description: a small pharmacy shop with a green cross, words: [pharmacy, chemist, drugstore], group: shop }
 
   Fruit and vegetables:
-    - { id: apple, description: a shiny red apple, words: [apple] }
+    - { id: apple, description: a shiny red apple, words: [apple], group: red-fruit }
     - { id: banana, description: a yellow banana, words: [banana] }
     - { id: orange-fruit, description: a round orange fruit with a green leaf, words: [orange fruit, an orange] }
     - { id: strawberry, description: a red strawberry, words: [strawberry] }
@@ -114,7 +119,7 @@ categories:
     - { id: lemon, description: a yellow lemon, words: [lemon] }
     - { id: watermelon, description: a slice of watermelon, words: [watermelon] }
     - { id: avocado, description: an avocado cut in half, words: [avocado] }
-    - { id: tomato, description: a red tomato, words: [tomato] }
+    - { id: tomato, description: a red tomato, words: [tomato], group: red-fruit }
     - { id: carrot, description: an orange carrot with green leaves, words: [carrot] }
     - { id: potato, description: a brown potato, words: [potato] }
     - { id: onion, description: a round onion, words: [onion] }
@@ -140,23 +145,23 @@ categories:
     - { id: chocolate, description: a bar of chocolate, words: [chocolate] }
 
   Drinks:
-    - { id: water, description: a glass of water, words: [water] }
-    - { id: coffee, description: a cup of coffee, words: [coffee] }
-    - { id: tea, description: a cup of tea with a teabag, words: [tea] }
-    - { id: milk, description: a glass of milk, words: [milk] }
-    - { id: juice, description: a glass of orange juice, words: [juice, orange juice] }
-    - { id: beer, description: a glass of beer, words: [beer] }
+    - { id: water, description: a glass of water, words: [water], group: water }
+    - { id: coffee, description: a cup of coffee, words: [coffee], group: cup }
+    - { id: tea, description: a cup of tea with a teabag, words: [tea], group: cup }
+    - { id: milk, description: a glass of milk, words: [milk], group: water }
+    - { id: juice, description: a glass of orange juice, words: [juice, orange juice], group: juice }
+    - { id: beer, description: a glass of beer, words: [beer], group: juice }
     - { id: wine, description: a glass of red wine, words: [wine] }
 
   At the table:
     - { id: plate, description: an empty white plate, words: [plate, dish] }
-    - { id: cup, description: an empty cup, words: [cup, mug] }
+    - { id: cup, description: an empty cup, words: [cup, mug], group: cup }
     - { id: spoon, description: a spoon, words: [spoon] }
     - { id: fork, description: a fork, words: [fork] }
     - { id: knife, description: a butter knife, words: [knife] }
-    - { id: table, description: a wooden table, words: [table] }
-    - { id: menu, description: an open restaurant menu, words: [menu] }
-    - { id: bill, description: a restaurant bill on a small tray, words: [bill, check, receipt] }
+    - { id: table, description: a wooden table, words: [table], group: table }
+    - { id: menu, description: an open restaurant menu, words: [menu], group: book }
+    - { id: bill, description: a restaurant bill on a small tray, words: [bill, check, receipt], group: coins }
 
   Home:
     - { id: house, description: a little house with a red roof, words: [house, home] }
@@ -166,91 +171,91 @@ categories:
     - { id: chair, description: a wooden chair, words: [chair] }
     - { id: key, description: a door key, words: [key] }
     - { id: clock, description: a round wall clock, words: [clock] }
-    - { id: bath, description: a bathtub with bubbles, words: [bath, bathtub] }
-    - { id: shower, description: a shower with water running, words: [shower] }
+    - { id: bath, description: a bathtub with bubbles, words: [bath, bathtub], group: bath }
+    - { id: shower, description: a shower with water running, words: [shower], group: bath }
     - { id: toilet, description: a toilet, words: [toilet, bathroom, restroom] }
     - { id: fridge, description: a fridge, words: [fridge, refrigerator] }
     - { id: stove, description: a stove with a pot on it, words: [stove, cooker] }
-    - { id: television, description: a television, words: [television, tv] }
+    - { id: television, description: a television, words: [television, tv], group: screen }
     - { id: phone, description: a mobile phone, words: [phone, mobile phone, cell phone, smartphone] }
-    - { id: computer, description: a laptop computer, words: [computer, laptop] }
+    - { id: computer, description: a laptop computer, words: [computer, laptop], group: screen }
 
   Clothes:
-    - { id: shirt, description: a button-up shirt, words: [shirt] }
-    - { id: t-shirt, description: a plain t-shirt, words: [t-shirt, tee] }
+    - { id: shirt, description: a button-up shirt, words: [shirt], group: shirt }
+    - { id: t-shirt, description: a plain t-shirt, words: [t-shirt, tee], group: shirt }
     - { id: trousers, description: a pair of trousers, words: [trousers, pants, jeans] }
     - { id: dress, description: a dress, words: [dress] }
     - { id: shoes, description: a pair of shoes, words: [shoe, shoes] }
     - { id: socks, description: a pair of socks, words: [sock, socks] }
     - { id: hat, description: a sun hat, words: [hat] }
-    - { id: coat, description: a warm winter coat, words: [coat, jacket] }
+    - { id: coat, description: a warm winter coat, words: [coat, jacket], group: shirt }
     - { id: glasses, description: a pair of glasses, words: [glasses, spectacles] }
-    - { id: bag, description: a handbag, words: [bag, handbag, purse] }
-    - { id: backpack, description: a backpack, words: [backpack, rucksack, school bag] }
+    - { id: bag, description: a handbag, words: [bag, handbag, purse], group: bag }
+    - { id: backpack, description: a backpack, words: [backpack, rucksack, school bag], group: bag }
     - { id: umbrella, description: an open umbrella, words: [umbrella] }
 
   Toys and play:
     - { id: ball, description: a colourful ball, words: [ball], group: ball }
-    - { id: teddy-bear, description: a soft teddy bear, words: [teddy bear, teddy] }
-    - { id: doll, description: a rag doll, words: [doll] }
+    - { id: teddy-bear, description: a soft teddy bear, words: [teddy bear, teddy], group: bear }
+    - { id: doll, description: a rag doll, words: [doll], group: girl }
     - { id: balloon, description: a red balloon on a string, words: [balloon] }
     - { id: kite, description: a kite flying, words: [kite] }
     - { id: crayons, description: a few colourful crayons, words: [crayon, crayons] }
     - { id: slide, description: a playground slide, words: [slide] }
     - { id: treasure, description: an open wooden treasure chest with jewels and a crown, words: [treasure, treasure chest], group: coins }
-    - { id: present, description: a wrapped present with a bow, words: [present, gift] }
+    - { id: present, description: a wrapped present with a bow, words: [present, gift], group: bag }
 
   School and work:
     - { id: book, description: a closed book, words: [book], group: book }
     - { id: pencil, description: a yellow pencil, words: [pencil] }
-    - { id: notebook, description: a spiral notebook, words: [notebook, paper] }
+    - { id: notebook, description: a spiral notebook, words: [notebook, paper], group: book }
     - { id: envelope, description: a closed envelope, words: [envelope, letter] }
-    - { id: parcel, description: a parcel wrapped in brown paper, words: [parcel, package, box] }
-    - { id: passport, description: a closed passport booklet, words: [passport] }
+    - { id: parcel, description: a parcel wrapped in brown paper, words: [parcel, package, box], group: bag }
+    - { id: passport, description: a closed passport booklet, words: [passport], group: book }
 
   Money and shopping:
     - { id: coins, description: a small pile of gold coins, words: [coin, coins, change], group: coins }
-    - { id: banknotes, description: a few green banknotes, words: [money, cash, banknote, note, bill money] }
+    - { id: banknotes, description: a few green banknotes, words: [money, cash, banknote, note, bill money], group: coins }
     - { id: bank-card, description: a bank card, words: [card, bank card, credit card, debit card] }
     - { id: wallet, description: a brown wallet, words: [wallet] }
-    - { id: shopping-bag, description: a paper shopping bag full of groceries, words: [shopping bag, groceries] }
-    - { id: basket, description: a shopping basket, words: [basket, shopping basket] }
+    - { id: shopping-bag, description: a paper shopping bag full of groceries, words: [shopping bag, groceries], group: bag }
+    - { id: basket, description: a shopping basket, words: [basket, shopping basket], group: bag }
 
   Transport and travel:
-    - { id: car, description: a small red car, words: [car] }
-    - { id: taxi, description: a yellow taxi, words: [taxi, cab] }
+    - { id: car, description: a small red car, words: [car], group: car }
+    - { id: taxi, description: a yellow taxi, words: [taxi, cab], group: car }
     - { id: bus, description: a big bus, words: [bus] }
-    - { id: train, description: a train, words: [train] }
-    - { id: bicycle, description: a bicycle, words: [bicycle, bike] }
-    - { id: motorbike, description: a motorbike, words: [motorbike, motorcycle, scooter] }
+    - { id: train, description: a train, words: [train], group: train }
+    - { id: bicycle, description: a bicycle, words: [bicycle, bike], group: bike }
+    - { id: motorbike, description: a motorbike, words: [motorbike, motorcycle, scooter], group: bike }
     - { id: boat, description: a little boat on water, words: [boat, ship] }
-    - { id: airplane, description: an airplane flying, words: [airplane, aeroplane, plane, flight] }
-    - { id: truck, description: a truck, words: [truck, lorry] }
-    - { id: suitcase, description: a suitcase with wheels, words: [suitcase, luggage] }
+    - { id: airplane, description: an airplane flying, words: [airplane, aeroplane, plane, flight], group: airplane }
+    - { id: truck, description: a truck, words: [truck, lorry], group: car }
+    - { id: suitcase, description: a suitcase with wheels, words: [suitcase, luggage], group: bag }
     - { id: ticket, description: a travel ticket, words: [ticket] }
     - { id: map, description: a folded map, words: [map] }
     - { id: traffic-light, description: a traffic light, words: [traffic light, traffic lights] }
 
   Places:
-    - { id: shop, description: a little shop with an awning, words: [shop, store] }
-    - { id: market, description: a market stall with fruit and vegetables, words: [market] }
-    - { id: restaurant, description: a restaurant table set for two, words: [restaurant] }
-    - { id: cafe, description: a small cafe with a table outside, words: [cafe, coffee shop] }
+    - { id: shop, description: a little shop with an awning, words: [shop, store], group: shop }
+    - { id: market, description: a market stall with fruit and vegetables, words: [market], group: shop }
+    - { id: restaurant, description: a restaurant table set for two, words: [restaurant], group: table }
+    - { id: cafe, description: a small cafe with a table outside, words: [cafe, coffee shop], group: shop }
     - { id: hotel, description: a tall hotel building, words: [hotel] }
     - { id: school, description: a school building with a bell, words: [school] }
     - { id: bank, description: a bank building with columns, words: [bank] }
     - { id: post-office, description: a red postbox, words: [post office, postbox, mailbox] }
-    - { id: park, description: a park with a tree and a bench, words: [park] }
-    - { id: train-station, description: a train waiting at a station platform, words: [station, train station, platform] }
-    - { id: airport, description: an airport building with a plane outside, words: [airport] }
+    - { id: park, description: a park with a tree and a bench, words: [park], group: tree }
+    - { id: train-station, description: a train waiting at a station platform, words: [station, train station, platform], group: train }
+    - { id: airport, description: an airport building with a plane outside, words: [airport], group: airplane }
     - { id: beach, description: a sunny beach with a bucket and spade, words: [beach] }
 
   Nature and weather:
     - { id: sun, description: a smiling yellow sun, words: [sun, sunny] }
     - { id: moon, description: a crescent moon, words: [moon] }
     - { id: star, description: a yellow star, words: [star] }
-    - { id: cloud, description: a fluffy white cloud, words: [cloud, cloudy] }
-    - { id: rain, description: a grey cloud with raindrops falling, words: [rain, raining, rainy] }
+    - { id: cloud, description: a fluffy white cloud, words: [cloud, cloudy], group: cloud }
+    - { id: rain, description: a grey cloud with raindrops falling, words: [rain, raining, rainy], group: cloud }
     - { id: snow, description: a snowflake, words: [snow, snowing, snowflake] }
     - { id: rainbow, description: a rainbow, words: [rainbow] }
     - { id: tree, description: a leafy green tree, words: [tree], group: tree }
@@ -261,17 +266,17 @@ categories:
     - { id: sea, description: blue sea waves, words: [sea, ocean] }
 
   Actions:
-    - { id: run, description: a child running, words: [run, running, to run] }
-    - { id: jump, description: a child jumping in the air, words: [jump, jumping, to jump] }
-    - { id: walk, description: a child walking, words: [walk, walking, to walk] }
+    - { id: run, description: a child running, words: [run, running, to run], group: move }
+    - { id: jump, description: a child jumping in the air, words: [jump, jumping, to jump], group: move }
+    - { id: walk, description: a child walking, words: [walk, walking, to walk], group: move }
     - { id: sleep, description: a child asleep in bed, words: [sleep, sleeping, to sleep, asleep], group: bed }
     - { id: eat, description: a child eating from a bowl with a spoon, words: [eat, eating, to eat] }
     - { id: drink, description: a child drinking from a cup, words: [drink, drinking, to drink] }
     - { id: swim, description: a child swimming, words: [swim, swimming, to swim] }
-    - { id: dance, description: a child dancing, words: [dance, dancing, to dance] }
-    - { id: sing, description: a child singing with musical notes around, words: [sing, singing, to sing] }
-    - { id: clap, description: a child clapping hands, words: [clap, clapping, to clap] }
-    - { id: climb, description: a child climbing a tree, words: [climb, climbing, to climb] }
+    - { id: dance, description: a child dancing, words: [dance, dancing, to dance], group: move }
+    - { id: sing, description: a child singing with musical notes around, words: [sing, singing, to sing], group: sing }
+    - { id: clap, description: a child clapping hands, words: [clap, clapping, to clap], group: sing }
+    - { id: climb, description: a child climbing a tree, words: [climb, climbing, to climb], group: tree }
     - { id: read, description: a child reading a book, words: [read, reading, to read], group: book }
     - { id: wash-hands, description: a child washing hands with soap bubbles, words: [wash, washing, wash hands, to wash] }
     - { id: brush-teeth, description: a child brushing teeth, words: [brush teeth, brushing teeth] }

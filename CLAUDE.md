@@ -254,6 +254,15 @@ docs/DATA.md §The game for adults, and the picture library):
   Add form or from its tile (`POST /api/stock-pictures/admin/:id/group`, admin;
   a file concept's is a 409), with the groups in use suggested; `mergeStock`
   passes it on, so a round never offers two of one group, file and added alike.
+- Look-alikes on one screen (ld-44x, migration 0021, docs/DATA.md §Look-alikes
+  on one screen): a round never shows two pictures of one group, stock or own.
+  pictures.yaml's groups were audited (a parcel and a suitcase are `bag`). A
+  word's own drawing gets the group the picturable check names in the same
+  call (`looksLike`, from `lookAlikeGroups`; `phrase_pictures.look_alike`),
+  else its description's words (`lookAlikeOf`, fixed `LOOK_ALIKE_RULES` in
+  `scripts/pictures.mjs`, free, so old rows need no call); `ownLookAlike`,
+  set in `playable`. A shared drawing's concept takes the check's, else its
+  description's (`mergeStock`). Nothing is relaxed for a small bank.
 - An admin sets or clears any concept's Adults only from its tile (ld-cvd,
   migration 0018, docs/DATA.md §Adults only, set from the page; `POST
   /api/stock-pictures/admin/:id/adults`): an added one's column, a file

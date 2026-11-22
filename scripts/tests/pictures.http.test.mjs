@@ -737,3 +737,49 @@ test("the daily cap of checks is counted again after the wait for the slot: reac
   assert.equal((await picturesOf(pip)).length, 0, "the words stay unjudged");
   assert.equal(openai.calls.length, 0);
 });
+
+/* ------------------------------- look-alikes ------------------------------- */
+
+test("the check names a look-alike group for a word it draws, stored once with its verdict; a round never shows two of one group, an own drawing's key from its description too (ld-44x)", async () => {
+  // A stock list with groups (no stock picture drawn: nothing is matched,
+  // every word is drawn, but the groups are offered all the same).
+  const file = path.join(root, "pictures.yaml");
+  fs.writeFileSync(file, "categories:\n  Travel:\n    - { id: trunk, description: a big travel trunk, words: [trunk], group: bag }\n    - { id: lad, description: a young lad, words: [lad], group: boy }\n");
+  try {
+    fake.picture("!auto-look");
+    const pip = await someone();
+    const p = await add(pip, [["der Koffer", "trunk"], ["die Kiste", "box"], ["der Hund", "dog"], ["die Katze", "cat"]]);
+    await drawAll(pip);
+    const prompt = fake.pictureArgs().find((a) => a.startsWith("Words:"));
+    assert.match(prompt, /\n\nLook-alike groups:\nbag: a big travel trunk\nboy: a young lad$/, "the groups in use, after the words");
+    const rows = await q("select p.text, x.id, x.status, x.look_alike from phrase_pictures x join phrases p on p.id = x.phrase_id where x.language_profile_id = $1 order by p.text", [pip.languageId]);
+    assert.deepEqual(rows.map((x) => [x.text, x.status, x.look_alike]), [
+      ["der Hund", "ready", null],
+      ["der Koffer", "ready", "bag"], // the check's
+      ["die Katze", "ready", null],
+      ["die Kiste", "ready", null], // none named: "a picture of box" is the bag group's by its words
+    ]);
+    const pic = new Map(rows.map((x) => [x.id, x.text]));
+    const r = await pip.call("POST", "/api/game/start");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.rounds.length, 4);
+    for (const round of r.body.rounds) {
+      const shown = round.choices.map((c) => pic.get(c.id));
+      assert.ok(!(shown.includes("der Koffer") && shown.includes("die Kiste")), `the trunk and the box never on one screen: ${shown}`);
+      assert.ok(shown.length >= 2, "a small bank still plays");
+    }
+    assert.ok(r.body.rounds.some((x) => x.phraseId === p["der Hund"].id && x.choices.length === 3), "a word with no key meets one of the group, as before");
+    // Shared into the pool (ld-ec9) with the check's group; the rest keep
+    // none stored (mergeStock keys them by their description's words).
+    const shared = await q("select description, look_alike_group from picture_stock_concepts where origin = 'drawing' order by description");
+    assert.deepEqual(shared.map((x) => [x.description, x.look_alike_group]), [
+      ["a picture of box", null],
+      ["a picture of cat", null],
+      ["a picture of dog", null],
+      ["a picture of trunk", "bag"],
+    ]);
+  } finally {
+    await settlePoolWords();
+    fs.rmSync(file, { force: true });
+  }
+});

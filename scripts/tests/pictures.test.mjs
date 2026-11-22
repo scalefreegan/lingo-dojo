@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, JUDGE_BATCH, PICTURE_THEME, cleanDescription, currentThemes, drawnTheme,
-  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockGroup, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
+  LOOK_ALIKE_RULE_GROUPS, lookAlikeGroups, lookAlikeOf, ownLookAlike, nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockGroup, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
 } from "../pictures.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -61,7 +61,7 @@ test("names never reach the provider: a description naming a learner on the acco
   assert.deepEqual([...nameWords(["Pip", "Mia-Rose O'Neil", "J"])], ["pip", "mia", "rose", "neil"]);
   // The check's reply: a yes naming someone is a no.
   const r = parseJudgeReply('{"items": [{"n": 1, "picturable": true, "description": "Pip waving"}, {"n": 2, "picturable": true, "description": "a kite"}]}', 2, names);
-  assert.deepEqual(r.verdicts, [{ picturable: false, description: null, stock: null, kidsSafe: null }, { picturable: true, description: "a kite", stock: null, kidsSafe: null }]);
+  assert.deepEqual(r.verdicts, [{ picturable: false, description: null, stock: null, kidsSafe: null, lookAlike: null }, { picturable: true, description: "a kite", stock: null, kidsSafe: null, lookAlike: null }]);
   // And the prompt, when a name came after the verdict was stored.
   assert.equal(picturePrompt("a portrait of Mia", names), null);
   assert.equal(picturePrompt("Pip with a kite", names), null);
@@ -127,9 +127,9 @@ test("the check's reply: one verdict per word, a yes with nothing to draw is a n
   );
   assert.equal(r.ok, true);
   assert.deepEqual(r.verdicts, [
-    { picturable: true, description: "a dog", stock: null, kidsSafe: null },
-    { picturable: false, description: null, stock: null, kidsSafe: null },
-    { picturable: false, description: null, stock: null, kidsSafe: null },
+    { picturable: true, description: "a dog", stock: null, kidsSafe: null, lookAlike: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null, lookAlike: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null, lookAlike: null },
     undefined,
   ]);
   assert.deepEqual(parseJudgeReply("no", 2), { ok: false, error: "no items list in the reply" });
@@ -329,10 +329,10 @@ test("the check is offered the stock and may answer a stock id: a known one is t
   });
   const r = parseJudgeReply(reply, 4, [], stock);
   assert.deepEqual(r.verdicts, [
-    { picturable: true, description: "a friendly brown dog", stock: "dog", kidsSafe: null },
-    { picturable: true, description: "a white horse", stock: null, kidsSafe: null },
-    { picturable: false, description: null, stock: null, kidsSafe: null },
-    { picturable: false, description: null, stock: null, kidsSafe: null },
+    { picturable: true, description: "a friendly brown dog", stock: "dog", kidsSafe: null, lookAlike: null },
+    { picturable: true, description: "a white horse", stock: null, kidsSafe: null, lookAlike: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null, lookAlike: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null, lookAlike: null },
   ]);
   // Not offered (not drawn yet): ignored like a made-up one.
   assert.equal(parseJudgeReply(reply, 1, [], []).verdicts[0].stock, null);
@@ -565,4 +565,158 @@ test("the shared stock list: numbers are counted things with no digits or colour
   assert.doesNotMatch(by.medicine.description, /pill/);
   const kids = new Set(stockForMode(concepts, "kids").map((c) => c.id));
   for (const id of ["beer", "wine", "pills", "milk", "medicine"]) assert.ok(kids.has(id), id);
+});
+
+/* ------------------------- look-alikes on one screen ------------------------ */
+// ld-44x (owner, 2026-11-22): pictures that look the same never share one
+// round's screen, even for different words (a box and a suitcase).
+
+test("the shared stock list groups the look-alikes the audit found (a parcel and a suitcase); every group has two or more", () => {
+  const { concepts } = loadPictureStock(path.join(REPO_ROOT, "content"));
+  const by = Object.fromEntries(concepts.map((c) => [c.id, c]));
+  const same = [
+    ["parcel", "suitcase"], ["parcel", "present"], ["suitcase", "bag"], ["bag", "backpack"], ["shopping-bag", "basket"],
+    ["book", "notebook"], ["book", "passport"], ["book", "menu"], ["coins", "banknotes"], ["coins", "bill"],
+    ["tree", "park"], ["tree", "climb"], ["train", "train-station"], ["shop", "cafe"], ["shop", "pharmacy"], ["shop", "market"],
+    ["airplane", "airport"], ["table", "restaurant"], ["car", "taxi"], ["car", "truck"], ["water", "milk"], ["juice", "beer"],
+    ["cup", "coffee"], ["cup", "tea"], ["girl", "doll"], ["run", "walk"], ["jump", "dance"], ["sing", "clap"], ["bear", "teddy-bear"],
+    ["apple", "tomato"], ["shirt", "t-shirt"], ["shirt", "coat"], ["television", "computer"], ["bath", "shower"], ["cloud", "rain"],
+    ["foot", "hand"], ["head", "tummy"], ["bicycle", "motorbike"],
+  ];
+  for (const [a, b] of same) assert.ok(by[a].group && by[a].group === by[b].group, `${a} and ${b} share a group`);
+  // Tight, not categories: these stay apart.
+  for (const [a, b] of [["water", "juice"], ["dog", "bear"], ["bus", "car"], ["house", "hotel"], ["mother", "girl"]]) assert.ok(!by[a].group || by[a].group !== by[b].group, `${a} and ${b} don't`);
+  const sizes = {};
+  for (const c of concepts) if (c.group) sizes[c.group] = (sizes[c.group] ?? 0) + 1;
+  for (const [g, n] of Object.entries(sizes)) assert.ok(n >= 2 && n <= 8, `group ${g} has ${n}`);
+  // The description rules name only groups the file has.
+  for (const g of LOOK_ALIKE_RULE_GROUPS) assert.ok(sizes[g], `rule group ${g} is a group of pictures.yaml`);
+});
+
+test("lookAlikeOf: a description's look-alike group by its words, whole words only, the earliest match", () => {
+  const cases = [
+    ["a parcel wrapped in brown paper", "bag"], ["a brown cardboard box", "bag"], ["a red suitcase", "bag"], ["a gift with a bow", "bag"],
+    ["a child reading a book", "book"], ["a glass of milk", "water"], ["a glass of fresh orange juice", "juice"], ["a cup of tea", "cup"],
+    ["a small café with a table", "shop"], ["a grey cloud with raindrops", "cloud"], ["two brothers side by side", "boy"], ["a rag doll", "girl"],
+    ["a rainbow", null], ["a pair of glasses", null], ["a red lunchbox", null], ["a red kite", null], ["a postbox", null], ["", null], [null, null],
+  ];
+  for (const [d, g] of cases) assert.equal(lookAlikeOf(d), g, String(d));
+  // The check's answer wins over the words; with none, the words decide.
+  assert.equal(ownLookAlike({ lookAlike: "boy", description: "a brown box" }), "boy");
+  assert.equal(ownLookAlike({ lookAlike: null, description: "a brown box" }), "bag");
+  assert.equal(ownLookAlike({ lookAlike: null, description: "a red kite" }), null);
+});
+
+/** A game's bank as pictures.ts playable builds it: a stock row carries its
+ *  concept's group, a word's own drawing its ownLookAlike. */
+function playableRows(entries) {
+  return new Map(entries.map(([p, extra]) => {
+    const [id, row] = ready(p, extra);
+    const group = row.stockId ? row.group : ownLookAlike(row);
+    return [id, group ? { ...row, group } : row];
+  }));
+}
+const stockRow = (id, group) => ({ file: stockKey(PICTURE_THEME.id, id), stockId: id, theme: PICTURE_THEME.id, description: id, ...(group ? { group } : {}) });
+const versions = Array.from({ length: 40 }, (_, i) => `${i}:2026-11-${String(10 + (i % 18)).padStart(2, "0")}T00:00:00.000Z`);
+const shown = (bank, p, v) => roundChoices(p, bank, v);
+
+test("a parcel and a suitcase (stock, one group) are never in one round, whichever is asked; other rounds may show either", () => {
+  const { concepts } = loadPictureStock(path.join(REPO_ROOT, "content"));
+  const group = (id) => concepts.find((c) => c.id === id).group;
+  const ps = [phrase("das Paket", "parcel"), phrase("der Koffer", "suitcase"), phrase("die Katze", "cat"), phrase("der Hund", "dog"), phrase("das Haus", "house"), phrase("der Stern", "star")];
+  const rows = playableRows([[ps[0], stockRow("parcel", group("parcel"))], [ps[1], stockRow("suitcase", group("suitcase"))], [ps[2]], [ps[3]], [ps[4]], [ps[5]]]);
+  const bank = pictureBank(ps, rows);
+  let withOne = 0;
+  for (const v of versions) {
+    for (const [asked, other] of [[0, 1], [1, 0]]) {
+      const a = shown(bank, ps[asked], v);
+      assert.ok(a.includes(rows.get(ps[asked].id).id));
+      assert.ok(!a.includes(rows.get(ps[other].id).id), `${v}: the look-alike is never on the same screen`);
+      assert.equal(a.length, GAME_CHOICES, "still a full round");
+    }
+    if (shown(bank, ps[2], v).some((id) => id === rows.get(ps[0].id).id || id === rows.get(ps[1].id).id)) withOne++;
+  }
+  assert.ok(withOne > 0, "another word's round still shows one of them");
+});
+
+test("an own drawing grouped with a stock picture (the check's key, or its description's) never shares a round with it", () => {
+  const ps = [phrase("der Koffer", "suitcase"), phrase("die Kiste", "box"), phrase("der Bursche", "lad"), phrase("der Junge", "boy"), phrase("die Katze", "cat"), phrase("das Haus", "house"), phrase("der Stern", "star")];
+  const rows = playableRows([
+    [ps[0], stockRow("suitcase", "bag")],
+    [ps[1], { description: "a brown cardboard box" }], // its words: bag
+    [ps[2], { description: "a young chap in a cap", lookAlike: "boy" }], // the check's
+    [ps[3], stockRow("boy", "boy")],
+    [ps[4]], [ps[5]], [ps[6]],
+  ]);
+  const bank = pictureBank(ps, rows);
+  for (const v of versions) {
+    for (const [asked, other] of [[0, 1], [1, 0], [2, 3], [3, 2]]) {
+      const a = shown(bank, ps[asked], v);
+      assert.ok(!a.includes(rows.get(ps[other].id).id), `${v}: ${ps[asked].meaning} never beside ${ps[other].meaning}`);
+    }
+  }
+});
+
+test("an own drawing with no key plays as before: the same choices as with no groups at all", () => {
+  const ps = [phrase("der Drachen", "kite"), phrase("der Koffer", "suitcase"), phrase("die Katze", "cat"), phrase("der Hund", "dog"), phrase("das Haus", "house")];
+  const rows = playableRows([[ps[0], { description: "a red kite" }], [ps[1], stockRow("suitcase", "bag")], [ps[2]], [ps[3]], [ps[4]]]);
+  assert.equal(rows.get(ps[0].id).group, undefined);
+  const plain = new Map([...rows].map(([k, r]) => [k, { ...r, group: undefined }]));
+  for (const v of versions) assert.deepEqual(shown(pictureBank(ps, rows), ps[0], v), shown(pictureBank(ps, plain), ps[0], v));
+});
+
+test("a small bank of look-alikes still makes a game: a round offers fewer choices, never none", () => {
+  // MIN_PICTURED pictures, two of one group: every round still has the
+  // right one and at least one other.
+  const ps = [phrase("das Paket", "parcel"), phrase("der Koffer", "suitcase"), phrase("der Drachen", "kite")];
+  const rows = playableRows([[ps[0], { description: "a parcel wrapped in brown paper" }], [ps[1], stockRow("suitcase", "bag")], [ps[2], { description: "a red kite" }]]);
+  const g = gameRounds(ps, rows, { now: NOW });
+  assert.equal(g.ready, true);
+  assert.equal(g.rounds.length, 3);
+  for (const r of g.rounds) {
+    assert.equal(r.choices.length, 2, "its own and the kite, or the kite and one of the two");
+    assert.ok(r.choices.includes(rows.get(r.phraseId).id));
+  }
+  // All of one group: a round of the right picture alone (as a round with
+  // only words of one meaning always was), never a broken one.
+  const all = [phrase("das Paket", "parcel"), phrase("der Koffer", "suitcase"), phrase("die Tasche", "bag")];
+  const same = playableRows(all.map((p) => [p, { description: `a ${p.meaning}` }]));
+  for (const r of gameRounds(all, same, { now: NOW }).rounds) assert.deepEqual(r.choices, [same.get(r.phraseId).id]);
+});
+
+test("the check is offered the look-alike groups and may name one for a word it draws; one not offered, or for a stock match, is none", () => {
+  const concepts = [
+    { id: "parcel", description: "a parcel wrapped in brown paper", group: "bag" },
+    { id: "suitcase", description: "a suitcase with wheels", group: "bag" },
+    { id: "boy", description: "a smiling boy waving", group: "boy" },
+    { id: "drawn-x", description: "a picture of a crate", group: "bag", drawing: true },
+    { id: "kite", description: "a red kite" },
+  ];
+  const groups = lookAlikeGroups(concepts);
+  assert.deepEqual(groups, [{ id: "bag", shows: ["a parcel wrapped in brown paper", "a suitcase with wheels"] }, { id: "boy", shows: ["a smiling boy waving"] }]);
+  const stock = [{ id: "dog", description: "a friendly brown dog", words: ["dog"] }];
+  const { system, user } = judgePrompt({ words: [{ text: "die Kiste", meaning: "box" }], stock, groups });
+  assert.match(system, /"looksLike"/);
+  assert.match(system, /never a broad category/);
+  assert.match(user, /\n\nLook-alike groups:\nbag: a parcel wrapped in brown paper; a suitcase with wheels\nboy: a smiling boy waving$/);
+  assert.doesNotMatch(judgePrompt({ words: [{ text: "die Kiste", meaning: "box" }] }).system, /looksLike/, "no groups, no question");
+  const reply = JSON.stringify({ items: [
+    { n: 1, picturable: true, description: "a cardboard box", looksLike: "bag" },
+    { n: 2, picturable: true, description: "a crate", looksLike: "crates" },
+    { n: 3, picturable: true, stock: "dog", looksLike: "bag" },
+    { n: 4, picturable: false, description: null, looksLike: "bag" },
+  ] });
+  const v = parseJudgeReply(reply, 4, [], stock, groups).verdicts;
+  assert.deepEqual(v.map((x) => x.lookAlike), ["bag", null, null, null]);
+  assert.equal(parseJudgeReply(reply, 4, [], stock).verdicts[0].lookAlike, null, "none offered, none taken");
+});
+
+test("a learner's shared drawing with no group plays under its description's; an admin's concept keeps what the admin set", () => {
+  const out = mergeStock([], [
+    { id: "drawn-a", category: "Drawn by learners", description: "a brown cardboard box", words: ["box"], origin: "drawing", kidsSafe: true },
+    { id: "drawn-b", category: "Drawn by learners", description: "a crate", words: ["crate"], origin: "drawing", kidsSafe: true, group: "boy" },
+    { id: "drawn-c", category: "Drawn by learners", description: "a red kite", words: ["kite"], origin: "drawing", kidsSafe: true },
+    { id: "crate", category: "Things", description: "a wooden box", words: ["crate"] },
+  ]);
+  assert.deepEqual(out.concepts.map((c) => [c.id, c.group ?? null]), [["drawn-a", "bag"], ["drawn-b", "boy"], ["drawn-c", null], ["crate", null]]);
 });
