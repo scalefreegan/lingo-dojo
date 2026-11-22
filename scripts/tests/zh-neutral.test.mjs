@@ -59,6 +59,32 @@ test("a word CC-CEDICT also reads full-tone for another sense is not neutralised
   assert.deepEqual(zh.uncertainWords("东西南北", "zh-CN", { cache: false }), []);
 });
 
+test("more compass and handle contexts, and the hints and marks the neutral tone must not disturb (PR #71 review)", () => {
+  for (const [t, r] of [["东西走向", "dōng xī zǒu xiàng"], ["东西两岸", "dōng xī liǎng àn"], ["东西向", "dōng xī xiàng"], ["南北东西", "nán běi dōng xī"], ["横穿东西", "héng chuān dōng xī"], ["把手放下", "bǎ shǒu fàng xià"]]) assert.equal(read(t), r, t);
+  // A hint that is only the full tone of a neutral syllable is not kept (nor laid over it).
+  for (const [w, full, line] of [["朋友", "péng yǒu", "我的朋友来了"], ["告诉", "gào sù", "他告诉我"], ["时候", "shí hòu", "什么时候"], ["意思", "yì sī", "没意思"]]) {
+    assert.equal(zh.hintToKeep(w, full.split(" "), [line], "zh-CN"), null, w);
+    const laid = zh.withHints(line, "zh-CN", [{ term: w, reading: full }]);
+    assert.deepEqual(laid, zh.readCodePoints(line, "zh-CN", { cache: false }), w);
+  }
+  assert.equal(zh.hintToKeep("朋友", ["péng", "yǒu"], ["我的朋友来了"], "zh-TW"), null, "zh-TW reads it full already");
+  // A hint that really differs still is kept.
+  assert.equal(zh.hintToKeep("还钱", ["hái", "qián"], ["还钱了"], "zh-CN") === null, false);
+  // 啊 呀 瘩 stay marked in both scripts, as on main (the neutral reading is no other reading only where applyNeutral put it).
+  const marked = (t, loc) => zh.uncertainWords(t, loc, { cache: false }).map((w) => w.word);
+  assert.deepEqual(marked("他是誰啊", "zh-TW"), ["誰啊"]);
+  assert.ok(marked("他是谁啊", "zh-CN").length > 0, "啊 is marked in zh-CN too");
+  for (const [t, loc] of [["他是誰啊", "zh-TW"], ["你好呀", "zh-TW"], ["疙瘩", "zh-TW"], ["他是谁啊", "zh-CN"], ["你好呀", "zh-CN"], ["疙瘩", "zh-CN"]]) {
+    const on = marked(t, loc);
+    zh.useNeutralWords(false);
+    try {
+      assert.deepEqual(on, marked(t, loc), `${t} ${loc} is marked as without the table`);
+    } finally {
+      zh.useNeutralWords(true);
+    }
+  }
+});
+
 test("zh-TW keeps its full tones", () => {
   assert.equal(read("朋友", "zh-TW"), "péng yǒu");
   assert.equal(read("東西", "zh-TW"), "dōng xī");

@@ -261,9 +261,10 @@ docs/DATA.md §Mandarin readings):
 - **The neutral tone** (ld-azb): a zh-CN profile shows it where the HSK 3.0
   list and CC-CEDICT both print it (朋友 péng you, 告诉 gào su; 东西 only in
   context, and no word CC-CEDICT also reads full for another sense; the generated
-  `web/src/script/zh-neutral.ts`, CC BY-SA 4.0, written by `npm run
-  pinyin:hsk-audit -- --write-neutral` from the gitignored HSK working file,
-  applied by `applyNeutral` in zh.ts after the common words). Not only doubled
+  `web/src/script/zh-neutral.ts`, CC BY-SA 4.0, written from the gitignored
+  HSK working file by `npm run pinyin:hsk-audit -- --write-neutral`, applied
+  by `applyNeutral` in zh.ts after the common words; hints and marks leave a
+  neutral tone it set alone: `Detail.neutral`). Not only doubled
   characters: that was PR #67's convention. Where the sources disagree, today's
   reading stays; zh-TW keeps full tones (no machine-readable Taiwan MoE
   source); a hand choice, the shared list and the context rules still win.

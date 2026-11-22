@@ -670,8 +670,11 @@ uncertain words in context.
       it, and a hand choice, the shared list and the context rules still
       win (a correction is laid over it after; a rule-changed syllable
       makes the word not match, so it is left alone). A neutral reading is
-      never "another reading" of the usual one (`unsureAt`: 前边 qián bian
-      isn't marked). Checked: the voice swap (`spokenText`, standIn has no
+      never "another reading" of the usual one where applyNeutral set it
+      (`Detail.neutral`, `unsureAt`: 前边 qián bian isn't marked; 啊 呀 瘩
+      are marked as before), and a reading hint that is only the full tone
+      of such a syllable is not kept nor laid over it (`withHints`,
+      `hintToKeep`). Checked: the voice swap (`spokenText`, standIn has no
       neutral tone: a neutral syllable is left to the voice), the tone check (the scorer
       reads the reader's reading; a neutral syllable is not judged) and
       Compare mode need nothing; `scripts/tests/zh-neutral.test.mjs`.
