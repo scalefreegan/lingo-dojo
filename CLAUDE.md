@@ -202,6 +202,29 @@ and taps its picture.
   1.
 - `LINGO_IMAGE_PROVIDER=stub` draws placeholders for tests and UI checks.
 
+Settled readings and kids readings (ld-0mn, migration 0017, docs/VOICE.md
+§Saying the settled reading and §Kids: marks and resolving, docs/DATA.md
+§Kids: resolving uncertain readings):
+- A voice is sent stand-in characters for a Mandarin word a person, the
+  shared list or a checked answer settled (`spokenFor` in
+  `web/server/readings.ts`, `spokenText` in `web/src/script/zh-speech.ts`,
+  the generated table `web/src/script/zh-homophones.ts`, `npm run
+  pinyin:homophones`): whole settled words only, on `/api/voice/speak` and
+  `outsideClip`; the cache key is the text sent; what is shown and stored
+  never changes.
+- Kids see the marks ("pronunciation being checked") with nothing to
+  press; the grown-up's side is the Phrase bank (`grownUp` in the
+  `ScriptContext`): the control, and **Words waiting for a pronunciation
+  check** (`GET /api/readings/waiting`). `POST /api/readings` takes a kids
+  learner's grown-up.
+- A kids Mandarin session's uncertain words (the dojo master's lines only)
+  are checked in the background, one tool-less Haiku call per batch
+  (`web/server/sessionReadings.ts`), validated like the recap's, stored as
+  the learner's own (no shared vote), at most 20 calls per language a day
+  from the `reading_check_calls` ledger (`scripts/db/readingChecks.ts`),
+  written as each call starts. A kids word still uncertain stays out of
+  the picture game until settled (`settledForKids`).
+
 Adults play it too, and the picture library (ld-318, migration 0013,
 docs/DATA.md §The game for adults, and the picture library):
 - Practice's **Pictures** mode (`web/src/components/PictureGameView.tsx`,
