@@ -53,7 +53,7 @@ async function list(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx):
   const q = new URL(req.url ?? "/", "http://localhost").searchParams;
   // hasPicture is the word game's own rule (not a row's status alone), so
   // the chip's count is the pictures line's.
-  const [rows, pictured] = await Promise.all([listPhrases(rawDb(), ctx.language), pictureWordIds(ctx.language, ctx.learner.mode)]);
+  const [rows, pictured] = await Promise.all([listPhrases(rawDb(), ctx.language), pictureWordIds(ctx.language, ctx.learner.mode, ctx.language)]);
   const all = rows.map((p) => ({ ...p, hasPicture: pictured.has(p.id) }));
   const page = bankPage(all, {
     q: (q.get("q") ?? "").slice(0, 200),

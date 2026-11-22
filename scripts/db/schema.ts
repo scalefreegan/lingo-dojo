@@ -1057,6 +1057,36 @@ export const readingCorrections = pgTable(
 );
 
 /**
+ * The ledger of a kids session's background reading checks (docs/DATA.md
+ * §Kids: resolving uncertain readings, migration 0017, bead ld-0mn): one
+ * row per tool-less model call, written as the call starts, so it counts
+ * toward the language's daily cap whatever it then gives (a failure too)
+ * and the cap survives a restart. Words and readings are never here: the
+ * answers go to reading_corrections. Queries only in
+ * scripts/db/readingChecks.ts.
+ */
+export const readingCheckCalls = pgTable(
+  "reading_check_calls",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    /** How many words the call asked about. */
+    words: integer("words").notNull(),
+    /** How many answers passed the checks and settled a word; null while
+     *  it runs, or when it got no reply. */
+    settled: integer("settled"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("reading_check_calls_counts", sql`${t.words} > 0 and ${t.settled} >= 0`),
+    foreignKey({ name: "reading_check_calls_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    // The daily cap counts one language's recent calls.
+    index("reading_check_calls_profile_idx").on(t.languageProfileId, t.createdAt),
+  ],
+);
+
+/**
  * The shared list of Mandarin readings (docs/DATA.md §Shared readings,
  * migration 0015, bead ld-4i2): whole-word readings every learner's reader
  * applies once `active` (zh.ts Corrections: below a learner's own hand

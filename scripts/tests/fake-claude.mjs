@@ -13,6 +13,9 @@
 // call (Practice's fill the gap) likewise: `cloze(text, delay)`,
 // `clozeRuns()`, `clozeArgs()`; by default `{"items": []}`. History's daily
 // digest likewise: `digest(text, delay)`, `digestRuns()`, `digestArgs()`.
+// A kids session's background reading check (ld-0mn) likewise:
+// `readings(text, delay)`, `readingRuns()`, `readingArgs()`; by default
+// `{"readings": []}`.
 //
 //   const fake = fakeClaude();
 //   before(() => fake.install());  after(() => fake.restore());
@@ -51,6 +54,10 @@ export function fakeClaude() {
     pictureDelay: path.join(bin, "picture-delay.txt"),
     pictureRan: path.join(bin, "picture-ran"),
     pictureArgs: path.join(bin, "picture-args.json"),
+    readings: path.join(bin, "readings.txt"),
+    readingsDelay: path.join(bin, "readings-delay.txt"),
+    readingsRan: path.join(bin, "readings-ran"),
+    readingsArgs: path.join(bin, "readings-args.json"),
     replies: path.join(bin, "replies.json"),
     argsLog: path.join(bin, "args.jsonl"),
     mcp: path.join(bin, "mcp.json"),
@@ -70,7 +77,9 @@ const side = args.some((a) => a.startsWith("You review one finished practice ses
       ? "digest"
       : args.some((a) => a.startsWith("You decide which words can be shown as a picture"))
         ? "picture"
-        : null;
+        : args.some((a) => a.startsWith("You read Mandarin words in context"))
+          ? "readings"
+          : null;
 fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
 fs.writeFileSync(side ? files[side + "Args"] : files.args, JSON.stringify(args));
 if (!side) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
@@ -164,6 +173,14 @@ setTimeout(() => {
       fs.writeFileSync(files.digestDelay, String(delay));
     },
     digestRuns: () => count(files.digestRan),
+    /** The next background reading checks' reply (a JSON string, or "!fail"). */
+    readings(text, delay = 0) {
+      fs.writeFileSync(files.readings, text);
+      fs.writeFileSync(files.readingsDelay, String(delay));
+    },
+    readingRuns: () => count(files.readingsRan),
+    /** The argv of the last reading check. */
+    readingArgs: () => (fs.existsSync(files.readingsArgs) ? JSON.parse(fs.readFileSync(files.readingsArgs, "utf8")) : null),
     /** The argv of the last digest call. */
     digestArgs: () => (fs.existsSync(files.digestArgs) ? JSON.parse(fs.readFileSync(files.digestArgs, "utf8")) : null),
     /** The argv of the last cloze generation call. */
@@ -187,5 +204,6 @@ setTimeout(() => {
   self.cloze(JSON.stringify({ items: [] }));
   self.picture("!auto");
   self.digest(JSON.stringify({ digest: "You practised a lot this week." }));
+  self.readings(JSON.stringify({ readings: [] }));
   return self;
 }

@@ -36,6 +36,23 @@ export interface MyReadingsReply {
   readings: MyReading[];
 }
 
+/** A bank word waiting for a pronunciation check (ld-0mn): a kids
+ *  learner's word whose reading is still uncertain, kept out of the game
+ *  until it is settled. `text` is the bank phrase it is in, `at` its UTF-16
+ *  offset there, `reading` what the reader shows now. */
+export interface WaitingWord {
+  word: string;
+  reading: string[];
+  text: string;
+  at: number;
+  phraseId: string;
+}
+
+/** GET /api/readings/waiting: a kids learner's (an adult's is empty). */
+export interface WaitingWordsReply {
+  words: WaitingWord[];
+}
+
 /** POST /api/readings */
 export interface ReadingSaveRequest {
   word: string;

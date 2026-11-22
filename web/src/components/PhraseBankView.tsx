@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { ApiError, addPhrase, deletePhrase, getPhrase, listPhrases, updatePhrase, type PhraseQuery } from "../api";
+import { ApiError, addPhrase, deletePhrase, getPhrase, getWaitingWords, listPhrases, updatePhrase, type PhraseQuery } from "../api";
+import type { WaitingWord } from "../../shared/readings.ts";
+import { ReadingFix } from "./ReadingFix";
 import type { MasteryBand, PhraseDetail, PhraseShow, PhraseSort, PhraseSummary, PhrasesReply } from "../types";
 import { hanChars, scriptFor } from "../script/script.ts";
 import { ScriptContext, useScript } from "../script/ruby.tsx";
@@ -187,6 +189,14 @@ function PhraseBank({ initialQuery }: { initialQuery: string }) {
       />
       {/* The word game's pictures: a kids learner's grown-up's side, or an adult's own (ld-318). */}
       <PicturesBar refresh={pictureChanges} onDrawn={onDrawn} />
+      <WaitingWords
+        locale={lang?.locale ?? undefined}
+        reload={reload + picturesDrawn}
+        onSettled={() => {
+          setPictureChanges((n) => n + 1);
+          refresh();
+        }}
+      />
       {notice && (
         <p className={`${fine} text-fg-2`} role="status">
           {notice}
@@ -277,6 +287,61 @@ function PhraseBank({ initialQuery }: { initialQuery: string }) {
         </Button>
       )}
     </div>
+  );
+}
+
+/**
+ * A kids learner's words whose reading the program isn't sure of (ld-0mn):
+ * kept out of the picture game until settled, listed here, on the
+ * grown-up's side, each in its phrase with the correction control. The
+ * session's background check and the recap settle most of them; this is
+ * for the rest. Nothing for an adult (their marks work as before).
+ */
+function WaitingWords({ locale, reload, onSettled }: { locale: string | undefined; reload: number; onSettled: () => void }) {
+  const { kids } = useScript();
+  const [words, setWords] = useState<WaitingWord[] | null>(null);
+  const [mine, setMine] = useState(0);
+  useEffect(() => {
+    if (!kids) return;
+    let gone = false;
+    getWaitingWords().then(
+      (r) => !gone && setWords(r.words),
+      () => !gone && setWords(null),
+    );
+    return () => {
+      gone = true;
+    };
+  }, [kids, reload, mine]);
+  if (!kids || !locale || !words?.length) return null;
+  return (
+    <section aria-labelledby="waiting-words" className="flex flex-col gap-2 rounded-lg border border-line p-3" data-testid="waiting-words">
+      <h3 id="waiting-words" className="text-sm font-medium text-fg">
+        Words waiting for a pronunciation check <span className="font-normal text-fg-3">{words.length}</span>
+      </h3>
+      <p className={`${fine} text-fg-2`}>
+        The program isn't sure how these are said, so they stay out of the picture game until they are checked: by the check during a session, the recap after it, or you here.
+      </p>
+      <ul className="flex flex-col gap-3">
+        {words.map((w) => (
+          <li key={w.word} className="flex flex-col gap-1">
+            <span className="text-base text-accent" lang={locale}>
+              <RubyText text={w.text} locale={locale} />
+            </span>
+            <ReadingFix
+              word={w.word}
+              reading={w.reading}
+              locale={locale}
+              unsure
+              grownUp
+              onSaved={() => {
+                setMine((n) => n + 1);
+                onSettled();
+              }}
+            />
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

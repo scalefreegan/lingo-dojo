@@ -4,7 +4,8 @@ import { MAX_RECAP_READINGS, parseRecapReadings } from "../../scripts/extraction
 import { listCorrections, phrasesWith, saveCorrection, saveRecapReading, setPhraseReading, type CorrectionRow } from "../../scripts/db/readings.ts";
 import { SharedFullError, SharedLimitError, activeList, adminList, confirm, exportActive, propose, recordUses, remove, usesSince, type SharedEntry } from "../../scripts/db/sharedReadings.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
-import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
+import type { MyReading, MyReadingsReply, ReadingSaveReply, SharedReadingsAdminReply, SharedReadingsReply, WaitingWordsReply } from "../shared/readings.ts";
+import { practiceCandidates } from "../../scripts/db/practice.ts";
 import { charReadings, correctionKey, correctionScope, makeCorrections, readCodePoints, readDetail, uncertainWords, validateCorrection, validateHint, type CorrectionEntry, type Corrections } from "../src/script/zh.ts";
 import { isHan } from "../src/script/script.ts";
 import { spokenText } from "../src/script/zh-speech.ts";
@@ -52,11 +53,11 @@ const wire = (r: CorrectionRow): MyReading => ({ word: r.word, reading: r.readin
  * own by hand and the recap's suggestions for them, and the shared list's
  * active entries. What the browser lays over the reader for them too.
  */
-export async function correctionsFor(profile: LanguageProfileRef | null, opts: { shared?: boolean } = {}): Promise<Corrections> {
+export async function correctionsFor(profile: LanguageProfileRef | null, opts: { shared?: boolean; kids?: boolean } = {}): Promise<Corrections> {
   const db = rawDb();
   const mine = profile ? await listCorrections(db, profile) : [];
   const shared = opts.shared === false ? [] : (await activeList(db)).entries;
-  return makeCorrections(splitMine(mine, shared));
+  return makeCorrections(splitMine(mine, shared, { kids: !!opts.kids }));
 }
 
 /**
@@ -66,13 +67,61 @@ export async function correctionsFor(profile: LanguageProfileRef | null, opts: {
  * differing answer is a suggestion. The browser splits them the same way
  * (script/ruby.tsx).
  */
-export function splitMine<T extends { kind: string; source: string }>(mine: readonly T[], shared: readonly CorrectionEntry[]) {
+export function splitMine<T extends { kind: string; source: string }>(mine: readonly T[], shared: readonly CorrectionEntry[], { kids = false }: { kids?: boolean } = {}) {
+  // A kids learner (ld-0mn): every checked model answer (the session's
+  // background check, the recap) settles the word, `checked`, below the
+  // shared list and the grown-up's hand. A child has no one else to check
+  // it, and a word left uncertain is kept out of the game: an answer that
+  // passed validateHint is better than the frequency prior's guess
+  // (measured: docs/VOICE.md §Kids: resolving uncertain readings).
+  if (kids) {
+    return {
+      mine: mine.filter((r) => r.source === "user" && r.kind !== "suggested"),
+      suggested: [] as T[],
+      checked: mine.filter((r) => r.source === "recap"),
+      shared,
+    };
+  }
   return {
     mine: mine.filter((r) => r.source === "user" && r.kind !== "suggested"),
     suggested: mine.filter((r) => r.kind === "suggested"),
     checked: mine.filter((r) => r.source === "recap" && r.kind === "confirmed"),
     shared,
   };
+}
+
+/** Whether `ref`'s learner is a kids one, from what a route holds. */
+export const isKids = (learner: { mode?: string } | null | undefined): boolean => learner?.mode === "kids";
+
+/**
+ * The words of `texts` (target-language texts in `locale`) whose reading
+ * is still uncertain for this learner (zh.ts uncertainWords, read with
+ * their corrections and the shared list): each once by its key, in order,
+ * with the text it is in. Empty for a language other than Mandarin.
+ */
+export async function uncertainIn(profile: LanguageProfileRef, locale: string | null, texts: readonly { id: string; text: string }[], opts: { kids?: boolean } = {}): Promise<{ id: string; text: string; word: string; key: string; at: number; reading: string[] }[]> {
+  if (!locale || !readsHints(locale) || !texts.length) return [];
+  const fixes = await correctionsFor(profile, opts);
+  const out: { id: string; text: string; word: string; key: string; at: number; reading: string[] }[] = [];
+  for (const t of texts) {
+    for (const w of uncertainWords(t.text, locale, { cache: false, corrections: fixes })) {
+      out.push({ id: t.id, text: t.text, word: w.word, key: correctionKey(w.word), at: [...t.text].slice(0, w.start).join("").length, reading: w.reading });
+    }
+  }
+  return out;
+}
+
+/**
+ * A kids learner's phrases with every reading settled (ld-0mn): a word
+ * still uncertain is kept out of the picture game (and so out of a kids
+ * learner's Practice, which is the game) until the in-session check, the
+ * recap, the grown-up or an admin's shared entry settles it. Anything
+ * else (an adult, another language) is returned as it is.
+ */
+export async function settledForKids<T extends { id: string; text: string | null }>(profile: LanguageProfileRef, kids: boolean, locale: string | null, phrases: T[]): Promise<T[]> {
+  if (!kids || !locale || !readsHints(locale)) return phrases;
+  const waiting = new Set((await uncertainIn(profile, locale, phrases.filter((p) => p.text).map((p) => ({ id: p.id, text: p.text! })), { kids: true })).map((w) => w.id));
+  return waiting.size ? phrases.filter((p) => !waiting.has(p.id)) : phrases;
 }
 
 /**
@@ -84,9 +133,9 @@ export function splitMine<T extends { kind: string; source: string }>(mine: read
  * provider, and the audio cache's key, which is computed over this.
  * Logged with counts only, never the text.
  */
-export async function spokenFor(profile: LanguageProfileRef | null, locale: string, text: string): Promise<string> {
+export async function spokenFor(profile: LanguageProfileRef | null, locale: string, text: string, kids = false): Promise<string> {
   if (!profile || !text || !readsHints(locale)) return text;
-  const out = spokenText(text, locale, await correctionsFor(profile));
+  const out = spokenText(text, locale, await correctionsFor(profile, { kids }));
   if (out.swaps.length) console.log(`[lingo-dojo] speech: ${out.swaps.length} character(s) of settled words said by a stand-in`);
   return out.text;
 }
@@ -312,8 +361,13 @@ export function logRecapReadings(conversationId: string, s: ReturnType<typeof ju
 
 /** /api/readings, mounted with wrap's `learner: true`. */
 export async function handleReadings(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
-  if (subPath(req)) return sendJson(res, 404, { error: "no such route" });
+  const sub = subPath(req);
   const locale = mandarinLocale(ctx.language);
+  if (sub === "/waiting" || sub === "waiting") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return sendJson(res, 200, { words: await waitingWords(ctx, locale) } satisfies WaitingWordsReply);
+  }
+  if (sub) return sendJson(res, 404, { error: "no such route" });
   if (req.method === "GET") {
     const rows = locale ? await listCorrections(rawDb(), ctx.language) : [];
     return sendJson(res, 200, { readings: rows.map(wire) } satisfies MyReadingsReply);
@@ -351,6 +405,23 @@ export async function handleReadings(req: IncomingMessage, res: ServerResponse, 
   }
   const phrases = await rereadPhrases(ctx.language, locale, v.word);
   return sendJson(res, 200, { reading: wire(row), shared, phrases } satisfies ReadingSaveReply);
+}
+
+/** The words of a kids learner's bank still waiting for a pronunciation
+ *  check (ld-0mn): what settledForKids keeps out of the game, each once
+ *  (by its key), with the first phrase it is in. Empty for an adult (their
+ *  marks and controls are as before) and for another language. */
+export async function waitingWords(ctx: LearnerCtx, locale: string | null): Promise<WaitingWordsReply["words"]> {
+  if (!isKids(ctx.learner) || !locale) return [];
+  const phrases = (await practiceCandidates(rawDb(), ctx.language)).filter((p) => p.text);
+  const seen = new Set<string>();
+  const out: WaitingWordsReply["words"] = [];
+  for (const w of await uncertainIn(ctx.language, locale, phrases.map((p) => ({ id: p.id, text: p.text! })), { kids: true })) {
+    if (seen.has(w.key)) continue;
+    seen.add(w.key);
+    out.push({ word: w.word, reading: w.reading, text: w.text, at: w.at, phraseId: w.id });
+  }
+  return out;
 }
 
 /** /api/readings/shared (any logged-in user). */

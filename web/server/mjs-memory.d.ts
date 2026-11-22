@@ -68,6 +68,8 @@ declare module "*/scripts/match.mjs" {
   export function normKey(text: unknown): string;
   export function normalizeAnswer(text: unknown, lang?: string): string;
   export function stripAccents(text: string): string;
+  /** `<` made harmless in text put into a prompt. */
+  export function defang(text: unknown): string;
   export function matchAnswer(input: {
     answer: string | null | undefined;
     expected: string;

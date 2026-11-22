@@ -19,6 +19,7 @@ import { paidSlot } from "./paid.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 import { outsideClip, readAudio, sttReady, transcribeAudio, voiceNote, voiceReady } from "./voice.ts";
+import { isKids } from "./readings.ts";
 
 // The Practice tab's routes (docs/DATA.md §Practice modes, §Grading):
 // flashcards both ways, the listening drill, speak-it and fill the gap
@@ -320,7 +321,7 @@ export async function phraseClip(ctx: LearnerCtx, phraseId: string, signal: Abor
   const locale = targetLocale(ctx);
   if (!locale) throw new HttpError(400, "this language has no voice locale, so its phrases can't be played");
   const settings = await readVoiceSettings(ctx.user.id);
-  const out = await outsideClip(ctx.user.id, settings, locale, text, signal, ctx.language);
+  const out = await outsideClip(ctx.user.id, settings, locale, text, signal, ctx.language, isKids(ctx.learner));
   console.log(`[lingo-dojo] practice audio: ${out.cached ? "hit" : "miss"} ${out.key.slice(0, 12)}`);
   return { text, locale, ...out };
 }
