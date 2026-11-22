@@ -495,6 +495,17 @@ test("Adults only on a file concept: set, it is kept from kids at once (list, fi
   assert.equal(before, 4);
   assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
 
+  // The kid's dog word points at the stock dog (matched by the check).
+  const dogWord = (await q("select p.id from phrases p where p.language_profile_id = $1 and p.meaning = 'dog'", [pip.languageId]))[0].id;
+  const dogPicture = (await q("select id, stock_id from phrase_pictures where phrase_id = $1", [dogWord]))[0];
+  assert.equal(dogPicture.stock_id, "dog");
+  const wordFile = async () => (await pip.call("GET", "/api/pictures/words")).body.words.find((w) => w.phraseId === dogWord).picture.file;
+  const phraseFile = async () => (await pip.call("GET", `/api/pictures/phrase/${dogWord}`)).body.picture.file;
+  const dogRef = await wordFile();
+  assert.ok(dogRef);
+  assert.equal(await phraseFile(), dogRef);
+  assert.equal((await pip.call("GET", `/api/game/pictures/${dogPicture.id}/${dogRef}`)).status, 200, "served while the flag is off");
+
   // On: install-wide, a row for the file's concept (content/ untouched).
   const yaml = fs.readFileSync(path.join(root, "pictures.yaml"), "utf8");
   const on = await setAdults(ada, "dog", true);
@@ -512,13 +523,17 @@ test("Adults only on a file concept: set, it is kept from kids at once (list, fi
   assert.equal((await ada.call("GET", `/api/stock-pictures/file/dog/${dogVersion}`)).status, 200, "an adult's session still gets it");
   const st = (await pip.call("GET", "/api/game")).body.status;
   assert.equal(st.pictured, before - 1, "the kid's dog word leaves the game");
-  const dogWord = (await q("select p.id from phrases p where p.language_profile_id = $1 and p.meaning = 'dog'", [pip.languageId]))[0].id;
-  const dogPicture = (await q("select id from phrase_pictures where phrase_id = $1", [dogWord]))[0].id;
+  // Nor served or shown from the kid's own word: the game's picture route
+  // is a 404, and My word pictures and the Phrase bank give it no file.
+  assert.equal((await pip.call("GET", `/api/game/pictures/${dogPicture.id}/${dogRef}`)).status, 404, "the kid's own dog word's picture is not served");
+  assert.equal(await wordFile(), null);
+  assert.equal(await phraseFile(), null);
+  assert.equal((await pip.call("GET", `/api/pictures/phrase/${dogWord}`)).body.picture.status, "ready", "still the dog picture, only not shown");
   const { rounds } = (await pip.call("POST", "/api/game/start")).body;
   assert.ok(rounds.length > 0);
   for (const r of rounds) {
     assert.notEqual(r.phraseId, dogWord);
-    assert.ok(!r.choices.some((c) => c.id === dogPicture), "never offered as a choice");
+    assert.ok(!r.choices.some((c) => c.id === dogPicture.id), "never offered as a choice");
   }
   // Not matched: a kids word judged now is not offered dog.
   const bo = await someone([KID]);
@@ -540,6 +555,9 @@ test("Adults only on a file concept: set, it is kept from kids at once (list, fi
   assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
   assert.equal((await pip.call("GET", `/api/stock-pictures/file/dog/${dogVersion}`)).status, 200);
   assert.equal((await pip.call("GET", "/api/game")).body.status.pictured, before);
+  assert.equal(await wordFile(), dogRef);
+  assert.equal(await phraseFile(), dogRef);
+  assert.equal((await pip.call("GET", `/api/game/pictures/${dogPicture.id}/${dogRef}`)).status, 200, "served again");
   // Eligible from the next check: a kids word judged now is offered and matched to it.
   await add(bo, [["der Köter", "dog"]]);
   await drawAll(bo);

@@ -246,6 +246,22 @@ async function playable(rows: Map<string, PictureRow>, mode: string): Promise<Ma
   return out;
 }
 
+/** Whether a learner of `mode` is kept from a row's stock picture: for a
+ *  kids learner, a row pointing at an `adults` concept, or at one that
+ *  isn't in the list (deleted, or the list unreadable: fails closed), the
+ *  same rule as playable. Read once per request (`stockById`), so an
+ *  admin's Adults only toggle (ld-cvd) applies from the next one. Never
+ *  true for an adult, nor for a word's own drawing. */
+async function stockWithheld(mode: string): Promise<(row: PictureRow) => boolean> {
+  if (mode !== "kids") return () => false;
+  const concepts = await stockById();
+  return (row) => {
+    if (!row.stockId) return false;
+    const c = concepts?.get(row.stockId);
+    return !c || c.adults === true;
+  };
+}
+
 /** A ready picture's file as its URL names it: a word's own file key, or
  *  for a stock picture the stock key and the file's version (picture-store
  *  stockVersion), so a stock picture drawn again in the same theme gets a
@@ -677,6 +693,10 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
 async function servePicture(res: ServerResponse, ctx: LearnerCtx, id: string, file: string): Promise<void> {
   const row = isUuid(id) ? await pictureById(rawDb(), profileOf(ctx), id.toLowerCase()) : undefined;
   if (!row || row.status !== "ready" || pictureRef(row) !== file || !row.contentType) throw new HttpError(404, "no such picture");
+  // A stock picture a kids learner is kept from (Adults only, set before
+  // or after the word was matched to it): not served, like playable keeps
+  // it out of the game.
+  if ((await stockWithheld(ctx.learner.mode))(row)) throw new HttpError(404, "no such picture");
   // A word's own file, or the shared stock picture it points at (by the
   // row: the same owner check, the same headers; the URL's file is the
   // stock key and the file's version, so another theme's picture, or one
@@ -775,8 +795,12 @@ async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
   return { restyled: moved + waiting, status: await statusOf(ctx) };
 }
 
-const pictureView = (row: PictureRow): PhrasePicture => ({
-  id: row.id, status: row.status, description: row.description, file: pictureRef(row),
+/** A word's picture as the Phrase bank and My word pictures show it.
+ *  `withheld` (stockWithheld): a kids learner's row pointing at an
+ *  Adults only stock concept has no file to show (servePicture is a 404
+ *  for it too). */
+const pictureView = (row: PictureRow, withheld: (row: PictureRow) => boolean = () => false): PhrasePicture => ({
+  id: row.id, status: row.status, description: row.description, file: withheld(row) ? null : pictureRef(row),
   stock: !!row.stockId, inTheme: row.status === "ready" && currentThemes(imageProvider().key).has(row.theme ?? ""), restyling: !!row.restyle,
 });
 
@@ -796,11 +820,11 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     // Every word of this language (practisable: with words and a meaning,
     // not suspended) with a verdict or a picture for its words as they are
     // now; newest first. Reads only.
-    const [phrases, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+    const [phrases, rows, withheld] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile), stockWithheld(ctx.learner.mode)]);
     const words: WordPictureItem[] = [];
     for (const p of [...phrases].sort((a, b) => +new Date(b.createdAt ?? 0) - +new Date(a.createdAt ?? 0))) {
       const row = rows.get(p.id);
-      if (row && isCurrent(row, p)) words.push({ phraseId: p.id, text: p.text, meaning: p.meaning, ...(p.reading ? { reading: p.reading } : {}), picture: pictureView(row) });
+      if (row && isCurrent(row, p)) words.push({ phraseId: p.id, text: p.text, meaning: p.meaning, ...(p.reading ? { reading: p.reading } : {}), picture: pictureView(row, withheld) });
     }
     return sendJson(res, 200, { words, status: await statusOf(ctx) } satisfies WordPicturesReply);
   }
@@ -824,7 +848,8 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     if (parts.length === 2) {
       if (req.method !== "GET") return methodNotAllowed(res, "GET");
       const row = await pictureOf(rawDb(), profile, phraseId);
-      return sendJson(res, 200, { picture: row && isCurrent(row, phrase) ? pictureView(row) : null, status: await statusOf(ctx) } satisfies PhrasePictureReply);
+      const withheld = await stockWithheld(ctx.learner.mode);
+      return sendJson(res, 200, { picture: row && isCurrent(row, phrase) ? pictureView(row, withheld) : null, status: await statusOf(ctx) } satisfies PhrasePictureReply);
     }
     const action = parts[2];
     if (action !== "remove" && action !== "redraw" && action !== "draw") return sendJson(res, 404, { error: "no such route" });
@@ -861,7 +886,7 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
       }
       // A trigger like Draw again: the same run, slot, ledger and caps.
       fillPictures(targetOf(ctx));
-      return sendJson(res, 200, { picture: pictureView(drawn.row), status: await statusOf(ctx) } satisfies PhrasePictureReply);
+      return sendJson(res, 200, { picture: pictureView(drawn.row, await stockWithheld(ctx.learner.mode)), status: await statusOf(ctx) } satisfies PhrasePictureReply);
     }
     const changed = await changePicture(rawDb(), profile, phraseId, pictureKey(phrase), action);
     if ("problem" in changed) {
@@ -870,7 +895,7 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     await dropPictureFile(changed.oldFile);
     // A grown-up's explicit redraw is a trigger (the same caps and ledger).
     if (action === "redraw") fillPictures(targetOf(ctx));
-    return sendJson(res, 200, { picture: pictureView(changed.row), status: await statusOf(ctx) } satisfies PhrasePictureReply);
+    return sendJson(res, 200, { picture: pictureView(changed.row, await stockWithheld(ctx.learner.mode)), status: await statusOf(ctx) } satisfies PhrasePictureReply);
   }
   sendJson(res, 404, { error: "no such route" });
 }

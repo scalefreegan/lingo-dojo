@@ -3514,7 +3514,13 @@ confirm first: clearing it lets kids' words be matched to it).
   file route read, on the next request:
   - set: a kids session at once gets no listing, a 404 for the file, no
     word pointing at it in the game or a round's choices, and the check
-    is not offered it;
+    is not offered it. A kids word matched to it before keeps its row,
+    but its picture is withheld (`stockWithheld` in
+    `web/server/pictures.ts`, the same rule as `playable`, failing closed
+    for a concept not in the list): `GET /api/game/pictures/:id/:file` is
+    a 404, and My word pictures (`/api/pictures/words`) and the Phrase
+    bank (`/api/pictures/phrase/:id` and its actions) show it with `file:
+    null`;
   - cleared: a kids session sees and plays it again, and the check offers
     it from the next picturable check (words already judged keep their
     verdicts).
