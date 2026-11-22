@@ -25,7 +25,10 @@
  *   - 所长: HSK 3.0 lists suǒzhǎng (level 3), but the idioms read cháng
  *     (一无所长, 各显所长, 各尽所长) and the segmenter splits them off;
  *   - not in HSK 3.0, both senses common: 不了, 分子, 教会, 明朝, 总长, 重重,
- *     朝阳, 供养, 播种, 外传, 倾倒, 散落, 调配. */
+ *     朝阳, 供养, 播种, 外传, 倾倒, 散落, 调配;
+ *   - 一晃 (the HSK 3.0 audit, ld-7xi): CC-CEDICT reads it one way, yī huǎng
+ *     (a flash), but HSK 3.0 prints yíhuàng (levels 7–9: time flashes by,
+ *     一晃十年), and both senses are common. */
 
 export type StandardReading = {
   word: string;
@@ -36,6 +39,8 @@ export type StandardReading = {
   trad?: string;
   /** What may follow it in a longer word the segmenter splits (好事|者). */
   notBefore?: string[];
+  /** What may come before it, ending a word the segmenter split (不倒|是). */
+  notAfter?: string[];
 };
 
 export const STANDARD_READINGS: StandardReading[] = [
@@ -75,6 +80,11 @@ export const STANDARD_READINGS: StandardReading[] = [
   { word: "下调", reading: "xià tiáo", tw: true, note: "HSK 3.0 levels 7–9" },
   { word: "饮水", reading: "yǐn shuǐ", tw: true, note: "HSK 3.0 levels 7–9" },
   { word: "琢磨", reading: "zuó mo", tw: false, note: "HSK 3.0 levels 7–9; Taiwan zhuó mó" },
+  // The HSK 3.0 audit (ld-7xi, npm run pinyin:hsk-audit): words the reader
+  // misread against the list (and, but for 说干就干, against CC-CEDICT).
+  { word: "倒是", reading: "dào shì/dào shi", tw: true, note: "HSK 3.0 level 5; CC-CEDICT dào shi", notAfter: ["不"] },
+  { word: "待会儿", reading: "dāi huì r", tw: false, note: "HSK 3.0 level 6; Taiwan dāi huǐ r", trad: "待會兒" },
+  { word: "说干就干", reading: "shuō gàn jiù gàn", tw: true, note: "HSK 3.0 levels 7–9", trad: "說幹就幹" },
   { word: "好玩", reading: "hǎo wán", tw: true, note: "judgement: not in HSK 3.0 (好玩儿); hào wán, to be playful, is rare" },
   { word: "中式", reading: "zhōng shì", tw: true, note: "judgement: not in HSK 3.0; zhòng shì, to pass the imperial exams, is historical" },
   { word: "较差", reading: "jiào chà", tw: true, note: "judgement: not in HSK 3.0; jiào chā, a range of values, is technical" },
@@ -98,4 +108,5 @@ export const STANDARD_READINGS: StandardReading[] = [
 export const UNSETTLED_WORDS: string[] = [
   "转动", "背着", "看好", "同行", "正当", "所长",
   "不了", "分子", "教会", "明朝", "总长", "重重", "朝阳", "供养", "播种", "外传", "倾倒", "散落", "调配",
+  "一晃",
 ];

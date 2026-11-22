@@ -594,8 +594,9 @@ uncertain words in context.
     dictionary word, a rule or a person;
   - the character has a second ordinary reading, other than the neutral
     tone of the same syllable;
-  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
-    simplified form). The reader's context rules settle these characters
+  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, and
+    见俩 since ld-7xi: 见 xiàn and 俩 liǎng live only in dictionary words, by
+    the simplified form). The reader's context rules settle these characters
     almost always, and marking them made up most of the noise;
   - it is not in a common word (PR #67). Every common word reads as
     CC-CEDICT reads it and is settled (`applyCommon` in zh.ts, after the
@@ -663,6 +664,110 @@ uncertain words in context.
       (`pinyin-sweep.mjs`) it changed only neutral tones of doubled
       characters (谢谢, 星星, 看看, 太太, 娘娘, 泡泡 …), none broken; PR #63's
       word and sentence sets unchanged (263/276, 70/87).
+    - **The HSK 3.0 audit** (ld-7xi, `npm run pinyin:hsk-audit`,
+      `scripts/pinyin-hsk-audit.mjs`; run by hand, no test needs it): every
+      word of the list read alone and compared with the printed pinyin,
+      then CC-CEDICT. The list's rows are a gitignored working file
+      (`data/freq/hsk/hsk-words.tsv`), made by `--import` from the text
+      copy in the MIT-licensed HSK-official-Query-System (the official
+      query system's data), checked against the scanned PDF by hand: 100
+      random rows re-read from the page images, all matching, and every
+      row in disagreement, which found two rows the text copy has wrong
+      (4/338 汇率, printed as 会; 1/224 妈妈∣妈), corrected in a gitignored
+      `hsk-fixes.tsv` beside it. 11,092 printed rows are 11,131 words
+      (variants, optional parts and examples taken apart).
+      - Of 9,468 words of two or more characters, 9,450 agreed (99.81%)
+        before the fixes: exactly, or by a convention we keep: 一 and 不
+        in their own tone (the list prints sandhi, 不客气 búkèqi); 儿 as ér
+        or erhua r; and **the neutral tone**: the reader keeps a
+        character's full tone where the list prints the neutral one (293
+        syllables, 232 of them neutral in CC-CEDICT too: 告诉 gào sù,
+        地方 dì fāng), as the common words do (PR #67: only doubled
+        characters take CC-CEDICT's neutral tone), and the list's full
+        tone where the reader has the neutral one (4).
+      - 18 disagreed. Reader bugs, fixed as zh-standard.ts rows ("HSK 3.0
+        level N"): 倒是 dào shì (was dǎo), 待会儿 dāi (was dài; zh-CN only,
+        Taiwan reads dāi huǐ r), 说干就干 gàn (was gān); 定为 wéi is the 为
+        context rule's (below). The list prints both readings, the reader
+        has the other: 倒车, 转动, 结果. Two readings in use, the reader's
+        kept: 所长, 正当, 一行 (already left to the reader), 为人 (as
+        common wèi rén in running text, marked), 一晃 (yíhuàng in the list,
+        yī huǎng in CC-CEDICT: now in `UNSETTLED_WORDS`, marked), 都会
+        and 穿着 (dōu huì and chuān zhe far more common than the list's
+        dū huì and zhuó), 尽可能 and 大都 (both standard), 出血 and 献血
+        (the list's colloquial xiě; CC-CEDICT xuè). After: 9,453 (99.84%).
+        倒是 applies between word boundaries only (摔倒|是, 颠倒是非 stay
+        dǎo), and not after 不 (`notAfter`: ICU cuts 他不|倒是, where 不倒
+        may be the word; left to the reader, marked).
+      - Single characters (1,663) are counted apart: alone a character
+        takes its most frequent reading and the list prints one row a
+        sense, so the 74 that differ are its other senses (还 huán, 长
+        zhǎng).
+      - zh-TW (CC-CEDICT's traditional spelling): 126 differ by Taiwan's
+        reading (星期 qí, 危險 wéi, zh-standard.ts rows kept out of zh-TW),
+        none otherwise; nothing changed for zh-TW.
+      - 189 of the words were still marked, most read right: erhua words
+        (男孩儿, 一下儿: 儿 read ér) and words beyond the common words' top
+        20,000 with a character of two readings (干杯, 难听, 长跑). With
+        the context rules (below): 154, and 9,454 agree (99.85%; 定为
+        wéi).
+    - **Context rules** (ld-7xi, `CONTEXT_RULES` and `contextRules` in
+      zh.ts, after `giveBack`; with the shipped prior only, like the
+      common words): common phrases CC-CEDICT has no entry for (一场, 更好,
+      很难) stayed marked, a character of two readings in them read by
+      default or the prior and nothing settling it. Each rule reads one
+      character by a neighbour and settles it, never where a dictionary
+      word, a table word, an earlier rule or a doubt settled it, and a
+      person's correction still outranks it. A rule holds only where it is
+      sure: where the other reading may be meant, the word stays as read
+      and marked, never traded for an unmarked wrong reading (PR #69
+      review: the kids' voice would speak it):
+      - 更 gèng before a character; after a degree word
+        (很太最更较挺真好超蛮极过) 难 nán (and after 不), 长 cháng (and after
+        多 closing a question: 有多长, not 多长了一颗牙), 强 qiáng, 差 chà, 累 lèi (and after 不), 重 zhòng; 长 cháng
+        before 时 (长时间), zhǎng after an institution (警长, 馆长; not
+        before 期久度短远寿达年, and not 所: 一无所长);
+      - a measure word after a numeral or 这那哪每各此该本首某何多: 场
+        chǎng (not before weather, an illness or a fight a character or
+        two on, 一场雨, 一场大雪, 一场战争: cháng in the dictionaries,
+        left marked; HSK 3.0 lists 场 chǎng only), 种 zhǒng, 片 piàn, 处
+        chù, 扇 shàn, 圈 quān, 曲 qǔ, 只 zhī (after 这那哪每 only when no
+        verb follows: 这只是, 这只说明 stay marked); 只 zhǐ before a verb or
+        modal (只会, 只想, 只不过) only at a clause's start or after a subject
+        or an adverb (我只, 他们只, 也只): after a verb or 了 it may be the
+        measure word with 一 dropped (我买了只会说话的鸟 zhī), marked; never
+        before a noun (只身, 独具只眼 zhī);
+      - 为 wéi after 转定题实图结化译选 standing as a word by itself (被定为,
+        转为; not 一定|为你, 决定|为我们);
+      - 数 shù before 十百千万亿个名次年月 (数千, 数十年), not after a person or
+        来去再先 (我数十下 shǔ), nor before 日 (数日子);
+      - 儿 r closing a word after one of `ERHUA_AFTER` (男孩儿, 一下儿,
+        哥们儿, 今儿个; not before 们: 这些孩儿们 stays marked): characters an erhua 儿 follows and no 儿 the child
+        does in CC-CEDICT (not 男儿, 健儿, 幸运儿, 托儿所);
+      - 量 liàng closing a run after a word of two or more characters
+        (销售量, 工作量), not after a person, a pronoun or one-character
+        word, nor a word after 让请帮叫给由被替, where it is the verb
+        (你帮我量, 医生来量, 你自己量, 让老师量 stay liáng, marked), nor 丈量,
+        称量, 车载斗量; liáng before 一下; 冲着 chòng, 载有 zài, 处以 chǔ, 降
+        jiàng before 到至低, 干 gàn before 过 (never 乾), and before 得 only
+        where the text writes 幹 (simplified 干得 may be 乾, dry: 衣服干得很快
+        stays marked), 行 xíng closing a phrase after 就都才也 (就行了).
+      Measured, each rule kept only if it broke nothing: on CC-CEDICT's
+      headwords, compared strictly (儿 r is not ér), 只 zhǐ fixed 2, 儿 r
+      270, 量 liàng 24 (both scripts; 48 before the review narrowed it), none broken (the first versions
+      broke 22 只 idioms, 135 儿 words and 8 量 verbs, and were narrowed
+      until none did); the other rules never touch a headword (a dictionary
+      word settles them). The sweep: 13 fixed, 0 broken (24 before the review). PR #63's sets:
+      words 263 → 264 (冲着; framed 259 → 260), sentences 70 → 72 (只不过是
+      ×2), none worse. On Tatoeba's 89,325 Mandarin sentences (CC BY 2.0,
+      a gitignored download) they read or settle about 2,500 characters; a sample of each
+      rule read by hand found only 为 wrong (一定为你, 决定为我们, before the
+      word-boundary condition). Of wordfreq's top 20,000 words read alone,
+      marked in simplified 191 → 88 and in traditional 202 → 106; of the
+      157 marked that CC-CEDICT has no entry for, 96 are now settled, every
+      one read right (checked by hand), and 61 stay marked (为名, 背上,
+      场上, 一卷, 干得: two readings a neighbour can't tell); none newly
+      marked.
 
   The unit marked is the segmenter's word. A single character joins the
   word after it (得去, 长着, 倒车), or the word before when there is no next
@@ -676,12 +781,14 @@ uncertain words in context.
     per 100 words.
   - With the definition above, before the common words: 1.80 per 100 in
     simplified (17 in 946 words) and 1.63 in traditional (15 in 921); 教练,
-    当然 were about a third of them. With them: **1.37 per 100 in
-    simplified** (13) and **1.19 in traditional** (11), the same after
-    the 20,000-word list (PR #67). The test holds both under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
+    当然 were about a third of them. With them: 1.37 per 100 in
+    simplified (13) and 1.19 in traditional (11), the same after
+    the 20,000-word list (PR #67). With the context rules (ld-7xi):
+    **0.74 per 100 in simplified** (7) and **0.54 in traditional** (5);
+    the test holds both under 1. content/'s two First steps scenes went from 3.64 per 100 (2
     in 55 words, both 再見) to 0.
-  - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
-    misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
+  - Marked now: 挑一个, 长一点, 有点干, 自然干 (长时间, 太长, 量一下 and 就行
+    settled by the context rules); and real misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
     得严重 (dé for de), 长着 (cháng for zhǎng).
   - 还 before 钱 / 书 / 你 (`giveBack`, PR #67 reviews): read huán only
     where the phrase ends there (the text's end, punctuation, 了吗吧呢啊,

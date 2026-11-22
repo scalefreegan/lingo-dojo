@@ -291,7 +291,7 @@ test("words CC-CEDICT reads two ways take the learner's standard reading (zh-sta
 
 test("the two-way words with no standard reading are marked in both scripts, alone and in a sentence, even where the library's dictionary has them (PR #67)", () => {
   const { UNSETTLED_WORDS } = zh_standard;
-  assert.equal(UNSETTLED_WORDS.length, 19);
+  assert.equal(UNSETTLED_WORDS.length, 20);
   // OpenCC writes Taiwan's 揹著 (bēi only, so not doubtful): 背著 here.
   const tw = (t) => toTw(t).replace("揹", "背");
   for (const w of UNSETTLED_WORDS) {
@@ -309,10 +309,97 @@ test("the two-way words with no standard reading are marked in both scripts, alo
   assert.deepEqual(marked("我受不了"), []);
 });
 
+test("the HSK 3.0 audit's reader bugs read as the list prints them, at word boundaries only, zh-TW only where Taiwan agrees (ld-7xi)", () => {
+  // The reader alone read 倒是 dǎo, 待会儿 dài, 说干就干 gān.
+  assert.equal(line("倒是"), "dào shì");
+  assert.equal(line("这倒是个好主意"), "zhè dào shì gè hǎo zhǔ yì");
+  assert.equal(line("我待会儿去"), "wǒ dāi huì r qù");
+  assert.equal(line("他说干就干"), "tā shuō gàn jiù gàn");
+  assert.equal(line("他說幹就幹", "zh-TW"), "tā shuō gàn jiù gàn");
+  for (const w of ["倒是", "待会儿", "说干就干"]) assert.deepEqual(marked(w), [], w);
+  // Not where the characters meet across two words.
+  assert.equal(line("摔倒是常事"), "shuāi dǎo shì cháng shì");
+  assert.equal(line("颠倒是非"), "diān dǎo shì fēi");
+  // ICU's 他不|倒是, where 不倒 may be the word: left to the reader.
+  assert.equal(line("他不倒是"), "tā bù dǎo shì");
+  assert.equal(line("再等待会儿"), "zài děng dài huì r");
+  // 待會兒 is left to the reader in zh-TW (Taiwan reads it dāi huǐ r).
+  assert.equal(line("我待會兒去", "zh-TW"), "wǒ dài huì r qù");
+  // 一晃: CC-CEDICT yī huǎng, HSK 3.0 yíhuàng, both senses common: marked.
+  assert.deepEqual(marked("一晃十年"), ["一晃"]);
+});
+
 test("a longer word holding a table word reads as CC-CEDICT reads it (zh-standard.ts, over the prior's table): 便宜行事 biàn yí (PR #67)", () => {
   assert.equal(line("便宜行事"), "biàn yí xíng shì");
   assert.equal(line("便宜行事", "zh-TW"), "biàn yí xíng shì");
   assert.equal(line("面恶心善"), "miàn è xīn shàn");
   assert.equal(line("京片子"), "jīng piàn zi");
   assert.equal(line("日较差"), "rì jiào chā");
+});
+
+test("context rules settle common phrases CC-CEDICT has no entry for, by a neighbour, in both scripts, and leave the cases they can't tell (ld-7xi)", () => {
+  const ids = zh.CONTEXT_RULES.map((r) => r.id);
+  // Read, and settled (unmarked), by a rule.
+  const settled = {
+    更好: "gèng hǎo", 很难: "hěn nán", 不难: "bù nán", 太长: "tài cháng", 多长时间: "duō cháng shí jiān", 最强: "zuì qiáng", 很差: "hěn chà", 不累: "bù lèi", 太重: "tài zhòng",
+    一场比赛: "yī chǎng bǐ sài", 两种: "liǎng zhǒng", 一只猫: "yī zhī māo", 这只猫: "zhè zhī māo", 一片: "yī piàn", 一处: "yī chù", 一扇门: "yī shàn mén", 一圈: "yī quān", 一曲: "yī qǔ",
+    只会: "zhǐ huì", 只不过是: "zhǐ bù guò shì", 被定为: "bèi dìng wéi", 数千人: "shù qiān rén", 男孩儿: "nán hái r", 今儿个: "jīn r gè", 销售量: "xiāo shòu liàng", 量一下: "liáng yī xià",
+    冲着我: "chòng zhe wǒ", 载有: "zài yǒu", 处以罚款: "chǔ yǐ fá kuǎn", 干过: "gàn guò", 就行了: "jiù xíng le", 长时间: "cháng shí jiān", 警长: "jǐng zhǎng", 降到零下: "jiàng dào líng xià",
+  };
+  for (const [t, want] of Object.entries(settled)) {
+    assert.equal(line(t), want, t);
+    assert.deepEqual(marked(t), [], t);
+  }
+  for (const [t, want] of [["這場比賽", "zhè chǎng bǐ sài"], ["很難", "hěn nán"], ["男孩兒", "nán hái r"], ["警長", "jǐng zhǎng"]]) {
+    assert.equal(line(t, "zh-TW"), want, t);
+    assert.deepEqual(marked(t, "zh-TW"), [], t);
+  }
+  // Where a rule can't tell, the reader's reading stands, marked.
+  for (const t of ["一场雨", "一场大雪", "只身", "独具只眼", "一定为你", "决定为我们", "男儿", "托儿所", "健儿", "丈量", "一无所长"]) assert.ok(marked(t).length, t);
+  assert.equal(line("一定为你"), "yī dìng wèi nǐ");
+  assert.equal(line("只身"), "zhī shēn");
+  assert.equal(line("托儿所"), "tuō ér suǒ");
+  assert.equal(line("丈量"), "zhàng liáng");
+  assert.equal(line("一无所长"), "yī wú suǒ cháng");
+  // 见 and 俩: their other readings live in dictionary words (CONTEXT_SETTLED).
+  assert.deepEqual(marked("我见过他"), []);
+  assert.deepEqual(marked("他俩"), []);
+  // A person's correction still outranks a rule.
+  const fix = zh.makeCorrections({ mine: [{ word: "一场", reading: "yī cháng" }] });
+  assert.equal(zh.readCodePoints("一场", "zh-CN", { cache: false, corrections: fix }).join(" "), "yī cháng");
+  // Off, the phrases are marked again (or misread), and the session rate rises.
+  const on = { cn: rate(SESSION_LINES, "zh-CN"), tw: rate(SESSION_LINES.map(toTw), "zh-TW") };
+  zh.useContextRules(ids);
+  try {
+    for (const t of Object.keys(settled)) assert.ok(marked(t).length || line(t) !== settled[t], `${t} without the rules`);
+    assert.ok(rate(SESSION_LINES, "zh-CN").marks > on.cn.marks && rate(SESSION_LINES.map(toTw), "zh-TW").marks > on.tw.marks);
+  } finally {
+    zh.useContextRules([]);
+  }
+  assert.ok(on.cn.per100 < 1 && on.tw.per100 < 1, `${on.cn.per100} / ${on.tw.per100}`);
+});
+
+test("a context rule settles only where it is sure: where the other reading may be meant, the word stays marked (PR #69 review, ld-7xi)", () => {
+  // 量 the verb after a person, a pronoun, 来 or 自己: liáng, marked; an amount after a longer word: liàng.
+  for (const t of ["你帮我量", "体温让医生来量", "这件衣服你自己量", "让老师量"]) {
+    assert.ok(line(t).endsWith("liáng"), t);
+    assert.ok(marked(t).length, t);
+  }
+  assert.equal(line("工作量"), "gōng zuò liàng");
+  // Simplified 干 before 得 may be 乾, dry: marked; 幹 written out is gàn.
+  for (const t of ["衣服干得很快", "天气干得很", "嘴唇干得裂开了"]) {
+    assert.ok(marked(t).some((w) => w.includes("干")), t);
+    assert.ok(!line(t).includes("gàn"), t);
+  }
+  assert.equal(line("你幹得很好", "zh-TW"), "nǐ gàn de hěn hǎo");
+  assert.ok(marked("衣服乾得很快", "zh-TW").length);
+  // 只 after a verb or 了 may be the measure word with 一 dropped.
+  assert.ok(marked("我买了只会说话的鸟").some((w) => w.includes("只")));
+  assert.deepEqual(marked("我只会说中文"), []);
+  assert.ok(marked("这只说明问题").some((w) => w.includes("只")));
+  // 儿们: the children as often as erhua.
+  assert.ok(marked("这些孩儿们").some((w) => w.includes("儿")));
+  // 数 after a person is the verb; 多长 before 了 may be zhǎng.
+  assert.ok(marked("我数十下").length);
+  assert.ok(marked("他又多长了一颗牙").length);
 });
