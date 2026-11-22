@@ -690,6 +690,47 @@ uncertain words in context.
       neutral counted wrong: words 254 → 256), session marks 0.74 / 0.54 per
       100 unchanged, wordfreq's top 20,000 marked 87 / 105 unchanged; 154 of
       the 20,000 read differently (时候, 还是, 朋友, 告诉, 先生, 意思).
+    - **Settled words** (ld-l1d; `web/src/script/zh-settled.ts`,
+      `applySettled` in zh.ts, written by `npm run pinyin:hsk-audit --
+      --write-settled`, which needs the gitignored HSK working file): the
+      HSK 3.0 words the reader marked though it read them right, most
+      beyond the common words' 20,000 (103 of the 151 between 20,000 and
+      40,000 in wordfreq) with a character of two readings (干杯, 难听,
+      长跑, 柏树). A word is settled when CC-CEDICT reads it exactly one way
+      (its entries, "also pr." and "Taiwan pr."), every row the list has
+      for it prints that reading (一 / 不 in their changed tone allowed; a
+      "·" syllable is not), the reader reads it so, and no other table has
+      it (common words, standard readings, `UNSETTLED_WORDS`; a
+      neutral-tone word only with its neutral tone in: 不由得, 挑剔). zh-TW
+      too only where CC-CEDICT has no other Taiwan reading and the reader
+      reads every traditional spelling so (柏树 Taiwan bó, 不由得 and 挑剔
+      full-toned there: zh-CN only). Left marked by hand: a verb with 着
+      (挨着: 挨着打 ái) and `PARSED_OTHERWISE`, words a sentence may parse
+      otherwise where the segmenter still bounds them: 得手 (你得手洗衣服
+      děi; ICU makes 你|得手|洗衣服), 得力 (你得力挺他), 管教 (他管教数学
+      jiāo), 去处 (去处好关系 chǔ), 长足 (猪长足了膘 zhǎng), 空想 (有空想想
+      kòng), 要强 (不要强人所难 qiǎng), 倒卖 (你倒卖了不少 dào). 138 words
+      (3.2 KB; widening the common words to wordfreq's top 80,000 instead
+      would be 8,567 words, 130 KB, with no HSK check).
+      `applySettled` runs last, after the corrections, and changes no
+      reading: it only sets `settled` on a run between word boundaries of
+      the segmenter (one of its words, or several where it splits the word
+      even alone: 长|跑; a word it keeps whole alone but splits here is
+      another parse, left alone), cutting no word of the library's
+      dictionary, written in one of its spellings, whose every syllable
+      already reads as the table's, with no correction, suggestion or
+      check (`fixed`) and no doubt on it. So a hand choice, the shared
+      list, the recap's suggestion (still marked), giveBack's 还, the
+      context rules, zh-standard.ts, `UNSETTLED_WORDS` and the neutral
+      table all go first; hints are untouched (`withHints` reads `dict`).
+      Measured (CC-CEDICT 2026-11-22): the HSK audit's marked words 153 →
+      27 (zh-CN), 167 → 37 (zh-TW, CC-CEDICT's traditional spellings); the
+      sweep 0 changed in every script; on the session corpus, PR #63's
+      word, framed and sentence sets, wordfreq's top 20,000 and every HSK
+      word alone and in six frames, in both scripts, no reading changed and
+      no mark was gained; every lost mark sits on a settled word read as
+      the table reads it (top 20,000 marked 88 / 106 → 88 / 105: 氾濫;
+      session marks unchanged); `scripts/tests/zh-settled.test.mjs`.
     - Reduplicated words read alike: a doubled character takes the first
       one's tone (狗狗, CC-CEDICT gou3 gou1, is gǒu gǒu), or the neutral tone
       where CC-CEDICT gives the second one (妈妈 mā ma, 谢谢 xiè xie, 星星 xīng
@@ -766,7 +807,8 @@ uncertain words in context.
         (男孩儿, 一下儿: 儿 read ér) and words beyond the common words' top
         20,000 with a character of two readings (干杯, 难听, 长跑). With
         the context rules (below): 154, and 9,454 agree (99.85%; 定为
-        wéi).
+        wéi). After the neutral tones, 153; with the settled words
+        (above, ld-l1d), 27.
     - **Context rules** (ld-7xi, `CONTEXT_RULES` and `contextRules` in
       zh.ts, after `giveBack`; with the shipped prior only, like the
       common words): common phrases CC-CEDICT has no entry for (一场, 更好,
