@@ -292,9 +292,16 @@ export default function KidsGameView() {
 
 /** The grown-up's line under the game: why there is no game yet, or what
  *  is missing. Small and grey: nothing a child needs to read. */
-function GrownUpNote({ status }: { status: PictureStatus }) {
+export function GrownUpNote({ status }: { status: PictureStatus }) {
   const lines: string[] = [];
+  // Words held back until their Mandarin reading is checked (ld-0mn): the
+  // reason the game may be short of words, and where to check them.
+  const held =
+    status.heldForReading > 0
+      ? `${status.heldForReading} word${status.heldForReading === 1 ? " is" : "s are"} waiting for a pronunciation check in Library → Phrase bank; ${status.heldForReading === 1 ? "it joins" : "they join"} the game once checked.`
+      : null;
   if (!status.ready) {
+    if (held) lines.push(held);
     if (status.problem) lines.push(status.problem);
     else if (status.drawing) lines.push(`Pictures are being drawn for the word game (${status.pictured} ready so far). The game opens once there are at least 3.`);
     else if (status.limited) lines.push(`Today's pictures for this language are used up; more are drawn tomorrow. ${status.pictured} ready so far.`);

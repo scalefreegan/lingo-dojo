@@ -32,6 +32,7 @@ before(async () => {
       `export { ScriptContext, loadZh, rubyPieces } from ${JSON.stringify(path.join(web, "src/script/ruby.tsx"))};`,
       `export { RubyText } from ${JSON.stringify(path.join(web, "src/components/Ruby.tsx"))};`,
       `export { ReadingFix } from ${JSON.stringify(path.join(web, "src/components/ReadingFix.tsx"))};`,
+      `export { GrownUpNote } from ${JSON.stringify(path.join(web, "src/components/KidsGameView.tsx"))};`,
     ].join("\n"),
   );
   const out = path.join(dir, "bundle.mjs");
@@ -87,4 +88,10 @@ test("the correction control: never in a child's view, on the grown-up's side on
   assert.match(render(KIDS, fix({ grownUp: true })), /This reading is wrong/, "the card opened from the grown-up's side");
   assert.match(render({ ...KIDS, grownUp: true }, fix()), /before your child learns it/, "inside the Phrase bank");
   assert.match(render(ADULTS, fix()), /This reading is wrong/);
+});
+
+test("the word game tells the grown-up how many words wait for a pronunciation check (PR #68 review)", () => {
+  const status = { pictured: 1, ready: false, drawing: false, waiting: 0, limited: false, problem: null, audio: null, audioNote: null, theme: "t", stock: 0, outOfTheme: 0, restyling: 0, needKey: 0, imagesToday: 0, imagesCap: 200, heldForReading: 2 };
+  assert.match(render(KIDS, React.createElement(m.GrownUpNote, { status })), /2 words are waiting for a pronunciation check in Library → Phrase bank/);
+  assert.doesNotMatch(render(KIDS, React.createElement(m.GrownUpNote, { status: { ...status, heldForReading: 0 } })), /pronunciation check/);
 });
