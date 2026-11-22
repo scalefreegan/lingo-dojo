@@ -15,7 +15,7 @@ import { loadPictureStock } from "../../scripts/content.mjs";
 import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
 import { adultsOverrides, stockList } from "./stockPictures.ts";
 import {
-  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, judgePrompt, parseJudgeReply,
+  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, isRound, judgePrompt, lookAlikeGroups, ownLookAlike, parseJudgeReply,
   pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
@@ -226,6 +226,23 @@ async function stockOffer(mode: string, rows?: Map<string, PictureRow>): Promise
   }
 }
 
+/** A look-alike group as the check is offered it (pictures.mjs lookAlikeGroups). */
+type LookAlikeGroup = { id: string; shows: string[] };
+
+/** The look-alike groups the picturable check may name for a word it will
+ *  draw (ld-44x): every group in the merged stock list, drawn or not (a
+ *  group is about what the pictures look like), as a learner of `mode`
+ *  sees the list. Never throws: none then, and the description's words
+ *  decide (pictures.mjs ownLookAlike). */
+async function groupOffer(mode: string): Promise<LookAlikeGroup[]> {
+  try {
+    return lookAlikeGroups(stockForMode(await stockList(), mode));
+  } catch (e) {
+    console.warn("[lingo-dojo] pictures: the look-alike groups couldn't be read:", String((e as Error)?.message || e));
+    return [];
+  }
+}
+
 /** Whether any stock picture is drawn in the current theme, read from the
  *  folder alone (no list, no database): the quick, synchronous guard that
  *  lets a run start with no image key. The run itself is offered only the
@@ -272,8 +289,9 @@ function stockPointer(id: string): StockPointer | null {
  *    pictures.yaml's or added from the picture library; and so does one
  *    whose concept is gone or unknown (deleted, or the list unreadable):
  *    for a child, a stock picture nobody can vouch for isn't shown;
- *  - a stock row carries its concept's look-alike `group`, so a round
- *    never offers two of one (pictures.mjs roundChoices).
+ *  - a stock row carries its concept's look-alike `group`, and a word's
+ *    own drawing its own (pictures.mjs ownLookAlike), so a round never
+ *    offers two of one (pictures.mjs roundChoices).
  *  The background work reads the rows as they are. */
 async function playable(rows: Map<string, PictureRow>, mode: string): Promise<Map<string, PictureRow & { group?: string | null }>> {
   const concepts = await stockById();
@@ -284,7 +302,12 @@ async function playable(rows: Map<string, PictureRow>, mode: string): Promise<Ma
       if (!r.theme || !stockPicture(r.theme, r.stockId)) continue;
       if (mode === "kids" && (!c || c.adults)) continue;
       out.set(k, c?.group ? { ...r, group: c.group } : r);
-    } else out.set(k, r);
+    } else {
+      // A word's own drawing: the check's look-alike group, else its
+      // description's (ld-44x), so it never meets a picture that looks the same.
+      const group = ownLookAlike(r);
+      out.set(k, group ? { ...r, group } : r);
+    }
   }
   return out;
 }
@@ -345,7 +368,7 @@ export function fillPictures(t: FillTarget): boolean {
       const offer = await stockOffer(t.mode, rows);
       const judgeRoom = (await pictureCallsSince(rawDb(), t.profile, "judge", since())) < PICTURE_DAILY_JUDGES;
       if (work.judge.length && judgeRoom && (canDraw || offer.length)) {
-        if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names, offer))) return;
+        if (!(await judge(t, work.judge.slice(0, JUDGE_BATCH), names, offer, await groupOffer(t.mode)))) return;
         continue;
       }
       if (work.restyleCheck.length && (judgeRoom || !offer.length)) {
@@ -416,8 +439,8 @@ type Word = { id: string; text: string | null; meaning: string | null };
  * SLOT_WAIT (nothing paid), or CAPPED. Throws on a failed call or an
  * unusable reply (the ledger row says so).
  */
-async function askCheck(t: FillTarget, sent: (Word & { key: string })[], names: string[], offer: StockConcept[]) {
-  const { system, user } = judgePrompt({ words: sent.map((w) => ({ text: w.text ?? "", meaning: w.meaning })), targetLanguage: t.targetLanguage, nativeLanguage: t.nativeLanguage, stock: offer });
+async function askCheck(t: FillTarget, sent: (Word & { key: string })[], names: string[], offer: StockConcept[], groups: LookAlikeGroup[] = []) {
+  const { system, user } = judgePrompt({ words: sent.map((w) => ({ text: w.text ?? "", meaning: w.meaning })), targetLanguage: t.targetLanguage, nativeLanguage: t.nativeLanguage, stock: offer, groups });
   let callId = "";
   let text: string | typeof CAPPED;
   try {
@@ -437,22 +460,30 @@ async function askCheck(t: FillTarget, sent: (Word & { key: string })[], names: 
     throw new Error(`the picturable check failed: ${failureHint(msg) || msg}`);
   }
   if (text === CAPPED) return CAPPED;
-  const parsed = parseJudgeReply(text, sent.length, names, offer);
+  const parsed = parseJudgeReply(text, sent.length, names, offer, groups);
   if (!parsed.ok) {
     await pictureCallDone(rawDb(), t.profile, callId, "failed").catch(() => {});
     throw new Error(`the picturable check's reply wasn't usable (${parsed.error})`);
   }
   await pictureCallDone(rawDb(), t.profile, callId, "ok").catch(() => {});
-  return parsed.verdicts as ({ picturable: boolean; description: string | null; stock: string | null; kidsSafe?: boolean | null } | undefined)[];
+  return parsed.verdicts;
 }
+
+/** The look-alike group a verdict stores (ld-44x): a stock match's
+ *  concept's group (kept in case the word becomes a drawing of its own
+ *  later: the stock file gone at the match, or Redraw all with no stock
+ *  picture in the new theme; while it points at stock, playable reads the
+ *  concept's own), else the one the check named for a word it draws. */
+const matchedGroup = (v: { stock: string | null; lookAlike: string | null }, offer: StockConcept[]): string | null =>
+  v.stock ? (offer.find((c) => c.id === v.stock)?.group ?? null) : v.lookAlike;
 
 /** One picturable check for words with no verdict; false when the
  *  background slot stayed busy past SLOT_WAIT (the run stops; nothing was
  *  paid). A word matched to a drawn stock picture is ready at once (no
  *  image call, no image in the ledger). Throws on a failed call. */
-async function judge(t: FillTarget, words: Word[], names: string[], offer: StockConcept[]): Promise<boolean> {
+async function judge(t: FillTarget, words: Word[], names: string[], offer: StockConcept[], groups: LookAlikeGroup[]): Promise<boolean> {
   const sent = words.map((w) => ({ ...w, key: pictureKey(w) }));
-  const verdicts = await askCheck(t, sent, names, offer);
+  const verdicts = await askCheck(t, sent, names, offer, groups);
   if (verdicts === false) return false;
   if (verdicts === CAPPED) return true;
   let judged = 0;
@@ -463,7 +494,7 @@ async function judge(t: FillTarget, words: Word[], names: string[], offer: Stock
     // A stock match whose file has gone since the offer is drawn instead.
     const stock = v.stock ? stockPointer(v.stock) : null;
     const { oldFile } = await storeVerdict(rawDb(), t.profile, {
-      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, kidsSafe: stock ? null : v.kidsSafe, ...(stock ? { stock } : {}),
+      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, kidsSafe: stock ? null : v.kidsSafe, lookAlike: matchedGroup(v, offer), ...(stock ? { stock } : {}),
     });
     await dropPictureFile(oldFile);
     judged++;
@@ -494,7 +525,7 @@ async function restyleCheck(t: FillTarget, words: Word[], names: string[], offer
     answered++;
     const stock = v?.stock ? stockPointer(v.stock) : null;
     if (stock) {
-      const done = await restyleToStock(rawDb(), t.profile, sent[i].id, sent[i].key, stock);
+      const done = await restyleToStock(rawDb(), t.profile, sent[i].id, sent[i].key, stock, matchedGroup(v!, offer));
       await dropPictureFile(done?.oldFile);
     } else if (canDraw) {
       await restyleToDraw(rawDb(), t.profile, sent[i].id, sent[i].key);
@@ -639,7 +670,9 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pool,
     poolLevel: cap,
     poolByLevel: game.byLevel,
-    ready: pictured + pool >= MIN_PICTURED,
+    // A game with at least one round of two or more pictures (gameRounds:
+    // a bank of look-alikes only, a car, a taxi and a truck, has none).
+    ready: pictured + pool >= MIN_PICTURED && gameRounds(game.phrases, game.rows, { now: new Date(), rounds: 1 }).ready,
     drawing: filling.has(profile.id),
     waiting: work.judge.length + work.draw.length,
     limited: images >= PICTURE_DAILY_IMAGES,
@@ -798,6 +831,10 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     const self = phrases.find((p) => p.id === phrase.id);
     const offered = self ? roundChoices(self, bank, a.version) : null;
     if (!offered) throw new HttpError(409, "this word's picture changed since the round was shown; skip it");
+    // A round of its own picture alone is never played (gameRounds leaves
+    // it out, ld-44x): a tap there would be a right answer on no evidence,
+    // so it records no review.
+    if (!isRound(offered)) throw new HttpError(409, "this word has no other picture to tell it from now; skip it");
     // The bank may have grown since the round was drawn (a picture made
     // meanwhile reshuffles it): a tap on any ready picture of this
     // language is graded (the right one is always offered); anything else
@@ -928,7 +965,7 @@ async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
     if (pointer) {
       // Another theme's stock picture of a concept drawn in this one.
       await requestRestyle(rawDb(), profile, [row.id], "check");
-      const done = await restyleToStock(rawDb(), profile, row.phraseId, row.phraseKey, pointer);
+      const done = await restyleToStock(rawDb(), profile, row.phraseId, row.phraseKey, pointer, offer.find((c) => c.id === row.stockId)?.group ?? null);
       if (done) moved++;
     } else check.push(row.id);
   }

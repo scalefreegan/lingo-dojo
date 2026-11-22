@@ -841,10 +841,19 @@ export const phrasePictures = pgTable(
      *  an adult's drawing, once shared into the picture pool, reach kids
      *  learners. Null: not asked (judged before 0020, or not picturable). */
     kidsSafe: boolean("kids_safe"),
+    /** The look-alike group the picturable check named for the word's own
+     *  drawing (migration 0021, ld-44x): one of the stock list's groups
+     *  (pictures.yaml's `group`, an added concept's look_alike_group), so a
+     *  round never shows it beside a picture of that group (pictures.mjs
+     *  roundChoices). Null: none named (judged before 0021, a stock match,
+     *  or no close look-alike); the description's words then decide
+     *  (pictures.mjs ownLookAlike). Set with the verdict, never re-asked. */
+    lookAlike: text("look_alike"),
     createdAt: createdAt(),
     updatedAt: tz("updated_at").notNull().defaultNow(),
   },
   (t) => [
+    check("phrase_pictures_look_alike", sql`${t.lookAlike} is null or ${t.lookAlike} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
     check("phrase_pictures_theme", sql`${t.theme} is null or ${t.theme} ~ '^[a-z0-9][a-z0-9.+-]{0,63}$'`),
     check("phrase_pictures_stock", sql`${t.stockId} is null or (${t.status} = 'ready' and ${t.theme} is not null and ${t.stockId} ~ '^[a-z0-9][a-z0-9-]{0,47}$')`),
     check("phrase_pictures_restyle", sql`${t.restyle} is null or (${t.status} = 'ready' and ${t.restyle} in ('check', 'draw'))`),
@@ -989,6 +998,13 @@ export const pictureStockConcepts = pgTable(
      *  concepts of one group (pictures.mjs roundChoices), file and added
      *  concepts alike. Null: none. Not named "group", a reserved word in SQL. */
     group: text("look_alike_group"),
+    /** Whether `group` was written on purpose (migration 0021, ld-44x): by
+     *  sharing a drawing (the check's group, else its description's), by an
+     *  admin (a clear included), or by the one-off fill of the drawings
+     *  shared before 0021 (scripts/db/pictureStock.ts fillDrawingGroups,
+     *  which touches only rows where this is false). So an admin's clear
+     *  sticks. Not read for an admin's own concepts. */
+    groupSet: boolean("look_alike_set").notNull().default(false),
     /** How it came (migration 0020, ld-ec9): `admin`, added from the
      *  picture library page; `drawing`, a learner's own word picture shared
      *  into the picture pool (web/server/picturePool.ts), its file copied

@@ -3091,6 +3091,10 @@ updated_at)`:
 - `restyle` (0012) is a grown-up's Redraw all waiting on a ready row:
   `check` (ask the check for a stock picture first) or `draw`. Null
   otherwise.
+- `look_alike` (0021, ld-44x) is the look-alike group the picturable check
+  named for a word it will draw (§Look-alikes on one screen). Null: none
+  named, a stock match, or judged before 0021; checked null or
+  `^[a-z0-9][a-z0-9-]{0,47}$`.
 - The checks:
   - `file` (64 hex) and `content_type` (png, webp or jpeg) are present
     exactly when the row is `ready`.
@@ -3328,8 +3332,9 @@ nature and weather, actions. Each is `{ id, description, words, group?,
 adults? }`: the id (also the file's name), the short description the
 theme's prompt gets, and the English words it stands for; `group` names
 look-alike concepts (a boy and a brother, a ball and catching one, a tree
-and a forest), and a round never offers two of one group (two right
-answers); `adults: true` (none of the file's since 2026-11-21) keeps a concept from kids
+and a forest, a parcel and a suitcase), and a round never offers two of one
+group (two right answers, or two a learner can't tell apart; §Look-alikes
+on one screen); `adults: true` (none of the file's since 2026-11-21) keeps a concept from kids
 learners: it is never offered to their check, so never matched, and a kids
 word pointing at one (matched before the flag) leaves the game
 (`stockForMode` in `scripts/pictures.mjs`, `playable` in
@@ -3564,6 +3569,62 @@ already there have none.
 
 **Deleting an added concept** deletes its file; words pointing at it leave
 the game until each is drawn again (nothing re-points them; bead filed).
+
+#### Look-alikes on one screen (ld-44x, migration 0021)
+
+Pictures that look the same are never on one round's screen, even for
+different words (the owner saw a box and a suitcase, 2026-11-22). Other
+rounds of the same game may show both. Every picture in a round carries a
+look-alike `group`, and `roundChoices` skips a second of one:
+
+- **Stock pictures:** the concept's `group`. The 2026-11-22 audit of the
+  drawn stock set added 19 groups and widened five (`bag`: parcel, present,
+  suitcase, bag, backpack, shopping bag, basket; `book` + notebook,
+  passport, menu; `coins` + banknotes, bill; `tree` + park, climb; `girl` +
+  doll; `leg` + hand; and `train`, `shop`, `airplane`, `table`, `car`,
+  `water`, `juice`, `cup`, `move`, `sing`, `bear`, `red-fruit`, `shirt`,
+  `screen`, `bath`, `cloud`, `head`, `bike`; drink joins `cup`, brush
+  teeth `mouth`). Groups are tight: only what a learner could take for the
+  other, by look or by one word naming both. A stock match stores its
+  concept's group in `look_alike` too: while it points at stock its
+  concept's own is read, but it keeps the group if it later becomes a
+  drawing of its own (the stock file gone at the match, or Redraw all with
+  no stock picture in the new theme).
+- **A word's own drawing:** the picturable check is offered the groups in
+  use (`lookAlikeGroups`: each id and up to three of its concepts'
+  descriptions, file and added, as the learner's mode sees the list) and
+  may name one per word it will draw (`looksLike`, only an offered id). It
+  is stored with the verdict in `phrase_pictures.look_alike`, once, in the
+  same call: no extra call, never re-asked. A grown-up's drawn-anyway
+  description and a `none` clear it.
+- **Fallback, free:** with no key from the check (judged before 0021, or
+  none named), the description's words decide (`lookAlikeOf`, the fixed
+  `LOOK_ALIKE_RULES` in `scripts/pictures.mjs`: box, parcel, suitcase, gift
+  → `bag`; a glass of milk → `water`; the earliest match wins). Every
+  concept's own description in `content/pictures.yaml` gives exactly its
+  group (a test holds them to it). Old rows get a key with no call and no
+  backfill. `ownLookAlike` is the check's
+  key, else this; `playable` in `web/server/pictures.ts` sets it as the
+  row's `group`. No key: the picture meets any other, as before.
+- **Shared drawings (the pool):** shared with `ownLookAlike` (the check's
+  key, else the description's) stored as their concept's
+  `look_alike_group`; the column is the truth (`mergeStock` derives
+  nothing), so an admin's change or clear on the picture library page
+  sticks. `picture_stock_concepts.look_alike_set` (0021, false for the
+  rows there) says the group was written on purpose: by sharing, by an
+  admin, or by the one-off fill of the drawings shared before 0021
+  (`fillDrawingGroups` in `scripts/db/pictureStock.ts`, run on the first
+  read of the added concepts in a process: a `drawing` row not yet marked
+  that already has a group, an admin's from before 0021, keeps it and is
+  only marked; one with none gets `lookAlikeOf` and is marked; free,
+  idempotent, every update guarded by the flag).
+- **Small banks:** a word whose round could offer only its own picture (a
+  bank of only a car, a taxi and a truck) is left out of the game
+  (`gameRounds`, `isRound`): one picture to tap is no evidence. A game
+  with no round left isn't `ready` (`status.ready` asks `gameRounds` too;
+  the game page says the pictures all look alike), and the answer route
+  answers a tap on such a round with a 409 and records no review.
+  Otherwise nothing is relaxed: a round may offer fewer than four.
 
 ### Redraw all in the current style
 

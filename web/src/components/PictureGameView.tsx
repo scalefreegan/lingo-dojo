@@ -406,7 +406,14 @@ export default function PictureGameView({
 /** Why there is no game yet, said plainly, with Draw pictures when words
  *  are waiting and nothing stands in the way. */
 function NotReady({ status, busy, onDraw }: { status: PictureStatus; busy: boolean; onDraw: () => void }) {
-  const lines: string[] = [`The picture game needs at least 3 words with pictures; ${status.pictured === 0 ? "none has one" : `${status.pictured} ${status.pictured === 1 ? "has" : "have"} one`} so far.`];
+  // Enough pictures, but all look alike (a car, a taxi and a truck): no
+  // round could show two to choose between (ld-44x).
+  const alike = status.pictured + status.pool >= 3;
+  const lines: string[] = [
+    alike
+      ? "The picture game needs pictures that look different from each other; the ones so far all look alike. More words bring more pictures."
+      : `The picture game needs at least 3 words with pictures; ${status.pictured === 0 ? "none has one" : `${status.pictured} ${status.pictured === 1 ? "has" : "have"} one`} so far.`,
+  ];
   if (status.problem) lines.push(status.problem);
   else if (status.drawing) lines.push("Pictures are being drawn now.");
   else if (status.limited) lines.push("Today's pictures for this language are drawn; more tomorrow.");

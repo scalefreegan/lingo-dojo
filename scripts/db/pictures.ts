@@ -64,13 +64,17 @@ export async function pictureOf(db: Db, profile: LanguageProfileRef, phraseId: s
 export async function storeVerdict(
   db: Db,
   profile: LanguageProfileRef,
-  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer; kidsSafe?: boolean | null },
+  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer; kidsSafe?: boolean | null; lookAlike?: string | null },
 ): Promise<{ row?: PictureRow; oldFile: string | null }> {
   if ((v.status === "ready") !== !!v.stock) throw new Error("a ready verdict is a stock picture's, and only it");
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, v.phraseId));
   if (before?.phraseKey === v.phraseKey) return { oldFile: null };
-  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, ...NO_FILE, ...(v.stock ?? {}) };
+  // The look-alike group (ld-44x): the check's for a word it draws, a
+  // stock match's concept's (a stock row plays under its concept's own;
+  // this one is for when it becomes a drawing of its own), none for `none`.
+  const lookAlike = v.status === "none" ? null : (v.lookAlike ?? null);
+  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, lookAlike, ...NO_FILE, ...(v.stock ?? {}) };
   try {
     if (!before) {
       const [row] = await mine.insertOrIgnore(phrasePictures, { phraseId: v.phraseId, ...values }, { target: [phrasePictures.phraseId] });
@@ -168,11 +172,13 @@ const waiting = (phraseId: string, phraseKey: string, from: "check" | "draw") =>
 /** The check found a stock picture for a word waiting to be restyled: it
  *  points there now (no image call). Returns the row and the file of its
  *  own it no longer holds, or undefined when it isn't waiting any more. */
-export async function restyleToStock(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, stock: StockPointer): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
+export async function restyleToStock(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, stock: StockPointer, lookAlike: string | null = null): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, waiting(phraseId, phraseKey, "check"));
   if (!before) return undefined;
-  const [row] = await mine.update(phrasePictures, { ...stock, restyle: null, updatedAt: sql`now()` }, and(eq(phrasePictures.id, before.id), waiting(phraseId, phraseKey, "check")) as SQL);
+  // The concept's look-alike group, kept with it (ld-44x); none known keeps
+  // what the row had.
+  const [row] = await mine.update(phrasePictures, { ...stock, restyle: null, ...(lookAlike ? { lookAlike } : {}), updatedAt: sql`now()` }, and(eq(phrasePictures.id, before.id), waiting(phraseId, phraseKey, "check")) as SQL);
   return row ? { row, oldFile: before.file === row.file ? null : ownFile(before) } : undefined;
 }
 
@@ -232,7 +238,9 @@ export async function drawAnyway(
   if (before.status !== "none") return { problem: "state" };
   const [row] = await mine.update(
     phrasePictures,
-    { status: "pending", description, updatedAt: sql`now()` },
+    // A description of their own: the check's look-alike group was for
+    // none (a `none` verdict has none), and the new one's words decide.
+    { status: "pending", description, lookAlike: null, updatedAt: sql`now()` },
     and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "none")) as SQL,
   );
   return row ? { row } : { problem: "state" };
@@ -256,7 +264,7 @@ export async function pictureFileInUse(db: Db, file: string): Promise<boolean> {
 export async function markNone(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string): Promise<void> {
   await forLanguageProfile(db, profile).update(
     phrasePictures,
-    { status: "none", description: null, updatedAt: sql`now()` },
+    { status: "none", description: null, lookAlike: null, updatedAt: sql`now()` },
     and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "pending")) as SQL,
   );
 }

@@ -95,7 +95,7 @@ export async function refuseSharedFile(db: Db, sourceFile: string, by: string | 
  */
 export async function shareDrawing(
   db: Db,
-  d: { id: string; category: string; description: string; words: string[]; sourceFile: string; kidsSafe: boolean | null; createdBy: string; key: string | null; text: string | null },
+  d: { id: string; category: string; description: string; words: string[]; sourceFile: string; kidsSafe: boolean | null; group?: string | null; createdBy: string; key: string | null; text: string | null },
 ): Promise<boolean> {
   return db.transaction(async (tx) => {
     // Refused meanwhile (an admin removed it while the run read the list).
@@ -103,7 +103,7 @@ export async function shareDrawing(
     if (refused) return false;
     const rows = await tx
       .insert(pictureStockConcepts)
-      .values({ id: d.id, category: d.category, description: d.description, words: d.words, origin: "drawing", sourceFile: d.sourceFile, kidsSafe: d.kidsSafe, createdBy: d.createdBy })
+      .values({ id: d.id, category: d.category, description: d.description, words: d.words, origin: "drawing", sourceFile: d.sourceFile, kidsSafe: d.kidsSafe, group: d.group ?? null, groupSet: true, createdBy: d.createdBy })
       .onConflictDoNothing()
       .returning({ id: pictureStockConcepts.id });
     if (rows.length !== 1) return false;

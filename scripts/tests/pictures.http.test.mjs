@@ -38,7 +38,9 @@ const { resetPoolMemory, settlePoolWords } = await import("../../web/server/pict
 const { backgroundSlot } = await import("../../web/server/paid.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
-const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES } = await import("../pictures.mjs");
+const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME } = await import("../pictures.mjs");
+const { writeStockPicture } = await import("../picture-store.mjs");
+const { phraseRevision } = await import("../practice.mjs");
 
 const fake = fakeClaude();
 
@@ -736,4 +738,91 @@ test("the daily cap of checks is counted again after the wait for the slot: reac
   assert.equal((await ledger(pip, "judge")).length, PICTURE_DAILY_JUDGES);
   assert.equal((await picturesOf(pip)).length, 0, "the words stay unjudged");
   assert.equal(openai.calls.length, 0);
+});
+
+/* ------------------------------- look-alikes ------------------------------- */
+
+test("the check names a look-alike group for a word it draws, stored once with its verdict; a round never shows two of one group, an own drawing's key from its description too (ld-44x)", async () => {
+  // A stock list with groups (no stock picture drawn: nothing is matched,
+  // every word is drawn, but the groups are offered all the same).
+  const file = path.join(root, "pictures.yaml");
+  fs.writeFileSync(file, "categories:\n  Travel:\n    - { id: trunk, description: a big travel trunk, words: [trunk], group: bag }\n    - { id: lad, description: a young lad, words: [lad], group: boy }\n");
+  try {
+    fake.picture("!auto-look");
+    const pip = await someone();
+    const p = await add(pip, [["der Koffer", "trunk"], ["die Kiste", "box"], ["der Hund", "dog"], ["die Katze", "cat"]]);
+    await drawAll(pip);
+    const prompt = fake.pictureArgs().find((a) => a.startsWith("Words:"));
+    assert.match(prompt, /\n\nLook-alike groups:\nbag: a big travel trunk\nboy: a young lad$/, "the groups in use, after the words");
+    const rows = await q("select p.text, x.id, x.status, x.look_alike from phrase_pictures x join phrases p on p.id = x.phrase_id where x.language_profile_id = $1 order by p.text", [pip.languageId]);
+    assert.deepEqual(rows.map((x) => [x.text, x.status, x.look_alike]), [
+      ["der Hund", "ready", null],
+      ["der Koffer", "ready", "bag"], // the check's
+      ["die Katze", "ready", null],
+      ["die Kiste", "ready", null], // none named: "a picture of box" is the bag group's by its words
+    ]);
+    const pic = new Map(rows.map((x) => [x.id, x.text]));
+    const r = await pip.call("POST", "/api/game/start");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.rounds.length, 4);
+    for (const round of r.body.rounds) {
+      const shown = round.choices.map((c) => pic.get(c.id));
+      assert.ok(!(shown.includes("der Koffer") && shown.includes("die Kiste")), `the trunk and the box never on one screen: ${shown}`);
+      assert.ok(shown.length >= 2, "a small bank still plays");
+    }
+    assert.ok(r.body.rounds.some((x) => x.phraseId === p["der Hund"].id && x.choices.length === 3), "a word with no key meets one of the group, as before");
+    // Shared into the pool (ld-ec9) with the group the round used: the
+    // check's, else the description's; stored, so an admin can change it.
+    const shared = await q("select description, look_alike_group, look_alike_set from picture_stock_concepts where origin = 'drawing' order by description");
+    assert.deepEqual(shared.map((x) => [x.description, x.look_alike_group, x.look_alike_set]), [
+      ["a picture of box", "bag", true],
+      ["a picture of cat", null, true],
+      ["a picture of dog", null, true],
+      ["a picture of trunk", "bag", true],
+    ]);
+  } finally {
+    await settlePoolWords();
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test("a stock match stores its concept's group; a bank of look-alikes only (a car, a taxi, a truck) is no game, and a lone round records no review (ld-44x)", async () => {
+  const file = path.join(root, "pictures.yaml");
+  fs.writeFileSync(file, [
+    "categories:",
+    "  Transport:",
+    "    - { id: car, description: a small red car, words: [car], group: car }",
+    "    - { id: taxi, description: a yellow taxi, words: [taxi], group: car }",
+    "    - { id: truck, description: a truck, words: [truck], group: car }",
+    "",
+  ].join("\n"));
+  for (const id of ["car", "taxi", "truck"]) writeStockPicture(PICTURE_THEME.id, id, placeholderPng([10, 20, 30]), "image/png");
+  try {
+    const pip = await someone();
+    const p = await add(pip, [["das Auto", "car"], ["das Taxi", "taxi"], ["der Lastwagen", "truck"]]);
+    await drawAll(pip);
+    assert.equal(openai.calls.length, 0, "all three from the stock");
+    const rows = await q("select p.text, x.status, x.stock_id, x.look_alike from phrase_pictures x join phrases p on p.id = x.phrase_id where x.language_profile_id = $1 order by p.text", [pip.languageId]);
+    assert.deepEqual(rows.map((x) => [x.text, x.status, x.stock_id, x.look_alike]), [
+      ["das Auto", "ready", "car", "car"],
+      ["das Taxi", "ready", "taxi", "car"],
+      ["der Lastwagen", "ready", "truck", "car"],
+    ], "the concept's group kept with the match, for a drawing of its own later");
+    const s = await status(pip);
+    assert.deepEqual([s.pictured, s.ready], [3, false], "three pictures, but no round of two to choose between");
+    const r = await pip.call("POST", "/api/game/start");
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.body.rounds, []);
+    // A tap sent anyway (an old page): no right answer on no evidence.
+    const car = p["das Auto"];
+    const [pic] = await q("select id from phrase_pictures where phrase_id = $1", [car.id]);
+    const res = await tap(pip, { phraseId: car.id, version: "0:", revision: phraseRevision(car) }, pic.id);
+    assert.equal(res.status, 409, res.text);
+    assert.match(res.body.error, /no other picture to tell it from/);
+    assert.equal((await q("select count(*)::int as n from reviews where language_profile_id = $1", [pip.languageId]))[0].n, 0, "no review");
+  } finally {
+    await settlePoolWords();
+    fs.rmSync(file, { force: true });
+    fs.rmSync(path.join(imagesDir, "stock"), { recursive: true, force: true });
+  }
 });

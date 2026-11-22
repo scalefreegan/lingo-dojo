@@ -14,7 +14,7 @@ import {
   KIDS_CHECK_BATCH, POOL_DAILY_CALLS, POOL_LANGS, POOL_WORDS_BATCH, SHARED_CATEGORY, checkPoolWord, kidsCheckPrompt, parseKidsCheckReply, parsePoolWordsReply, poolId, poolKey,
   poolWords, poolWordsPrompt, shareable, sharedConceptId, sharedWords,
 } from "../../scripts/picture-pool.mjs";
-import { PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, stockForMode } from "../../scripts/pictures.mjs";
+import { PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, ownLookAlike, stockForMode } from "../../scripts/pictures.mjs";
 import { deleteStockPicture, readPicture, writeStockPicture } from "../../scripts/picture-store.mjs";
 import type { CandidatePhrase } from "../../scripts/practice.mjs";
 import { rawDb } from "./db.ts";
@@ -267,6 +267,10 @@ export async function shareDrawings(t: ShareFrom, phrases: CandidatePhrase[], ro
         // A kids learner's own word reaches kids unless its check said no;
         // an adult's only once a check said yes.
         kidsSafe: t.mode === "kids" ? (row.kidsSafe ?? true) : (row.kidsSafe ?? null),
+        // Its look-alike group goes with it (ld-44x): the check's, else its
+        // description's. The column is the truth from here (an admin may
+        // change or clear it on the picture library page).
+        group: ownLookAlike(row),
         createdBy: t.userId,
         key, text: key ? checkPoolWord(key, phrase.text ?? "", names) : null,
       });

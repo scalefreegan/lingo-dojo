@@ -318,6 +318,99 @@ export function readStockGroup(value) {
  *  `adults` concept (beer, wine, pills) never reaches a kids learner. */
 export const stockForMode = (concepts, mode) => (mode === "kids" ? concepts.filter((c) => !c.adults) : concepts);
 
+/* ------------------------------- look-alikes -------------------------------- */
+
+/**
+ * A picture with no look-alike group of its own (a word's own drawing the
+ * check gave none, judged before 0021 or not; a learner's shared drawing),
+ * keyed by its description's words (ld-44x): free and deterministic, so
+ * old rows get one too with no call. Each rule names a group of
+ * content/pictures.yaml (a test keeps them in step) and the nouns whose
+ * pictures look like that group's, or that a child could call by one of
+ * its words (a box, a suitcase, a gift). The earliest match in the
+ * description wins (its subject comes first: "a child reading a book" is
+ * the book's, "a glass of milk" the glass's). A key too many only keeps
+ * two pictures apart in one round; a missing one is what this is for.
+ */
+/** A whole word (or words) of a lower-cased description: letters on
+ *  neither side, so "rain" is not "rainbow" and "café" ends at its é. */
+const word = (alts) => new RegExp(`(?<!\\p{L})(?:${alts})(?!\\p{L})`, "u");
+const LOOK_ALIKE_RULES = [
+  ["bag", word("box(?:es)?|parcels?|packages?|suitcases?|luggage|presents?|gifts?|bags?|handbags?|purses?|backpacks?|rucksacks?|satchels?|baskets?|briefcases?|crates?")],
+  ["book", word("books?|notebooks?|passports?|menus?|booklets?|diar(?:y|ies)|magazines?")],
+  ["coins", word("coins?|banknotes?|money|cash|treasure|bills?|receipts?")],
+  ["tree", word("trees?|forests?|woods|park")],
+  ["train", word("trains?|locomotives?")],
+  ["shop", word("shops?|stores?|caf[eé]s?|pharmac(?:y|ies)|markets?|stalls?|baker(?:y|ies)|kiosks?")],
+  ["airplane", word("airplanes?|aeroplanes?|planes?|jets?|airports?")],
+  ["car", word("cars?|taxis?|cabs?|trucks?|lorr(?:y|ies)|vans?|jeeps?")],
+  ["water", word("glass(?:es)? of (?:[a-z]+ ){0,2}(?:water|milk)")],
+  ["juice", word("glass(?:es)? of (?:[a-z]+ ){0,2}(?:juice|beer|lemonade|cider)")],
+  ["cup", word("cups?|mugs?|teacups?")],
+  ["bear", word("bears?|teddy|teddies")],
+  ["red-fruit", word("apples?|tomato(?:es)?")],
+  ["shirt", word("shirts?|t-shirts?|blouses?|coats?|jackets?")],
+  ["screen", word("televisions?|tvs?|laptops?|computers?|monitors?")],
+  ["bath", word("bathtubs?|baths?|showers?")],
+  ["cloud", word("clouds?|rain|raindrops?|raining")],
+  ["bike", word("bicycles?|bikes?|motorbikes?|motorcycles?|scooters?")],
+  ["boy", word("boys?|brothers?")],
+  ["girl", word("girls?|sisters?|dolls?")],
+  ["mouth", word("mouths?|lips|teeth|tooth")],
+  ["leg", word("legs?|foot|feet|toes|hand")], // "hand" alone: "washing hands" is an action, not the drawn hand
+  ["bed", word("beds?")],
+  ["table", word("tables?")],
+  ["head", word("heads?|tumm(?:y|ies)|bell(?:y|ies)")],
+  ["ball", word("balls?")],
+  ["move", word("running|walking|jumping|dancing")],
+  ["sing", word("singing|clapping")],
+];
+
+/** The groups LOOK_ALIKE_RULES name (the test checks each is a group of
+ *  content/pictures.yaml). */
+export const LOOK_ALIKE_RULE_GROUPS = [...new Set(LOOK_ALIKE_RULES.map(([g]) => g))];
+
+/** A description's look-alike group by LOOK_ALIKE_RULES, or null. */
+export function lookAlikeOf(description) {
+  if (typeof description !== "string" || !description) return null;
+  const d = description.toLowerCase();
+  let best = null;
+  let at = Infinity;
+  for (const [g, re] of LOOK_ALIKE_RULES) {
+    const m = re.exec(d);
+    if (m && m.index < at) {
+      best = g;
+      at = m.index;
+    }
+  }
+  return best;
+}
+
+/** The look-alike group a word's own drawing plays under (roundChoices):
+ *  the picturable check's answer stored with its verdict (`lookAlike`,
+ *  migration 0021), else its description's (lookAlikeOf). Null: none, and
+ *  it meets any picture, as before. */
+export const ownLookAlike = (row) => row?.lookAlike || lookAlikeOf(row?.description);
+
+/**
+ * The look-alike groups the picturable check is offered (ld-44x), from the
+ * merged stock list as a learner of that mode sees it: each `{ id, shows }`,
+ * a few of its concepts' descriptions so the model sees what the group's
+ * pictures look like. Learners' shared drawings give no examples (the
+ * library's own concepts say what a group is), but their groups are the
+ * same ids. Sorted by id.
+ */
+export function lookAlikeGroups(concepts, perGroup = 3) {
+  const by = new Map();
+  for (const c of concepts ?? []) {
+    if (!c?.group || c.drawing) continue;
+    const list = by.get(c.group) ?? [];
+    if (list.length < perGroup) list.push(c.description);
+    by.set(c.group, list);
+  }
+  return [...by.keys()].sort().map((id) => ({ id, shows: by.get(id) }));
+}
+
 /* ---------------------------------- the key --------------------------------- */
 
 /** A word's picture key: its words and meaning. A picture is for one
@@ -458,8 +551,13 @@ export function picturePrompt(description, names = [], theme = PICTURE_THEME) {
  * stock list is the library's own, sent as data after it. Nothing here
  * assumes the learner is a child (the game will be offered to adults too);
  * the descriptions stay safe for one all the same.
+ *
+ * `groups` (lookAlikeGroups: [{id, shows}]) are the look-alike groups in
+ * use (ld-44x): for a word it will draw (no stock match) the reply may name
+ * the one its picture could be mistaken for, `looksLike`, stored with the
+ * verdict so a round never shows it beside one of them.
  */
-export function judgePrompt({ words, targetLanguage = "the target language", nativeLanguage = "English", stock = [] }) {
+export function judgePrompt({ words, targetLanguage = "the target language", nativeLanguage = "English", stock = [], groups = [] }) {
   const system = [
     "You decide which words can be shown as a picture, for a listening game: the learner hears a word and taps the picture that matches it.",
     "A word is picturable only when one simple, unambiguous cartoon of a single thing (an object, an animal, a food, a body part, a colour, a simple action) would make a learner think of exactly that word.",
@@ -475,6 +573,12 @@ export function judgePrompt({ words, targetLanguage = "the target language", nat
           'For a picturable word whose meaning is exactly one stock picture\'s concept (the same thing, not a related one: "kitten" may be the cat, "cat food" is not), also give that id as "stock". Judge by the word\'s meaning alone, whoever is learning it. Otherwise leave "stock" out.',
         ]
       : []),
+    ...(groups.length
+      ? [
+          "Then comes a list of look-alike groups: each an id and a few of the pictures in it. A round of the game never shows two pictures of one group, since a learner could take one for the other.",
+          `For a picturable word${stock.length ? ' with no "stock"' : ""}, also give "looksLike": the id of the group whose pictures its picture would look much the same as, or that a learner could call by its word (a box and a suitcase, a brother and a boy). Only a close look-alike, never a broad category; when none is that close, leave "looksLike" out.`,
+        ]
+      : []),
     'Reply with ONLY one JSON object, no prose, no code fence: {"items": [{"n": 1, "picturable": true, "description": "a shiny red apple", "kidsSafe": true' +
       (stock.length ? ', "stock": "apple"' : "") +
       '}, {"n": 2, "picturable": false, "description": null}]}, one item per word, by its number.',
@@ -482,6 +586,7 @@ export function judgePrompt({ words, targetLanguage = "the target language", nat
   ].join("\n");
   const lines = ["Words:", ...words.map((w, i) => `${i + 1}. ${defang(clean(w.text).replace(/\s+/g, " ").trim())} — ${defang(clean(w.meaning ?? "").replace(/\s+/g, " ").trim())}`)];
   if (stock.length) lines.push("", "Stock pictures:", ...stock.map((c) => `${c.id}: ${c.words.join(", ")}`));
+  if (groups.length) lines.push("", "Look-alike groups:", ...groups.map((g) => `${g.id}: ${g.shows.join("; ")}`));
   return { system, user: lines.join("\n") };
 }
 
@@ -498,9 +603,15 @@ export function judgePrompt({ words, targetLanguage = "the target language", nat
  * concept's }` (what its picture shows, and what a drawing of its own
  * would be asked for if the stock file is gone); an id not offered is
  * ignored, and the item read as if it had none.
+ *
+ * `groups` are the look-alike group ids the prompt offered: a word to draw
+ * carries `lookAlike`, the one it named (`looksLike`), or null for none or
+ * one not offered. A stock match carries none (its concept's group is
+ * read from the stock list).
  */
-export function parseJudgeReply(text, count, names = [], stock = []) {
+export function parseJudgeReply(text, count, names = [], stock = [], groups = []) {
   const offered = new Map(stock.map((c) => [c.id, c]));
+  const groupIds = new Set(groups.map((g) => (typeof g === "string" ? g : g.id)));
   const avoid = nameWords(names);
   const raw = extractJsonObject(text);
   if (!raw || !Array.isArray(raw.items)) return { ok: false, error: "no items list in the reply" };
@@ -512,7 +623,7 @@ export function parseJudgeReply(text, count, names = [], stock = []) {
     const fromStock = concept ? cleanDescription(concept.description, avoid) : null;
     if (fromStock) {
       // A stock picture is never shared again: its own flags say who sees it.
-      verdicts[n - 1] = { picturable: true, description: fromStock, stock: concept.id, kidsSafe: null };
+      verdicts[n - 1] = { picturable: true, description: fromStock, stock: concept.id, kidsSafe: null, lookAlike: null };
       continue;
     }
     const description = it.picturable ? cleanDescription(it.description, avoid) : null;
@@ -520,7 +631,8 @@ export function parseJudgeReply(text, count, names = [], stock = []) {
     // anything but a plain true or false is "not asked" (null), which
     // keeps the drawing from kids until a separate check says yes.
     const kidsSafe = description && typeof it.kidsSafe === "boolean" ? it.kidsSafe : null;
-    verdicts[n - 1] = { picturable: !!description, description, stock: null, kidsSafe };
+    const lookAlike = description && typeof it.looksLike === "string" && groupIds.has(it.looksLike) ? it.looksLike : null;
+    verdicts[n - 1] = { picturable: !!description, description, stock: null, kidsSafe, lookAlike };
   }
   return { ok: true, verdicts };
 }
@@ -607,6 +719,12 @@ const meaningKey = (m) => clean(m ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/g
  * practice limits don't apply: a game is a handful of words the child
  * already has pictures for. `ready: false` when there are too few
  * pictures for a game (no rounds then).
+ *
+ * A word whose round could offer only its own picture (every other one
+ * shares its meaning, its file or its look-alike group: a bank of only a
+ * car, a taxi and a truck) is left out (ld-44x): one picture to tap is no
+ * evidence, and the answer route grades no such round (isRound). With no
+ * round left the game isn't `ready`.
  */
 export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = "" } = {}) {
   const bank = pictureBank(phrases, rows);
@@ -636,18 +754,19 @@ export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = ""
   const lv = (x) => ["A1", "A2", "B1", "B2"].indexOf(x.phrase.pool.level);
   pool.sort((a, b) => lv(a) - lv(b) || (mix(a.phrase.id) < mix(b.phrase.id) ? -1 : 1));
   later.sort((a, b) => ms(a.card.due) - ms(b.card.due));
-  const picked = [...due, ...fresh, ...pool, ...later].slice(0, rounds);
-  return {
-    ready: true,
-    pictured: bank.length,
-    rounds: picked.map((x) => ({
-      phraseId: x.phrase.id,
-      version: cardVersion(x.card),
-      revision: phraseRevision(x.phrase),
-      choices: roundChoices(x.phrase, bank, cardVersion(x.card)),
-    })),
-  };
+  const out = [];
+  for (const x of [...due, ...fresh, ...pool, ...later]) {
+    if (out.length === rounds) break;
+    const choices = roundChoices(x.phrase, bank, cardVersion(x.card));
+    if (!isRound(choices)) continue;
+    out.push({ phraseId: x.phrase.id, version: cardVersion(x.card), revision: phraseRevision(x.phrase), choices });
+  }
+  return { ready: out.length > 0, pictured: bank.length, rounds: out };
 }
+
+/** Whether a round's choices make a round to grade: its own picture and
+ *  at least one other (ld-44x). */
+export const isRound = (choices) => Array.isArray(choices) && choices.length >= 2;
 
 /** A round's seed: the word, its card version, its revision and its
  *  picture's file, so a round shows the same pictures until it is answered,
@@ -672,10 +791,13 @@ export function roundChoices(phrase, bank, version) {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   // Never two of one meaning, nor two of one picture (two words pointing
-  // at one stock picture), nor two stock pictures of one look-alike group
-  // (a boy and a brother; the server sets `group` from the merged stock
-  // list, pictures.yaml's and the added concepts' alike):
-  // each would be two right answers.
+  // at one stock picture), nor two pictures of one look-alike group (a
+  // boy and a brother, a parcel and a suitcase; the server sets `group`:
+  // a stock picture's from the merged stock list, pictures.yaml's and the
+  // added concepts' alike, a word's own drawing's from ownLookAlike):
+  // each would be two right answers, or one a learner can't tell apart.
+  // Only one round's screen: another round of the game may show both.
+  // With too few others left, the round simply offers fewer choices.
   const seen = new Set([meaningKey(phrase.meaning)]);
   const files = new Set([own.picture.file]);
   const groups = new Set(own.picture.group ? [own.picture.group] : []);

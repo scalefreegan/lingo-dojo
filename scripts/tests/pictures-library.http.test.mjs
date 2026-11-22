@@ -771,3 +771,38 @@ test("an added concept in a file concept's look-alike group never shares a round
   assert.equal((await setGroup(ada, "lad", null)).status, 200);
   for (const choices of await roundStock()) assert.deepEqual(choices, ["boy", "cat", "dog", "lad"]);
 });
+
+test("a drawing shared before 0021 gets its description's look-alike group once, free; an admin's clear then sticks (ld-44x)", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  // As PR #74 left them: drawings with no group, never written.
+  const shared = (id, description) =>
+    q(`insert into picture_stock_concepts (id, category, description, words, origin, source_file, kids_safe) values ($1, 'Drawn by learners', $2, '{x}', 'drawing', $3, true)`, [id, description, crypto.randomBytes(32).toString("hex")]);
+  await shared("drawn-0000000000000001", "a brown cardboard box");
+  await shared("drawn-0000000000000002", "a red kite");
+  // Two whose group an admin set before 0021 (the route took any added concept).
+  await shared("drawn-0000000000000003", "a red kite");
+  await shared("drawn-0000000000000004", "a box");
+  await q("update picture_stock_concepts set look_alike_group = 'toys' where id = 'drawn-0000000000000003'");
+  await q("update picture_stock_concepts set look_alike_group = 'shop' where id = 'drawn-0000000000000004'");
+  const rows = () => q("select id, look_alike_group, look_alike_set from picture_stock_concepts where id in ('drawn-0000000000000001', 'drawn-0000000000000002') order by id");
+  const admins = () => q("select id, look_alike_group, look_alike_set from picture_stock_concepts where id in ('drawn-0000000000000003', 'drawn-0000000000000004') order by id");
+  assert.deepEqual((await rows()).map((r) => [r.look_alike_group, r.look_alike_set]), [[null, false], [null, false]]);
+  resetStockMemory(); // a fresh process: the fill hasn't run
+  const runs = fake.pictureRuns();
+  const list = await ada.call("GET", "/api/stock-pictures");
+  assert.equal(list.status, 200, list.text);
+  assert.deepEqual((await rows()).map((r) => [r.look_alike_group, r.look_alike_set]), [["bag", true], [null, true]], "filled by the words, and marked");
+  assert.deepEqual((await admins()).map((r) => [r.look_alike_group, r.look_alike_set]), [["toys", true], ["shop", true]], "an admin's group survives unchanged, marked");
+  assert.equal(fake.pictureRuns(), runs, "no call");
+  // The admin clears the box's group: the next reads keep it clear.
+  const cleared = await setGroup(ada, "drawn-0000000000000001", null);
+  assert.equal(cleared.status, 200, cleared.text);
+  await ada.call("GET", "/api/stock-pictures");
+  await ada.call("GET", "/api/stock-pictures");
+  assert.deepEqual((await rows()).map((r) => r.look_alike_group), [null, null], "the clear sticks");
+  assert.equal((await ada.call("GET", "/api/stock-pictures")).body.concepts.find((c) => c.id === "drawn-0000000000000001").group, null);
+  // And a group the admin sets is kept as set.
+  await setGroup(ada, "drawn-0000000000000002", "toys");
+  await ada.call("GET", "/api/stock-pictures");
+  assert.deepEqual((await rows()).map((r) => r.look_alike_group), [null, "toys"]);
+});

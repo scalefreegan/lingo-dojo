@@ -2,13 +2,13 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listLearners } from "../../scripts/db/accounts.ts";
 import {
-  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
+  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, fillDrawingGroups, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
   stockCallStarted, stockCallsSince, type AdultsOverride, type CustomConcept,
 } from "../../scripts/db/pictureStock.ts";
 import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
-import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
+import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, lookAlikeOf, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
 import type { StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
 import type { Ctx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -80,8 +80,20 @@ const stockProblem = (): string | null => (stockProvider().problem() ? STOCK_KEY
 /** The admin's own concepts from the database; never throws (a read that
  *  fails is the file's concepts alone, logged): a broken read is no reason
  *  to fail a word's picturable check. */
+/** Whether fillDrawingGroups has run once in this process (ld-44x). */
+let drawingGroupsFilled = false;
+
 export async function customConcepts(): Promise<CustomConcept[]> {
   try {
+    // Drawings shared before 0021 get their look-alike group first, once
+    // (free), ld-44x. One pass that succeeds leaves none to fill: the app
+    // shares a drawing already marked, so later reads skip it.
+    if (!drawingGroupsFilled) {
+      await fillDrawingGroups(rawDb(), lookAlikeOf).then(
+        () => (drawingGroupsFilled = true),
+        (e) => console.warn("[lingo-dojo] pictures: shared drawings' look-alike groups weren't filled:", String((e as Error)?.message || e)),
+      );
+    }
     return await customStockConcepts(rawDb());
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the added stock concepts couldn't be read:", String((e as Error)?.message || e));
@@ -151,6 +163,7 @@ export async function settleStockDraws(): Promise<void> {
 
 /** Forget the queue's memory (the tests: a restart). */
 export function resetStockMemory(): void {
+  drawingGroupsFilled = false;
   queue.clear();
   refused.clear();
   stopped = null;

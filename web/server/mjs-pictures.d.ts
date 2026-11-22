@@ -16,9 +16,13 @@ declare module "*/scripts/pictures.mjs" {
     theme?: string | null;
     stockId?: string | null;
     restyle?: string | null;
-    /** A stock picture's look-alike group (set by the server from
-     *  pictures.yaml): a round never offers two of one. */
+    /** The look-alike group a round plays it under (set by the server:
+     *  a stock picture's concept's, a word's own drawing's ownLookAlike): a
+     *  round never offers two of one. */
     group?: string | null;
+    /** The picturable check's look-alike group for a word's own drawing
+     *  (phrase_pictures.look_alike, migration 0021). */
+    lookAlike?: string | null;
   }
   /** A stock concept as the check is offered it. */
   interface StockOffer {
@@ -32,6 +36,11 @@ declare module "*/scripts/pictures.mjs" {
     adults?: true;
   }
   export function stockForMode<C extends { adults?: true }>(concepts: C[], mode: string): C[];
+  export const LOOK_ALIKE_RULE_GROUPS: string[];
+  export function isRound(choices: string[] | null | undefined): boolean;
+  export function lookAlikeOf(description: string | null | undefined): string | null;
+  export function ownLookAlike(row: { lookAlike?: string | null; description?: string | null } | null | undefined): string | null;
+  export function lookAlikeGroups(concepts: { group?: string | null; drawing?: true; description: string }[], perGroup?: number): { id: string; shows: string[] }[];
   export interface PictureTheme {
     readonly id: string;
     readonly provider: string;
@@ -73,13 +82,15 @@ declare module "*/scripts/pictures.mjs" {
     targetLanguage?: string;
     nativeLanguage?: string;
     stock?: { id: string; words: string[] }[];
+    groups?: { id: string; shows: string[] }[];
   }): { system: string; user: string };
   export function parseJudgeReply(
     text: string,
     count: number,
     names?: Iterable<string | null | undefined>,
     stock?: { id: string; description: string }[],
-  ): { ok: true; verdicts: ({ picturable: boolean; description: string | null; stock: string | null; kidsSafe?: boolean | null } | undefined)[] } | { ok: false; error: string };
+    groups?: ({ id: string } | string)[],
+  ): { ok: true; verdicts: ({ picturable: boolean; description: string | null; stock: string | null; kidsSafe?: boolean | null; lookAlike: string | null } | undefined)[] } | { ok: false; error: string };
   export function pictureWork<P extends CandidatePhrase>(phrases: P[], rows: Map<string, PictureLike>): { judge: P[]; draw: P[]; restyleCheck: P[]; restyleDraw: P[] };
   export function readyPicture<R extends PictureLike>(phrase: CandidatePhrase, rows: Map<string, R>): R | null;
   export function pictureBank<R extends PictureLike>(phrases: CandidatePhrase[], rows: Map<string, R>): { phrase: CandidatePhrase; picture: R }[];

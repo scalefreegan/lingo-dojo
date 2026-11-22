@@ -103,10 +103,14 @@ let text = fs.readFileSync(side ? files[side] : files.reply, "utf8");
 // hello, thanks or please; one whose meaning is a word of an offered stock
 // picture ("Stock pictures:" lines, "<id>: <words>") also names that id.
 // "!auto-stock=<id>": the same, but every picturable word names <id> (a
-// made-up one, say).
+// made-up one, say). "!auto-look": the same, and a word drawn (no stock)
+// whose meaning is in an offered look-alike group's line ("Look-alike
+// groups:", "<id>: <descriptions>") names that group as "looksLike".
 if (side === "picture" && text.startsWith("!auto")) {
   const forced = text.startsWith("!auto-stock=") ? text.slice("!auto-stock=".length) : null;
-  const prompt = args.find((a) => a.startsWith("Words:")) || "";
+  const look = text.startsWith("!auto-look");
+  const [prompt, groupPart = ""] = (args.find((a) => a.startsWith("Words:")) || "").split("\\n\\nLook-alike groups:\\n");
+  const groups = groupPart.split("\\n").filter(Boolean).map((line) => line.split(": "));
   const [wordPart, stockPart = ""] = prompt.split("\\n\\nStock pictures:\\n");
   const stock = new Map();
   for (const line of stockPart.split("\\n").filter(Boolean)) {
@@ -119,7 +123,8 @@ if (side === "picture" && text.startsWith("!auto")) {
       const meaning = line.split(" — ")[1] || "";
       const no = /hello|thank|please/i.test(meaning);
       const id = forced ?? stock.get(meaning.toLowerCase().replace(/^the /, ""));
-      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning, ...(!no ? { kidsSafe: !/beer|wine/i.test(meaning) } : {}), ...(!no && id ? { stock: id } : {}) };
+      const like = look && !no && !id ? groups.find(([, shows]) => new RegExp("\\\\b" + meaning.toLowerCase() + "\\\\b").test(shows || ""))?.[0] : undefined;
+      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning, ...(!no ? { kidsSafe: !/beer|wine/i.test(meaning) } : {}), ...(!no && id ? { stock: id } : {}), ...(like ? { looksLike: like } : {}) };
     }),
   });
 }
