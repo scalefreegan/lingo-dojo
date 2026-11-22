@@ -26,6 +26,7 @@ import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 import { COMMON_WORDS } from "./zh-words.ts";
+import { NEUTRAL_WORDS } from "./zh-neutral.ts";
 import { STANDARD_READINGS, UNSETTLED_WORDS } from "./zh-standard.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
@@ -182,6 +183,9 @@ export interface Detail {
    *  还 before 钱 / 书 / 你 that may be hái or huán): marked uncertain
    *  whatever its ranks say, until a person settles it. */
   doubt: boolean[];
+  /** The neutral tone was put there by applyNeutral (ld-azb): the same
+   *  syllable's full tone is no other reading, and a hint may not undo it. */
+  neutral: boolean[];
 }
 
 /** Options for a read: `cache: false` neither reads nor fills the cache;
@@ -244,6 +248,28 @@ for (const s of STANDARD_READINGS) {
     standard: { cnOnly: !s.tw, notBefore: s.notBefore ?? [], notAfter: s.notAfter ?? [] },
   });
 }
+/** The neutral-tone words (zh-neutral.ts, ld-azb), by simplified spelling:
+ *  the reader's reading with the neutral syllables put in. */
+const neutralWords = new Map<string, string[]>(
+  NEUTRAL_WORDS.split("|")
+    .filter(Boolean)
+    .map((e) => {
+      const [w, r] = e.split("=");
+      return [w, r.split(" ")];
+    }),
+);
+const NEUTRAL_MAX = Math.max(1, ...[...neutralWords.keys()].map((w) => [...w].length));
+/** The verbs a table word may follow inside one segmenter word (买东西,
+ *  给朋友). */
+const NEUTRAL_AFTER = "买卖拿带吃喝做给找要有没收送搬爱想看";
+/** Off for scripts/pinyin-hsk-audit.mjs --write-neutral, which measures
+ *  the reader without the table, and for tests of the reader without it. */
+let neutralOn = true;
+export function useNeutralWords(on: boolean): void {
+  neutralOn = on;
+  cache.clear();
+}
+
 /** Off only for scripts/gen-zh-words.mjs, which compares the reader
  *  without the list to CC-CEDICT. */
 let commonOn = true;
@@ -422,6 +448,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
   let joined = settled;
   let starts: boolean[] | null = null;
   const doubt = cps.map(() => false);
+  const neutral = cps.map(() => false);
   if (cps.some(isHan)) {
     // A zh-TW profile's text is always read as traditional. A zh-CN one's
     // by its characters (t2s.ts scriptOf): simplified text (one with a
@@ -470,6 +497,8 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     const edges = looseStarts(cps, simp, starts, joined);
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
     if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw, doubt);
+    // The mainland's neutral tone (ld-azb); Taiwan keeps the full tones.
+    if (!tw && neutralOn && prior === SHIPPED) applyNeutral(cps, simp, joined, edges, out, neutral, doubt);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
@@ -477,13 +506,81 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
     if (prior === SHIPPED) contextRules(cps, simp, dict, starts, out, settled, doubt);
     if (fixes) fixed = applyCorrections(cps, simp, { joined, starts: edges }, fixes, tw, out, settled);
+    // A correction's reading is its own, whatever applyNeutral had set there.
+    fixed.forEach((f, k) => {
+      if (f) neutral[k] = false;
+    });
   }
-  const detail = { readings: out, settled, dict, joined, starts, fixed, doubt };
+  const detail = { readings: out, settled, dict, joined, starts, fixed, doubt, neutral };
   if (!useCache) return detail;
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, detail);
   return detail;
 }
+
+/**
+ * The neutral tone in zh-CN (ld-azb): a word of zh-neutral.ts (the official
+ * HSK 3.0 list prints the neutral tone and CC-CEDICT has it too: 朋友 péng
+ * you, 告诉 gào su) between word boundaries of the segmenter takes it where
+ * the reader gives the word's full tones. A word is changed only if each
+ * syllable is the table's, or the table's neutral one with the tone on:
+ * a reading a context rule or the prior chose otherwise leaves the whole
+ * word alone. Nothing is settled or marked by it, and a person's
+ * correction is laid over it after (applyCorrections).
+ */
+function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], flag: boolean[], doubt: boolean[]): void {
+  const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
+  // The segmenter makes 买东西 one word: a table word also starts right
+  // after a one-character verb that opens the segmenter's word.
+  const start = (k: number) => edge(k) || (k > 0 && NEUTRAL_AFTER.includes(simp[k - 1]) && edge(k - 1));
+  for (let i = 0; i < cps.length; ) {
+    let hit = 0;
+    if (isHan(cps[i]) && start(i)) {
+      for (let e = Math.min(cps.length, i + NEUTRAL_MAX); e >= i + 2 && !hit; e--) {
+        if (!edge(e) || !cps.slice(i, e).every(isHan)) continue;
+        const r = neutralWords.get(simp.slice(i, e).join(""));
+        if (!r || r.length !== e - i) continue;
+        const ok = r.every((x, n) => out[i + n] === x || (out[i + n] != null && x === toneless(x) && toneless(out[i + n]!) === x));
+        if (!ok) continue;
+        r.forEach((x, n) => {
+          if (out[i + n] !== x) flag[i + n] = true;
+          out[i + n] = x;
+        });
+        hit = e - i;
+      }
+    }
+    i += hit || 1;
+  }
+  // 东西 is dōng xi (a thing) only where the words around it say so, and is
+  // never wrong without a mark: after a cue (THING_STRONG, THING_WEAK) and before the end
+  // of the text, punctuation or a closed list of followers it is dōng xi
+  // (买东西, 什么东西, 我的东西呢); after a cue with anything else following
+  // (公园的东西门都开着, 我要东西对称) it stays dōng xī and is marked
+  // uncertain (`doubt`), for the recap or a person to settle. No cue: dōng xī
+  // as before. (CC-CEDICT reads both.)
+  for (let i = 1; i + 1 < cps.length; i++) {
+    if (simp[i] !== "东" || simp[i + 1] !== "西" || out[i] !== "dōng" || out[i + 1] !== "xī") continue;
+    const cue = simp[i - 1];
+    const strong = THING_STRONG.includes(cue);
+    if (!strong && !THING_WEAK.includes(cue)) continue;
+    const next = i + 2 < cps.length ? simp[i + 2] : "";
+    // 的 is a cue only after a person (我的东西, 谁的东西): 长江的东西 is the river's compass.
+    const owner = cue !== "的" || THING_OWNER.includes(simp[i - 2] ?? "");
+    const closed = owner && (!next || !isHan(next) || THING_AFTER.includes(next) || (strong && THING_AFTER_STRONG.includes(next)));
+    if (closed) out[i + 1] = "xi";
+    else doubt[i] = true;
+  }
+}
+/** Before 东西 a cue that it is "a thing": a verb or measure taking an object. */
+const THING_STRONG = "买卖拿带吃喝找偷丢没好坏些件样点个么";
+/** A weaker cue (的 要 有 also open 公园的东西门, 我要东西对称). */
+const THING_WEAK = "要有的";
+/** The owners before 的 that make 东西 a thing. */
+const THING_OWNER = "我你他她它们谁咱";
+/** After 东西 what only fits "a thing": a particle. */
+const THING_AFTER = "了呢吗吧啊呀";
+/** After a strong cue also an adverb or verb of the thing's: 都 也 很 太 放 给. */
+const THING_AFTER_STRONG = "都也很太放给";
 
 /** What may follow 钱 / 书 after 还 for it to be huán (give back): a
  *  particle, the 给 of whom, 的时候, a number. */
@@ -785,7 +882,8 @@ export const MAX_WORD_CHARS = 8;
  *  default or the frequency prior) and that has another ordinary reading
  *  (the prior's ranks: one at least 5% as frequent as its first in
  *  CC-CEDICT's words), unless it is one of CONTEXT_SETTLED, or the other
- *  is only the neutral tone of the same syllable (头 tou). A word that
+ *  is only the neutral tone of the same syllable (头 tou), or the reading
+ *  shown is the neutral tone of the usual one (前边 bian). A word that
  *  only the recap suggested a reading for stays uncertain. */
 function unsureAt(cps: string[], d: Detail, k: number): boolean {
   const cur = d.readings[k];
@@ -795,7 +893,9 @@ function unsureAt(cps: string[], d: Detail, k: number): boolean {
   if (CONTEXT_SETTLED.includes(s)) return false;
   const ranks = priorFor(prior.ranks, cps[k], s);
   if (!ranks || ranks.length < 2) return false;
-  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r));
+  // A neutral tone applyNeutral put there (前边 qián bian, ld-azb) is the
+  // usual syllable's, not another reading of it.
+  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r) && !(d.neutral[k] && cur === toneless(cur) && toneless(r) === cur));
 }
 
 /** An uncertain word of a text: code points [start, end), its characters,
@@ -1279,7 +1379,11 @@ export function withHints(text: string, locale: string, hints: readonly ReadingH
       term.forEach((c, k) => {
         if (!isHan(c)) return;
         // A correction outranks a hint as it outranks the dictionary.
-        if (!d.dict[i + k] && !settledBy(d.fixed[i + k])) out[i + k] = syl[n];
+        // Nor the neutral tone applyNeutral set: the full tone of that syllable
+        // is the same word read by the hint's model, not another reading.
+        const now = out[i + k] ?? "";
+        const keepsNeutral = d.neutral[i + k] && now === toneless(now) && toneless(syl[n]) === now;
+        if (!d.dict[i + k] && !settledBy(d.fixed[i + k]) && !keepsNeutral) out[i + k] = syl[n];
         n++;
       });
       i = end - 1;
