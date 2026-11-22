@@ -540,7 +540,19 @@ function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: 
     }
     i += hit || 1;
   }
+  // 东西 is dōng xi (a thing) only where the words around it say so: after a
+  // verb or measure word that takes an object (买东西, 什么东西, 这个东西, 好东西)
+  // and not before a character that makes it the compass (东西南北, 东西方向,
+  // 东西部). Anywhere else it keeps dōng xī, as before (CC-CEDICT: both).
+  for (let i = 1; i + 1 < cps.length; i++) {
+    if (simp[i] !== "东" || simp[i + 1] !== "西" || out[i] !== "dōng" || out[i + 1] !== "xī") continue;
+    if (THING_BEFORE.includes(simp[i - 1]) && !(i + 2 < cps.length && COMPASS_AFTER.includes(simp[i + 2]))) out[i + 1] = "xi";
+  }
 }
+/** Before 东西 "a thing": 买卖拿带吃喝找偷丢要有没好坏些件样点个么的. */
+const THING_BEFORE = "买卖拿带吃喝找偷丢要有没好坏些件样点个么的";
+/** After 东西 the compass: 南北方向部边两岸侧半球走. */
+const COMPASS_AFTER = "南北方向部边两岸侧半球走";
 
 /** What may follow 钱 / 书 after 还 for it to be huán (give back): a
  *  particle, the 给 of whom, 的时候, a number. */

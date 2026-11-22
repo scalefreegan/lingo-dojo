@@ -259,7 +259,8 @@ docs/DATA.md §Mandarin readings):
   ways, `zh-words.ts` from `npm run pinyin:words`, `applyCommon`). Never
   in kids views.
 - **The neutral tone** (ld-azb): a zh-CN profile shows it where the HSK 3.0
-  list and CC-CEDICT both print it (朋友 péng you, 东西 dōng xi; the generated
+  list and CC-CEDICT both print it (朋友 péng you, 告诉 gào su; 东西 only in
+  context, and no word CC-CEDICT also reads full for another sense; the generated
   `web/src/script/zh-neutral.ts`, CC BY-SA 4.0, written by `npm run
   pinyin:hsk-audit -- --write-neutral` from the gitignored HSK working file,
   applied by `applyNeutral` in zh.ts after the common words). Not only doubled

@@ -641,11 +641,23 @@ uncertain words in context.
       `npm run pinyin:hsk-audit -- --write-neutral`, which needs the
       gitignored HSK working file): a mainland profile shows the neutral
       (light) tone where the official HSK 3.0 list prints it and CC-CEDICT
-      has it too (朋友 péng you, 东西 dōng xi, 告诉 gào su, 时候, 先生, 意思,
-      名字): 227 words. A syllable the list marks "·" (fù·qīn: usually
-      neutral, printed full) is not taken, and a word the list prints both
-      ways (地方 dìfang and dìfāng, 精神, 大意) keeps today's reading, as
-      does any word where the two sources disagree. The table keeps only the word and its reading (CC-CEDICT
+      has it too (朋友 péng you, 告诉 gào su, 时候, 先生, 意思, 名字): 212
+      words. Left out: a syllable the list marks "·" (fù·qīn), a word the
+      list prints both ways (地方, 精神, 大意), any word where the two
+      disagree, and (PR #71 review: a wrong reading must never be silent)
+      the 15 words CC-CEDICT also reads full-tone for another sense, each
+      read as before: 东西 (dōng xī, east-west: 东西南北), 买卖 (mǎi mài),
+      大方 (dà fāng), 工夫 (gōng fū), 把手 (bǎ shǒu: 门把手), 人家 (rén jiā),
+      大爷 (dà yé), 公道 (gōng dào), 说道 (shuō dào, said: 他说道), 上头
+      (shàng tóu), 多少 (duō shǎo), 生意 (shēng yì, vitality), 妻子 (qī zǐ,
+      wife and children), 本事 (běn shì), 出息 (chū xī). Another 9 words had
+      a full-tone entry that is only a variant pronunciation of the same
+      word and sense (告诉 故事 金子 管子 早晨 摆设 挖苦 媳妇 世故, checked
+      by hand, `SAME_SENSE`): neutral. 东西 alone has a small context rule
+      (`THING_BEFORE`, `COMPASS_AFTER`): dōng xi after a verb or measure that
+      takes an object (买东西, 什么东西, 这个东西, 好东西, 我的东西) unless a
+      compass character follows (东西南北, 东西方向, 东西部), else dōng xī.
+      The table keeps only the word and its reading (CC-CEDICT
       facts, CC BY-SA 4.0, ZH-FREQ-LICENSE.txt), never the list, a level or an
       order. The pass runs after the common words, for zh-CN only (zh-TW
       is unchanged: Taiwan's Ministry of Education dictionary was not
@@ -659,20 +671,16 @@ uncertain words in context.
       win (a correction is laid over it after; a rule-changed syllable
       makes the word not match, so it is left alone). A neutral reading is
       never "another reading" of the usual one (`unsureAt`: 前边 qián bian
-      isn't marked). 24 of the words also have a full-tone CC-CEDICT entry
-      for another sense (东西 east-west, 买卖 mǎi mài, 大方, 工夫, 把手 bǎ
-      shǒu, 人家, 大爷 dà yé, 公道, 说道…): the mainland everyday reading is
-      shown, as the owner chose; a person can correct one to its full tone.
-      Checked: the voice swap (`spokenText`, standIn has no neutral tone: a
-      neutral syllable is left to the voice), the tone check (the scorer
+      isn't marked). Checked: the voice swap (`spokenText`, standIn has no
+      neutral tone: a neutral syllable is left to the voice), the tone check (the scorer
       reads the reader's reading; a neutral syllable is not judged) and
       Compare mode need nothing; `scripts/tests/zh-neutral.test.mjs`.
       Measured (CC-CEDICT 2026-11-22): the sweep 0 fixed, 0 broken (the
       sweep counts neutral and full as agreeing; agreeing exactly,
-      simplified zh-CN 105,007 → 105,344, zh-TW unchanged), PR #63's sets
+      simplified zh-CN 105,007 → 105,361, zh-TW unchanged), PR #63's sets
       words 264/276, framed 260, sentences 72/87 before and after (strictly,
-      neutral counted wrong: words 254 → 257), session marks 0.74 / 0.54 per
-      100 unchanged, wordfreq's top 20,000 marked 87 / 105 unchanged; 169 of
+      neutral counted wrong: words 254 → 256), session marks 0.74 / 0.54 per
+      100 unchanged, wordfreq's top 20,000 marked 87 / 105 unchanged; 154 of
       the 20,000 read differently (时候, 还是, 朋友, 告诉, 先生, 意思).
     - Reduplicated words read alike: a doubled character takes the first
       one's tone (狗狗, CC-CEDICT gou3 gou1, is gǒu gǒu), or the neutral tone
@@ -723,9 +731,8 @@ uncertain words in context.
         东西 dōng xī), as the common words do (PR #67: only doubled
         characters took CC-CEDICT's neutral tone), and the list's full
         tone where the reader has the neutral one (4). Since ld-azb zh-CN
-        shows the neutral tone where both print it (the next section's
-        neutral-tone table); the 293 became 58, all where CC-CEDICT has
-        the full tone only, and the 4 are the same words as before.
+        shows the neutral tone where both print it (the neutral-tone table
+        below): the 232 became 19 and the 293 became 77.
       - 18 disagreed. Reader bugs, fixed as zh-standard.ts rows ("HSK 3.0
         level N"): 倒是 dào shì (was dǎo), 待会儿 dāi (was dài; zh-CN only,
         Taiwan reads dāi huǐ r), 说干就干 gàn (was gān); 定为 wéi is the 为

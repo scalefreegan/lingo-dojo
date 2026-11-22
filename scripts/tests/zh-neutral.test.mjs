@@ -17,7 +17,7 @@ const read = (t, loc = "zh-CN", opts = {}) => zh.readCodePoints(t, loc, { cache:
 test("zh-CN shows the neutral tone of the table's words, alone and in a sentence", () => {
   const rows = NEUTRAL_WORDS.split("|").map((e) => e.split("="));
   assert.ok(rows.length > 200, `${rows.length} words`);
-  for (const [w, r] of [["朋友", "péng you"], ["东西", "dōng xi"], ["告诉", "gào su"], ["包子", "bāo zi"], ["时候", "shí hou"], ["名字", "míng zi"], ["意思", "yì si"], ["先生", "xiān sheng"]]) {
+  for (const [w, r] of [["朋友", "péng you"], ["告诉", "gào su"], ["包子", "bāo zi"], ["时候", "shí hou"], ["名字", "míng zi"], ["意思", "yì si"], ["先生", "xiān sheng"]]) {
     assert.equal(read(w), r, w);
     assert.equal(read(`我的${w}来了`).split(" ").slice(2, 2 + [...w].length).join(" "), r, `${w} in a sentence`);
   }
@@ -39,6 +39,24 @@ test("where the two sources disagree or the list prints both, today's reading st
   assert.equal(read("大意"), "dà yì");
   // Not in the table: an ordinary word keeps its tones.
   assert.equal(read("学习"), "xué xí");
+});
+
+test("a word CC-CEDICT also reads full-tone for another sense is not neutralised blind (PR #71 review)", () => {
+  // The compass, "said", the handle: read as before, never dōng xi / shuō dao / bǎ shou.
+  assert.equal(read("东西南北"), "dōng xī nán běi");
+  assert.equal(read("东西方向的路"), "dōng xī fāng xiàng de lù");
+  assert.equal(read("他说道"), "tā shuō dào");
+  assert.equal(read("门把手"), "mén bǎ shǒu");
+  assert.equal(read("东西部地区").split(" ").slice(0, 3).join(" "), "dōng xī bù");
+  // 东西 "a thing": where the words around it say so.
+  for (const [t, r] of [["买东西", "mǎi dōng xi"], ["什么东西", "shén me dōng xi"], ["这个东西", "zhè ge dōng xi"], ["好东西", "hǎo dōng xi"], ["这是我的东西", "zhè shì wǒ de dōng xi"]]) assert.equal(read(t), r, t);
+  // The words that stay out of the table.
+  for (const w of ["东西", "买卖", "大方", "工夫", "把手", "人家", "大爷", "公道", "说道", "上头", "多少", "生意", "妻子", "本事", "出息"]) assert.ok(!NEUTRAL_WORDS.split("|").some((e) => e.startsWith(`${w}=`)), w);
+  // Same word and sense, only a variant pronunciation: neutral.
+  assert.equal(read("告诉"), "gào su");
+  assert.equal(read("故事"), "gù shi");
+  // Never a silent wrong reading: none of these is newly marked or newly settled.
+  assert.deepEqual(zh.uncertainWords("东西南北", "zh-CN", { cache: false }), []);
 });
 
 test("zh-TW keeps its full tones", () => {
