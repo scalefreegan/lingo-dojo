@@ -498,7 +498,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
     if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw, doubt);
     // The mainland's neutral tone (ld-azb); Taiwan keeps the full tones.
-    if (!tw && neutralOn && prior === SHIPPED) applyNeutral(cps, simp, joined, edges, out, neutral);
+    if (!tw && neutralOn && prior === SHIPPED) applyNeutral(cps, simp, joined, edges, out, neutral, doubt);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
@@ -506,6 +506,10 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
     if (prior === SHIPPED) contextRules(cps, simp, dict, starts, out, settled, doubt);
     if (fixes) fixed = applyCorrections(cps, simp, { joined, starts: edges }, fixes, tw, out, settled);
+    // A correction's reading is its own, whatever applyNeutral had set there.
+    fixed.forEach((f, k) => {
+      if (f) neutral[k] = false;
+    });
   }
   const detail = { readings: out, settled, dict, joined, starts, fixed, doubt, neutral };
   if (!useCache) return detail;
@@ -524,7 +528,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
  * word alone. Nothing is settled or marked by it, and a person's
  * correction is laid over it after (applyCorrections).
  */
-function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], flag: boolean[]): void {
+function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[], flag: boolean[], doubt: boolean[]): void {
   const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
   // The segmenter makes 买东西 one word: a table word also starts right
   // after a one-character verb that opens the segmenter's word.
@@ -547,22 +551,36 @@ function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: 
     }
     i += hit || 1;
   }
-  // 东西 is dōng xi (a thing) only where the words around it say so: after a
-  // verb or measure word that takes an object (买东西, 什么东西, 这个东西, 好东西)
-  // and not before a character that makes it the compass (东西南北, 东西方向,
-  // 东西部). Anywhere else it keeps dōng xī, as before (CC-CEDICT: both).
+  // 东西 is dōng xi (a thing) only where the words around it say so, and is
+  // never wrong without a mark: after a cue (THING_STRONG, THING_WEAK) and before the end
+  // of the text, punctuation or a closed list of followers it is dōng xi
+  // (买东西, 什么东西, 我的东西呢); after a cue with anything else following
+  // (公园的东西门都开着, 我要东西对称) it stays dōng xī and is marked
+  // uncertain (`doubt`), for the recap or a person to settle. No cue: dōng xī
+  // as before. (CC-CEDICT reads both.)
   for (let i = 1; i + 1 < cps.length; i++) {
     if (simp[i] !== "东" || simp[i + 1] !== "西" || out[i] !== "dōng" || out[i + 1] !== "xī") continue;
-    if (THING_BEFORE.includes(simp[i - 1]) && !(i + 2 < cps.length && COMPASS_AFTER.includes(simp[i + 2]))) {
-      out[i + 1] = "xi";
-      flag[i + 1] = true;
-    }
+    const cue = simp[i - 1];
+    const strong = THING_STRONG.includes(cue);
+    if (!strong && !THING_WEAK.includes(cue)) continue;
+    const next = i + 2 < cps.length ? simp[i + 2] : "";
+    // 的 is a cue only after a person (我的东西, 谁的东西): 长江的东西 is the river's compass.
+    const owner = cue !== "的" || THING_OWNER.includes(simp[i - 2] ?? "");
+    const closed = owner && (!next || !isHan(next) || THING_AFTER.includes(next) || (strong && THING_AFTER_STRONG.includes(next)));
+    if (closed) out[i + 1] = "xi";
+    else doubt[i] = true;
   }
 }
-/** Before 东西 "a thing": 买卖拿带吃喝找偷丢要有没好坏些件样点个么的. */
-const THING_BEFORE = "买卖拿带吃喝找偷丢要有没好坏些件样点个么的";
-/** After 东西 the compass: 南北方向部边两岸侧半球走. */
-const COMPASS_AFTER = "南北方向部边两岸侧半球走";
+/** Before 东西 a cue that it is "a thing": a verb or measure taking an object. */
+const THING_STRONG = "买卖拿带吃喝找偷丢没好坏些件样点个么";
+/** A weaker cue (的 要 有 also open 公园的东西门, 我要东西对称). */
+const THING_WEAK = "要有的";
+/** The owners before 的 that make 东西 a thing. */
+const THING_OWNER = "我你他她它们谁咱";
+/** After 东西 what only fits "a thing": a particle. */
+const THING_AFTER = "了呢吗吧啊呀";
+/** After a strong cue also an adverb or verb of the thing's: 都 也 很 太 放 给. */
+const THING_AFTER_STRONG = "都也很太放给";
 
 /** What may follow 钱 / 书 after 还 for it to be huán (give back): a
  *  particle, the 给 of whom, 的时候, a number. */
@@ -877,7 +895,7 @@ function unsureAt(cps: string[], d: Detail, k: number): boolean {
   if (!ranks || ranks.length < 2) return false;
   // A neutral tone applyNeutral put there (前边 qián bian, ld-azb) is the
   // usual syllable's, not another reading of it.
-  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r) && !(d.neutral[k] && toneless(r) === toneless(cur)));
+  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r) && !(d.neutral[k] && cur === toneless(cur) && toneless(r) === cur));
 }
 
 /** An uncertain word of a text: code points [start, end), its characters,
@@ -1363,7 +1381,8 @@ export function withHints(text: string, locale: string, hints: readonly ReadingH
         // A correction outranks a hint as it outranks the dictionary.
         // Nor the neutral tone applyNeutral set: the full tone of that syllable
         // is the same word read by the hint's model, not another reading.
-        const keepsNeutral = d.neutral[i + k] && toneless(syl[n]) === toneless(out[i + k] ?? "");
+        const now = out[i + k] ?? "";
+        const keepsNeutral = d.neutral[i + k] && now === toneless(now) && toneless(syl[n]) === now;
         if (!d.dict[i + k] && !settledBy(d.fixed[i + k]) && !keepsNeutral) out[i + k] = syl[n];
         n++;
       });

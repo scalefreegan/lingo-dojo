@@ -49,7 +49,7 @@ test("a word CC-CEDICT also reads full-tone for another sense is not neutralised
   assert.equal(read("门把手"), "mén bǎ shǒu");
   assert.equal(read("东西部地区").split(" ").slice(0, 3).join(" "), "dōng xī bù");
   // 东西 "a thing": where the words around it say so.
-  for (const [t, r] of [["买东西", "mǎi dōng xi"], ["什么东西", "shén me dōng xi"], ["这个东西", "zhè ge dōng xi"], ["好东西", "hǎo dōng xi"], ["这是我的东西", "zhè shì wǒ de dōng xi"]]) assert.equal(read(t), r, t);
+  for (const [t, r] of [["买东西", "mǎi dōng xi"], ["什么东西", "shén me dōng xi"], ["这个东西", "zhè ge dōng xi"], ["好东西", "hǎo dōng xi"], ["这是我的东西", "zhè shì wǒ de dōng xi"], ["我的东西呢", "wǒ de dōng xi ne"]]) assert.equal(read(t), r, t);
   // The words that stay out of the table.
   for (const w of ["东西", "买卖", "大方", "工夫", "把手", "人家", "大爷", "公道", "说道", "上头", "多少", "生意", "妻子", "本事", "出息"]) assert.ok(!NEUTRAL_WORDS.split("|").some((e) => e.startsWith(`${w}=`)), w);
   // Same word and sense, only a variant pronunciation: neutral.
@@ -79,6 +79,35 @@ test("more compass and handle contexts, and the hints and marks the neutral tone
     zh.useNeutralWords(false);
     try {
       assert.deepEqual(on, marked(t, loc), `${t} ${loc} is marked as without the table`);
+    } finally {
+      zh.useNeutralWords(true);
+    }
+  }
+});
+
+test("东西 after a cue is never wrong and unmarked; the neutral flag does not outlive a suggestion (PR #71 re-review)", () => {
+  const marked = (t, loc = "zh-CN", opts = {}) => zh.uncertainWords(t, loc, { cache: false, ...opts });
+  for (const t of ["公园的东西门都开着", "中国的东西差异很大", "这条路的东西长三公里", "城市的东西轴线", "我要东西对称", "长江的东西"]) {
+    const r = read(t).split(" ");
+    const at = [...t].indexOf("西");
+    assert.equal(r[at], "xī", t);
+    assert.ok(marked(t).some((w) => w.word.includes("东西")), `${t} is marked`);
+  }
+  for (const t of ["买东西", "什么东西", "我的东西呢"]) {
+    assert.ok(read(t).split(" ").includes("xi"), t);
+    assert.deepEqual(marked(t), [], t);
+  }
+  // A correcting hint for the compass is not dropped.
+  assert.equal(zh.hintToKeep("东西", ["dōng", "xī"], ["公园的东西门都开着"], "zh-CN"), null, "already read so");
+  // A recap's suggestion for a word that applyNeutral had made neutral keeps the mark.
+  assert.deepEqual(marked("你多大岁数了？", "zh-CN", { corrections: zh.makeCorrections({ suggested: [{ word: "岁数", reading: "suì shù" }] }) }).map((w) => [w.word, w.unsure, w.suggested]), [["岁数", [4], true]]);
+  // Anything else: the same marks with and without the table, a suggestion or not.
+  for (const [line, word, reading] of [["你们商量一下", "商量", "shāng liáng"], ["他的功夫很好", "功夫", "gōng fū"], ["你多大岁数了？", "岁数", "suì shu"]]) {
+    const sug = zh.makeCorrections({ suggested: [{ word, reading }] });
+    const on = JSON.stringify(marked(line, "zh-CN", { corrections: sug }));
+    zh.useNeutralWords(false);
+    try {
+      assert.equal(on, JSON.stringify(marked(line, "zh-CN", { corrections: sug })), word);
     } finally {
       zh.useNeutralWords(true);
     }

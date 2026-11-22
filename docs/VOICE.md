@@ -653,10 +653,14 @@ uncertain words in context.
       wife and children), 本事 (běn shì), 出息 (chū xī). Another 9 words had
       a full-tone entry that is only a variant pronunciation of the same
       word and sense (告诉 故事 金子 管子 早晨 摆设 挖苦 媳妇 世故, checked
-      by hand, `SAME_SENSE`): neutral. 东西 alone has a small context rule
-      (`THING_BEFORE`, `COMPASS_AFTER`): dōng xi after a verb or measure that
-      takes an object (买东西, 什么东西, 这个东西, 好东西, 我的东西) unless a
-      compass character follows (东西南北, 东西方向, 东西部), else dōng xī.
+      by hand, `SAME_SENSE`): neutral. 东西 alone has a context rule: after
+      a cue (买卖拿带吃喝找偷丢没好坏些件样点个么, or the weaker 要有的) and
+      before the text's end, punctuation or a particle (了呢吗吧啊呀; after
+      a strong cue also 都也很太放给) it is dōng xi (买东西, 什么东西,
+      我的东西呢); after a cue with anything else following (公园的东西门
+      都开着, 我要东西对称) it stays dōng xī and is marked uncertain
+      (`doubt`), never wrong and unmarked; with no cue it is dōng xī as
+      before. The rule does not set `Detail.neutral`.
       The table keeps only the word and its reading (CC-CEDICT
       facts, CC BY-SA 4.0, ZH-FREQ-LICENSE.txt), never the list, a level or an
       order. The pass runs after the common words, for zh-CN only (zh-TW
@@ -671,7 +675,8 @@ uncertain words in context.
       win (a correction is laid over it after; a rule-changed syllable
       makes the word not match, so it is left alone). A neutral reading is
       never "another reading" of the usual one where applyNeutral set it
-      (`Detail.neutral`, `unsureAt`: 前边 qián bian isn't marked; 啊 呀 瘩
+      (`Detail.neutral`, only while the syllable is still neutral: a recap's
+      suggested reading brings the mark back; `unsureAt`: 前边 qián bian isn't marked; 啊 呀 瘩
       are marked as before), and a reading hint that is only the full tone
       of such a syllable is not kept nor laid over it (`withHints`,
       `hintToKeep`). Checked: the voice swap (`spokenText`, standIn has no
