@@ -15,7 +15,7 @@ import { loadPictureStock } from "../../scripts/content.mjs";
 import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
 import { adultsOverrides, stockList } from "./stockPictures.ts";
 import {
-  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, judgePrompt, lookAlikeGroups, ownLookAlike, parseJudgeReply,
+  JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, isRound, judgePrompt, lookAlikeGroups, ownLookAlike, parseJudgeReply,
   pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
@@ -469,6 +469,14 @@ async function askCheck(t: FillTarget, sent: (Word & { key: string })[], names: 
   return parsed.verdicts;
 }
 
+/** The look-alike group a verdict stores (ld-44x): a stock match's
+ *  concept's group (kept in case the word becomes a drawing of its own
+ *  later: the stock file gone at the match, or Redraw all with no stock
+ *  picture in the new theme; while it points at stock, playable reads the
+ *  concept's own), else the one the check named for a word it draws. */
+const matchedGroup = (v: { stock: string | null; lookAlike: string | null }, offer: StockConcept[]): string | null =>
+  v.stock ? (offer.find((c) => c.id === v.stock)?.group ?? null) : v.lookAlike;
+
 /** One picturable check for words with no verdict; false when the
  *  background slot stayed busy past SLOT_WAIT (the run stops; nothing was
  *  paid). A word matched to a drawn stock picture is ready at once (no
@@ -486,7 +494,7 @@ async function judge(t: FillTarget, words: Word[], names: string[], offer: Stock
     // A stock match whose file has gone since the offer is drawn instead.
     const stock = v.stock ? stockPointer(v.stock) : null;
     const { oldFile } = await storeVerdict(rawDb(), t.profile, {
-      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, kidsSafe: stock ? null : v.kidsSafe, lookAlike: v.lookAlike, ...(stock ? { stock } : {}),
+      phraseId: sent[i].id, phraseKey: sent[i].key, status: stock ? "ready" : v.picturable ? "pending" : "none", description: v.description, kidsSafe: stock ? null : v.kidsSafe, lookAlike: matchedGroup(v, offer), ...(stock ? { stock } : {}),
     });
     await dropPictureFile(oldFile);
     judged++;
@@ -517,7 +525,7 @@ async function restyleCheck(t: FillTarget, words: Word[], names: string[], offer
     answered++;
     const stock = v?.stock ? stockPointer(v.stock) : null;
     if (stock) {
-      const done = await restyleToStock(rawDb(), t.profile, sent[i].id, sent[i].key, stock);
+      const done = await restyleToStock(rawDb(), t.profile, sent[i].id, sent[i].key, stock, matchedGroup(v!, offer));
       await dropPictureFile(done?.oldFile);
     } else if (canDraw) {
       await restyleToDraw(rawDb(), t.profile, sent[i].id, sent[i].key);
@@ -662,7 +670,9 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     pool,
     poolLevel: cap,
     poolByLevel: game.byLevel,
-    ready: pictured + pool >= MIN_PICTURED,
+    // A game with at least one round of two or more pictures (gameRounds:
+    // a bank of look-alikes only, a car, a taxi and a truck, has none).
+    ready: pictured + pool >= MIN_PICTURED && gameRounds(game.phrases, game.rows, { now: new Date(), rounds: 1 }).ready,
     drawing: filling.has(profile.id),
     waiting: work.judge.length + work.draw.length,
     limited: images >= PICTURE_DAILY_IMAGES,
@@ -821,6 +831,10 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     const self = phrases.find((p) => p.id === phrase.id);
     const offered = self ? roundChoices(self, bank, a.version) : null;
     if (!offered) throw new HttpError(409, "this word's picture changed since the round was shown; skip it");
+    // A round of its own picture alone is never played (gameRounds leaves
+    // it out, ld-44x): a tap there would be a right answer on no evidence,
+    // so it records no review.
+    if (!isRound(offered)) throw new HttpError(409, "this word has no other picture to tell it from now; skip it");
     // The bank may have grown since the round was drawn (a picture made
     // meanwhile reshuffles it): a tap on any ready picture of this
     // language is graded (the right one is always offered); anything else
@@ -951,7 +965,7 @@ async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
     if (pointer) {
       // Another theme's stock picture of a concept drawn in this one.
       await requestRestyle(rawDb(), profile, [row.id], "check");
-      const done = await restyleToStock(rawDb(), profile, row.phraseId, row.phraseKey, pointer);
+      const done = await restyleToStock(rawDb(), profile, row.phraseId, row.phraseKey, pointer, offer.find((c) => c.id === row.stockId)?.group ?? null);
       if (done) moved++;
     } else check.push(row.id);
   }

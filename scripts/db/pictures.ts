@@ -70,9 +70,10 @@ export async function storeVerdict(
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, v.phraseId));
   if (before?.phraseKey === v.phraseKey) return { oldFile: null };
-  // The check's look-alike group (ld-44x) is only for a drawing of the
-  // word's own: a stock match plays under its concept's.
-  const lookAlike = v.status === "pending" ? (v.lookAlike ?? null) : null;
+  // The look-alike group (ld-44x): the check's for a word it draws, a
+  // stock match's concept's (a stock row plays under its concept's own;
+  // this one is for when it becomes a drawing of its own), none for `none`.
+  const lookAlike = v.status === "none" ? null : (v.lookAlike ?? null);
   const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, lookAlike, ...NO_FILE, ...(v.stock ?? {}) };
   try {
     if (!before) {
@@ -171,11 +172,13 @@ const waiting = (phraseId: string, phraseKey: string, from: "check" | "draw") =>
 /** The check found a stock picture for a word waiting to be restyled: it
  *  points there now (no image call). Returns the row and the file of its
  *  own it no longer holds, or undefined when it isn't waiting any more. */
-export async function restyleToStock(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, stock: StockPointer): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
+export async function restyleToStock(db: Db, profile: LanguageProfileRef, phraseId: string, phraseKey: string, stock: StockPointer, lookAlike: string | null = null): Promise<{ row: PictureRow; oldFile: string | null } | undefined> {
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, waiting(phraseId, phraseKey, "check"));
   if (!before) return undefined;
-  const [row] = await mine.update(phrasePictures, { ...stock, restyle: null, updatedAt: sql`now()` }, and(eq(phrasePictures.id, before.id), waiting(phraseId, phraseKey, "check")) as SQL);
+  // The concept's look-alike group, kept with it (ld-44x); none known keeps
+  // what the row had.
+  const [row] = await mine.update(phrasePictures, { ...stock, restyle: null, ...(lookAlike ? { lookAlike } : {}), updatedAt: sql`now()` }, and(eq(phrasePictures.id, before.id), waiting(phraseId, phraseKey, "check")) as SQL);
   return row ? { row, oldFile: before.file === row.file ? null : ownFile(before) } : undefined;
 }
 

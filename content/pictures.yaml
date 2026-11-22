@@ -271,7 +271,7 @@ categories:
     - { id: walk, description: a child walking, words: [walk, walking, to walk], group: move }
     - { id: sleep, description: a child asleep in bed, words: [sleep, sleeping, to sleep, asleep], group: bed }
     - { id: eat, description: a child eating from a bowl with a spoon, words: [eat, eating, to eat] }
-    - { id: drink, description: a child drinking from a cup, words: [drink, drinking, to drink] }
+    - { id: drink, description: a child drinking from a cup, words: [drink, drinking, to drink], group: cup }
     - { id: swim, description: a child swimming, words: [swim, swimming, to swim] }
     - { id: dance, description: a child dancing, words: [dance, dancing, to dance], group: move }
     - { id: sing, description: a child singing with musical notes around, words: [sing, singing, to sing], group: sing }
@@ -279,5 +279,5 @@ categories:
     - { id: climb, description: a child climbing a tree, words: [climb, climbing, to climb], group: tree }
     - { id: read, description: a child reading a book, words: [read, reading, to read], group: book }
     - { id: wash-hands, description: a child washing hands with soap bubbles, words: [wash, washing, wash hands, to wash] }
-    - { id: brush-teeth, description: a child brushing teeth, words: [brush teeth, brushing teeth] }
+    - { id: brush-teeth, description: a child brushing teeth, words: [brush teeth, brushing teeth], group: mouth }
     - { id: catch, description: a child catching a ball, words: [catch, catching, to catch], group: ball }

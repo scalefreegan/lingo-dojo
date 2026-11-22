@@ -1,5 +1,5 @@
 {
-  "id": "841859eb-ef31-4710-8e1f-88d8f206e87c",
+  "id": "e417922f-3d92-4993-80ac-7682961c94b6",
   "prevId": "24fca0bc-2e5c-4e3c-914a-7170203e0c9a",
   "version": "7",
   "dialect": "postgresql",
@@ -3233,6 +3233,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "look_alike_set": {
+          "name": "look_alike_set",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "origin": {
           "name": "origin",

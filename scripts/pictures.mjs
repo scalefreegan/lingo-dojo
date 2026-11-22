@@ -244,11 +244,7 @@ export function mergeStock(base, custom = [], adultsOverrides = []) {
     // check said yes: until then, and after a no, it is adults only
     // whatever its own flag says.
     const adults = c.adults === true || (c.origin === "drawing" && c.kidsSafe !== true);
-    // A shared drawing with no group of its own (shared before 0021, or the
-    // check gave none) plays under its description's (ld-44x, lookAlikeOf):
-    // in every learner's game it may meet a stock picture that looks the same.
-    const group = c.group || (c.origin === "drawing" ? lookAlikeOf(c.description) : null);
-    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(group ? { group } : {}), ...(adults ? { adults: true } : {}) });
+    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(c.group ? { group: c.group } : {}), ...(adults ? { adults: true } : {}) });
   }
   if (shadowed.length) {
     const ids = shadowed.map((c) => `"${c.id}"`).join(", ");
@@ -342,7 +338,7 @@ const word = (alts) => new RegExp(`(?<!\\p{L})(?:${alts})(?!\\p{L})`, "u");
 const LOOK_ALIKE_RULES = [
   ["bag", word("box(?:es)?|parcels?|packages?|suitcases?|luggage|presents?|gifts?|bags?|handbags?|purses?|backpacks?|rucksacks?|satchels?|baskets?|briefcases?|crates?")],
   ["book", word("books?|notebooks?|passports?|menus?|booklets?|diar(?:y|ies)|magazines?")],
-  ["coins", word("coins?|banknotes?|money|cash|treasure")],
+  ["coins", word("coins?|banknotes?|money|cash|treasure|bills?|receipts?")],
   ["tree", word("trees?|forests?|woods|park")],
   ["train", word("trains?|locomotives?")],
   ["shop", word("shops?|stores?|caf[eé]s?|pharmac(?:y|ies)|markets?|stalls?|baker(?:y|ies)|kiosks?")],
@@ -361,8 +357,10 @@ const LOOK_ALIKE_RULES = [
   ["boy", word("boys?|brothers?")],
   ["girl", word("girls?|sisters?|dolls?")],
   ["mouth", word("mouths?|lips|teeth|tooth")],
-  ["leg", word("legs?|foot|feet|toes")],
+  ["leg", word("legs?|foot|feet|toes|hand")], // "hand" alone: "washing hands" is an action, not the drawn hand
   ["bed", word("beds?")],
+  ["table", word("tables?")],
+  ["head", word("heads?|tumm(?:y|ies)|bell(?:y|ies)")],
   ["ball", word("balls?")],
   ["move", word("running|walking|jumping|dancing")],
   ["sing", word("singing|clapping")],
@@ -721,6 +719,12 @@ const meaningKey = (m) => clean(m ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/g
  * practice limits don't apply: a game is a handful of words the child
  * already has pictures for. `ready: false` when there are too few
  * pictures for a game (no rounds then).
+ *
+ * A word whose round could offer only its own picture (every other one
+ * shares its meaning, its file or its look-alike group: a bank of only a
+ * car, a taxi and a truck) is left out (ld-44x): one picture to tap is no
+ * evidence, and the answer route grades no such round (isRound). With no
+ * round left the game isn't `ready`.
  */
 export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = "" } = {}) {
   const bank = pictureBank(phrases, rows);
@@ -750,18 +754,19 @@ export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = ""
   const lv = (x) => ["A1", "A2", "B1", "B2"].indexOf(x.phrase.pool.level);
   pool.sort((a, b) => lv(a) - lv(b) || (mix(a.phrase.id) < mix(b.phrase.id) ? -1 : 1));
   later.sort((a, b) => ms(a.card.due) - ms(b.card.due));
-  const picked = [...due, ...fresh, ...pool, ...later].slice(0, rounds);
-  return {
-    ready: true,
-    pictured: bank.length,
-    rounds: picked.map((x) => ({
-      phraseId: x.phrase.id,
-      version: cardVersion(x.card),
-      revision: phraseRevision(x.phrase),
-      choices: roundChoices(x.phrase, bank, cardVersion(x.card)),
-    })),
-  };
+  const out = [];
+  for (const x of [...due, ...fresh, ...pool, ...later]) {
+    if (out.length === rounds) break;
+    const choices = roundChoices(x.phrase, bank, cardVersion(x.card));
+    if (!isRound(choices)) continue;
+    out.push({ phraseId: x.phrase.id, version: cardVersion(x.card), revision: phraseRevision(x.phrase), choices });
+  }
+  return { ready: out.length > 0, pictured: bank.length, rounds: out };
 }
+
+/** Whether a round's choices make a round to grade: its own picture and
+ *  at least one other (ld-44x). */
+export const isRound = (choices) => Array.isArray(choices) && choices.length >= 2;
 
 /** A round's seed: the word, its card version, its revision and its
  *  picture's file, so a round shows the same pictures until it is answered,

@@ -11,7 +11,7 @@
 //
 // Erasable TypeScript only, like pictures.ts: the tests import it as is.
 
-import { asc, eq, gt, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lt, sql, type SQL } from "drizzle-orm";
 import type { Db } from "./owned.ts";
 import { loadPictureStock } from "../content.mjs";
 import { forgetPoolWords, refuseSharedFile } from "./picturePool.ts";
@@ -90,8 +90,33 @@ export async function setCustomStockAdults(db: Db, id: string, adults: boolean):
 /** Set or clear (null) an added concept's look-alike group (already
  *  checked: pictures.mjs readStockGroup); false when there is no such row. */
 export async function setCustomStockGroup(db: Db, id: string, group: string | null): Promise<boolean> {
-  const rows = await db.update(pictureStockConcepts).set({ group }).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
+  // Written on purpose: a cleared group stays clear (no fill re-derives it).
+  const rows = await db.update(pictureStockConcepts).set({ group, groupSet: true }).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
   return rows.length === 1;
+}
+
+/**
+ * The one-off fill of a look-alike group for learners' drawings shared
+ * before 0021 (ld-44x): each `drawing` concept whose group was never
+ * written (`look_alike_set` false) gets `groupOf(description)` (pictures.mjs
+ * lookAlikeOf: free, no call), and is marked written, so it is filled once
+ * and an admin's later clear sticks. Idempotent (only unwritten rows, each
+ * update guarded by the flag); after the first pass it is one read that
+ * finds nothing. Returns how many it filled.
+ */
+export async function fillDrawingGroups(db: Db, groupOf: (description: string) => string | null): Promise<number> {
+  const unset = and(eq(pictureStockConcepts.origin, "drawing"), eq(pictureStockConcepts.groupSet, false)) as SQL;
+  const rows = await db.select({ id: pictureStockConcepts.id, description: pictureStockConcepts.description }).from(pictureStockConcepts).where(unset);
+  let n = 0;
+  for (const r of rows) {
+    const done = await db
+      .update(pictureStockConcepts)
+      .set({ group: groupOf(r.description), groupSet: true })
+      .where(and(eq(pictureStockConcepts.id, r.id), unset) as SQL)
+      .returning({ id: pictureStockConcepts.id });
+    n += done.length;
+  }
+  return n;
 }
 
 /** An admin's Adults only setting for a content/pictures.yaml concept, as

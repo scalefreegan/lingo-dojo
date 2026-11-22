@@ -103,7 +103,7 @@ export async function shareDrawing(
     if (refused) return false;
     const rows = await tx
       .insert(pictureStockConcepts)
-      .values({ id: d.id, category: d.category, description: d.description, words: d.words, origin: "drawing", sourceFile: d.sourceFile, kidsSafe: d.kidsSafe, group: d.group ?? null, createdBy: d.createdBy })
+      .values({ id: d.id, category: d.category, description: d.description, words: d.words, origin: "drawing", sourceFile: d.sourceFile, kidsSafe: d.kidsSafe, group: d.group ?? null, groupSet: true, createdBy: d.createdBy })
       .onConflictDoNothing()
       .returning({ id: pictureStockConcepts.id });
     if (rows.length !== 1) return false;

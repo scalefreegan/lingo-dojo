@@ -2,13 +2,13 @@ import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listLearners } from "../../scripts/db/accounts.ts";
 import {
-  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
+  addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, fillDrawingGroups, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
   stockCallStarted, stockCallsSince, type AdultsOverride, type CustomConcept,
 } from "../../scripts/db/pictureStock.ts";
 import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
-import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
+import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, lookAlikeOf, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
 import type { StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
 import type { Ctx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -82,6 +82,9 @@ const stockProblem = (): string | null => (stockProvider().problem() ? STOCK_KEY
  *  to fail a word's picturable check. */
 export async function customConcepts(): Promise<CustomConcept[]> {
   try {
+    // Drawings shared before 0021 get their look-alike group first, once
+    // (free; after that a read that finds nothing): ld-44x.
+    await fillDrawingGroups(rawDb(), lookAlikeOf).catch((e) => console.warn("[lingo-dojo] pictures: shared drawings' look-alike groups weren't filled:", String((e as Error)?.message || e)));
     return await customStockConcepts(rawDb());
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the added stock concepts couldn't be read:", String((e as Error)?.message || e));

@@ -37,6 +37,7 @@ declare module "*/scripts/pictures.mjs" {
   }
   export function stockForMode<C extends { adults?: true }>(concepts: C[], mode: string): C[];
   export const LOOK_ALIKE_RULE_GROUPS: string[];
+  export function isRound(choices: string[] | null | undefined): boolean;
   export function lookAlikeOf(description: string | null | undefined): string | null;
   export function ownLookAlike(row: { lookAlike?: string | null; description?: string | null } | null | undefined): string | null;
   export function lookAlikeGroups(concepts: { group?: string | null; drawing?: true; description: string }[], perGroup?: number): { id: string; shows: string[] }[];

@@ -2,7 +2,10 @@
 // docs/DATA.md §Kids word game) on PGlite, from a 0020 database: one
 // nullable column on phrase_pictures, no default (every row there keeps
 // none: its description's words decide, pictures.mjs ownLookAlike), and a
-// value in pictures.yaml's group format (the check). Plain ALTER TABLE ADD
+// value in pictures.yaml's group format (the check); and
+// picture_stock_concepts.look_alike_set, false for every row there (the
+// drawings shared before 0021 are filled once, scripts/db/pictureStock.ts
+// fillDrawingGroups). Plain ALTER TABLE ADD
 // COLUMN / ADD CONSTRAINT CHECK: nothing PostgreSQL 18 only.
 //   node --test scripts/tests/db-migration-0021.test.mjs
 
@@ -24,9 +27,10 @@ const upTo = (marker, what) => {
   return disk.slice(0, i + 1);
 };
 
-test("0021 on a 0020 database: phrase_pictures.look_alike, nullable with no default, checked like pictures.yaml's group", async (t) => {
+test("0021 on a 0020 database: phrase_pictures.look_alike, nullable with no default, checked like pictures.yaml's group; picture_stock_concepts.look_alike_set, false for the rows there", async (t) => {
   const { query } = await fresh(t);
   await applyMigrations(query, upTo('CREATE TABLE "picture_pool_words"', "0020"));
+  await query(`insert into picture_stock_concepts (id, category, description, words, origin, source_file, kids_safe) values ('drawn-0123456789abcdef', 'Drawn by learners', 'a brown box', '{box}', 'drawing', $1, true)`, ["a".repeat(64)]);
   const through = upTo('"look_alike" text', "0021");
   assert.equal(through.length, 22, "the twenty-second migration");
   await applyMigrations(query, through);
@@ -37,6 +41,8 @@ test("0021 on a 0020 database: phrase_pictures.look_alike, nullable with no defa
   );
   const [c] = await query(`select pg_get_constraintdef(oid) as def from pg_constraint where conname = 'phrase_pictures_look_alike'`);
   assert.equal(c.def, "CHECK (((look_alike IS NULL) OR (look_alike ~ '^[a-z0-9][a-z0-9-]{0,47}$'::text)))");
+  // A drawing shared before 0021: never written, so the one-off fill takes it.
+  assert.deepEqual(await query(`select look_alike_group, look_alike_set from picture_stock_concepts`), [{ look_alike_group: null, look_alike_set: false }]);
   // The check itself, on a value alone (no phrase row needed).
   const ok = async (v) => (await query(`select ($1::text is null or $1::text ~ '^[a-z0-9][a-z0-9-]{0,47}$') as ok`, [v]))[0].ok;
   for (const v of ["bag", "red-fruit", "hot-drink-2", null]) assert.equal(await ok(v), true, String(v));

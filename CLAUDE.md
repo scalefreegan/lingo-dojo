@@ -260,9 +260,14 @@ docs/DATA.md §The game for adults, and the picture library):
   word's own drawing gets the group the picturable check names in the same
   call (`looksLike`, from `lookAlikeGroups`; `phrase_pictures.look_alike`),
   else its description's words (`lookAlikeOf`, fixed `LOOK_ALIKE_RULES` in
-  `scripts/pictures.mjs`, free, so old rows need no call); `ownLookAlike`,
-  set in `playable`. A shared drawing's concept takes the check's, else its
-  description's (`mergeStock`). Nothing is relaxed for a small bank.
+  `scripts/pictures.mjs`, free, so old rows need no call; every
+  pictures.yaml concept's description gives its own group); `ownLookAlike`,
+  set in `playable`. A stock match stores its concept's group too. A shared
+  drawing's concept stores `ownLookAlike` at share time (the column is the
+  truth: an admin's clear sticks; `look_alike_set`, and `fillDrawingGroups`
+  fills the ones shared before 0021 once, free). A round of one picture
+  only is left out of the game and never graded (`isRound`); a game with
+  none left isn't `ready`.
 - An admin sets or clears any concept's Adults only from its tile (ld-cvd,
   migration 0018, docs/DATA.md §Adults only, set from the page; `POST
   /api/stock-pictures/admin/:id/adults`): an added one's column, a file

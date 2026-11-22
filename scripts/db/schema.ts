@@ -998,6 +998,13 @@ export const pictureStockConcepts = pgTable(
      *  concepts of one group (pictures.mjs roundChoices), file and added
      *  concepts alike. Null: none. Not named "group", a reserved word in SQL. */
     group: text("look_alike_group"),
+    /** Whether `group` was written on purpose (migration 0021, ld-44x): by
+     *  sharing a drawing (the check's group, else its description's), by an
+     *  admin (a clear included), or by the one-off fill of the drawings
+     *  shared before 0021 (scripts/db/pictureStock.ts fillDrawingGroups,
+     *  which touches only rows where this is false). So an admin's clear
+     *  sticks. Not read for an admin's own concepts. */
+    groupSet: boolean("look_alike_set").notNull().default(false),
     /** How it came (migration 0020, ld-ec9): `admin`, added from the
      *  picture library page; `drawing`, a learner's own word picture shared
      *  into the picture pool (web/server/picturePool.ts), its file copied

@@ -38,7 +38,9 @@ const { resetPoolMemory, settlePoolWords } = await import("../../web/server/pict
 const { backgroundSlot } = await import("../../web/server/paid.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
-const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES } = await import("../pictures.mjs");
+const { PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME } = await import("../pictures.mjs");
+const { writeStockPicture } = await import("../picture-store.mjs");
+const { phraseRevision } = await import("../practice.mjs");
 
 const fake = fakeClaude();
 
@@ -769,17 +771,58 @@ test("the check names a look-alike group for a word it draws, stored once with i
       assert.ok(shown.length >= 2, "a small bank still plays");
     }
     assert.ok(r.body.rounds.some((x) => x.phraseId === p["der Hund"].id && x.choices.length === 3), "a word with no key meets one of the group, as before");
-    // Shared into the pool (ld-ec9) with the check's group; the rest keep
-    // none stored (mergeStock keys them by their description's words).
-    const shared = await q("select description, look_alike_group from picture_stock_concepts where origin = 'drawing' order by description");
-    assert.deepEqual(shared.map((x) => [x.description, x.look_alike_group]), [
-      ["a picture of box", null],
-      ["a picture of cat", null],
-      ["a picture of dog", null],
-      ["a picture of trunk", "bag"],
+    // Shared into the pool (ld-ec9) with the group the round used: the
+    // check's, else the description's; stored, so an admin can change it.
+    const shared = await q("select description, look_alike_group, look_alike_set from picture_stock_concepts where origin = 'drawing' order by description");
+    assert.deepEqual(shared.map((x) => [x.description, x.look_alike_group, x.look_alike_set]), [
+      ["a picture of box", "bag", true],
+      ["a picture of cat", null, true],
+      ["a picture of dog", null, true],
+      ["a picture of trunk", "bag", true],
     ]);
   } finally {
     await settlePoolWords();
     fs.rmSync(file, { force: true });
+  }
+});
+
+test("a stock match stores its concept's group; a bank of look-alikes only (a car, a taxi, a truck) is no game, and a lone round records no review (ld-44x)", async () => {
+  const file = path.join(root, "pictures.yaml");
+  fs.writeFileSync(file, [
+    "categories:",
+    "  Transport:",
+    "    - { id: car, description: a small red car, words: [car], group: car }",
+    "    - { id: taxi, description: a yellow taxi, words: [taxi], group: car }",
+    "    - { id: truck, description: a truck, words: [truck], group: car }",
+    "",
+  ].join("\n"));
+  for (const id of ["car", "taxi", "truck"]) writeStockPicture(PICTURE_THEME.id, id, placeholderPng([10, 20, 30]), "image/png");
+  try {
+    const pip = await someone();
+    const p = await add(pip, [["das Auto", "car"], ["das Taxi", "taxi"], ["der Lastwagen", "truck"]]);
+    await drawAll(pip);
+    assert.equal(openai.calls.length, 0, "all three from the stock");
+    const rows = await q("select p.text, x.status, x.stock_id, x.look_alike from phrase_pictures x join phrases p on p.id = x.phrase_id where x.language_profile_id = $1 order by p.text", [pip.languageId]);
+    assert.deepEqual(rows.map((x) => [x.text, x.status, x.stock_id, x.look_alike]), [
+      ["das Auto", "ready", "car", "car"],
+      ["das Taxi", "ready", "taxi", "car"],
+      ["der Lastwagen", "ready", "truck", "car"],
+    ], "the concept's group kept with the match, for a drawing of its own later");
+    const s = await status(pip);
+    assert.deepEqual([s.pictured, s.ready], [3, false], "three pictures, but no round of two to choose between");
+    const r = await pip.call("POST", "/api/game/start");
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.body.rounds, []);
+    // A tap sent anyway (an old page): no right answer on no evidence.
+    const car = p["das Auto"];
+    const [pic] = await q("select id from phrase_pictures where phrase_id = $1", [car.id]);
+    const res = await tap(pip, { phraseId: car.id, version: "0:", revision: phraseRevision(car) }, pic.id);
+    assert.equal(res.status, 409, res.text);
+    assert.match(res.body.error, /no other picture to tell it from/);
+    assert.equal((await q("select count(*)::int as n from reviews where language_profile_id = $1", [pip.languageId]))[0].n, 0, "no review");
+  } finally {
+    await settlePoolWords();
+    fs.rmSync(file, { force: true });
+    fs.rmSync(path.join(imagesDir, "stock"), { recursive: true, force: true });
   }
 });
