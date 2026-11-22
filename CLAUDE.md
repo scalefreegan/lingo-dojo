@@ -258,6 +258,14 @@ docs/DATA.md §Mandarin readings):
   CC-CEDICT reads them and are not marked unless CC-CEDICT reads them two
   ways, `zh-words.ts` from `npm run pinyin:words`, `applyCommon`). Never
   in kids views.
+- **The neutral tone** (ld-azb): a zh-CN profile shows it where the HSK 3.0
+  list and CC-CEDICT both print it (朋友 péng you, 东西 dōng xi; the generated
+  `web/src/script/zh-neutral.ts`, CC BY-SA 4.0, written by `npm run
+  pinyin:hsk-audit -- --write-neutral` from the gitignored HSK working file,
+  applied by `applyNeutral` in zh.ts after the common words). Not only doubled
+  characters: that was PR #67's convention. Where the sources disagree, today's
+  reading stays; zh-TW keeps full tones (no machine-readable Taiwan MoE
+  source); a hand choice, the shared list and the context rules still win.
 - **The correction.** The character card's **This reading is wrong** or
   **This is right** (`ReadingFix.tsx`) saves the learner's choice per
   language profile, keyed by the word's simplified spelling

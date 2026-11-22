@@ -26,6 +26,7 @@ import { buildExemplarIndex, commonChars, type ExemplarIndex } from "./sounds.ts
 import { mergedWith, scriptOf, simplifyAligned } from "./t2s.ts";
 import { ANYWHERE, BLOCK, FALLBACK, RANKS, WORDS } from "./zh-freq.ts";
 import { COMMON_WORDS } from "./zh-words.ts";
+import { NEUTRAL_WORDS } from "./zh-neutral.ts";
 import { STANDARD_READINGS, UNSETTLED_WORDS } from "./zh-standard.ts";
 
 /** Everyday words the library's dictionary misreads, in either script
@@ -244,6 +245,28 @@ for (const s of STANDARD_READINGS) {
     standard: { cnOnly: !s.tw, notBefore: s.notBefore ?? [], notAfter: s.notAfter ?? [] },
   });
 }
+/** The neutral-tone words (zh-neutral.ts, ld-azb), by simplified spelling:
+ *  the reader's reading with the neutral syllables put in. */
+const neutralWords = new Map<string, string[]>(
+  NEUTRAL_WORDS.split("|")
+    .filter(Boolean)
+    .map((e) => {
+      const [w, r] = e.split("=");
+      return [w, r.split(" ")];
+    }),
+);
+const NEUTRAL_MAX = Math.max(1, ...[...neutralWords.keys()].map((w) => [...w].length));
+/** The verbs a table word may follow inside one segmenter word (买东西,
+ *  给朋友). */
+const NEUTRAL_AFTER = "买卖拿带吃喝做给找要有没收送搬爱想看";
+/** Off for scripts/pinyin-hsk-audit.mjs --write-neutral, which measures
+ *  the reader without the table, and for tests of the reader without it. */
+let neutralOn = true;
+export function useNeutralWords(on: boolean): void {
+  neutralOn = on;
+  cache.clear();
+}
+
 /** Off only for scripts/gen-zh-words.mjs, which compares the reader
  *  without the list to CC-CEDICT. */
 let commonOn = true;
@@ -470,6 +493,8 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     const edges = looseStarts(cps, simp, starts, joined);
     applyPrior(cps, simp, liao, { joined, dict, starts: edges }, out, settled);
     if (commonOn && prior === SHIPPED) applyCommon(cps, simp, joined, starts, out, settled, tw, doubt);
+    // The mainland's neutral tone (ld-azb); Taiwan keeps the full tones.
+    if (!tw && neutralOn && prior === SHIPPED) applyNeutral(cps, simp, joined, edges, out);
     if (tw) taiwanize(text, out);
     const before = out.slice();
     particleDe(text, out);
@@ -483,6 +508,38 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
   if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
   cache.set(key, detail);
   return detail;
+}
+
+/**
+ * The neutral tone in zh-CN (ld-azb): a word of zh-neutral.ts (the official
+ * HSK 3.0 list prints the neutral tone and CC-CEDICT has it too: 朋友 péng
+ * you, 告诉 gào su) between word boundaries of the segmenter takes it where
+ * the reader gives the word's full tones. A word is changed only if each
+ * syllable is the table's, or the table's neutral one with the tone on:
+ * a reading a context rule or the prior chose otherwise leaves the whole
+ * word alone. Nothing is settled or marked by it, and a person's
+ * correction is laid over it after (applyCorrections).
+ */
+function applyNeutral(cps: string[], simp: string[], joined: boolean[], starts: boolean[] | null, out: (string | null)[]): void {
+  const edge = (k: number) => k >= cps.length || ((starts ? starts[k] : true) && !joined[k]);
+  // The segmenter makes 买东西 one word: a table word also starts right
+  // after a one-character verb that opens the segmenter's word.
+  const start = (k: number) => edge(k) || (k > 0 && NEUTRAL_AFTER.includes(simp[k - 1]) && edge(k - 1));
+  for (let i = 0; i < cps.length; ) {
+    let hit = 0;
+    if (isHan(cps[i]) && start(i)) {
+      for (let e = Math.min(cps.length, i + NEUTRAL_MAX); e >= i + 2 && !hit; e--) {
+        if (!edge(e) || !cps.slice(i, e).every(isHan)) continue;
+        const r = neutralWords.get(simp.slice(i, e).join(""));
+        if (!r || r.length !== e - i) continue;
+        const ok = r.every((x, n) => out[i + n] === x || (out[i + n] != null && x === toneless(x) && toneless(out[i + n]!) === x));
+        if (!ok) continue;
+        r.forEach((x, n) => (out[i + n] = x));
+        hit = e - i;
+      }
+    }
+    i += hit || 1;
+  }
 }
 
 /** What may follow 钱 / 书 after 还 for it to be huán (give back): a
@@ -785,7 +842,8 @@ export const MAX_WORD_CHARS = 8;
  *  default or the frequency prior) and that has another ordinary reading
  *  (the prior's ranks: one at least 5% as frequent as its first in
  *  CC-CEDICT's words), unless it is one of CONTEXT_SETTLED, or the other
- *  is only the neutral tone of the same syllable (头 tou). A word that
+ *  is only the neutral tone of the same syllable (头 tou), or the reading
+ *  shown is the neutral tone of the usual one (前边 bian). A word that
  *  only the recap suggested a reading for stays uncertain. */
 function unsureAt(cps: string[], d: Detail, k: number): boolean {
   const cur = d.readings[k];
@@ -795,7 +853,9 @@ function unsureAt(cps: string[], d: Detail, k: number): boolean {
   if (CONTEXT_SETTLED.includes(s)) return false;
   const ranks = priorFor(prior.ranks, cps[k], s);
   if (!ranks || ranks.length < 2) return false;
-  return ranks.some((r) => r !== cur && !(r === toneless(r) && toneless(cur) === r));
+  // The same syllable with or without its tone is no other reading, either
+  // way round (头 tou; 前边 qián bian, neutral by zh-neutral.ts, ld-azb).
+  return ranks.some((r) => r !== cur && !(toneless(r) === toneless(cur) && (r === toneless(r) || cur === toneless(cur))));
 }
 
 /** An uncertain word of a text: code points [start, end), its characters,
