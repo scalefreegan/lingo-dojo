@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../api";
 import { answerRound, fillPictures, gameStatus, pictureBlob, startGame, wordAudio } from "../gameApi";
-import type { GameAnswerReply, GameRound, PictureStatus } from "../types";
+import type { GameAnswerReply, GameRound, PictureStatus, PoolLevel } from "../types";
 import { RubyText } from "./Ruby";
-import { Badge, Button, Card } from "./ui";
+import { Badge, Button, Card, inputClass } from "./ui";
 
 /* The picture game for an adult learner (bead ld-318; docs/DATA.md §Kids
  * word game, §The game): a mode of the Practice tab beside flashcards,
@@ -68,6 +68,10 @@ export default function PictureGameView({
   const [game, setGame] = useState<Loaded[]>([]);
   const [done, setDone] = useState<Answered[]>([]);
   const [tick, setTick] = useState(0);
+  // How far the shared picture pool reaches this game (ld-ec9): null is the
+  // profile's level (status.poolLevel). The learner's own words are in
+  // whatever their level.
+  const [level, setLevel] = useState<PoolLevel | null>(null);
   const shownAt = useRef(0);
   const submitIds = useRef(new Map<string, string>());
   const made = useRef<{ urls: string[]; audio: HTMLAudioElement[] }>({ urls: [], audio: [] });
@@ -118,7 +122,7 @@ export default function PictureGameView({
     setPhase({ kind: "loading" });
     release();
     try {
-      const r = await startGame();
+      const r = await startGame(undefined, level ?? undefined);
       setStatus(r.status);
       if (!r.rounds.length) {
         setError("No round could be made: there are fewer than 3 words with pictures right now.");
@@ -359,11 +363,15 @@ export default function PictureGameView({
         {status && (
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="picture-game-stats">
             <Stat label="Words with pictures" value={status.pictured} />
+            <Stat label="Shared pictures" value={status.poolByLevel[level ?? status.poolLevel]} />
             <Stat label="Waiting for pictures" value={status.waiting} />
             <Stat label="Pictures today" value={`${status.imagesToday} / ${status.imagesCap}`} />
           </dl>
         )}
         {modePicker}
+        {status && status.poolByLevel.B2 > 0 && (
+          <LevelPicker value={level ?? status.poolLevel} profileLevel={status.poolLevel} counts={status.poolByLevel} onChange={(l) => setLevel(l === status.poolLevel ? null : l)} />
+        )}
         {status && !status.ready && <NotReady status={status} busy={busy} onDraw={() => void drawPictures()} />}
         {status?.ready && status.audio && (
           <p className="rounded-md bg-warn-soft p-3 text-sm text-fg" role="status">
@@ -379,7 +387,11 @@ export default function PictureGameView({
           <Button variant="primary" onClick={() => void play()} disabled={!status?.ready || busy} data-testid="picture-game-start">
             Start
           </Button>
-          {status?.ready && <span className={`${fine} text-fg-3`}>Up to 8 rounds from your {status.pictured} pictured words</span>}
+          {status?.ready && (
+            <span className={`${fine} text-fg-3`}>
+              Up to 8 rounds: your {status.pictured} pictured word{status.pictured === 1 ? "" : "s"} first, then shared pictures you haven't played
+            </span>
+          )}
         </div>
         {error && (
           <p className="rounded-md bg-err-soft p-3 text-sm text-err" role="alert">
@@ -414,6 +426,31 @@ function NotReady({ status, busy, onDraw }: { status: PictureStatus; busy: boole
         </div>
       )}
     </div>
+  );
+}
+
+const LEVELS: PoolLevel[] = ["A1", "A2", "B1", "B2"];
+
+/** How far the shared pictures reach (ld-ec9): "up to" a CEFR level, the
+ *  profile's level by default, each with how many shared words it holds.
+ *  The learner's own words are always in. */
+function LevelPicker({ value, profileLevel, counts, onChange }: { value: PoolLevel; profileLevel: PoolLevel; counts: Record<PoolLevel, number>; onChange: (l: PoolLevel) => void }) {
+  return (
+    <label className="flex flex-wrap items-center gap-2 text-sm text-fg-2">
+      <span>Shared pictures up to</span>
+      <select
+        className={`${inputClass} w-auto py-1 text-sm`}
+        value={value}
+        onChange={(e) => onChange(e.target.value as PoolLevel)}
+        data-testid="picture-game-level"
+      >
+        {LEVELS.map((l) => (
+          <option key={l} value={l}>
+            {l} ({counts[l]} word{counts[l] === 1 ? "" : "s"}){l === profileLevel ? ", your level" : ""}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

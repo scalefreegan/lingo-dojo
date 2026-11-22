@@ -2,12 +2,31 @@
 // word game): the game's status and rounds, a tap's reply, and the
 // grown-up's view of a word's picture in the phrase bank.
 
+/** A level of the shared picture pool (scripts/picture-pool.mjs POOL_LEVELS). */
+export type PoolLevel = "A1" | "A2" | "B1" | "B2";
+
+/** POST /api/game/start's body: how far the shared pool reaches this
+ *  game (left out: the profile's level, `PictureStatus.poolLevel`). The
+ *  learner's own words are in whatever their level. */
+export interface GameStartRequest {
+  level?: PoolLevel;
+}
+
 /** What the game, and the grown-up's bank, say about the pictures. Read
  *  from the rows and the ledger only: nothing here starts a call. */
 export interface PictureStatus {
   /** Words with a ready picture. */
   pictured: number;
-  /** Enough of them for a game (pictures.mjs MIN_PICTURED). */
+  /** Words of the shared picture pool (every picture on the install, with
+   *  its word in this language: ld-ec9) the game adds at `poolLevel`, past
+   *  the learner's own. */
+  pool: number;
+  /** The level the pool reaches by default: the profile's level as a CEFR
+   *  level from A1 to B2 (scripts/picture-pool.mjs levelCap). */
+  poolLevel: PoolLevel;
+  /** The pool's words up to each level (cumulative), for the level picker. */
+  poolByLevel: Record<PoolLevel, number>;
+  /** Enough pictures for a game, own and pool together (pictures.mjs MIN_PICTURED). */
   ready: boolean;
   /** Pictures being drawn now (a background run for this language). */
   drawing: boolean;
@@ -171,6 +190,13 @@ export interface StockConceptView {
   /** Its look-alike group (pictures.yaml's `group`, or an added concept's,
    *  set from the page), or null: a round never offers two of one group. */
   group: string | null;
+  /** A learner's own drawing shared into the picture pool (ld-ec9), filed
+   *  under "Drawn by learners"; an admin may delete it like an added one. */
+  drawing: boolean;
+  /** A shared drawing's kids check: true (kids learners get it), false
+   *  (they never do), null for anything but a drawing. Until it says yes a
+   *  drawing is Adults only, and that flag can't be cleared. */
+  kidsChecked: boolean | null;
   /** The picture's version in the current theme (the file URL's
    *  cache-busting part: /api/stock-pictures/file/:id/:version), or null
    *  while it isn't drawn. */

@@ -64,13 +64,13 @@ export async function pictureOf(db: Db, profile: LanguageProfileRef, phraseId: s
 export async function storeVerdict(
   db: Db,
   profile: LanguageProfileRef,
-  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer },
+  v: { phraseId: string; phraseKey: string; status: "pending" | "none" | "ready"; description: string | null; stock?: StockPointer; kidsSafe?: boolean | null },
 ): Promise<{ row?: PictureRow; oldFile: string | null }> {
   if ((v.status === "ready") !== !!v.stock) throw new Error("a ready verdict is a stock picture's, and only it");
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, v.phraseId));
   if (before?.phraseKey === v.phraseKey) return { oldFile: null };
-  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, ...NO_FILE, ...(v.stock ?? {}) };
+  const values = { phraseKey: v.phraseKey, status: v.status, description: v.description, kidsSafe: v.kidsSafe ?? null, ...NO_FILE, ...(v.stock ?? {}) };
   try {
     if (!before) {
       const [row] = await mine.insertOrIgnore(phrasePictures, { phraseId: v.phraseId, ...values }, { target: [phrasePictures.phraseId] });

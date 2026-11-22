@@ -39,6 +39,7 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
+const { resetPoolMemory, settlePoolWords } = await import("../../web/server/picturePool.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, imageProvider, bflFetch, BFL_IMAGE, BFL_TIMING, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
 const { PICTURE_THEME, stockKey } = await import("../pictures.mjs");
@@ -120,6 +121,10 @@ after(async () => {
 const REAL_TIMING = { ...BFL_TIMING };
 beforeEach(async () => {
   await settlePictureFills();
+  // Drawings are shared install-wide (ld-ec9): each test starts with none.
+  await settlePoolWords();
+  resetPoolMemory();
+  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls"]) await q(`delete from ${t}`);
   resetPictureMemory();
   Object.assign(BFL_TIMING, REAL_TIMING, { pollMs: 5 });
   Object.assign(bfl, { mode: "ok", submits: [], polls: [], downloads: [], offhost: [], pending: 2, sample: null, fail: null, failing: new Set() });
@@ -202,7 +207,7 @@ test("the keys pick the provider: Black Forest Labs first, OpenAI when only its 
   // With only OpenAI's, OpenAI draws, recorded as not the theme's own look.
   fs.writeFileSync(process.env.LINGO_ENV_FILE, OPENAI_ONLY);
   const kim = await someone();
-  await add(kim, WORDS.slice(0, 1));
+  await add(kim, WORDS.slice(1, 2));
   await drawAll(kim);
   assert.equal(openai.calls.length, 1);
   assert.equal((await rowsOf(kim))[0].theme, "cream-outline-1+openai");
@@ -341,7 +346,8 @@ test("a made-up stock id, or one whose file isn't drawn, is ignored: the word is
   await add(kim, WORDS.slice(0, 2));
   await drawAll(kim);
   assert.doesNotMatch(fake.pictureArgs().find((a) => a.startsWith("Words:")), /^dog:/m);
-  assert.deepEqual((await rowsOf(kim)).map((r) => [r.text, r.stock_id]), [["der Hund", null], ["die Katze", "cat"]]);
+  // The dog: pip's drawing, shared with every learner (ld-ec9).
+  assert.deepEqual((await rowsOf(kim)).map((r) => [r.text, r.stock_id?.replace(/^drawn-.*/, "drawn")]), [["der Hund", "drawn"], ["die Katze", "cat"]]);
 });
 
 test("a stock file is never deleted by a word's remove, redraw or delete; Draw again gives the word a picture of its own", async () => {
@@ -535,7 +541,7 @@ test("a word whose drawing fails twice in a row (its own fault) is left out like
   // Out of credits again and again: the account's problem, not the word's.
   bfl.mode = "credits";
   const kim = await someone();
-  await add(kim, WORDS.slice(0, 1));
+  await add(kim, WORDS.slice(2, 3));
   for (let i = 0; i < 3; i++) {
     resetPictureMemory("backoff");
     await drawAll(kim);

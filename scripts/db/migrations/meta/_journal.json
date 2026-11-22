@@ -141,6 +141,13 @@
       "when": 1795364693893,
       "tag": "0019_stock_group",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795374953442,
+      "tag": "0020_picture_pool",
+      "breakpoints": true
     }
   ]
 }

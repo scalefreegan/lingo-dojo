@@ -61,7 +61,7 @@ test("names never reach the provider: a description naming a learner on the acco
   assert.deepEqual([...nameWords(["Pip", "Mia-Rose O'Neil", "J"])], ["pip", "mia", "rose", "neil"]);
   // The check's reply: a yes naming someone is a no.
   const r = parseJudgeReply('{"items": [{"n": 1, "picturable": true, "description": "Pip waving"}, {"n": 2, "picturable": true, "description": "a kite"}]}', 2, names);
-  assert.deepEqual(r.verdicts, [{ picturable: false, description: null, stock: null }, { picturable: true, description: "a kite", stock: null }]);
+  assert.deepEqual(r.verdicts, [{ picturable: false, description: null, stock: null, kidsSafe: null }, { picturable: true, description: "a kite", stock: null, kidsSafe: null }]);
   // And the prompt, when a name came after the verdict was stored.
   assert.equal(picturePrompt("a portrait of Mia", names), null);
   assert.equal(picturePrompt("Pip with a kite", names), null);
@@ -127,9 +127,9 @@ test("the check's reply: one verdict per word, a yes with nothing to draw is a n
   );
   assert.equal(r.ok, true);
   assert.deepEqual(r.verdicts, [
-    { picturable: true, description: "a dog", stock: null },
-    { picturable: false, description: null, stock: null },
-    { picturable: false, description: null, stock: null },
+    { picturable: true, description: "a dog", stock: null, kidsSafe: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null },
     undefined,
   ]);
   assert.deepEqual(parseJudgeReply("no", 2), { ok: false, error: "no items list in the reply" });
@@ -329,10 +329,10 @@ test("the check is offered the stock and may answer a stock id: a known one is t
   });
   const r = parseJudgeReply(reply, 4, [], stock);
   assert.deepEqual(r.verdicts, [
-    { picturable: true, description: "a friendly brown dog", stock: "dog" },
-    { picturable: true, description: "a white horse", stock: null },
-    { picturable: false, description: null, stock: null },
-    { picturable: false, description: null, stock: null },
+    { picturable: true, description: "a friendly brown dog", stock: "dog", kidsSafe: null },
+    { picturable: true, description: "a white horse", stock: null, kidsSafe: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null },
+    { picturable: false, description: null, stock: null, kidsSafe: null },
   ]);
   // Not offered (not drawn yet): ignored like a made-up one.
   assert.equal(parseJudgeReply(reply, 1, [], []).verdicts[0].stock, null);

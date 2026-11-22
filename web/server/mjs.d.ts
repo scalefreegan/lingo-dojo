@@ -55,6 +55,13 @@ declare module "*/scripts/content.mjs" {
   /** Never throws; bad files land in `problems`. The mode and its levels are
    *  the route's to add (content.ts contentReply). */
   export function loadContent(root?: string): Omit<import("../shared/wire.ts").ContentReply, "mode" | "levels" | "defaultLevel">;
+  /** The shared picture pool's translation table (content/picture-words.yaml). */
+  export const POOL_WORDS_FILE: string;
+  /** content/picture-words.yaml, checked (scripts/picture-pool.mjs readPoolWords). */
+  export function loadPoolWords(root?: string, stock?: string[] | null): {
+    entries: Map<string, { level: string; words: Record<string, string> }>;
+    problems: { level: "error" | "warning"; message: string; file?: string }[];
+  };
   /** content/pictures.yaml, checked (scripts/pictures.mjs readStockList). */
   export function loadPictureStock(root?: string): {
     concepts: import("../../scripts/pictures.mjs").StockConcept[];

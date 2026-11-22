@@ -58,6 +58,14 @@ export function fakeClaude() {
     readingsDelay: path.join(bin, "readings-delay.txt"),
     readingsRan: path.join(bin, "readings-ran"),
     readingsArgs: path.join(bin, "readings-args.json"),
+    poolWords: path.join(bin, "pool-words.txt"),
+    poolWordsDelay: path.join(bin, "pool-words-delay.txt"),
+    poolWordsRan: path.join(bin, "pool-words-ran"),
+    poolWordsArgs: path.join(bin, "pool-words-args.json"),
+    kidsCheck: path.join(bin, "kids-check.txt"),
+    kidsCheckDelay: path.join(bin, "kids-check-delay.txt"),
+    kidsCheckRan: path.join(bin, "kids-check-ran"),
+    kidsCheckArgs: path.join(bin, "kids-check-args.json"),
     replies: path.join(bin, "replies.json"),
     argsLog: path.join(bin, "args.jsonl"),
     mcp: path.join(bin, "mcp.json"),
@@ -79,7 +87,11 @@ const side = args.some((a) => a.startsWith("You review one finished practice ses
         ? "picture"
         : args.some((a) => a.startsWith("You read Mandarin words in context"))
           ? "readings"
-          : null;
+          : args.some((a) => a.startsWith("You name pictures in many languages"))
+            ? "poolWords"
+            : args.some((a) => a.startsWith("You decide whether picture words are right for a young child"))
+              ? "kidsCheck"
+              : null;
 fs.appendFileSync(side ? files[side + "Ran"] : files.ran, "x");
 fs.writeFileSync(side ? files[side + "Args"] : files.args, JSON.stringify(args));
 if (!side) fs.appendFileSync(files.argsLog, JSON.stringify(args) + "\\n");
@@ -99,7 +111,7 @@ if (side === "picture" && text.startsWith("!auto")) {
   const stock = new Map();
   for (const line of stockPart.split("\\n").filter(Boolean)) {
     const [id, words] = line.split(": ");
-    for (const w of (words || "").split(", ")) stock.set(w, id);
+    for (const w of (words || "").split(", ")) if (!stock.has(w)) stock.set(w, id); // the first listed (the file's before shared drawings)
   }
   const words = wordPart.split("\\n").slice(1);
   text = JSON.stringify({
@@ -107,9 +119,35 @@ if (side === "picture" && text.startsWith("!auto")) {
       const meaning = line.split(" — ")[1] || "";
       const no = /hello|thank|please/i.test(meaning);
       const id = forced ?? stock.get(meaning.toLowerCase().replace(/^the /, ""));
-      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning, ...(!no && id ? { stock: id } : {}) };
+      return { n: i + 1, picturable: !no, description: no ? null : "a picture of " + meaning, ...(!no ? { kidsSafe: !/beer|wine/i.test(meaning) } : {}), ...(!no && id ? { stock: id } : {}) };
     }),
   });
+}
+// The picture pool's naming call, "!auto": every picture named in every
+// language, each word made of its key's script and the picture's number
+// (so it passes the script check and no two pictures share a word), level
+// A1 unless its English words say "passport" (B1).
+if (side === "poolWords" && text.startsWith("!auto")) {
+  const prompt = args.find((a) => a.startsWith("Pictures:")) || "";
+  const BASE = { ru: 0x0430, el: 0x03b1, ar: 0x0628, hi: 0x0915, ja: 0x3042, ko: 0xac00, zh: 0x4e00 };
+  const KEYS = ["en", "es", "fr", "de", "it", "pt", "nl", "sv", "ru", "el", "ar", "hi", "ja", "ko", "zh-CN", "zh-TW", "zh-HK"];
+  const letters = (n) => String.fromCharCode(97 + (n % 26)) + String.fromCharCode(97 + Math.floor(n / 26) % 26);
+  const items = prompt.split("\\n").slice(1).filter(Boolean).map((line, i) => {
+    const id = line.replace(/^\\d+\\. /, "").split(": ")[0];
+    const n = id.split("").reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) % 600, 7);
+    const words = {};
+    for (const k of KEYS) {
+      const base = BASE[k.split("-")[0]];
+      words[k] = base ? String.fromCharCode(base + (n % 20)) + String.fromCharCode(base + Math.floor(n / 20) % 20) + (k.startsWith("zh") ? "" : "") : k + " " + letters(n) + letters(i);
+    }
+    return { id, level: /passport/.test(line) ? "B1" : "A1", words };
+  });
+  text = JSON.stringify({ items });
+}
+// The shared drawings' kids check, "!auto": fine unless the line says beer or wine.
+if (side === "kidsCheck" && text.startsWith("!auto")) {
+  const prompt = args.find((a) => a.startsWith("Pictures:")) || "";
+  text = JSON.stringify({ items: prompt.split("\\n").slice(1).filter(Boolean).map((line, i) => ({ n: i + 1, kidsSafe: !/beer|wine/i.test(line) })) });
 }
 // A sequence (answers()): the nth run since it was set takes the nth reply.
 if (!side && fs.existsSync(files.replies)) {
@@ -179,6 +217,19 @@ setTimeout(() => {
       fs.writeFileSync(files.readingsDelay, String(delay));
     },
     readingRuns: () => count(files.readingsRan),
+    /** The picture pool's naming calls: a JSON string, "!fail", or "!auto" (the default). */
+    poolWords(text, delay = 0) {
+      fs.writeFileSync(files.poolWords, text);
+      fs.writeFileSync(files.poolWordsDelay, String(delay));
+    },
+    poolWordsRuns: () => count(files.poolWordsRan),
+    poolWordsArgs: () => (fs.existsSync(files.poolWordsArgs) ? JSON.parse(fs.readFileSync(files.poolWordsArgs, "utf8")) : null),
+    /** The shared drawings' kids checks: a JSON string, "!fail", or "!auto" (the default). */
+    kidsCheck(text, delay = 0) {
+      fs.writeFileSync(files.kidsCheck, text);
+      fs.writeFileSync(files.kidsCheckDelay, String(delay));
+    },
+    kidsCheckRuns: () => count(files.kidsCheckRan),
     /** The argv of the last reading check. */
     readingArgs: () => (fs.existsSync(files.readingsArgs) ? JSON.parse(fs.readFileSync(files.readingsArgs, "utf8")) : null),
     /** The argv of the last digest call. */
@@ -205,5 +256,7 @@ setTimeout(() => {
   self.picture("!auto");
   self.digest(JSON.stringify({ digest: "You practised a lot this week." }));
   self.readings(JSON.stringify({ readings: [] }));
+  self.poolWords("!auto");
+  self.kidsCheck("!auto");
   return self;
 }

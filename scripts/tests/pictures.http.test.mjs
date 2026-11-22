@@ -34,6 +34,7 @@ for (const k of ["ELEVENLABS_API_KEY", "AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"
 
 const { apiPlugins } = await import("../../web/server/api.ts");
 const { SLOT_WAIT, resetPictureMemory, settlePictureFills } = await import("../../web/server/pictures.ts");
+const { resetPoolMemory, settlePoolWords } = await import("../../web/server/picturePool.ts");
 const { backgroundSlot } = await import("../../web/server/paid.ts");
 const { settleExtractions } = await import("../../web/server/extraction.ts");
 const { placeholderPng, OPENAI_IMAGE } = await import("../../web/server/imageProvider.ts");
@@ -75,6 +76,10 @@ after(async () => {
 const REAL_WAIT = { ...SLOT_WAIT };
 beforeEach(async () => {
   await settlePictureFills();
+  // Drawings are shared install-wide (ld-ec9): each test starts with none.
+  await settlePoolWords();
+  resetPoolMemory();
+  for (const t of ["picture_stock_concepts", "picture_pool_words", "picture_pool_levels", "picture_pool_calls"]) await q(`delete from ${t}`);
   resetPictureMemory();
   Object.assign(SLOT_WAIT, REAL_WAIT);
   openai.calls = [];
@@ -217,7 +222,8 @@ test("a session's end draws its language's pictures in the background, an adult'
   await add(pip, WORDS.slice(0, 3));
   await session(pip, "kids");
   assert.equal(fake.pictureRuns() - before, 2);
-  assert.equal(openai.calls.length, 5);
+  // Sam's dog and cat are shared with every learner (ld-ec9): only the ball is drawn.
+  assert.equal(openai.calls.length, 3);
   assert.equal((await status(pip)).pictured, 3, "the pictures are there before the game is opened");
 });
 

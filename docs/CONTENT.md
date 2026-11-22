@@ -320,6 +320,38 @@ uses. The file is optional: if it is missing the loader reports a problem and
 the UI falls back to free-text fields. The native language defaults to the
 profile's `native_language`, or English when the profile has none.
 
+## `content/picture-words.yaml` — the picture pool's words
+
+Every stock concept in `content/pictures.yaml` gets its word in each
+language the picture game can play and a CEFR level (docs/DATA.md §The
+shared picture pool, ld-ec9). One line per concept:
+
+```yaml
+version: 1
+concepts:
+  dog: { level: A1, en: dog, es: el perro, …, zh-CN: 狗, zh-TW: 狗, zh-HK: 狗, pt-PT: o cão }
+```
+
+- `level`: A1, A2, B1 or B2 (the game offers a learner the words at or
+  below their level). An entry with another level is skipped.
+- The base keys, all required: `en es fr de it pt nl sv ru el ar hi ja ko
+  zh-CN zh-TW zh-HK`. zh-CN is simplified Mandarin, zh-TW traditional
+  Mandarin, zh-HK Cantonese (its own everyday word, in traditional
+  characters).
+- Optional variants where the common word differs: `en-GB en-AU es-ES
+  es-AR es-CO pt-PT fr-CA de-AT de-CH nl-BE ar-EG ar-LB ar-MA`.
+- A word is the everyday one a child would hear: a noun with its article
+  where the language uses one, a verb in its dictionary form. It must be
+  in its language's script, at most 40 characters, with no slash or
+  bracket, no space in Chinese, and never a person's name. A word that
+  fails is left out with a warning.
+
+`npm run pictures:words` drafts the missing words with a local tool-less
+`claude -p` and merges them in (words already there always win; `--dry-run`,
+`--limit N`, `--batch N`, `--model`). Review the draft before committing:
+the file is the product. A concept added to `pictures.yaml` without words
+is named by the app's capped background call instead, until the table has it.
+
 ## `content/packs/<date>-<slug>.yaml` — a pack
 
 Saved packs live in the database, one set per learner per language

@@ -19,6 +19,7 @@ import YAML from "yaml";
 // the types (the same as scripts/db/*.ts).
 import { readRandomScene } from "../web/shared/scenes.ts";
 import { readStockList } from "./pictures.mjs";
+import { readPoolWords } from "./picture-pool.mjs";
 import { parseRef } from "../web/shared/unit-rules.ts";
 
 // Paths derive from import.meta.url, never process.cwd(): `npm run dev` runs
@@ -297,7 +298,12 @@ export function loadContent(root = contentRoot()) {
   // languages.yaml): checked here so a bad entry shows with the rest of
   // the library's problems. Only a root that has the file (the adult one;
   // kids share it).
-  if (fs.existsSync(path.join(root, PICTURE_STOCK_FILE))) for (const p of loadPictureStock(root).problems) problems.push(p);
+  if (fs.existsSync(path.join(root, PICTURE_STOCK_FILE))) {
+    const stock = loadPictureStock(root);
+    for (const p of stock.problems) problems.push(p);
+    // Its words for the shared picture pool (ld-ec9), checked against it.
+    if (fs.existsSync(path.join(root, POOL_WORDS_FILE))) for (const p of loadPoolWords(root, stock.concepts.map((c) => c.id)).problems) problems.push(p);
+  }
 
   return { root, schema, frame, frameDrill, profile, languages, units, scenarios, problems };
 }
@@ -332,6 +338,39 @@ export function loadPictureStock(root = contentRoot()) {
   const out = readStockList(raw);
   for (const p of out.problems) report(p.level, p.message);
   return { concepts: out.concepts, problems };
+}
+
+/** The shared picture pool's reviewed translation table, beside pictures.yaml. */
+export const POOL_WORDS_FILE = "picture-words.yaml";
+
+/**
+ * content/picture-words.yaml → `{ entries, problems }` (picture-pool.mjs
+ * readPoolWords: concept id → `{ level, words }`, each word checked to be
+ * in its language's script). `stock` (concept ids, optional) also reports
+ * entries for no concept and concepts with a language missing. Optional:
+ * no file is no entries and no problem (the background naming call fills
+ * what it can, capped). Always the content root's, like pictures.yaml.
+ */
+export function loadPoolWords(root = contentRoot(), stock = null) {
+  const abs = path.join(root, POOL_WORDS_FILE);
+  const problems = [];
+  const report = (level, message) => problems.push({ file: displayPath(abs), level, message });
+  if (!fs.existsSync(abs)) return { entries: new Map(), problems };
+  const read = readText(abs);
+  if (read.error) {
+    report("error", read.error);
+    return { entries: new Map(), problems };
+  }
+  let raw;
+  try {
+    raw = YAML.parse(read.text);
+  } catch (e) {
+    report("error", `not valid YAML: ${firstLine(e)}`);
+    return { entries: new Map(), problems };
+  }
+  const out = readPoolWords(raw, stock);
+  for (const p of out.problems) report(p.level, p.message);
+  return { entries: out.entries, problems };
 }
 
 function loadYamlFile(abs, report) {

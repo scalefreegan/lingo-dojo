@@ -31,6 +31,9 @@ declare module "*/scripts/practice.mjs" {
     cloze?: { id: string; sentence: string; blankStart: number; blankEnd: number; origin: "example" | "generated" }[];
     /** No sentence yet, and one is worth a model call. */
     clozeNeeded?: boolean;
+    /** A word of the shared picture pool not in the bank yet (scripts/
+     *  picture-pool.mjs poolWords): the picture game alone plays it. */
+    pool?: { conceptId: string; level: string };
   }
   export function produceDrill(phrase: CandidatePhrase, card: { reps: number } | null | undefined): "cloze" | "speak";
 

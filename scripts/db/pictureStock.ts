@@ -13,7 +13,18 @@
 
 import { asc, eq, gt, lt, sql } from "drizzle-orm";
 import type { Db } from "./owned.ts";
+import { loadPictureStock } from "../content.mjs";
+import { forgetPoolWords } from "./picturePool.ts";
 import { pictureStockAdults, pictureStockCalls, pictureStockConcepts } from "./schema.ts";
+
+/** The ids content/pictures.yaml has (a shadowed added row shares one). */
+const shadowedIds = (): Set<string> => {
+  try {
+    return new Set(loadPictureStock().concepts.map((c: { id: string }) => c.id));
+  } catch {
+    return new Set();
+  }
+};
 
 /** A concept as pictures.mjs mergeStock takes it. */
 export interface CustomConcept {
@@ -25,6 +36,10 @@ export interface CustomConcept {
   adults?: boolean;
   /** Its look-alike group (migration 0019): never two of one in a round. */
   group?: string | null;
+  /** How it came (migration 0020): an admin's, or a learner's shared drawing. */
+  origin?: "admin" | "drawing";
+  /** A shared drawing's kids check (true, false, or null: not asked). */
+  kidsSafe?: boolean | null;
 }
 
 /** Every added concept, oldest first (the order they join their category). */
@@ -32,7 +47,7 @@ export async function customStockConcepts(db: Db): Promise<CustomConcept[]> {
   const rows = await db
     .select({
       id: pictureStockConcepts.id, category: pictureStockConcepts.category, description: pictureStockConcepts.description, words: pictureStockConcepts.words,
-      adults: pictureStockConcepts.adults, group: pictureStockConcepts.group,
+      adults: pictureStockConcepts.adults, group: pictureStockConcepts.group, origin: pictureStockConcepts.origin, kidsSafe: pictureStockConcepts.kidsSafe,
     })
     .from(pictureStockConcepts)
     .orderBy(asc(pictureStockConcepts.createdAt), asc(pictureStockConcepts.id));
@@ -53,8 +68,13 @@ export async function addCustomStockConcept(db: Db, c: CustomConcept, createdBy:
 /** Delete an added concept; false when there is no such row (a concept of
  *  content/pictures.yaml is never a row, so it can't be deleted here). */
 export async function deleteCustomStockConcept(db: Db, id: string): Promise<boolean> {
-  const rows = await db.delete(pictureStockConcepts).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
-  return rows.length === 1;
+  return db.transaction(async (tx) => {
+    const rows = await tx.delete(pictureStockConcepts).where(eq(pictureStockConcepts.id, id)).returning({ id: pictureStockConcepts.id });
+    // Its words in the picture pool go with it (picturePool.ts), unless the
+    // file has a concept of that id (a shadowed row): the file's then own them.
+    if (rows.length === 1 && !shadowedIds().has(id)) await forgetPoolWords(tx, id);
+    return rows.length === 1;
+  });
 }
 
 /** Set or clear an added concept's Adults only flag; false when there is

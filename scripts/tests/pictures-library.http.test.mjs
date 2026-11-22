@@ -381,7 +381,7 @@ test("adults-only concepts, pictures.yaml's and added ones, are never offered to
   const kite = await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite" });
   assert.equal(kite.status, 201, kite.text);
   assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "x", category: "Toys", description: "a top", words: "top", adults: "yes" })).status, 400);
-  assert.deepEqual(await q("select id, adults from picture_stock_concepts order by id"), [{ id: "kite", adults: false }, { id: "wine", adults: true }]);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts where origin = 'admin' order by id"), [{ id: "kite", adults: false }, { id: "wine", adults: true }]);
   await settleStockDraws();
   await ada.call("POST", "/api/stock-pictures/admin/missing", { count: 2 });
   await settleStockDraws();
@@ -436,7 +436,8 @@ test("adults-only concepts, pictures.yaml's and added ones, are never offered to
   assert.match(adultArgs, /wine: wine/);
   const adultStock = await stockOf(sam);
   assert.deepEqual([adultStock.beer, adultStock.wine], ["beer", "wine"]);
-  assert.deepEqual((await sam.call("GET", "/api/stock-pictures")).body.concepts.map((c) => c.id).sort(), ["beer", "dog", "kite", "wine"]);
+  // (Pip's own drawings of beer and wine are shared too, Adults only.)
+  assert.deepEqual((await sam.call("GET", "/api/stock-pictures")).body.concepts.filter((c) => !c.drawing).map((c) => c.id).sort(), ["beer", "dog", "kite", "wine"]);
 });
 
 test("an added concept pictures.yaml later takes the id of: the file's wins, the row is shown as shadowed (one warning) and can be deleted, its picture kept", async () => {
@@ -476,7 +477,8 @@ test("an added concept pictures.yaml later takes the id of: the file's wins, the
 
 const setAdults = (who, id, adults) => who.call("POST", `/api/stock-pictures/admin/${id}/adults`, { adults });
 const flagOf = (reply, id) => reply.body.concepts.find((c) => c.id === id)?.adults;
-const kidIds = async (who) => (await who.call("GET", "/api/stock-pictures")).body.concepts.map((c) => c.id).sort();
+// The library's concepts, not the drawings learners' words shared (ld-ec9).
+const kidIds = async (who) => (await who.call("GET", "/api/stock-pictures")).body.concepts.filter((c) => !c.drawing).map((c) => c.id).sort();
 /** Point a learner's word (by meaning) at a stock concept, as a check would have. */
 const pointAt = (who, meaning, id) =>
   q(
@@ -587,7 +589,7 @@ test("Adults only cleared on a file concept the file flags: a row saying false; 
   await settleStockDraws();
   assert.deepEqual(await kidIds(pip), ["dog", "kite"]);
   assert.equal(flagOf(await setAdults(ada, "kite", true), "kite"), true);
-  assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: true }]);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts where origin = 'admin'"), [{ id: "kite", adults: true }]);
   assert.deepEqual(await q("select concept_id from picture_stock_adults"), [], "never a row for an added concept");
   assert.deepEqual(await kidIds(pip), ["dog"]);
   await add(pip, [["der Drachen", "kite"], ["der Hund", "dog"], ["der Ball", "ball"]]);
@@ -595,7 +597,7 @@ test("Adults only cleared on a file concept the file flags: a row saying false; 
   await pointAt(pip, "kite", "kite");
   const pictured = (await pip.call("GET", "/api/game")).body.status.pictured;
   assert.equal(flagOf(await setAdults(ada, "kite", false), "kite"), false);
-  assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: false }]);
+  assert.deepEqual(await q("select id, adults from picture_stock_concepts where origin = 'admin'"), [{ id: "kite", adults: false }]);
   assert.deepEqual(await kidIds(pip), ["dog", "kite"]);
   assert.equal((await pip.call("GET", "/api/game")).body.status.pictured, pictured + 1, "the kid's kite word is back in the game");
 
@@ -634,7 +636,7 @@ test("Adults only on a shadowed id: the file's concept is set (a row), the shado
     const k = on.body.concepts.find((c) => c.id === "kite");
     assert.deepEqual([k.custom, k.adults], [false, true], "the file's concept, now adults only");
     assert.deepEqual(on.body.shadowed.map((c) => [c.id, c.adults]), [["kite", false]], "the shadowed row is unchanged");
-    assert.deepEqual(await q("select id, adults from picture_stock_concepts"), [{ id: "kite", adults: false }]);
+    assert.deepEqual(await q("select id, adults from picture_stock_concepts where origin = 'admin'"), [{ id: "kite", adults: false }]);
     assert.deepEqual(await q("select concept_id, adults from picture_stock_adults"), [{ concept_id: "kite", adults: true }]);
     assert.deepEqual(await kidIds(pip), ["cat", "dog"]);
     // The shadowed row goes; the file's concept keeps the admin's setting.

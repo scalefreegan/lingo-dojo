@@ -7,7 +7,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStatusReply, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStartRequest, GameStatusReply, PoolLevel, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
   WordPicturesReply,
 } from "./types";
 import { utcOffset } from "./practiceApi";
@@ -16,7 +16,7 @@ import { utcOffset } from "./practiceApi";
 export const gameStatus = (signal?: AbortSignal) => req<GameStatusReply>("/api/game", { signal });
 
 /** POST /api/game/start: a game's rounds (from ready pictures only). */
-export const startGame = (signal?: AbortSignal) => req<GameStartReply>("/api/game/start", { ...json({}), signal });
+export const startGame = (signal?: AbortSignal, level?: PoolLevel) => req<GameStartReply>("/api/game/start", { ...json((level ? { level } : {}) satisfies GameStartRequest), signal });
 
 /** POST /api/game/answer: one tap, recorded quietly. */
 export const answerRound = (body: Omit<GameAnswerRequest, "tz">) => req<GameAnswerReply>("/api/game/answer", json({ ...body, tz: utcOffset() }));
