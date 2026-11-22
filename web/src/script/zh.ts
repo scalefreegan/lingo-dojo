@@ -15,7 +15,8 @@
  * prior (zh-freq.ts: the common reading, and common words). A few words the library misreads in either script are
  * corrected (READING_FIXES), a zh-TW text then takes Taiwan's standard
  * readings where they differ (script.ts TAIWAN_READINGS), and the
- * particles 地 得 兒 are read by their neighbours (particleDe). Tone sandhi
+ * particles 地 得 兒 are read by their neighbours (particleDe), as are a few
+ * characters in common phrases no dictionary has (contextRules). Tone sandhi
  * is off: the marks are each character's own tone, as dictionaries and
  * zhuyin textbooks print them (不是 bù shì, 一個 yī gè). */
 
@@ -474,6 +475,7 @@ export function readDetail(text: string, locale: string, { cache: wantCache = tr
     particleDe(text, out);
     giveBack(cps, simp, dict, out, doubt);
     for (let k = 0; k < out.length; k++) if (out[k] !== before[k]) settled[k] = true;
+    if (prior === SHIPPED) contextRules(cps, simp, dict, starts, out, settled, doubt);
     if (fixes) fixed = applyCorrections(cps, simp, { joined, starts: edges }, fixes, tw, out, settled);
   }
   const detail = { readings: out, settled, dict, joined, starts, fixed, doubt };
@@ -512,6 +514,139 @@ function giveBack(cps: string[], simp: string[], dict: boolean[], out: (string |
     const ends = next == null || !isHan(next) || AFTER_GIVEN.includes(simp[j]) || simp.slice(j, j + 3).join("") === "的时候" || NUMERALS.includes(next);
     if (ends) out[k] = "huán";
     else doubt[k] = true;
+  }
+}
+
+/* ------------------------------ context rules ----------------------------- */
+
+/** What counts a measure word: a numeral, or a word that points or
+ *  quantifies before one (这场, 每种, 何处, 本片, 多处). */
+const COUNTERS = `${NUMERALS}这那哪每各此该本首某何多`;
+/** Degree words before an adjective (很难, 太长, 最强, 过重). */
+const DEGREE_BEFORE = "很太最更较挺真好超蛮极过";
+/** Institutions whose head is a 长 zhǎng (警长, 馆长, 组长, 站长). */
+const HEADED = "警馆局处院校部科厅队组班站社团营舰厂署司州省市县区镇乡村";
+/** Weather, an illness, a fight: what a 场 cháng counts (一场雨). */
+const SPELLS = "雨雪病梦风灾战仗架震";
+/** Verbs and modals 只 zhǐ, only, comes before (只会, 只想, 只用). */
+const ONLY_BEFORE = "会想用要能是有好得在说看做吃给剩管顾怕知不";
+/** Characters an erhua 儿 follows, and no 儿 the child in CC-CEDICT does
+ *  (哥们儿, 玩意儿, 女孩儿, 今儿, 宝贝儿 …, and the HSK 3.0 erhua words:
+ *  一下儿, 面条儿, 名牌儿, 胡同儿, 小偷儿, 茶馆儿), measured on its
+ *  headwords (ld-7xi). */
+const ERHUA_AFTER = "意孩活特伙鸟今们人地明贝妇范子昨盖馅哥天眼歌法娘样颠当倍话艺坎乐塔虫蕾蛋刺脑胆火棍皮腕把闷盹兜下条牌同偷馆";
+
+/**
+ * One context rule (ld-7xi): character `ch` (simplified) takes `reading`
+ * where `when(prev, next, at)` holds of its neighbours (simplified, "" for
+ * none or a non-Chinese character). A rule reads a character only where no
+ * dictionary word, table word, rule or correction settled it, and settles
+ * it: each is a short test of a neighbour, never a list of words.
+ */
+interface ContextRule {
+  id: string;
+  ch: string;
+  reading: string;
+  when: (prev: string, next: string, at: { k: number; simp: string[]; starts: boolean[] | null }) => boolean;
+}
+export const CONTEXT_RULES: ContextRule[] = [
+  // 更 before what it grades (更好, 更大, 更何况): gèng. gēng (to change,
+  // a night watch) lives in dictionary words: 更新, 更换, 三更.
+  { id: "geng", ch: "更", reading: "gèng", when: (_, next) => next !== "" },
+  // An adjective after a degree word (很难, 不难, 太长, 最强, 很差, 很累,
+  // 太重): its adjective reading, not 难 nàn, 长 zhǎng, 强 qiǎng, 差 chā,
+  // 累 lěi, 重 chóng.
+  { id: "nan", ch: "难", reading: "nán", when: (prev) => prev !== "" && (DEGREE_BEFORE + "不").includes(prev) },
+  { id: "chang", ch: "长", reading: "cháng", when: (prev) => prev !== "" && (DEGREE_BEFORE + "多").includes(prev) },
+  // 长 cháng before 时 (长时间, 长时期); zhǎng, the head, after an
+  // institution (警长, 馆长, 组长) where no word of length follows.
+  { id: "changShi", ch: "长", reading: "cháng", when: (_, next) => next === "时" },
+  { id: "zhang3", ch: "长", reading: "zhǎng", when: (prev, next) => prev !== "" && HEADED.includes(prev) && !"期久度短远寿".includes(next || "\0") },
+  { id: "qiang", ch: "强", reading: "qiáng", when: (prev) => prev !== "" && DEGREE_BEFORE.includes(prev) },
+  { id: "cha", ch: "差", reading: "chà", when: (prev) => prev !== "" && DEGREE_BEFORE.includes(prev) },
+  { id: "lei", ch: "累", reading: "lèi", when: (prev) => prev !== "" && (DEGREE_BEFORE + "不").includes(prev) },
+  { id: "zhong", ch: "重", reading: "zhòng", when: (prev) => prev !== "" && DEGREE_BEFORE.includes(prev) },
+  // A measure word after a numeral or a pointing word (一场, 这场, 两种,
+  // 一片, 一处, 一扇, 一圈, 一曲). 场 before weather, an illness or a
+  // fight, a character or two on (一场雨, 一场大雪, 一场病, 一场战争), is
+  // cháng in the dictionaries, chǎng in much speech: left, marked. HSK 3.0
+  // lists 场 chǎng only.
+  { id: "chang3", ch: "场", reading: "chǎng", when: (prev, next, { k, simp }) => prev !== "" && COUNTERS.includes(prev) && ![next, simp[k + 2] ?? ""].some((x) => x !== "" && SPELLS.includes(x)) },
+  { id: "zhong3", ch: "种", reading: "zhǒng", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  { id: "pian", ch: "片", reading: "piàn", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  { id: "chu", ch: "处", reading: "chù", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  { id: "shan", ch: "扇", reading: "shàn", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  { id: "quan", ch: "圈", reading: "quān", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  { id: "qu", ch: "曲", reading: "qǔ", when: (prev) => prev !== "" && COUNTERS.includes(prev) },
+  // 只: zhī counting animals after a numeral (一只, 几只, 一只只), and
+  // after 这 / 那 / 哪 / 每 unless a verb follows (这只是 zhǐ, 这只有…
+  // either); zhǐ, only, before a verb or a modal (只会, 只想, 只用), not
+  // before a noun (只身, 只字, 只言片语, 独具只眼: zhī, a single).
+  {
+    id: "zhi1",
+    ch: "只",
+    reading: "zhī",
+    when: (prev, next) => prev !== "" && ((NUMERALS + "只").includes(prev) || ("这那哪每".includes(prev) && !"是有能会要不在好得想".includes(next || "\0"))),
+  },
+  { id: "zhi3", ch: "只", reading: "zhǐ", when: (prev, next) => next !== "" && ONLY_BEFORE.includes(next) && !(NUMERALS + "只这那哪每").includes(prev || "\0") },
+  // 为 wéi, to be or to act as, after a verb of naming or becoming outside
+  // a dictionary word (定为, 转为, 题为, 实为, 结为, 化为), the verb a word
+  // by itself for the segmenter: not where it ends a longer word (一定|为你,
+  // 决定|为我们, 试图|为: wèi).
+  { id: "wei2", ch: "为", reading: "wéi", when: (prev, _, { k, starts }) => prev !== "" && "转定题实图结化译选".includes(prev) && !!starts && starts[k - 1] && starts[k] },
+  // 数 shù, several, before a number or a counted thing (数千, 数十年, 数个,
+  // 数名, 数次); not before 日 (数日子 shǔ, to count the days).
+  { id: "shu", ch: "数", reading: "shù", when: (_, next) => next !== "" && "十百千万亿个名次年月".includes(next) },
+  // 儿 closing a word after one of ERHUA_AFTER, outside a dictionary
+  // word: erhua's r (男孩儿, 一下儿, 聊天儿, 玩意儿, 哥们儿, 今儿个). Not
+  // after any character: 儿 is the child in as many (男儿, 健儿, 育儿,
+  // 幸运儿, 混血儿), nor before another word (托儿所, 生儿育女).
+  { id: "er", ch: "儿", reading: "r", when: (prev, next) => prev !== "" && ERHUA_AFTER.includes(prev) && (next === "" || "们个".includes(next)) },
+  // 量 at the end of a run, after a character (销售量, 工作量): liàng, an
+  // amount, but not after a verb of measuring (丈量, 称量, 车载斗量);
+  // before 一下 (量一下体温): liáng, to measure.
+  { id: "liang4", ch: "量", reading: "liàng", when: (prev, next) => prev !== "" && next === "" && !"丈称斗掂比".includes(prev) },
+  { id: "liang2", ch: "量", reading: "liáng", when: (_, next, { k, simp }) => next === "一" && simp[k + 2] === "下" },
+  // 冲着, facing: chòng. 载有, carrying: zài. 处以, to sentence to: chǔ.
+  { id: "chong", ch: "冲", reading: "chòng", when: (_, next) => next === "着" },
+  { id: "zai", ch: "载", reading: "zài", when: (_, next) => next === "有" },
+  { id: "chu3", ch: "处", reading: "chǔ", when: (_, next) => next === "以" },
+  // 降 jiàng, to fall, before 到 / 至 / 低 (降到, 降至); xiáng (to
+  // surrender) lives in dictionary words: 投降, 降服.
+  { id: "jiang", ch: "降", reading: "jiàng", when: (_, next) => next !== "" && "到至低".includes(next) },
+  // 干 gàn, to do, before 过 or 得 (干过, 干得好).
+  { id: "gan", ch: "干", reading: "gàn", when: (_, next) => "过得".includes(next || "\0") },
+  // 行 xíng, all right, closing a phrase after 就 / 都 / 才 / 也 (就行, 都行,
+  // 才行, 就行了).
+  { id: "xing", ch: "行", reading: "xíng", when: (prev, next) => prev !== "" && "就都才也".includes(prev) && (next === "" || "了吗吧啊呢".includes(next)) },
+];
+/** The rules switched off by id: for the measurements that keep or drop
+ *  each one, and the tests. */
+let rulesOff = new Set<string>();
+export function useContextRules(off: Iterable<string>): void {
+  rulesOff = new Set(off);
+  cache.clear();
+}
+
+/**
+ * The context rules over one text's readings, in place (ld-7xi): common
+ * phrases CC-CEDICT has no entry for (一场, 更好, 很难) stayed marked,
+ * because a character of two readings in them was read by default or by
+ * the prior and nothing settled it. Each rule reads one character by its
+ * neighbours, the first that holds, and settles it; never a character a
+ * dictionary word, a table word or an earlier rule settled (a person's
+ * correction comes after, and outranks it), nor one left in doubt.
+ */
+function contextRules(cps: string[], simp: string[], dict: boolean[], starts: boolean[] | null, out: (string | null)[], settled: boolean[], doubt: boolean[]): void {
+  const han = (k: number) => (k >= 0 && k < cps.length && isHan(cps[k]) ? simp[k] : "");
+  for (let k = 0; k < cps.length; k++) {
+    if (settled[k] || dict[k] || doubt[k] || out[k] == null) continue;
+    for (const r of CONTEXT_RULES) {
+      if (r.ch !== simp[k] || rulesOff.has(r.id) || !r.when(han(k - 1), han(k + 1), { k, simp, starts })) continue;
+      out[k] = r.reading;
+      settled[k] = true;
+      break;
+    }
   }
 }
 
@@ -603,13 +738,14 @@ export function ambiguousChars(text: string, locale: string, opts: ReadOpts = {}
  *  word settled them (ld-4i2): never marked. Their other readings live in
  *  words the library's dictionary has (要 yāo in 要求, 给 jǐ in 供给, 少 shào
  *  in 少年, 几 jī in 几乎, 角 jué in 角色, 率 shuài in 率领, 扫 sào in 扫帚, 折
- *  zhē in 折腾, 分 fèn in 部分), or a rule reads them by their neighbours
+ *  zhē in 折腾, 分 fèn in 部分; ld-7xi: 见 xiàn in 图穷匕见, 俩 liǎng in
+ *  伎俩), or a rule reads them by their neighbours
  *  (the particles 地 and 了 的 着, whose zhe the following verb settles in
  *  speech; 吗 嘛 má only in 干吗). Measured on session-style text (the
  *  reading-marks test): with them marked, 9 words in 100 were; without,
  *  under 2. Keyed by the simplified form (給 嗎 幾 掃 too). 得 stays marked:
  *  dé / děi alone is a real choice (你得去 děi). */
-export const CONTEXT_SETTLED = "了的地着吗嘛要给少分几角率扫折";
+export const CONTEXT_SETTLED = "了的地着吗嘛要给少分几角率扫折见俩";
 
 /** The longest word a mark or a correction covers, in characters. */
 export const MAX_WORD_CHARS = 8;

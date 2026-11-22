@@ -336,3 +336,45 @@ test("a longer word holding a table word reads as CC-CEDICT reads it (zh-standar
   assert.equal(line("京片子"), "jīng piàn zi");
   assert.equal(line("日较差"), "rì jiào chā");
 });
+
+test("context rules settle common phrases CC-CEDICT has no entry for, by a neighbour, in both scripts, and leave the cases they can't tell (ld-7xi)", () => {
+  const ids = zh.CONTEXT_RULES.map((r) => r.id);
+  // Read, and settled (unmarked), by a rule.
+  const settled = {
+    更好: "gèng hǎo", 很难: "hěn nán", 不难: "bù nán", 太长: "tài cháng", 多长时间: "duō cháng shí jiān", 最强: "zuì qiáng", 很差: "hěn chà", 不累: "bù lèi", 太重: "tài zhòng",
+    一场比赛: "yī chǎng bǐ sài", 两种: "liǎng zhǒng", 一只猫: "yī zhī māo", 这只猫: "zhè zhī māo", 一片: "yī piàn", 一处: "yī chù", 一扇门: "yī shàn mén", 一圈: "yī quān", 一曲: "yī qǔ",
+    只会: "zhǐ huì", 只不过是: "zhǐ bù guò shì", 被定为: "bèi dìng wéi", 数千人: "shù qiān rén", 男孩儿: "nán hái r", 今儿个: "jīn r gè", 销售量: "xiāo shòu liàng", 量一下: "liáng yī xià",
+    冲着我: "chòng zhe wǒ", 载有: "zài yǒu", 处以罚款: "chǔ yǐ fá kuǎn", 干过: "gàn guò", 就行了: "jiù xíng le", 长时间: "cháng shí jiān", 警长: "jǐng zhǎng", 降到零下: "jiàng dào líng xià",
+  };
+  for (const [t, want] of Object.entries(settled)) {
+    assert.equal(line(t), want, t);
+    assert.deepEqual(marked(t), [], t);
+  }
+  for (const [t, want] of [["這場比賽", "zhè chǎng bǐ sài"], ["很難", "hěn nán"], ["男孩兒", "nán hái r"], ["警長", "jǐng zhǎng"]]) {
+    assert.equal(line(t, "zh-TW"), want, t);
+    assert.deepEqual(marked(t, "zh-TW"), [], t);
+  }
+  // Where a rule can't tell, the reader's reading stands, marked.
+  for (const t of ["一场雨", "一场大雪", "只身", "独具只眼", "一定为你", "决定为我们", "男儿", "托儿所", "健儿", "丈量", "一无所长"]) assert.ok(marked(t).length, t);
+  assert.equal(line("一定为你"), "yī dìng wèi nǐ");
+  assert.equal(line("只身"), "zhī shēn");
+  assert.equal(line("托儿所"), "tuō ér suǒ");
+  assert.equal(line("丈量"), "zhàng liáng");
+  assert.equal(line("一无所长"), "yī wú suǒ cháng");
+  // 见 and 俩: their other readings live in dictionary words (CONTEXT_SETTLED).
+  assert.deepEqual(marked("我见过他"), []);
+  assert.deepEqual(marked("他俩"), []);
+  // A person's correction still outranks a rule.
+  const fix = zh.makeCorrections({ mine: [{ word: "一场", reading: "yī cháng" }] });
+  assert.equal(zh.readCodePoints("一场", "zh-CN", { cache: false, corrections: fix }).join(" "), "yī cháng");
+  // Off, the phrases are marked again (or misread), and the session rate rises.
+  const on = { cn: rate(SESSION_LINES, "zh-CN"), tw: rate(SESSION_LINES.map(toTw), "zh-TW") };
+  zh.useContextRules(ids);
+  try {
+    for (const t of Object.keys(settled)) assert.ok(marked(t).length || line(t) !== settled[t], `${t} without the rules`);
+    assert.ok(rate(SESSION_LINES, "zh-CN").marks > on.cn.marks && rate(SESSION_LINES.map(toTw), "zh-TW").marks > on.tw.marks);
+  } finally {
+    zh.useContextRules([]);
+  }
+  assert.ok(on.cn.per100 < 1 && on.tw.per100 < 1, `${on.cn.per100} / ${on.tw.per100}`);
+});

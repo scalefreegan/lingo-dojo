@@ -594,8 +594,9 @@ uncertain words in context.
     dictionary word, a rule or a person;
   - the character has a second ordinary reading, other than the neutral
     tone of the same syllable;
-  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, by the
-    simplified form). The reader's context rules settle these characters
+  - it is not in `CONTEXT_SETTLED` (了的地着吗嘛要给少分几角率扫折, and
+    见俩 since ld-7xi: 见 xiàn and 俩 liǎng live only in dictionary words, by
+    the simplified form). The reader's context rules settle these characters
     almost always, and marking them made up most of the noise;
   - it is not in a common word (PR #67). Every common word reads as
     CC-CEDICT reads it and is settled (`applyCommon` in zh.ts, after the
@@ -705,9 +706,56 @@ uncertain words in context.
       - zh-TW (CC-CEDICT's traditional spelling): 126 differ by Taiwan's
         reading (星期 qí, 危險 wéi, zh-standard.ts rows kept out of zh-TW),
         none otherwise; nothing changed for zh-TW.
-      - 189 of the words are still marked, most read right: erhua words
+      - 189 of the words were still marked, most read right: erhua words
         (男孩儿, 一下儿: 儿 read ér) and words beyond the common words' top
-        20,000 with a character of two readings (干杯, 难听, 长跑).
+        20,000 with a character of two readings (干杯, 难听, 长跑). With
+        the context rules (below): 154, and 9,454 agree (99.85%; 定为
+        wéi).
+    - **Context rules** (ld-7xi, `CONTEXT_RULES` and `contextRules` in
+      zh.ts, after `giveBack`; with the shipped prior only, like the
+      common words): common phrases CC-CEDICT has no entry for (一场, 更好,
+      很难) stayed marked, a character of two readings in them read by
+      default or the prior and nothing settling it. Each rule reads one
+      character by a neighbour and settles it, never where a dictionary
+      word, a table word, an earlier rule or a doubt settled it, and a
+      person's correction still outranks it:
+      - 更 gèng before a character; after a degree word
+        (很太最更较挺真好超蛮极过) 难 nán (and after 不), 长 cháng (and after
+        多), 强 qiáng, 差 chà, 累 lèi (and after 不), 重 zhòng; 长 cháng
+        before 时 (长时间), zhǎng after an institution (警长, 馆长; not
+        before 期久度短远寿, and not 所: 一无所长);
+      - a measure word after a numeral or 这那哪每各此该本首某何多: 场
+        chǎng (not before weather, an illness or a fight a character or
+        two on, 一场雨, 一场大雪, 一场战争: cháng in the dictionaries,
+        left marked; HSK 3.0 lists 场 chǎng only), 种 zhǒng, 片 piàn, 处
+        chù, 扇 shàn, 圈 quān, 曲 qǔ, 只 zhī (after 这那哪每 only when no
+        verb follows: 这只是 zhǐ); 只 zhǐ before a verb or modal (只会,
+        只想, 只不过), never before a noun (只身, 独具只眼 zhī);
+      - 为 wéi after 转定题实图结化译选 standing as a word by itself (被定为,
+        转为; not 一定|为你, 决定|为我们);
+      - 数 shù before 十百千万亿个名次年月 (数千, 数十年; not 数日子 shǔ);
+      - 儿 r closing a word after one of `ERHUA_AFTER` (男孩儿, 一下儿,
+        哥们儿, 今儿个): characters an erhua 儿 follows and no 儿 the child
+        does in CC-CEDICT (not 男儿, 健儿, 幸运儿, 托儿所);
+      - 量 liàng closing a run (销售量; not 丈量, 称量, 车载斗量), liáng
+        before 一下; 冲着 chòng, 载有 zài, 处以 chǔ, 降 jiàng before 到至低,
+        干 gàn before 过得, 行 xíng closing a phrase after 就都才也 (就行了).
+      Measured, each rule kept only if it broke nothing: on CC-CEDICT's
+      headwords, compared strictly (儿 r is not ér), 只 zhǐ fixed 2, 儿 r
+      272, 量 liàng 48 (both scripts), none broken (the first versions
+      broke 22 只 idioms, 135 儿 words and 8 量 verbs, and were narrowed
+      until none did); the other rules never touch a headword (a dictionary
+      word settles them). The sweep: 24 fixed, 0 broken. PR #63's sets:
+      words 263 → 264 (冲着; framed 259 → 260), sentences 70 → 72 (只不过是
+      ×2), none worse. On Tatoeba's 89,325 Mandarin sentences (CC BY 2.0,
+      a gitignored download) they read or settle about 2,500 characters; a sample of each
+      rule read by hand found only 为 wrong (一定为你, 决定为我们, before the
+      word-boundary condition). Of wordfreq's top 20,000 words read alone,
+      marked in simplified 191 → 88 and in traditional 202 → 106; of the
+      157 marked that CC-CEDICT has no entry for, 96 are now settled, every
+      one read right (checked by hand), and 61 stay marked (为名, 背上,
+      场上, 一卷, 干得: two readings a neighbour can't tell); none newly
+      marked.
 
   The unit marked is the segmenter's word. A single character joins the
   word after it (得去, 长着, 倒车), or the word before when there is no next
@@ -721,12 +769,14 @@ uncertain words in context.
     per 100 words.
   - With the definition above, before the common words: 1.80 per 100 in
     simplified (17 in 946 words) and 1.63 in traditional (15 in 921); 教练,
-    当然 were about a third of them. With them: **1.37 per 100 in
-    simplified** (13) and **1.19 in traditional** (11), the same after
-    the 20,000-word list (PR #67). The test holds both under 1.5. content/'s two First steps scenes went from 3.64 per 100 (2
+    当然 were about a third of them. With them: 1.37 per 100 in
+    simplified (13) and 1.19 in traditional (11), the same after
+    the 20,000-word list (PR #67). With the context rules (ld-7xi):
+    **0.74 per 100 in simplified** (7) and **0.54 in traditional** (5);
+    the test holds both under 1. content/'s two First steps scenes went from 3.64 per 100 (2
     in 55 words, both 再見) to 0.
-  - Marked now: 长时间, 太长, 挑一个, 长一点, 有点干, 量一下, 就行; and real
-    misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
+  - Marked now: 挑一个, 长一点, 有点干, 自然干 (长时间, 太长, 量一下 and 就行
+    settled by the context rules); and real misreadings it catches: 你得去 / 我得走了 (dé for děi), 问得, 得很 and
     得严重 (dé for de), 长着 (cháng for zhǎng).
   - 还 before 钱 / 书 / 你 (`giveBack`, PR #67 reviews): read huán only
     where the phrase ends there (the text's end, punctuation, 了吗吧呢啊,
