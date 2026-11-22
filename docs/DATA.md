@@ -3402,10 +3402,11 @@ personal rows, so not through `owned.ts`; queries only in
 `scripts/db/pictureStock.ts`):
 
 - `picture_stock_concepts (id, category, description, words text[],
-  adults boolean not null default false, created_by → users ON DELETE SET
-  NULL, created_at)`: a concept an admin
+  adults boolean not null default false, look_alike_group text (0019),
+  created_by → users ON DELETE SET NULL, created_at)`: a concept an admin
   added from the page. Checks: id `^[a-z0-9][a-z0-9-]{0,47}$`, category
-  1–40 characters, description 1–80, 1–20 words. Never written to
+  1–40 characters, description 1–80, 1–20 words, a group null or in the
+  id's format (§Look-alike groups, set from the page). Never written to
   `content/` (`content/pictures.yaml` is the content agent's file).
 - `picture_stock_calls (id, user_id → users ON DELETE SET NULL,
   concept_id, outcome ok|refused|failed|null, created_at)`, indexed on
@@ -3456,6 +3457,9 @@ warning and the file alone when it can't).
   - `:id/adults` `{adults}` (true or false; anything else is a 400, an
     unknown id a 404): sets or clears the concept's Adults only flag
     (§Adults only, set from the page), and answers the list.
+  - `concepts` also takes `group`, and `:id/group` `{group}` sets or
+    clears an added concept's look-alike group (§Look-alike groups, set
+    from the page).
 
 **Drawing.** Queued draws are drawn by one install-wide run, a picture at
 a time, each in the asking admin's background paid slot (the same slot as
@@ -3484,8 +3488,7 @@ learner:
   at all leaves the game too);
 - left out of `GET /api/stock-pictures` and a 404 from its file route when
   the session's active learner is a kids learner.
-The shared-library grid shows an "Adults only" badge on both kinds. Added
-concepts have no look-alike `group`.
+The shared-library grid shows an "Adults only" badge on both kinds.
 
 #### Adults only, set from the page (ld-cvd)
 
@@ -3527,6 +3530,37 @@ confirm first: clearing it lets kids' words be matched to it).
 - Fails closed: if the settings can't be read, every file concept counts
   as Adults only (kids get none of them for that read; an adult's view
   doesn't depend on the flag), logged.
+
+#### Look-alike groups, set from the page (ld-2nw)
+
+An added concept may carry a look-alike `group`, like a file concept's in
+`content/pictures.yaml`, so a round never offers it beside a look-alike
+(a lad and the file's boy: two right answers). Migration
+`0019_stock_group` adds `picture_stock_concepts.look_alike_group text`
+(nullable; not `group`, a reserved word in SQL), checked null or
+`^[a-z0-9][a-z0-9-]{0,47}$`, the format of the file's group ids. Rows
+already there have none.
+
+- **Set** in the Add form's optional **Look-alike group** field, or
+  later from the concept's tile (**Group**, then Save; blank clears it).
+  Both fields suggest every group in use, the file's and the added ones'
+  (a `datalist`), since joining an existing group is the usual case.
+- **Checked** by `readStockGroup` in `scripts/pictures.mjs`: trimmed and
+  lower-cased, then the file's format (`STOCK_ID_RE`); absent, null or
+  blank is none; anything else is a 400 with a sentence.
+- `POST /api/stock-pictures/admin/:id/group` `{group}` (auth `admin`: a
+  403 for a non-admin, 401 logged out): a body without `group` or a bad
+  one is a 400, an unknown id a 404, and a concept of
+  `content/pictures.yaml` (or a shadowed id: the file's is the one in
+  use) a 409, since its group is set in the file. Answers the list.
+- **Read** through `mergeStock`, which passes an added concept's group to
+  `readStockList` with the file's (a stored group that no longer passes
+  is dropped with a warning). `playable` in `web/server/pictures.ts`
+  gives each stock row its concept's group from the merged list, so
+  `roundChoices` never offers two concepts of one group, file and added
+  alike, from the next round on. The list reply carries each concept's
+  `group` (the file's too) and the tile shows it to an admin; only an
+  added concept's can be edited.
 
 **Deleting an added concept** deletes its file; words pointing at it leave
 the game until each is drawn again (nothing re-points them; bead filed).

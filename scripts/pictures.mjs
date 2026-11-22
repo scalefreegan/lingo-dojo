@@ -207,7 +207,9 @@ export const PICTURE_DAILY_STOCK = 300;
  * `shadowed` so the page can show it and let an admin delete the row; one
  * warning names them all. Each concept says whether it is `custom` (it may
  * be deleted from the page; the file's may not). Both kinds keep their
- * `adults` flag (stockForMode); only the file's have a look-alike `group`.
+ * `adults` flag (stockForMode) and their look-alike `group` (an added
+ * concept's own column, migration 0019): one group may hold concepts of
+ * both kinds, and roundChoices never offers two of one.
  * `adultsOverrides` (rows of picture_stock_adults, `{ id, adults }`) are an
  * admin's Adults only settings for the file's concepts, made from the page
  * (the app never writes content/): each replaces its file concept's flag.
@@ -228,11 +230,11 @@ export function mergeStock(base, custom = [], adultsOverrides = []) {
   const shadowed = [];
   for (const c of custom ?? []) {
     if (taken.has(c.id)) {
-      shadowed.push({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true });
+      shadowed.push({ id: c.id, category: c.category, description: c.description, words: c.words, adults: c.adults === true, group: c.group ?? null });
       continue;
     }
     mine.add(c.id);
-    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(c.adults === true ? { adults: true } : {}) });
+    (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(c.group ? { group: c.group } : {}), ...(c.adults === true ? { adults: true } : {}) });
   }
   if (shadowed.length) {
     const ids = shadowed.map((c) => `"${c.id}"`).join(", ");
@@ -253,7 +255,7 @@ export const stockIdFrom = (name) =>
 
 /**
  * A new stock concept from the picture library page: `{ concept: { id,
- * category, description, words } }` or `{ error }` (a sentence for the
+ * category, description, words, adults, group } }` or `{ error }` (a sentence for the
  * admin). The id is made from `name`; it must be new among `existing` (the
  * merged list). The description passes cleanDescription as typed, with no
  * learner name on the admin's account (`names`); stored cleaned. Words are
@@ -277,7 +279,25 @@ export function readNewConcept(body, existing = [], names = []) {
   if (words.length > 20) return { error: "At most 20 words." };
   if (words.some((w) => w.length > 60)) return { error: "Each word at most 60 characters." };
   if (b.adults != null && typeof b.adults !== "boolean") return { error: "Adults only is yes or no." };
-  return { concept: { id, category, description: d.description, words, adults: b.adults === true } };
+  const g = readStockGroup(b.group);
+  if (g.error !== undefined) return g;
+  return { concept: { id, category, description: d.description, words, adults: b.adults === true, group: g.group } };
+}
+
+/**
+ * A look-alike group as the picture library page sends it (the Add form,
+ * or a concept card's edit): `{ group }` (null for none: absent, null or
+ * blank) or `{ error }` (a sentence for the admin). The format is
+ * pictures.yaml's `group` (STOCK_ID_RE), after trimming and lower-casing,
+ * so an added concept can share a group with the file's ("boy").
+ */
+export function readStockGroup(value) {
+  if (value == null) return { group: null };
+  if (typeof value !== "string") return { error: "A look-alike group is a short name, like \"boy\"." };
+  const g = value.trim().toLowerCase();
+  if (!g) return { group: null };
+  if (!STOCK_ID_RE.test(g)) return { error: "A look-alike group is lowercase letters, digits and hyphens (at most 48), like \"boy\" or \"hot-drink\"." };
+  return { group: g };
 }
 
 /** The stock concepts a learner of `mode` may be offered or shown: an
@@ -613,7 +633,8 @@ export function roundChoices(phrase, bank, version) {
   }
   // Never two of one meaning, nor two of one picture (two words pointing
   // at one stock picture), nor two stock pictures of one look-alike group
-  // (a boy and a brother; the server sets `group` from pictures.yaml):
+  // (a boy and a brother; the server sets `group` from the merged stock
+  // list, pictures.yaml's and the added concepts' alike):
   // each would be two right answers.
   const seen = new Set([meaningKey(phrase.meaning)]);
   const files = new Set([own.picture.file]);

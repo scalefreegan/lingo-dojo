@@ -976,6 +976,11 @@ export const pictureStockConcepts = pgTable(
     /** Adults only (pictures.mjs stockForMode): never offered to, matched
      *  for or shown to a kids learner, like pictures.yaml's `adults: true`. */
     adults: boolean("adults").notNull().default(false),
+    /** Its look-alike group (migration 0019, ld-2nw), like pictures.yaml's
+     *  `group` and in its format (STOCK_ID_RE): a round never offers two
+     *  concepts of one group (pictures.mjs roundChoices), file and added
+     *  concepts alike. Null: none. Not named "group", a reserved word in SQL. */
+    group: text("look_alike_group"),
     createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
   },
@@ -984,6 +989,7 @@ export const pictureStockConcepts = pgTable(
     check("picture_stock_concepts_category", sql`char_length(${t.category}) between 1 and 40`),
     check("picture_stock_concepts_description", sql`char_length(${t.description}) between 1 and 80`),
     check("picture_stock_concepts_words", sql`cardinality(${t.words}) between 1 and 20`),
+    check("picture_stock_concepts_group", sql`${t.group} is null or ${t.group} ~ '^[a-z0-9][a-z0-9-]{0,47}$'`),
   ],
 );
 

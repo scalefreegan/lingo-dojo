@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DESCRIPTION_MAX, DESCRIPTION_WORDS, GAME_CHOICES, GAME_ROUNDS, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, JUDGE_BATCH, PICTURE_THEME, cleanDescription, currentThemes, drawnTheme,
-  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
+  nameWords, gameRounds, grownUpDescription, judgePrompt, mergeStock, parseJudgeReply, pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, readNewConcept, readStockGroup, readStockList, restyleTargets, roundChoices, stockForMode, stockIdFrom, stockKey,
 } from "../pictures.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -438,7 +438,7 @@ test("readNewConcept: an id from the name, new; a category; a description by cle
   assert.equal(stockIdFrom("  Ice Cream!  "), "ice-cream");
   assert.equal(stockIdFrom("Crème brûlée"), "creme-brulee");
   assert.deepEqual(readNewConcept({ name: "Ice cream", category: "Food", description: "a cone of “ice cream”", words: "Ice cream, ice-cream cone, ice cream" }, existing), {
-    concept: { id: "ice-cream", category: "Food", description: "a cone of ice cream", words: ["ice cream", "ice-cream cone"], adults: false },
+    concept: { id: "ice-cream", category: "Food", description: "a cone of ice cream", words: ["ice cream", "ice-cream cone"], adults: false, group: null },
   });
   assert.deepEqual(readNewConcept({ name: "kite", category: "Toys", description: "a kite", words: ["kite", "Kites"] }).concept.words, ["kite", "kites"]);
   assert.equal(readNewConcept({ name: "wine", category: "Drinks", description: "a glass of wine", words: "wine", adults: true }).concept.adults, true);
@@ -456,6 +456,48 @@ test("readNewConcept: an id from the name, new; a category; a description by cle
   ]) {
     const r = readNewConcept(body, existing, ["Rosa"]);
     assert.ok(r.error && re.test(r.error), `${JSON.stringify(body)}: ${r.error}`);
+  }
+});
+
+test("readStockGroup (ld-2nw): pictures.yaml's group format, trimmed and lower-cased; blank or absent is none; anything else an error", () => {
+  for (const [v, g] of [[undefined, null], [null, null], ["", null], ["   ", null], ["boy", "boy"], ["  Hot-Drink ", "hot-drink"], ["x".repeat(48), "x".repeat(48)], ["0-9", "0-9"]]) {
+    assert.deepEqual(readStockGroup(v), { group: g }, JSON.stringify(v));
+  }
+  for (const v of ["two words", "bad_id", "-boy", "a/b", "x".repeat(49), "ñ", 5, true, ["boy"], {}]) {
+    assert.match(readStockGroup(v).error ?? "", /look-alike group/, JSON.stringify(v));
+  }
+  const body = { name: "lad", category: "People", description: "a young lad", words: "lad" };
+  assert.equal(readNewConcept({ ...body, group: " Boy " }).concept.group, "boy");
+  assert.equal(readNewConcept(body).concept.group, null);
+  assert.match(readNewConcept({ ...body, group: "Bad Group" }).error, /look-alike group/);
+});
+
+test("mergeStock keeps an added concept's look-alike group, so a round never offers it with a file concept of that group", () => {
+  const base = readStockList({ categories: { People: [{ id: "boy", description: "a smiling boy", words: ["boy"], group: "boy" }] } }).concepts;
+  const custom = [
+    { id: "lad", category: "People", description: "a young lad", words: ["lad"], group: "boy" },
+    { id: "kite", category: "Toys", description: "a red kite", words: ["kite"], group: null },
+    { id: "boy", category: "People", description: "another boy", words: ["chap"], group: "people" },
+  ];
+  const out = mergeStock(base, custom);
+  assert.deepEqual(out.concepts.map((c) => [c.id, c.custom, c.group ?? null]), [["boy", false, "boy"], ["lad", true, "boy"], ["kite", true, null]]);
+  assert.deepEqual(out.shadowed.map((c) => [c.id, c.group]), [["boy", "people"]], "a shadowed row shows its group");
+  // A stored group that no longer passes is dropped with a warning, not kept.
+  assert.ok(mergeStock(base, [{ ...custom[0], group: "Bad Group" }]).problems.some((p) => /lad.*group/.test(p.message)));
+
+  // The game as the server builds it (pictures.ts playable: a stock row
+  // carries its concept's group): the boy and the lad are never together.
+  const byId = new Map(out.concepts.map((c) => [c.id, c]));
+  const ps = [phrase("der Junge", "boy"), phrase("der Bursche", "lad"), phrase("die Katze", "cat"), phrase("der Ball", "ball"), phrase("das Haus", "house"), phrase("der Baum", "tree")];
+  const st = (id) => ({ file: stockKey(PICTURE_THEME.id, id), stockId: id, theme: PICTURE_THEME.id, group: byId.get(id).group });
+  const rows = new Map([ready(ps[0], st("boy")), ready(ps[1], st("lad")), ready(ps[2]), ready(ps[3]), ready(ps[4]), ready(ps[5])]);
+  const bank = pictureBank(ps, rows);
+  for (let i = 0; i < 40; i++) {
+    for (const [asked, other] of [[0, 1], [1, 0]]) {
+      const a = roundChoices(ps[asked], bank, `${i}:`);
+      assert.ok(a.includes(rows.get(ps[asked].id).id));
+      assert.ok(!a.includes(rows.get(ps[other].id).id), `round ${i}: the look-alike is never a wrong answer`);
+    }
   }
 });
 

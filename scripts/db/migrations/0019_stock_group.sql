@@ -1,0 +1,2 @@
+ALTER TABLE "picture_stock_concepts" ADD COLUMN "look_alike_group" text;--> statement-breakpoint
+ALTER TABLE "picture_stock_concepts" ADD CONSTRAINT "picture_stock_concepts_group" CHECK ("picture_stock_concepts"."look_alike_group" is null or "picture_stock_concepts"."look_alike_group" ~ '^[a-z0-9][a-z0-9-]{0,47}$');

@@ -205,6 +205,7 @@ const WRITES = (id = "dog") => [
   ["POST", `/api/stock-pictures/admin/${id}/draw`, {}],
   ["POST", `/api/stock-pictures/admin/${id}/remove`, {}],
   ["POST", `/api/stock-pictures/admin/${id}/adults`, { adults: true }],
+  ["POST", `/api/stock-pictures/admin/${id}/group`, { group: "pets" }],
 ];
 
 test("the stock set: any logged-in user browses it; every write is a 403 for a non-admin, a 401 logged out", async () => {
@@ -664,4 +665,107 @@ test("Adults only settings that can't be read fail closed: a kids session gets n
   }
   assert.ok(warned.some((w) => /Adults only settings couldn't be read/.test(w)));
   assert.deepEqual(await kidIds(pip), ["cat", "dog", "kite"]);
+});
+
+/* ------------------------------ look-alike groups ----------------------------- */
+
+const GROUP_YAML = [
+  "categories:",
+  "  People:",
+  "    - { id: boy, description: a smiling boy waving, words: [boy], group: boy }",
+  "  Animals:",
+  "    - { id: dog, description: a friendly brown dog, words: [dog, puppy] }",
+  "    - { id: cat, description: a fluffy orange cat, words: [cat, kitten] }",
+  "",
+].join("\n");
+const setGroup = (who, id, group) => who.call("POST", `/api/stock-pictures/admin/${id}/group`, { group });
+const groupsOf = async () => Object.fromEntries((await q("select id, look_alike_group from picture_stock_concepts order by id")).map((r) => [r.id, r.look_alike_group]));
+
+test("a look-alike group on an added concept: set when added, checked like the file's, edited and cleared from the card; a file concept's is a 409", async () => {
+  fs.writeFileSync(path.join(root, "pictures.yaml"), GROUP_YAML);
+  const ada = await someone([ADULT], { admin: true });
+  const addKite = (group) => ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite", group });
+  for (const bad of ["Two words", "bad_id", "-boy", "x".repeat(49), 5, true, ["boy"]]) {
+    const r = await addKite(bad);
+    assert.equal(r.status, 400, JSON.stringify(bad));
+    assert.match(r.body.error, /look-alike group/);
+  }
+  assert.deepEqual(await groupsOf(), {}, "nothing added with a bad group");
+  const lad = await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "lad", category: "People", description: "a young lad with a cap", words: "lad", group: "  Boy " });
+  assert.equal(lad.status, 201, lad.text);
+  const kite = await addKite("");
+  assert.equal(kite.status, 201, kite.text);
+  assert.deepEqual(await groupsOf(), { kite: null, lad: "boy" }, "trimmed and lower-cased; blank is none");
+  const view = (r, id) => r.body.concepts.find((c) => c.id === id).group;
+  assert.deepEqual([view(kite, "lad"), view(kite, "kite"), view(kite, "boy"), view(kite, "dog")], ["boy", null, "boy", null], "the list shows each one's group, the file's too");
+
+  // Edited from the card: set, changed, cleared ("" or null).
+  const r = await setGroup(ada, "kite", "toys");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(view(r, "kite"), "toys");
+  assert.equal(view(await setGroup(ada, "kite", "flying-things"), "kite"), "flying-things");
+  assert.equal(view(await setGroup(ada, "kite", ""), "kite"), null);
+  assert.equal(view(await setGroup(ada, "lad", null), "lad"), null);
+  assert.deepEqual(await groupsOf(), { kite: null, lad: null });
+
+  // Bad edits change nothing.
+  await setGroup(ada, "lad", "boy");
+  for (const body of [{}, null, { group: "Bad Group" }, { group: 3 }, { group: "a/b" }]) {
+    assert.equal((await ada.call("POST", "/api/stock-pictures/admin/lad/group", body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await setGroup(ada, "nothing-here", "boy")).status, 404);
+  assert.equal((await setGroup(ada, "Bad_Id", "boy")).status, 404);
+  const file = await setGroup(ada, "dog", "pets");
+  assert.equal(file.status, 409, "a file concept's group is the file's");
+  assert.match(file.body.error, /pictures\.yaml/);
+  assert.deepEqual(await groupsOf(), { kite: null, lad: "boy" });
+  assert.equal(fs.readFileSync(path.join(root, "pictures.yaml"), "utf8"), GROUP_YAML, "content/ untouched");
+});
+
+test("a look-alike group on a non-admin: a 403 for adults and kids sessions alike, nothing changed", async () => {
+  const ada = await someone([ADULT], { admin: true });
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "kite", category: "Toys", description: "a red kite", words: "kite", group: "toys" })).status, 201);
+  const sam = await someone([ADULT]);
+  const pip = await someone([KID]);
+  for (const who of [sam, pip]) {
+    assert.equal((await setGroup(who, "kite", "other")).status, 403);
+    assert.equal((await setGroup(who, "kite", null)).status, 403);
+  }
+  assert.equal((await client(base).call("POST", "/api/stock-pictures/admin/kite/group", { group: null })).status, 401);
+  assert.deepEqual(await groupsOf(), { kite: "toys" });
+});
+
+test("an added concept in a file concept's look-alike group never shares a round with it; cleared, it may", async () => {
+  fs.writeFileSync(path.join(root, "pictures.yaml"), GROUP_YAML);
+  const ada = await someone([ADULT], { admin: true });
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/concepts", { name: "lad", category: "People", description: "a young lad with a cap", words: "lad", group: "boy" })).status, 201);
+  await settleStockDraws();
+  assert.equal((await ada.call("POST", "/api/stock-pictures/admin/missing", { count: 3 })).status, 202);
+  await settleStockDraws();
+  assert.deepEqual(stockFiles(), ["boy.png", "cat.png", "dog.png", "lad.png"]);
+
+  const sam = await someone([ADULT]);
+  await add(sam, [["el chico", "boy"], ["el chaval", "lad"], ["el perro", "dog"], ["el gato", "cat"]]);
+  await drawAll(sam);
+  const rows = await q(
+    "select pp.id, pp.stock_id, p.meaning from phrase_pictures pp join phrases p on p.id = pp.phrase_id where pp.language_profile_id = $1 and pp.status = 'ready'",
+    [sam.languageId],
+  );
+  assert.deepEqual(rows.map((x) => [x.meaning, x.stock_id]).sort(), [["boy", "boy"], ["cat", "cat"], ["dog", "dog"], ["lad", "lad"]], "every word is a stock picture");
+  const stockOf = new Map(rows.map((x) => [x.id, x.stock_id]));
+  const roundStock = async () => {
+    const r = await sam.call("POST", "/api/game/start");
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.rounds.length, 4);
+    return r.body.rounds.map((round) => round.choices.map((c) => stockOf.get(c.id)).sort());
+  };
+  // Four pictures and four choices a round: only the group keeps a round
+  // from offering all four.
+  for (const choices of await roundStock()) {
+    assert.ok(!(choices.includes("boy") && choices.includes("lad")), `boy and lad together: ${choices}`);
+    assert.equal(choices.length, 3, "one of the look-alikes is left out");
+  }
+  // Cleared from the card: the next rounds may offer both.
+  assert.equal((await setGroup(ada, "lad", null)).status, 200);
+  for (const choices of await roundStock()) assert.deepEqual(choices, ["boy", "cat", "dog", "lad"]);
 });

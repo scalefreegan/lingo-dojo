@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
-import { addStockConcept, changeStockPicture, drawMissingStock, setStockAdults, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
+import { addStockConcept, changeStockPicture, drawMissingStock, setStockAdults, setStockGroup, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
 import type { StockConceptView, StockListReply, WordPictureItem, WordPicturesReply } from "../types";
 import { PictureSection, PicturesBar } from "./WordPictures";
 import { Badge, Button, Card, inputClass } from "./ui";
@@ -233,6 +233,10 @@ function SharedLibrary() {
     for (const c of list?.concepts ?? []) out.set(c.category, [...(out.get(c.category) ?? []), c]);
     return out;
   }, [list]);
+  // Every look-alike group in use (the file's and the added ones'), offered
+  // by the Add form and each card's group field: joining an existing group
+  // is the usual case (a new drink beside the file's drinks).
+  const groups = useMemo(() => [...new Set((list?.concepts ?? []).map((c) => c.group).filter((g): g is string => !!g))].sort(), [list]);
 
   if (!list) {
     return (
@@ -291,6 +295,13 @@ function SharedLibrary() {
       {list.canEdit && list.problem && <p className={`${fine} text-warn`}>{list.problem}</p>}
       {list.canEdit && list.stopped && <p className={`${fine} text-warn`} data-testid="stock-stopped">{list.stopped}</p>}
       {error && <p className={`${fine} text-err`} role="alert">{error}</p>}
+      {list.canEdit && (
+        <datalist id="stock-groups">
+          {groups.map((g) => (
+            <option key={g} value={g} />
+          ))}
+        </datalist>
+      )}
       {list.canEdit && adding && (
         <AddConcept
           categories={[...byCategory.keys()]}
@@ -340,7 +351,7 @@ function SharedLibrary() {
           </h4>
           <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6" data-testid="stock-grid">
             {concepts.map((c) => (
-              <StockTile key={c.id} c={c} canEdit={list.canEdit} busy={busy} blocked={!!list.problem || left === 0} onAct={(action) => {
+              <StockTile key={c.id} c={c} canEdit={list.canEdit} busy={busy} blocked={!!list.problem || left === 0} onGroup={(group) => act(() => setStockGroup(c.id, group))} onAct={(action) => {
                 if (action === "remove" && !window.confirm(`Delete the shared picture "${label(c.id)}"? Words that use it leave the word game until each is drawn again.`)) return;
                 if (action === "draw" && c.version && !window.confirm(`Draw "${label(c.id)}" again, in the current style? About $${list.costEach.toFixed(3)}.`)) return;
                 if (action === "adults") {
@@ -362,8 +373,22 @@ function SharedLibrary() {
 
 const label = (id: string) => id.replace(/-/g, " ");
 
-function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; canEdit: boolean; busy: boolean; blocked: boolean; onAct: (action: "draw" | "remove" | "adults") => void }) {
+function StockTile({ c, canEdit, busy, blocked, onAct, onGroup }: {
+  c: StockConceptView;
+  canEdit: boolean;
+  busy: boolean;
+  blocked: boolean;
+  onAct: (action: "draw" | "remove" | "adults") => void;
+  onGroup: (group: string | null) => Promise<boolean>;
+}) {
   const url = useBlobUrl(c.version ? `${c.id}/${c.version}` : null, (signal) => stockPictureBlob(c.id, c.version!, signal));
+  // The group's field, open while an admin edits an added concept's group
+  // (the file's are set in content/pictures.yaml, shown only).
+  const [editing, setEditing] = useState<string | null>(null);
+  async function saveGroup(e: FormEvent) {
+    e.preventDefault();
+    if (editing !== null && (await onGroup(editing.trim() || null))) setEditing(null);
+  }
   return (
     <li className="flex flex-col gap-1" data-testid="stock-tile" data-concept={c.id}>
       <div className="grid aspect-square w-full place-items-center overflow-hidden rounded-lg border border-line bg-raised" title={c.description}>
@@ -379,6 +404,11 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
       {(c.custom || c.adults || canEdit) && (
         <span className="flex flex-wrap items-center gap-1">
           {c.custom && <Badge title="Added from this page">Added</Badge>}
+          {canEdit && c.group && editing === null && (
+            <span data-testid="stock-group">
+              <Badge title={`Look-alike group "${c.group}": never two of one group in a round`}>≈ {c.group}</Badge>
+            </span>
+          )}
           {c.adults && (
             <span data-testid="stock-adults">
               <Badge tone="warn" title="Adults only: never shown to kids learners">
@@ -407,6 +437,19 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
           <Button variant="ghost" className={small} disabled={busy || blocked || c.queued} onClick={() => onAct("draw")} data-testid="stock-draw">
             {c.version ? "Redraw" : "Draw"}
           </Button>
+          {c.custom && editing === null && (
+            <Button
+              variant="ghost"
+              className={small}
+              disabled={busy}
+              aria-label={`Look-alike group of ${label(c.id)}`}
+              title="Pictures of one look-alike group are never offered together in a round"
+              onClick={() => setEditing(c.group ?? "")}
+              data-testid="stock-group-edit"
+            >
+              Group
+            </Button>
+          )}
           {c.custom && (
             <Button variant="ghost" className={`${small} text-err`} disabled={busy} onClick={() => onAct("remove")} data-testid="stock-remove">
               Delete
@@ -414,25 +457,52 @@ function StockTile({ c, canEdit, busy, blocked, onAct }: { c: StockConceptView; 
           )}
         </span>
       )}
+      {canEdit && c.custom && editing !== null && (
+        <form className="flex flex-col gap-1" onSubmit={(e) => void saveGroup(e)} data-testid="stock-group-form">
+          <label className={`flex flex-col gap-1 ${fine} text-fg-2`}>
+            Look-alike group
+            <input
+              className={inputClass}
+              value={editing}
+              onChange={(e) => setEditing(e.target.value)}
+              list="stock-groups"
+              placeholder="none"
+              maxLength={48}
+              autoFocus
+              data-testid="stock-group-input"
+            />
+          </label>
+          <span className="-ml-2 flex flex-wrap">
+            <Button type="submit" variant="ghost" className={small} disabled={busy} data-testid="stock-group-save">
+              Save
+            </Button>
+            <Button variant="ghost" className={small} disabled={busy} onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+          </span>
+        </form>
+      )}
     </li>
   );
 }
 
 /** An admin's new concept: a name, a category, the English words it stands
  *  for, and what the picture shows (the server checks it like a word's). */
-function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: boolean; onAdd: (body: { name: string; category: string; words: string; description: string; adults: boolean }) => Promise<boolean> }) {
+function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: boolean; onAdd: (body: { name: string; category: string; words: string; description: string; adults: boolean; group: string | null }) => Promise<boolean> }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [words, setWords] = useState("");
   const [description, setDescription] = useState("");
   const [adults, setAdults] = useState(false);
+  const [group, setGroup] = useState("");
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (await onAdd({ name, category, words, description, adults })) {
+    if (await onAdd({ name, category, words, description, adults, group: group.trim() || null })) {
       setName("");
       setWords("");
       setDescription("");
       setAdults(false);
+      setGroup("");
     }
   }
   return (
@@ -458,6 +528,10 @@ function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: b
         <label className={`flex flex-col gap-1 ${fine} text-fg-2`}>
           What the picture shows (a few plain words)
           <input className={inputClass} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="a cone of strawberry ice cream" required maxLength={80} />
+        </label>
+        <label className={`flex flex-col gap-1 ${fine} text-fg-2`}>
+          Look-alike group (optional: never two of one group in a round)
+          <input className={inputClass} value={group} onChange={(e) => setGroup(e.target.value)} list="stock-groups" placeholder="boy" maxLength={48} data-testid="stock-add-group" />
         </label>
         <label className={`flex items-center gap-2 ${fine} text-fg-2 sm:col-span-2`}>
           <input type="checkbox" checked={adults} onChange={(e) => setAdults(e.target.checked)} data-testid="stock-add-adults" />
