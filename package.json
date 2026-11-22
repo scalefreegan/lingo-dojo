@@ -21,7 +21,8 @@
     "pron:proof": "node scripts/pronunciation-proof.mjs --recordings",
     "pinyin:sweep": "node scripts/pinyin-sweep.mjs",
     "pinyin:freq": "node scripts/gen-zh-freq.mjs",
-    "pinyin:words": "node scripts/gen-zh-words.mjs"
+    "pinyin:words": "node scripts/gen-zh-words.mjs",
+    "pinyin:hsk-audit": "node scripts/pinyin-hsk-audit.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

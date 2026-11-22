@@ -663,6 +663,51 @@ uncertain words in context.
       (`pinyin-sweep.mjs`) it changed only neutral tones of doubled
       characters (谢谢, 星星, 看看, 太太, 娘娘, 泡泡 …), none broken; PR #63's
       word and sentence sets unchanged (263/276, 70/87).
+    - **The HSK 3.0 audit** (ld-7xi, `npm run pinyin:hsk-audit`,
+      `scripts/pinyin-hsk-audit.mjs`; run by hand, no test needs it): every
+      word of the list read alone and compared with the printed pinyin,
+      then CC-CEDICT. The list's rows are a gitignored working file
+      (`data/freq/hsk/hsk-words.tsv`), made by `--import` from the text
+      copy in the MIT-licensed HSK-official-Query-System (the official
+      query system's data), checked against the scanned PDF by hand: 100
+      random rows re-read from the page images, all matching, and every
+      row in disagreement, which found two rows the text copy has wrong
+      (4/338 汇率, printed as 会; 1/224 妈妈∣妈), corrected in a gitignored
+      `hsk-fixes.tsv` beside it. 11,092 printed rows are 11,131 words
+      (variants, optional parts and examples taken apart).
+      - Of 9,468 words of two or more characters, 9,450 agreed (99.81%)
+        before the fixes: exactly, or by a convention we keep: 一 and 不
+        in their own tone (the list prints sandhi, 不客气 búkèqi); 儿 as ér
+        or erhua r; and **the neutral tone**: the reader keeps a
+        character's full tone where the list prints the neutral one (293
+        syllables, 232 of them neutral in CC-CEDICT too: 告诉 gào sù,
+        地方 dì fāng), as the common words do (PR #67: only doubled
+        characters take CC-CEDICT's neutral tone), and the list's full
+        tone where the reader has the neutral one (4).
+      - 18 disagreed. Reader bugs, fixed as zh-standard.ts rows ("HSK 3.0
+        level N"): 倒是 dào shì (was dǎo), 待会儿 dāi (was dài; zh-CN only,
+        Taiwan reads dāi huǐ r), 说干就干 gàn (was gān); 定为 wéi is the 为
+        context rule's (below). The list prints both readings, the reader
+        has the other: 倒车, 转动, 结果. Two readings in use, the reader's
+        kept: 所长, 正当, 一行 (already left to the reader), 为人 (as
+        common wèi rén in running text, marked), 一晃 (yíhuàng in the list,
+        yī huǎng in CC-CEDICT: now in `UNSETTLED_WORDS`, marked), 都会
+        and 穿着 (dōu huì and chuān zhe far more common than the list's
+        dū huì and zhuó), 尽可能 and 大都 (both standard), 出血 and 献血
+        (the list's colloquial xiě; CC-CEDICT xuè). After: 9,453 (99.84%).
+        倒是 applies between word boundaries only (摔倒|是, 颠倒是非 stay
+        dǎo), and not after 不 (`notAfter`: ICU cuts 他不|倒是, where 不倒
+        may be the word; left to the reader, marked).
+      - Single characters (1,663) are counted apart: alone a character
+        takes its most frequent reading and the list prints one row a
+        sense, so the 74 that differ are its other senses (还 huán, 长
+        zhǎng).
+      - zh-TW (CC-CEDICT's traditional spelling): 126 differ by Taiwan's
+        reading (星期 qí, 危險 wéi, zh-standard.ts rows kept out of zh-TW),
+        none otherwise; nothing changed for zh-TW.
+      - 189 of the words are still marked, most read right: erhua words
+        (男孩儿, 一下儿: 儿 read ér) and words beyond the common words' top
+        20,000 with a character of two readings (干杯, 难听, 长跑).
 
   The unit marked is the segmenter's word. A single character joins the
   word after it (得去, 长着, 倒车), or the word before when there is no next

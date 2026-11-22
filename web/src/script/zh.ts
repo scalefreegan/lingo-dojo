@@ -222,7 +222,7 @@ type CommonWord = {
   trad: string[][] | null;
   /** A learner's standard reading (zh-standard.ts): written over the
    *  reader's choice, in zh-TW only where Taiwan agrees (`cnOnly` else). */
-  standard?: { cnOnly: boolean; notBefore: string[] };
+  standard?: { cnOnly: boolean; notBefore: string[]; notAfter: string[] };
 };
 const common = new Map<string, CommonWord>(
   COMMON_WORDS.split("|")
@@ -240,7 +240,7 @@ for (const s of STANDARD_READINGS) {
   common.set(s.word, {
     readings: s.reading.split("/").map((x) => x.split(" ")),
     trad: s.trad ? [[...s.trad]] : null,
-    standard: { cnOnly: !s.tw, notBefore: s.notBefore ?? [] },
+    standard: { cnOnly: !s.tw, notBefore: s.notBefore ?? [], notAfter: s.notAfter ?? [] },
   });
 }
 /** Off only for scripts/gen-zh-words.mjs, which compares the reader
@@ -320,6 +320,10 @@ function applyCommon(cps: string[], simp: string[], joined: boolean[], starts: b
         // Part of a longer word the segmenter split (好事|者 hào shì zhě).
         const after = simp.slice(e).join("");
         if (c.standard.notBefore.some((x) => after.startsWith(x))) continue;
+        // Or the end of a word before it the segmenter split (他不倒是:
+        // ICU's 他不|倒是, where 不倒 may be the word).
+        const before = simp.slice(0, i).join("");
+        if (c.standard.notAfter.some((x) => before.endsWith(x))) continue;
         const now = out.slice(i, e);
         const r = c.readings.find((r) => r.every((x, n) => x === now[n])) ?? c.readings[0];
         r.forEach((x, n) => {

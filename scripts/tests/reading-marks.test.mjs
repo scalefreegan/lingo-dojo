@@ -291,7 +291,7 @@ test("words CC-CEDICT reads two ways take the learner's standard reading (zh-sta
 
 test("the two-way words with no standard reading are marked in both scripts, alone and in a sentence, even where the library's dictionary has them (PR #67)", () => {
   const { UNSETTLED_WORDS } = zh_standard;
-  assert.equal(UNSETTLED_WORDS.length, 19);
+  assert.equal(UNSETTLED_WORDS.length, 20);
   // OpenCC writes Taiwan's 揹著 (bēi only, so not doubtful): 背著 here.
   const tw = (t) => toTw(t).replace("揹", "背");
   for (const w of UNSETTLED_WORDS) {
@@ -307,6 +307,26 @@ test("the two-way words with no standard reading are marked in both scripts, alo
   assert.deepEqual(zh.uncertainWords("我们一起同行", "zh-CN", { cache: false, corrections: fix }), []);
   // Inside a dictionary word, not: 受不了.
   assert.deepEqual(marked("我受不了"), []);
+});
+
+test("the HSK 3.0 audit's reader bugs read as the list prints them, at word boundaries only, zh-TW only where Taiwan agrees (ld-7xi)", () => {
+  // The reader alone read 倒是 dǎo, 待会儿 dài, 说干就干 gān.
+  assert.equal(line("倒是"), "dào shì");
+  assert.equal(line("这倒是个好主意"), "zhè dào shì gè hǎo zhǔ yì");
+  assert.equal(line("我待会儿去"), "wǒ dāi huì r qù");
+  assert.equal(line("他说干就干"), "tā shuō gàn jiù gàn");
+  assert.equal(line("他說幹就幹", "zh-TW"), "tā shuō gàn jiù gàn");
+  for (const w of ["倒是", "待会儿", "说干就干"]) assert.deepEqual(marked(w), [], w);
+  // Not where the characters meet across two words.
+  assert.equal(line("摔倒是常事"), "shuāi dǎo shì cháng shì");
+  assert.equal(line("颠倒是非"), "diān dǎo shì fēi");
+  // ICU's 他不|倒是, where 不倒 may be the word: left to the reader.
+  assert.equal(line("他不倒是"), "tā bù dǎo shì");
+  assert.equal(line("再等待会儿"), "zài děng dài huì r");
+  // 待會兒 is left to the reader in zh-TW (Taiwan reads it dāi huǐ r).
+  assert.equal(line("我待會兒去", "zh-TW"), "wǒ dài huì r qù");
+  // 一晃: CC-CEDICT yī huǎng, HSK 3.0 yíhuàng, both senses common: marked.
+  assert.deepEqual(marked("一晃十年"), ["一晃"]);
 });
 
 test("a longer word holding a table word reads as CC-CEDICT reads it (zh-standard.ts, over the prior's table): 便宜行事 biàn yí (PR #67)", () => {
