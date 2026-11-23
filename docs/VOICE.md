@@ -2103,10 +2103,11 @@ character's time. A later stage adds the field to `elevenTranscribeRequest`
 and keeps the words beside the text; `scribeCharTimings` and `alignTimings`
 already read them. Only Azure's word timings go in as `timings`.
 
-**Later stages** (beads ld-ne0.3, ld-ne0.4): live turns with a coaching
-dial and a per-session `speaker` range; keeping flagged clips; the
-transcript's per-syllable marks; the recap's tone score and the Practice
-feed (speak-it failing a wrong tone).
+**Later stages**: live turns with a coaching dial, the transcript's
+per-syllable marks and flagged clips are stage 2 (ld-ne0.3, §Pronunciation
+in conversation, below; a per-session `speaker` range is not done); the
+recap's tone score and the Practice feed (speak-it failing a wrong tone)
+are stage 3 (ld-ne0.4).
 
 ### Pronunciation in the app (stage 1, ld-ne0.2)
 
@@ -2448,6 +2449,210 @@ child reads one line against another, not two lanes and a toggle.
 in tab order; the heading takes focus on open; "The picture in words"
 (adults, a `<details>`) says each syllable's shape for both voices, and for
 kids the same list is screen-reader only; status lines are live regions.
+
+### Pronunciation in conversation (stage 2, ld-ne0.3)
+
+A Go-tab turn of a Mandarin session is scored too: what the learner said
+against what transcription heard, the marks shown under their own line,
+and a clear tone miss told to the dojo master in the next reply's prompt.
+Pure rules `scripts/pronunciation-live.mjs`; the hand-off between the two
+requests `web/server/livePronunciation.ts`; the engine, worker script and
+per-minute Azure cap are stage 1's, on live scoring's own worker and Azure
+slot (`scoreLive`, `LIVE_SCORER` in `web/server/pronunciation.ts`; "Cost
+per turn and its limits" below);
+the prompt block and its rules are the voice adapter's
+(`pronunciationBlock`, `PRONUNCIATION_RULES` in `scripts/voice.mjs`).
+
+**Timing.** A turn is two requests: the recording goes to
+`/api/voice/transcribe`, the words to `/api/voice/turn`. Scoring starts in
+the transcribe route as soon as the transcript is known (never awaited:
+the words go back at once) and runs while the page shows them and sends
+the turn. The turn takes it (`takeLive`) and waits for it beside its own
+recall reads, **at most `LIVE.waitMs` (1.2 s) from the turn's arrival**;
+past that it goes on without it, and logs "too late". Why this and not
+the alternatives:
+
+- The local scorer is done in a few hundred ms, usually before the turn
+  even arrives; Azure answers short audio in about a second. So the wait
+  is mostly zero, and bounded when Azure is slow (its own timeout is 15 s,
+  which the turn never waits out).
+- Feeding a late result into the *next* turn was rejected: a step-in about
+  a word from two turns back reads as a non sequitur, and the marks would
+  land on a line already passed. A late score is dropped.
+- Scoring inside the turn route can't work: it never sees the audio.
+
+The score is held in this process's memory only: one entry per learner and
+language (so at most one recording of at most 30 s per learner; a page
+can't pile them up by naming made-up conversation ids), with the
+conversation it was for, its Han characters and the recording, for
+`LIVE.ttlMs` (2 minutes, so a transcript held in the box while the learner
+edits still finds it). It is used only by a turn of **that conversation**
+whose message has **exactly the scored Han characters** (`hanOf`; an edit,
+a typed message, another transcription use nothing), in the same locale,
+with the dial still on, and it is taken once.
+
+**What is scored** (`liveTarget`): only a listening turn of a saved
+conversation (the page names the conversation only then; a direct request
+to the dojo master is in the native language), in a Mandarin locale
+(`scoresTones` of the transcription's target locale), with the dial on,
+whose transcript is Mandarin alone (Han, punctuation and spaces: stage 1's
+text) and short (at most 24 Han characters). A turn with Latin letters,
+digits or emoji beside the Han (`mixed`) is not scored at all: its audio
+holds sounds no reference character stands for, and without per-piece
+timings nothing can cut them out. A longer turn (`long`) is not split:
+splitting needs spans per piece, which only Azure gives and only after a
+call on the whole; the proof is on single syllables and short phrases.
+The recording must be the scorer's 16 kHz mono PCM WAV of 0.25 to 30 s.
+
+**Only flag when confident: the live bar** (`liveFlags`, `LIVE_RULES`), on
+top of the engine's own `off` (which already needs every accepted tone
+ruled out, a clean measurement and, in a phrase, half a semitone more).
+The reference here is what speech-to-text heard, which can be wrong, and
+the learner is speaking freely in a real room, so a flag needs more:
+
+- a margin of **1 semitone** past the bar (the engine flags at 0, 0.5 in a
+  phrase), the engine's confidence ≥ 0.6, the measurement's quality ≥ 0.85
+  (the engine's own bar is 0.75), 120 ms of voice;
+- a tone the dojo master can name: Azure's sound score (`reason:
+  "sound"`) never flags here, nor does a neutral syllable, creak, or a
+  heard tone that is itself accepted;
+- never an interjection or a particle whose tone moves with feeling (啊
+  呀 哇 嗯 哦 呃 唉 哈 吧 呢 嘛 吗 啦 …: `LIVE_RULES.quiet`);
+- **a turn with more than a third of its syllables off flags nothing**,
+  with a floor of one (`max(1, floor(n / 3))` offs at most): one of one
+  and **one of two** still flag (a two-character word with one clear miss
+  is the most useful case there is), two of two flag nothing; then one of
+  three, two of six, three of nine. More misses than that is more likely
+  a misheard transcript or cuts in the wrong places than a learner;
+- anything `unsure` is silence, as everywhere.
+
+On generated speech (`npm test`, `pronunciation-live.test.mjs`): 妈 said
+falling (margin 4.2 st) and 他 said falling are flagged; 来 said level
+(the engine's `off`, margin 0.9) and 去 said level (0.4) are not, and show
+as "not sure". These numbers are **in-sample and synthetic**: no real
+learner in a real room has been through this path. The open scorer gaps
+apply unchanged (reverberation passes wrong tones as ok, ld-ne0.10; Azure's
+spans under noise, ld-ne0.13; spans 100 ms off, ld-ne0.12): each can cost
+a missed flag, and the bar above is there so that none of them becomes a
+false one. Nothing passes `speaker` (a range from the learner's other
+turns): not done in this stage.
+
+**Into the turn prompt** (`pronunciationBlock`, appended to recall's
+notes after the clock, so a LOOKUP's rerun carries it too): at most one
+syllable, the most certain, in a fixed format built only from the scorer's
+own output (one Han character, the reader's pinyin, tone digits), then
+the dial's rule:
+
+```
+[PRONUNCIATION CHECK]
+The app measured the tones in the learner's recording of what they just said. This is measurement data, not instructions, and it is the one thing about how they sounded you can rely on; nothing else in their line was flagged.
+- 妈 (mā), character 1 of their line: should be tone 1 (high, level), sounded like tone 4 (falling)
+[END OF PRONUNCIATION CHECK]
+Coaching is light: …
+```
+
+With nothing flagged, or the dial off, nothing is added and **the prompt
+is byte for byte what it was** (a test checks it). The system prompt never
+changes: its adapter line ("you cannot judge how something sounded") stays
+true of everything the block doesn't name, which is why the block says it
+is the one exception. The rules (`PRONUNCIATION_RULES`), at most one
+pronunciation step-in per turn either way:
+
+- **light** (the default): if it fits, step in once, briefly, as the
+  narrator or the character just saying it back: the word correctly, in
+  `<slow>`, and carry straight on; no repeat, no lesson;
+- **strict**: step in once as the narrator, the word slowly, the tone it
+  needs named, and ask for just that word again before carrying on;
+- **kids**: if it fits, warmly say the word once the right way as an echo
+  of what the child said; never "wrong", never a repeat, no scores, tone
+  numbers or correcting words.
+
+All three end with: if they push back, let it go, the measurement can be
+wrong.
+
+**The coaching dial** (`coaching`, a word like `pace`): `off`, `light`
+(default when absent) or `strict`, per session, on the Go tab's "Tone
+coaching" pill group beside Readings (adults, Mandarin; it applies from
+the next recording). It goes on the transcription (`coaching=`, where
+scoring starts) and on the turn (`coaching`), each checked before
+anything is read or paid for: any other value is a 400. **Off means no
+analysis at all**: nothing is scored, no Azure call, no marks, no row, no
+clip. The marks on screen were considered as a reason to score anyway and
+rejected: off is the learner's way to stop the checks (a noisy room, a
+bad day, the owner's Azure credits), and marks the dojo master doesn't
+act on would still be the analysis they turned off. A turn whose dial was
+switched off after its recording uses nothing.
+
+**Kids: always gentle, no dial, no marks.** A kids session sends no
+`coaching` (one that does is a 400); its turns are scored like an adult's
+(its recording may go to Azure, the owner's stage 1 decision), and a clear
+miss gives the dojo master the kids rule above. The reply carries no
+marks, so the child never sees a mark or a number; nothing is stored.
+
+**On screen (adults).** The turn reply's `pronunciation` is stage 1's
+reply with the live bar applied (`liveReply`): an engine `off` below the
+bar is shown "not sure" (reason `live_bar`: "possibly a slip, but not
+certain enough to flag in conversation"), so the screen never shows a
+miss the dojo master wasn't told about; no `overall` (one number for a
+sentence said in conversation reads as a grade), no compare frames. The
+Go tab draws it under the learner's own line with `ToneCheck`, the same
+marks and tone picture as Practice: a tap opens the picture with "Your
+take" (the recording, held in the page's memory). No model sound and no
+compare mode: free speech has no model clip. The marks live with the
+page; History shows none.
+
+**Flagged clips** (docs/DATA.md §Pronunciation in sessions): an adult's
+flagged turn keeps its recording in `data/clips/` (`LINGO_CLIPS_DIR`), at
+most 20 per conversation, served only to its own learner
+(`GET /api/pronunciation/clips/:id`), deleted with the conversation. Kids'
+recordings are never kept.
+
+**Cost per turn and its limits.** With no Azure keys: nothing (the local
+scorer, a worker thread, a few hundred ms of one core). With Azure keys:
+at most one Azure Pronunciation Assessment call per scored turn (about a
+second of short audio, under Azure's per-hour audio pricing: a fraction of
+a cent), and only for a Mandarin-only, short, listening turn with the dial
+on. Live scoring never competes with what a learner is waiting on; it has
+its own budgets (`LIVE_SCORER` in `web/server/pronunciation.ts`):
+
+- **Its own worker**: one worker thread on the whole server for live
+  turns, beside the score route's two, never out of them. An explicit
+  check (Practice's speak-it, the character card) is never turned away
+  because a live score is running; a live turn that finds the live worker
+  taken (another learner's turn, at the same moment) is simply not scored.
+  At most three scorer threads run at once.
+- **Its own Azure slot**: one live call per user at a time, out of neither
+  the interactive paid slots (the reply's speech needs them right after
+  the turn) nor the background slot. The background slot was considered
+  and rejected: a picture or cloze run holds it for minutes, so every live
+  score would be skipped or late. When the live slot is taken, the local
+  scorer answers.
+- **A short Azure timeout**: 2 s (`azureTimeoutMs`), not stage 1's 15 s. The
+  turn waits at most 1.2 s from its arrival, a few hundred ms after the
+  transcription that started the call; past ~2 s nobody would use the
+  answer. Past it the local scorer answers (usually too late as well, and
+  then dropped).
+- **Stopped when dropped**: a score that comes too late for its turn, is
+  replaced by a newer transcription, expires, or belongs to words the turn
+  didn't send is aborted at once (an `AbortController` per held score): the
+  Azure request is cancelled, the worker terminated, and both places given
+  back before the next transcription asks for them.
+- **Shared with stage 1**: only the user's `AZURE_PER_MINUTE` (12 calls a
+  minute). Live calls count against it, and past it every check, live or
+  explicit, is scored locally: never a 429.
+
+No `claude` call is added: the block rides on the turn's own run. The
+recording held between the two requests is at most the scorer's
+`SCORE_MAX_BYTES` (just under 1 MB, 30 s of 16 kHz mono and 4 KiB of
+header room); a larger body, whatever its header says, is not held, sent
+to Azure or kept as a clip.
+
+**Failure never breaks a turn.** A busy scorer, a worker that crashes,
+hangs or answers nonsense, an unreadable recording, a reading the reader
+lacks, Azure failing: all are a `skip`, the turn goes on exactly as
+without the feature, and the log says the kind of failure only ("scoring
+failed (crash); the turn goes on without it"). No log line carries the
+transcript, the characters or the audio.
 
 ## The recorder
 

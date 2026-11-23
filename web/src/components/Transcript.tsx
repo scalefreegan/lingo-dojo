@@ -5,7 +5,16 @@ import { CharTerm } from "./Ruby";
 import { SpeakerCritter } from "./Mascots";
 import { haystack, layout, mightMatch } from "../gloss";
 import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
-import type { VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
+import type { LivePronunciation, VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
+import { ToneCheck } from "./ToneCheck";
+
+/** A learner line's tone marks (docs/VOICE.md §Pronunciation in
+ *  conversation): the turn's reply, and the take it scored (the recording,
+ *  held in the page's memory only). */
+export interface LineTones {
+  reply: LivePronunciation;
+  take: Blob | null;
+}
 
 /* The transcript of a voice session: the live one on the Go tab
  * (VoicePanel), and a saved one opened read-only from History, which has no
@@ -39,6 +48,7 @@ export const Transcript = memo(function Transcript({
   className,
   follow = true,
   canStar = false,
+  tones,
 }: {
   entries: VoiceHistoryItem[];
   plan: VoicePlanItem[];
@@ -62,6 +72,9 @@ export const Transcript = memo(function Transcript({
   /** ☆ Star in the definition card (the active language's phrase bank):
    *  only where the transcript is in that language. */
   canStar?: boolean;
+  /** Tone marks under the learner's own lines, by entry index (a live
+   *  adult Mandarin session with the coaching dial on). */
+  tones?: ReadonlyMap<number, LineTones>;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
   const following = useRef(follow);
@@ -200,6 +213,7 @@ export const Transcript = memo(function Transcript({
         onClosePick={onClosePick}
         onReplay={canReplay ? replayLine : undefined}
         canStar={canStar}
+        tones={tones?.get(i)}
       />
     );
   })}
@@ -227,6 +241,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onClosePick,
   onReplay,
   canStar,
+  tones,
 }: {
   m: VoiceHistoryItem;
   i: number;
@@ -245,10 +260,11 @@ const TranscriptRow = memo(function TranscriptRow({
   onClosePick: (refocus?: boolean) => void;
   onReplay?: (i: number, j: number, lines: VoiceLine[]) => void;
   canStar?: boolean;
+  tones?: LineTones;
 }) {
   if (m.role === "learner") {
-    return (
-      <li className="max-w-[85%] self-end rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
+    const bubble = (
+      <div className="rounded-2xl rounded-br-md bg-accent-soft px-3.5 py-2 text-sm text-fg">
         {CONTROL_LABEL[m.text] ? (
           <span className="text-fg-3 italic">{CONTROL_LABEL[m.text]}</span>
         ) : jumpTitle != null ? (
@@ -260,6 +276,19 @@ const TranscriptRow = memo(function TranscriptRow({
           </>
         ) : (
           m.text
+        )}
+      </div>
+    );
+    // The line's tone marks, under it (adults only: the server gives kids
+    // none). The same marks as Practice's speak-it, so a tap opens the same
+    // tone picture with the learner's own take.
+    return (
+      <li className="flex max-w-[85%] flex-col items-end gap-1 self-end">
+        {bubble}
+        {tones && (
+          <div className="w-full rounded-xl border border-line bg-raised px-2.5 py-2" data-testid="voice-learner-tones">
+            <ToneCheck reply={tones.reply} take={tones.take} kids={false} />
+          </div>
         )}
       </li>
     );

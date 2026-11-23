@@ -9,13 +9,14 @@ import { SessionTimeline } from "./SessionTimeline";
 import { RubyToggle } from "./Ruby";
 import { reloadMyReadings } from "../script/ruby.tsx";
 import { SessionRecap } from "./SessionRecap";
-import { Transcript } from "./Transcript";
+import { Transcript, type LineTones } from "./Transcript";
+import { scoresTonesHere } from "../pronunciationApi";
 import {
   DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
-  ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
+  Coaching, ConversationSummary, LibrarySort, LibraryVoice, Mode, PackInput, RecallReview, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, TtsProvider, VoiceChoice, VoiceGender, VoiceHistoryItem, VoiceLine, VoiceSegment, VoiceSettings,
   VoiceAge, VoiceCastNote, VoiceCastReply, VoiceGloss, VoicePlanItem, VoiceSettingsReply, VoiceSlot, VoiceSpeaker,
 } from "../types";
 import { useCopyStatus } from "../useCopyStatus";
@@ -557,6 +558,22 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     setEntries(next);
   };
 
+  // Pronunciation in conversation (docs/VOICE.md §Pronunciation in
+  // conversation): the session's coaching dial (adults in a Mandarin
+  // session; kids have none and are always gentle), read by the async
+  // turn flow through its ref; the tone marks of the learner's lines, by
+  // entry index, with the take each was scored on (held in memory only);
+  // and the last recording sent for transcription, for its line's marks.
+  const showDial = mode === "adult" && scoresTonesHere(locale);
+  const [coaching, setCoachingState] = useState<Coaching>("light");
+  const coachingRef = useRef<Coaching>("light");
+  const setCoaching = (c: Coaching) => {
+    coachingRef.current = c;
+    setCoachingState(c);
+  };
+  const [tones, setTones] = useState<ReadonlyMap<number, LineTones>>(() => new Map());
+  const takeRef = useRef<{ text: string; wav: Blob } | null>(null);
+
   useEffect(() => {
     let live = true;
     getVoiceSettings(langs).then(
@@ -602,7 +619,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     // way dies with the page).
     const onPageHide = () => void closeConversation(true);
     window.addEventListener("pagehide", onPageHide);
-    const offSwitch = onBeforeSwitch(() => closeConversation(true));
+    const offSwitch = onBeforeSwitch(() => {
+      // The tone-coaching dial is the session's, and so the learner's and
+      // language's: the next one starts at the default. (The tab is keyed
+      // only by mode, so this panel stays mounted across the switch.)
+      coachingRef.current = "light";
+      setCoachingState("light");
+      return closeConversation(true);
+    });
     return () => {
       window.removeEventListener("pagehide", onPageHide);
       offSwitch();
@@ -1135,7 +1159,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         // (it lives in the snapshot): an unsaved turn plays the scene this
         // session drew, as a picked one; the next conversation keeps it.
         const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
-        const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs };
+        const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs, ...(mode === "adult" ? { coaching: coachingRef.current } : {}) };
         const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal, onLine);
         if (c) {
           inFlight.current.set(c.id, req);
@@ -1194,6 +1218,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         { role: "master", lines: r.lines, ...(r.glosses?.length ? { glosses: r.glosses } : {}), ...(r.choices?.length ? { choices: r.choices } : {}), ...(r.stage ? { stage: r.stage } : {}), ...(notes.length ? { castNotes: notes } : {}) },
       ]);
       if (r.plan?.length) setPlan(r.plan);
+      // The learner line's tone marks (an adult Mandarin turn whose
+      // recording was scored), under that line, with the take it was
+      // scored on when this message is that recording's words.
+      const marks = r.pronunciation;
+      if (marks && message) {
+        const take = takeRef.current?.text === message ? takeRef.current.wav : null;
+        setTones((was) => new Map(was).set(history.length - 1, { reply: marks, take }));
+      }
       // A kids session's uncertain words are checked in the background as
       // they appear (ld-0mn, server/sessionReadings.ts): read this
       // language's readings again now (the last turn's check) and once more
@@ -1529,8 +1561,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // Practice speech is taken as the target language with the expected
       // phrases as hints; a direct request is the native language, no hints.
       const locales = (toMaster ? [nativeLocale] : [locale, nativeLocale]).filter((l): l is string => !!l);
-      const { text } = await transcribe(wav, locales, ctrl.signal, toMaster ? [] : expectedPhrases(entriesRef.current), toMaster ? undefined : convRef.current?.id);
+      const { text } = await transcribe(wav, locales, ctrl.signal, toMaster ? [] : expectedPhrases(entriesRef.current), toMaster ? undefined : convRef.current?.id, !toMaster && mode === "adult" ? coachingRef.current : undefined);
       if (ctrl.signal.aborted || gen !== genRef.current) return;
+      // The take this transcript came from: its line's tone marks play it.
+      takeRef.current = toMaster || !text ? null : { text, wav };
       if (!text) {
         setPhase("idle");
         setNotice("Couldn't make out any words — try again.");
@@ -1696,6 +1730,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     castRef.current = null;
     setCast(null);
     setSession([]);
+    setTones(new Map());
+    takeRef.current = null;
     setPicked(null);
     setPlan([]);
     startedAtRef.current = null;
@@ -1915,9 +1951,15 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       )}
 
       {/* Pinyin / zhuyin over the transcript's Chinese (nothing for other languages). */}
-      {started && <RubyToggle locale={locale} className="self-end" />}
+      {(started || (canStart && showDial)) && (
+        <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 self-stretch">
+          {showDial && <CoachingDial value={coaching} onChange={setCoaching} />}
+          {started && <RubyToggle locale={locale} />}
+        </div>
+      )}
       {started && (
         <Transcript
+          tones={tones}
           entries={entries}
           plan={plan}
           playing={playing}
@@ -2754,7 +2796,39 @@ function VoiceWave() {
   );
 }
 
+/** The dial's three settings, each with the note shown beside it. */
+const COACHING_CHOICES: { value: Coaching; label: string; note: string }[] = [
+  { value: "off", label: "Off", note: "No tone checks: nothing is scored, shown or kept." },
+  { value: "light", label: "Light", note: "Tone marks under your lines; the dojo master steps in briefly on a clear miss, at most once a turn." },
+  { value: "strict", label: "Strict", note: "As light, and the dojo master asks you to say a missed word again." },
+];
 
+/** The session's tone-coaching dial (adults, Mandarin): the same pill group
+ *  as the readings toggle beside it. Takes effect from the next recording. */
+function CoachingDial({ value, onChange }: { value: Coaching; onChange: (c: Coaching) => void }) {
+  const note = COACHING_CHOICES.find((c) => c.value === value)?.note ?? "";
+  return (
+    <div role="group" aria-label="Tone coaching" className="flex items-center gap-1" data-testid="voice-coaching">
+      <span className="text-sm text-fg-3 sm:text-xs" aria-hidden="true" title={note}>
+        Tone coaching
+      </span>
+      <span className="sr-only">{note}</span>
+      {COACHING_CHOICES.map((c) => (
+        <button
+          key={c.value}
+          type="button"
+          aria-pressed={value === c.value}
+          title={c.note}
+          className={`rounded-full border px-2.5 py-0.5 text-sm sm:text-xs ${value === c.value ? "border-accent bg-accent-soft text-accent" : "border-line text-fg-2 hover:bg-raised"}`}
+          onClick={() => onChange(c.value)}
+          data-testid={`voice-coaching-${c.value}`}
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /** A quick-request chip above the composer, or a check-in answer. */
 function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: (e: MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {

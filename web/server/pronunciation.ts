@@ -16,7 +16,10 @@ import type { PronunciationModelReply, PronunciationScoreReply } from "../shared
 // browser globals at the top level; scripts/tests/server-imports.test.mjs
 // loads this chain under plain node to catch that.
 import { charReadings, readCodePoints, validateHint, withHints } from "../src/script/zh.ts";
+import { clipOf } from "../../scripts/db/pronunciation.ts";
+import { readClip } from "../../scripts/pronunciation-clips.mjs";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
+import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, sendJson, subPath } from "./sse.ts";
@@ -144,7 +147,7 @@ const azureCalls = azureLimiter();
 /** Why this route stopped without an answer for the page, for the log: a
  *  fixed word, never anything from the request, the engine or Azure. */
 class ScoreFailure extends Error {
-  readonly kind: "timeout" | "crash" | "error" | "slow_body";
+  readonly kind: "timeout" | "crash" | "error" | "slow_body" | "cancelled";
   constructor(kind: ScoreFailure["kind"]) {
     super(`pronunciation: ${kind}`);
     this.kind = kind;
@@ -213,17 +216,24 @@ function runScorer(
   syllables: ExpectedSyllable[],
   azure: AzureAssessment | null,
   timings: { startMs: number; endMs: number }[] | null = null,
+  /** A live turn's (scoreLive): aborted when its score is dropped (late,
+   *  replaced), which ends the worker at once (a ScoreFailure "cancelled"). */
+  signal?: AbortSignal,
 ): Promise<{ result: ScoreResult; frames: TakeFrames; durationMs: number }> {
+  if (signal?.aborted) return Promise.reject(new ScoreFailure("cancelled"));
   return new Promise((resolve, reject) => {
     const w = new Worker(SCORER.worker, { workerData: { wav, syllables, azure, timings } });
     let settled = false;
+    const onAbort = () => finish(() => reject(new ScoreFailure("cancelled")));
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       void w.terminate();
       fn();
     };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => finish(() => reject(new ScoreFailure("timeout"))), SCORER.timeoutMs);
     w.once("message", (m: { result?: ScoreResult; frames?: TakeFrames; durationMs?: number; error?: string }) =>
       finish(() => (m?.result && m.frames ? resolve({ result: m.result, frames: m.frames, durationMs: Number(m.durationMs) || 0 }) : reject(new ScoreFailure("error")))),
@@ -244,7 +254,12 @@ async function assessWithAzure(
    *  the paid slot, right before the request goes; false means the clip's
    *  call was made before, and none is made now. */
   claim?: () => boolean,
+  /** A live turn's call (scoreLive): its own slot instead of the user's
+   *  interactive one, its own short timeout, and the score's signal (an
+   *  abort ends the request: a ScoreFailure "cancelled"). */
+  live?: { slot: <T>(fn: () => Promise<T>) => Promise<T>; timeoutMs: number; signal: AbortSignal },
 ): Promise<{ azure: AzureAssessment } | { fallback: "failed" | "busy" | "limit" }> {
+  const timeoutMs = live?.timeoutMs ?? AZURE_TIMEOUT_MS;
   const failed = (why: string) => {
     console.log(`[lingo-dojo] pronunciation: Azure ${why}; ${claim ? "reading the model clip locally" : "scoring locally"}`);
     return { fallback: "failed" as const };
@@ -266,22 +281,20 @@ async function assessWithAzure(
     if (res && !res.writableEnded) ctrl.abort();
   };
   res?.on("close", onClose);
+  const signals = [ctrl.signal, AbortSignal.timeout(timeoutMs), ...(live ? [live.signal] : [])];
   try {
     let status = 0;
-    const json = await paidSlot(
-      ctx.user.id,
-      async () => {
-        if (claim && !claim()) {
-          status = -1;
-          return null;
-        }
-        const r = await fetch(request.url, { ...request.init, signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(AZURE_TIMEOUT_MS)]) });
-        status = r.status;
-        if (!r.ok) return null;
-        return (await r.json().catch(() => undefined)) as unknown;
-      },
-      "pronunciation checks",
-    );
+    const call = async () => {
+      if (claim && !claim()) {
+        status = -1;
+        return null;
+      }
+      const r = await fetch(request.url, { ...request.init, signal: AbortSignal.any(signals) });
+      status = r.status;
+      if (!r.ok) return null;
+      return (await r.json().catch(() => undefined)) as unknown;
+    };
+    const json = await (live ? live.slot(call) : paidSlot(ctx.user.id, call, "pronunciation checks"));
     // The clip's one call was made before (another request won the claim).
     if (json === null && status === -1) return { fallback: "failed" };
     if (json === null) return failed(`answered ${status}`);
@@ -292,7 +305,8 @@ async function assessWithAzure(
   } catch (e) {
     if (e instanceof HttpError && e.status === 429) return { fallback: "busy" };
     if (ctrl.signal.aborted) throw new HttpError(499, "cancelled");
-    return failed((e as Error)?.name === "TimeoutError" ? `gave no answer in ${AZURE_TIMEOUT_MS / 1000}s` : "could not be reached");
+    if (live?.signal.aborted) throw new ScoreFailure("cancelled");
+    return failed((e as Error)?.name === "TimeoutError" ? `gave no answer in ${timeoutMs / 1000}s` : "could not be reached");
   } finally {
     res?.off("close", onClose);
   }
@@ -357,6 +371,118 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   } finally {
     workers--;
     scoring.delete(ctx.user.id);
+  }
+}
+
+/** A live turn's score (stage 2, livePronunciation.ts), or why there is
+ *  none: the same limits, engine and worker as the score route. */
+export type LiveScore =
+  | { result: ScoreResult; reply: PronunciationScoreReply; engine: "azure" | "local"; durationMs: number }
+  | { skip: "busy" | "audio" | "reading" | "failed" };
+
+/**
+ * Live scoring's own budgets, apart from everything a learner waits on
+ * (docs/VOICE.md §Pronunciation in conversation, "Cost per turn and its
+ * limits"):
+ *  - `workers`: worker threads for live turns on the whole server, beside
+ *    (never out of) the score route's MAX_WORKERS, so a live score never
+ *    turns an explicit tone check away; past it the turn isn't scored;
+ *  - one live Azure call per user at a time, out of neither the user's
+ *    interactive paid slots (the reply's speech needs them next) nor the
+ *    background slot (a picture run holds it for minutes: every live score
+ *    would be skipped or late);
+ *  - `azureTimeoutMs`: a live Azure call is abandoned past this, and the
+ *    local scorer answers. The turn waits for the score at most LIVE.waitMs
+ *    (1.2 s) from its arrival, which comes a few hundred ms after the
+ *    transcription that started the call; past ~2 s there's nobody to give
+ *    the answer to.
+ * Mutable for the tests, like SCORER.
+ */
+export const LIVE_SCORER = { workers: 1, azureTimeoutMs: 2000 };
+let liveWorkers = 0;
+const liveAzure = new Set<string>();
+
+/** Take one of a live budget: its release (run once), also run at once
+ *  when `signal` aborts, so a dropped score frees its place before its
+ *  promise has even settled (a replacing transcription finds it free). Null
+ *  when taken (or already aborted). */
+function holdLive(take: () => boolean, give: () => void, signal: AbortSignal): (() => void) | null {
+  if (signal.aborted || !take()) return null;
+  let held = true;
+  const release = () => {
+    if (!held) return;
+    held = false;
+    signal.removeEventListener("abort", release);
+    give();
+  };
+  signal.addEventListener("abort", release, { once: true });
+  return release;
+}
+
+/**
+ * Score a Go-tab turn's recording against what transcription heard (stage
+ * 2, ld-ne0.3; docs/VOICE.md §Pronunciation in conversation): the score
+ * route's engine, worker script and per-minute Azure cap, called by the
+ * server in the background (livePronunciation.ts startLive), never by a
+ * request of its own, on live scoring's own budgets (LIVE_SCORER). `signal`
+ * aborts it when the score is dropped (late, replaced, expired): the Azure
+ * request and the worker end at once and their places are freed. Nothing
+ * here may fail the turn: every way out that isn't a score is a `skip`,
+ * and a busy budget is a skip at once (no queue: the turn would not wait for
+ * it anyway). The reply is shaped as stage 1's (`kids`: no score); the
+ * caller applies the live bar.
+ */
+export async function scoreLive(
+  ctx: LearnerCtx,
+  { wav, text, locale, kids, signal }: { wav: Uint8Array; text: string; locale: string; kids: boolean; signal: AbortSignal },
+): Promise<LiveScore> {
+  if (signal.aborted) return { skip: "failed" };
+  if (liveWorkers >= LIVE_SCORER.workers) return { skip: "busy" };
+  const a = readScoreAudio(wav);
+  if (a.error !== undefined) return { skip: "audio" };
+  const t = readScoreText(text);
+  if (t.error !== undefined) return { skip: "reading" };
+  const s = scoreSyllables(t.text, readCodePoints(t.text, locale, { cache: false }));
+  if (s.error !== undefined) return { skip: "reading" };
+  // The worker place is taken now, before Azure, so a recording paid for at
+  // Azure is never then left without a worker; it is freed on abort.
+  const releaseWorker = holdLive(() => liveWorkers < LIVE_SCORER.workers && ++liveWorkers > 0, () => void liveWorkers--, signal);
+  if (!releaseWorker) return { skip: "busy" };
+  try {
+    const keys = voiceKeys();
+    const choice = scoringEngine({ keys });
+    let azure: AzureAssessment | null = null;
+    let fallback: PronunciationScoreReply["fallback"] = choice.why;
+    if (choice.engine === "azure") {
+      const user = ctx.user.id;
+      const slot = async <T,>(fn: () => Promise<T>): Promise<T> => {
+        const release = holdLive(() => !liveAzure.has(user) && !!liveAzure.add(user), () => void liveAzure.delete(user), signal);
+        if (!release) throw new HttpError(429, "busy");
+        try {
+          return await fn();
+        } finally {
+          release();
+        }
+      };
+      // No `res`: nothing waits on this request's connection (the
+      // transcription has answered); the call ends on its own short timeout
+      // or when the score is dropped.
+      const out = await assessWithAzure(null, ctx, { wav, text: t.text, locale, keys }, undefined, { slot, timeoutMs: LIVE_SCORER.azureTimeoutMs, signal });
+      if ("azure" in out) azure = out.azure;
+      else fallback = out.fallback;
+    }
+    const { result, durationMs } = await runScorer(wav, s.syllables, azure, null, signal);
+    const engine = azure ? "azure" : "local";
+    // The engine and the count only, as the score route logs: never the text.
+    console.log(`[lingo-dojo] pronunciation (live): ${engine}${!azure && fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
+    return { result, engine, durationMs, reply: scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids, text: t.text, locale }) };
+  } catch (e) {
+    const kind = e instanceof ScoreFailure ? e.kind : "error";
+    if (kind === "cancelled") console.log("[lingo-dojo] pronunciation (live): scoring stopped; its score was dropped");
+    else console.error(`[lingo-dojo] pronunciation (live): scoring failed (${kind}); the turn goes on without it`);
+    return { skip: "failed" };
+  } finally {
+    releaseWorker();
   }
 }
 
@@ -519,6 +645,24 @@ async function guardedModel(req: IncomingMessage, res: ServerResponse, ctx: Lear
   }
 }
 
+const CHECK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * GET /api/pronunciation/clips/:id: a flagged turn's kept clip (stage 2,
+ * docs/DATA.md §Pronunciation in sessions), by its check's id, to the
+ * learner and language it belongs to only: any other id (another learner's,
+ * another language's, a check that kept no audio, a deleted conversation's)
+ * is the same 404. Never cached by the browser beyond the page.
+ */
+async function serveClip(res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
+  if (!CHECK_ID_RE.test(id)) throw new HttpError(404, "no such clip");
+  const clip = await clipOf(rawDb(), ctx.language, id.toLowerCase());
+  const bytes = clip ? readClip(clip.conversationId, clip.file) : null;
+  if (!bytes) throw new HttpError(404, "no such clip");
+  res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": bytes.length, "Cache-Control": "private, no-store" });
+  res.end(bytes);
+}
+
 /** /api/pronunciation, mounted with wrap's `learner: true`. */
 export async function handlePronunciation(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const parts = subPath(req).split("/").filter(Boolean);
@@ -529,6 +673,10 @@ export async function handlePronunciation(req: IncomingMessage, res: ServerRespo
   if (parts.length === 1 && parts[0] === "model") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     return guardedModel(req, res, ctx);
+  }
+  if (parts.length === 2 && parts[0] === "clips") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return serveClip(res, ctx, parts[1]);
   }
   sendJson(res, 404, { error: "no such route" });
 }

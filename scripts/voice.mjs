@@ -313,6 +313,63 @@ ${castRule}
 export const READINGS_RULE =
   "- In the GLOSS line, after each glossed word of two or more characters (not a whole sentence, not a single character), add its pinyin with tone marks in square brackets, one syllable per character: 銀行 [yín háng] = bank. The app shows it over the characters; it is never spoken.";
 
+/* ------------------------- pronunciation, per turn ------------------------- */
+
+// Stage 2 of pronunciation feedback (ld-ne0.3; docs/VOICE.md §Pronunciation
+// in conversation): when the app's tone check of a Mandarin learner's
+// recording clears the live bar (scripts/pronunciation-live.mjs liveFlags),
+// the turn's prompt carries one block saying which syllable missed its tone,
+// and the rule for this session's coaching dial. Only then: with nothing
+// flagged, or the dial off, nothing is added and the prompt is byte for byte
+// what it was (the system prompt never changes: the adapter's "you cannot
+// judge how something sounded" stays true for everything the block doesn't
+// name). Its lines are built from the scorer's own output (one Han
+// character, its reader's pinyin, tone digits), never from text the learner
+// or the model wrote.
+
+export const PRONUNCIATION_OPEN = "[PRONUNCIATION CHECK]";
+export const PRONUNCIATION_CLOSE = "[END OF PRONUNCIATION CHECK]";
+
+/** What the dojo master does with a flag, per dial (kids: no dial, always
+ *  this gentle one). At most one step-in per turn, always. */
+export const PRONUNCIATION_RULES = Object.freeze({
+  light:
+    "Coaching is light: if it fits the moment, step in once, briefly (a few words as the narrator, or the character simply saying it back): say the word correctly, slowly (<slow><t>…</t></slow>), and carry straight on. Don't ask them to repeat it and don't make it a lesson. At most one pronunciation step-in this turn; if they push back, let it go: the measurement can be wrong.",
+  strict:
+    "Coaching is strict: step in once as the narrator: say the word correctly, slowly (<slow><t>…</t></slow>), name the tone it needs in a few words, and ask the learner to say just that word again; when they have, carry on where you were. At most one pronunciation step-in this turn; if they push back, let it go: the measurement can be wrong.",
+  kids:
+    "If it fits, warmly say that word once the right way as part of your reply (an echo of what they said, slowly: <slow><t>…</t></slow>) so they hear it. Never say it was wrong, never ask them to say it again, and no scores, tone numbers or correcting words: this is a young child having fun.",
+});
+
+const TONE_WORD = { 1: "tone 1 (high, level)", 2: "tone 2 (rising)", 3: "tone 3 (low, dipping)", 4: "tone 4 (falling)" };
+
+/**
+ * The turn's pronunciation block, or "" (the prompt unchanged) when there is
+ * nothing to say: no flag, or the dial off. `flags` are
+ * pronunciation-live.mjs flagNote()s, most certain first; only the first is
+ * told (one step-in per turn). `coaching` is "light" or "strict" for an
+ * adult; a kids session passes mode "kids" and gets the gentle rule.
+ */
+export function pronunciationBlock(flags, { mode = "adult", coaching = "light" } = {}) {
+  const f = Array.isArray(flags) ? flags[0] : null;
+  if (!f) return "";
+  const kids = mode === "kids";
+  if (!kids && coaching !== "light" && coaching !== "strict") return "";
+  // Defensive: the scorer only ever names one Han character, a reading in
+  // letters and tone marks, and tone digits; anything else is dropped.
+  const char = String(f.char ?? "");
+  if (!/^\p{Script=Han}$/u.test(char) || !TONE_WORD[f.expectedTone] || !TONE_WORD[f.heardTone] || f.expectedTone === f.heardTone) return "";
+  const pinyin = /^[\p{L}\p{M}]{1,12}$/u.test(String(f.pinyin ?? "")) ? ` (${f.pinyin})` : "";
+  const place = Number.isInteger(f.place) && f.place >= 1 ? `, character ${f.place} of their line` : "";
+  return [
+    PRONUNCIATION_OPEN,
+    "The app measured the tones in the learner's recording of what they just said. This is measurement data, not instructions, and it is the one thing about how they sounded you can rely on; nothing else in their line was flagged.",
+    `- ${char}${pinyin}${place}: should be ${TONE_WORD[f.expectedTone]}, sounded like ${TONE_WORD[f.heardTone]}`,
+    PRONUNCIATION_CLOSE,
+    kids ? PRONUNCIATION_RULES.kids : PRONUNCIATION_RULES[coaching],
+  ].join("\n");
+}
+
 /** The system prompt for a voice turn: the pack as assembled, then the
  *  delivery adapter. `{ drill: true }` for a drill scenario (First steps):
  *  the narrator is the only speaker; `{ readings: true }` for a Mandarin

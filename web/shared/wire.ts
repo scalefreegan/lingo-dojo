@@ -763,6 +763,14 @@ export interface VoiceSegment {
  *  each provider's own setting for "slow" (scripts/voice.mjs speechPace). */
 export type SpeechPace = "normal" | "slow";
 
+/** The Go tab's pronunciation coaching dial, per session (docs/VOICE.md
+ *  §Pronunciation in conversation; scripts/pronunciation-live.mjs). A word,
+ *  like the pace: "off" (nothing is scored, shown or kept), "light" (the
+ *  default: the dojo master may step in once, briefly, on a clear tone
+ *  miss) or "strict" (it asks for that word again). Adults only: a kids
+ *  session sends none (else 400) and is always gentle. */
+export type Coaching = "off" | "light" | "strict";
+
 /** A /api/voice/speak reply's header, present only when the piece was asked
  *  for slow and the provider, model or voice can't slow down itself (Eleven
  *  v3/v4, an Azure HD voice): the clip is at normal speed and the browser
@@ -840,7 +848,20 @@ export interface VoiceTurnRequest {
    *  conversation made after turns went unsaved starts where saving stopped,
    *  so those turns are stored too. */
   conversationStart?: number;
+  /** The pronunciation coaching dial (adults; absent: "light"). The same
+   *  word goes with the turn's transcription (/api/voice/transcribe
+   *  `coaching=`), which is where scoring starts. A kids turn sends none. */
+  coaching?: Coaching;
 }
+
+/** The tone marks of the learner's line in a Go-tab turn (adults only):
+ *  stage 1's reply shape, with the live bar applied (an engine miss below
+ *  it is "not sure", reason "live_bar"), no score and no compare frames. */
+export type LivePronunciation = PronunciationScoreReply & {
+  /** The kept clip of a flagged turn (GET /api/pronunciation/clips/:id),
+   *  when this turn's audio was kept. */
+  clipId?: string;
+};
 
 export interface VoiceTurnReply {
   lines: VoiceLine[];
@@ -867,6 +888,10 @@ export interface VoiceTurnReply {
   /** The review block this turn's prompt carried (chosen as of the
    *  conversation's start), so the Go tab shows what the session revisits. */
   review?: RecallReview;
+  /** The tone marks of the learner's message (an adult Mandarin session
+   *  with the dial on, when its transcription was scored in time); absent
+   *  otherwise, and always for kids. */
+  pronunciation?: LivePronunciation;
 }
 
 /** POST /api/voice/turn with `Accept: text/event-stream` (docs/VOICE.md

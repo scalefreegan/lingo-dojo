@@ -259,6 +259,11 @@ declare module "*/scripts/voice.mjs" {
   export const PACES: readonly import("../shared/wire.ts").SpeechPace[];
   export function paceOf(v: unknown): import("../shared/wire.ts").SpeechPace | null;
   export const SLOW_RATE: number;
+  export const PRONUNCIATION_OPEN: string;
+  export const PRONUNCIATION_CLOSE: string;
+  export const PRONUNCIATION_RULES: Readonly<{ light: string; strict: string; kids: string }>;
+  /** The turn's pronunciation block, or "" (nothing flagged, or the dial off). */
+  export function pronunciationBlock(flags: import("../../scripts/pronunciation-live.mjs").FlagNote[], opts?: { mode?: Mode; coaching?: import("../shared/wire.ts").Coaching }): string;
   export const SAY_SLOW_WPM: number;
   export function speechPace(provider: string, pace: import("../shared/wire.ts").SpeechPace, o?: { model?: string; voice?: string }): { speed: number; playbackRate: number };
   export function elevenVoicesRequest(o: { key: string }): Req;

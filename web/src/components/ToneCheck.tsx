@@ -50,6 +50,10 @@ function unsureWhy(reason: string | undefined): string {
       return "too quiet to read";
     case "every_tone":
       return "this character has readings in every tone, so on its own any tone could be right";
+    case "live_bar":
+      // A conversation turn's miss below the live bar (pronunciation-live.mjs
+      // liveReply): there was something, but not enough to say so.
+      return "possibly a slip, but not certain enough to flag in conversation";
     default:
       return "the recording wasn't clear enough here to tell";
   }

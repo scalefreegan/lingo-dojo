@@ -4264,6 +4264,71 @@ The rules:
 - Tests: `scripts/tests/db-migration-0017.test.mjs`,
   `scripts/tests/kids-readings.http.test.mjs`.
 
+## Pronunciation in sessions (ld-ne0.3, migration 0022)
+
+Stage 2 of pronunciation feedback (docs/VOICE.md §Pronunciation in
+conversation): an adult Mandarin Go-tab turn's tone check is kept with the
+turn, and a flagged turn's recording is kept on this Mac.
+
+**`pronunciation_checks`**, one row per scored learner turn:
+
+| column | |
+|---|---|
+| `id` | uuid; also the clip's file name |
+| `learner_id`, `language_profile_id` | owners; (language_profile_id, learner_id) → language_profiles, cascade |
+| `conversation_id` | → conversations (id, language_profile_id), cascade |
+| `turn_id` | the learner turn scored; → turns (id, language_profile_id), cascade; unique |
+| `engine` | `azure` or `local` |
+| `coaching` | the dial as the turn was sent: `light` or `strict` (`off` is never scored) |
+| `syllables` | jsonb, per syllable: `char`, `pinyin`, `expectedTone`, `accept`, `verdict` (the live bar applied: `ok`, `off`, `unsure`), `heardTone` (on ok and off), `reason` (on unsure, `live_bar` for an engine miss below the bar), `margin`, `confidence`, `startMs`, `endMs` |
+| `flagged` | how many syllables passed the live bar |
+| `clip_file`, `clip_bytes`, `clip_ms` | the kept clip, all three or none; only with `flagged > 0`; the file name a uuid plus `.wav` (a CHECK) |
+| `created_at` | |
+
+Indexes: by conversation (the cap, the delete) and by (language, time)
+(stage 3's trend). No row-level security: the content agent's reader never
+reads it. Queries only in `scripts/db/pronunciation.ts`, through
+`forLanguageProfile`.
+
+- **Written inside the turn's transaction** (`saveTurn`, `recordCheck`),
+  on the learner row the write inserted for the message, so a check exists
+  only for a stored turn. A learner row is never rewritten (planTurnWrite
+  drops at most a final master reply), so a check stays with its turn; the
+  cascades cover any later change.
+- **Clips**: `<LINGO_CLIPS_DIR or <data dir>/clips>/<conversation>/<check
+  id>.wav` (`scripts/pronunciation-clips.mjs`): 0600 files in 0700 folders,
+  written atomically before the transaction and kept only if the row keeps
+  them. **At most `MAX_CLIPS_PER_CONVERSATION` (20) per conversation**,
+  counted under the conversation row's FOR UPDATE lock: each is one turn of
+  at most 30 s of 16 kHz mono (under 1 MB), so a session keeps under 20 MB.
+  Past the cap a flagged turn keeps its row without audio, and the file
+  written for it is removed at once, as it is when the turn isn't saved.
+  Only a flagged turn's audio is ever offered; every other recording lives
+  only in memory (at most 2 minutes, one per learner) and goes.
+- **Served** by `GET /api/pronunciation/clips/:id` (`wrap`, `learner:
+  true`): the check must be the active language's (`clipOf`) and keep a
+  file; anything else is the same 404. `Cache-Control: private,
+  no-store`. Nothing in the app plays them yet (stage 3, ld-ne0.4, and a
+  History player are where they'd be used); the Go tab plays the take it
+  holds in memory.
+- **Deleted with the conversation**: the rows by cascade, the folder by
+  `DELETE /api/conversations/:id` (a failure to remove it is logged, never
+  the learner's). The app has no learner or language delete; a database
+  restore without the folder just has rows whose clips 404.
+- **Kids: nothing is stored**, no row and no clip, a privacy-conservative
+  default for children's voices. Their turns are still scored for the
+  dojo master's gentle rule (and may go to Azure, the owner's stage 1
+  decision). If the owner wants kids' checks for a grown-up's view later,
+  storing the row (not the audio) is a one-line change in
+  `web/server/livePronunciation.ts` `takeLive`.
+- **For stage 3** (ld-ne0.4: the recap's tone score against last time, the
+  Practice feed, the per-tone trend) the per-syllable record above is
+  what it reads; the transcript itself is on the turn row.
+- Tests: `scripts/tests/db-migration-0022.test.mjs` (the table, its
+  checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`
+  (written with the turn, the cap, served to its learner only, gone with
+  the conversation, nothing for kids).
+
 ## Docs to update as phases land
 
 - `PRD.md`: the "no database" decision, the non-goals (feedback loop; multi-user

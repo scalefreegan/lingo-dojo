@@ -26,7 +26,8 @@ import { hintPhrases } from "../../scripts/db/phrases.ts";
 import { CONVERSATION_ID_RE } from "../../scripts/conversations.mjs";
 import { KEYTERM_SHARE, sessionKeyterms } from "../../scripts/keyterms.mjs";
 import { rawDb } from "./db.ts";
-import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock } from "./conversations.ts";
+import { conversationHints, conversationIdOf, openConversation, playedPack, saveTurn, takeTurnLock, type SaveTurnOut } from "./conversations.ts";
+import { LIVE, dropClip, offerClip, requestCoaching, startLive, takeLive, transcribeCoaching } from "./livePronunciation.ts";
 import { bankLocaleOf, runLookup, turnRecall } from "./recall.ts";
 import { logHints, readsHints, settleHints, wantsReadings } from "./hints.ts";
 import { revisitBlock, storedRevisit } from "../../scripts/revisit.mjs";
@@ -287,6 +288,9 @@ export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerRes
     .split(",")
     .map((s) => s.trim())
     .filter((s) => LOCALE_RE.test(s));
+  // The pronunciation coaching dial (livePronunciation.ts): a bad word is a
+  // 400 before anything is read or paid for.
+  const coaching = transcribeCoaching(req, ctx);
   const provider = (await readVoiceSettings(ctx.user.id)).stt;
   // Only Scribe takes keyterms: no reads for the other providers.
   const keyterms = provider === "elevenlabs" && (heard.length || params.has("conversation")) ? await sessionTerms(req, ctx, heard, params.get("conversation")) : [];
@@ -295,6 +299,14 @@ export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerRes
   // In one of the user's paid slots (paid.ts), taken after the upload so a
   // slow one holds nothing.
   const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime, locales, keyterms }), "transcriptions");
+  // A listening turn of a saved conversation (the page names one only
+  // then): its tone check starts now, in the background, and the turn picks
+  // it up (docs/VOICE.md §Pronunciation in conversation). Never in the way
+  // of the words going back.
+  const conversation = params.get("conversation");
+  if (conversation && CONVERSATION_ID_RE.test(conversation) && text) {
+    startLive(ctx, { conversationId: conversation.toLowerCase(), text, wav: audio, locale: locales[0] ?? "", coaching });
+  }
   sendJson(res, 200, { text, provider } satisfies TranscribeReply);
 }
 
@@ -398,6 +410,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
   const body = await readJsonBody<Partial<VoiceTurnRequest>>(req);
   // The active learner's mode; a body naming the other one is a 400.
   const mode = learnerMode(req, ctx, body?.mode ?? undefined);
+  // The pronunciation coaching dial: a word, else a 400; none from kids.
+  const coaching = requestCoaching(ctx, body?.coaching);
+  // The turn's wait for its tone check is counted from here.
+  const arrived = Date.now();
   if (!body?.pack || typeof body.pack !== "object") throw new HttpError(400, "body must carry the pack");
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (message.length > REPLAY_MAX_CHARS) throw new HttpError(413, "message too long");
@@ -436,6 +452,15 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const pack = playedPack(body.pack, conversation);
     // The active learner and language are the profile (content.profile is the file's).
     const content = { ...loadContent(modeRoot(mode)), profile: learnerProfile(ctx.learner, ctx.language) };
+    // The session's target locale: the conversation's own (its pack's
+    // variant), else the language profile's. A Mandarin session asks for
+    // reading hints on its glosses; no other language's prompt changes.
+    const targetLocale = (conversation ? localeFor(conversation.targetLanguage, conversation.targetVariant) : null) ?? bankLocaleOf(ctx.language) ?? "";
+    // The tone check of the recording this message was transcribed from
+    // (livePronunciation.ts: started by the transcription), waited for
+    // beside the reads below and at most LIVE.waitMs from the turn's
+    // arrival. Null for most turns; never fails one.
+    const live = conversation && message ? takeLive(ctx, { conversationId: conversation.id, message, locale: targetLocale, coaching, deadline: arrived + LIVE.waitMs }) : Promise.resolve(null);
     // Recall (docs/DATA.md §Recall in sessions), from one read of the bank:
     // the review block (the phrases stored on the conversation when it
     // began, read back by id, so every turn of a session and its recap offer
@@ -469,10 +494,6 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     // unless the pack's own narrator unit fixes it.
     // A session that builds on an earlier attempt of this scene (docs/DATA.md
     // §Revisit) carries a briefing on it, frozen when it began; adults only.
-    // The session's target locale: the conversation's own (its pack's
-    // variant), else the language profile's. A Mandarin session asks for
-    // reading hints on its glosses; no other language's prompt changes.
-    const targetLocale = (conversation ? localeFor(conversation.targetLanguage, conversation.targetVariant) : null) ?? bankLocaleOf(ctx.language) ?? "";
     const systemPrompt =
       voiceSystemPrompt(markdown, mode, { drill, readings: wantsReadings(targetLocale) }) +
       (pinnedNarratorGender(pack.units) ? "" : narratorDirective(body.narratorGender)) +
@@ -514,7 +535,10 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         throw new HttpError(msg === "cancelled" ? 499 : 502, failureHint(msg) || msg);
       }
     };
-    const notes = [recall.retrieval];
+    // A clear tone miss is one more block after recall's (empty, and the
+    // prompt unchanged, with nothing flagged or the dial off).
+    const scored = await live;
+    const notes = [recall.retrieval, scored?.block ?? ""];
     let run = await ask(notes);
     // LOOKUP: the dojo master asked for the learner's past instead of
     // replying. The server answers it (the bank and past sessions, this
@@ -564,6 +588,9 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const hinted = settleHints(parseGlosses(run.text, { readings: readsHints(targetLocale) }), lines, targetLocale);
     logHints(hinted.stats);
     const reply: VoiceTurnReply = { lines, glosses: hinted.glosses, choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
+    // The learner line's tone marks (adults only: livePronunciation.ts
+    // gives kids none).
+    if (scored?.marks) reply.pronunciation = scored.marks;
     if (conversation) {
       // Stored before the reply goes out, still under the lock. A failed
       // write doesn't cost the learner a reply that's already paid for: the
@@ -572,10 +599,20 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
         role: "master" as const, lines, glosses: reply.glosses, choices: reply.choices, ...(reply.stage ? { stage: reply.stage } : {}), castNotes: reply.castNotes,
         durationMs: run.durationMs, costUsd: run.costUsd,
       };
-      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack, model: settings.model, lookup, review: recall.store }).catch((e) => {
+      // A flagged turn's audio is written first (named by its check's id)
+      // and kept only if the write below keeps its row's clip; otherwise it
+      // goes again at once (keptClip).
+      const pron = scored?.check ? offerClip(conversation.id, scored.check) : null;
+      const out: SaveTurnOut = {};
+      reply.saved = await saveTurn(ctx.language, conversation.id, { screen: all.slice(from), message, master, pack, model: settings.model, lookup, review: recall.store, pronunciation: pron }, out).catch((e) => {
         console.error(`[lingo-dojo] saving a turn of conversation ${conversation.id}:`, e);
         return false;
       });
+      if (pron?.clip) {
+        if (reply.saved && out.clipKept) {
+          if (reply.pronunciation) reply.pronunciation.clipId = pron.id;
+        } else dropClip(conversation.id, pron.clip.file);
+      }
     }
     // A kids Mandarin session's uncertain words are settled as they appear
     // (sessionReadings.ts, ld-0mn): one background check per batch, after
