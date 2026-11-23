@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
-import { scorableText, scoresTonesHere } from "../pronunciationApi";
+import { checksWordsHere, scorableText, scoresTonesHere } from "../pronunciationApi";
 import { speakItProcessing } from "../../shared/tone-text.ts";
 import { startRecording, type MicProcessing, type Recording } from "../recorder";
 import type {
@@ -11,6 +11,9 @@ import { MarkedText, RubyText, RubyToggle } from "./Ruby";
 import PictureGameView from "./PictureGameView";
 import { ToneScoreView } from "./ToneCheck";
 import { useToneScore } from "./useToneScore";
+import { WordScoreView } from "./WordCheck";
+import { useWordScore } from "./useWordScore";
+import { useModelAudio, type ModelAudio } from "./useModelAudio";
 import { Badge, Button, Card, inputClass } from "./ui";
 
 /* Practice over the active language's phrase bank (docs/DATA.md §Practice
@@ -1042,7 +1045,8 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
  * never becomes a review. "Type it instead" makes it a typed produce
  * flashcard. For Mandarin, once a spoken answer is graded, its recording
  * is checked for tones (SpokenTones): marks on the phrase, which never
- * change the grade (stage 1).
+ * change the grade (stage 1). In a language the word check covers, for
+ * its words (SpokenWords, ld-ne0.16), likewise.
  */
 function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
   // Raw for the tone check where there will be one (Mandarin, a phrase it
@@ -1101,7 +1105,7 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           onNext={onNext}
           how={typing ? "wrote" : "said"}
           play={phrasePlayer}
-          extra={!typing && take ? <SpokenTones take={take} result={result} locale={locale} model={phrasePlayer} /> : undefined}
+          extra={!typing && take ? scoresTonesHere(locale) ? <SpokenTones take={take} result={result} locale={locale} model={phrasePlayer} /> : <SpokenWords take={take} result={result} locale={locale} model={phrasePlayer} /> : undefined}
         />
       )}
     </>
@@ -1124,56 +1128,20 @@ function SpokenTones({ take, result, locale, model }: { take: Blob; result: Prac
   return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId: model.phraseId }} />;
 }
 
-/** The phrase's audio, fetched on the first play and kept for the card. */
-function useModelAudio(phraseId: string) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const el = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
-  // Bumped when the card goes: audio that arrives after that is for a card
-  // no longer shown, so it is neither kept nor played over the next one.
-  const gen = useRef(0);
-  const ctrl = useRef<AbortController | null>(null);
-  useEffect(
-    () => () => {
-      gen.current++;
-      ctrl.current?.abort();
-      el.current?.audio.pause();
-      if (el.current) URL.revokeObjectURL(el.current.url);
-      el.current = null;
-    },
-    [phraseId],
-  );
-  async function play() {
-    setError(null);
-    const mine = gen.current;
-    try {
-      if (!el.current) {
-        if (ctrl.current) return; // already fetching: the first tap plays it
-        setBusy(true);
-        const c = new AbortController();
-        ctrl.current = c;
-        let blob: Blob;
-        try {
-          ({ blob } = await phraseAudio(phraseId, c.signal));
-        } finally {
-          if (ctrl.current === c) ctrl.current = null;
-        }
-        if (mine !== gen.current) return;
-        const url = URL.createObjectURL(blob);
-        el.current = { audio: new Audio(url), url };
-      }
-      const a = el.current.audio;
-      a.currentTime = 0;
-      await a.play();
-    } catch (e) {
-      if (mine === gen.current) setError(errText(e));
-    } finally {
-      if (mine === gen.current) setBusy(false);
-    }
-  }
-  return { play: () => void play(), busy, error, phraseId };
+/**
+ * The words of a spoken answer, on the phrase (WordCheck.tsx), for a
+ * language beyond Mandarin that this server checks (ld-ne0.16): Azure only,
+ * so with no keys the server says `not_available` and nothing is shown. The
+ * same rule as the tones: only when the words were right or close. The
+ * grade never changes. Model: the phrase's own audio, as for the tones.
+ */
+function SpokenWords({ take, result, locale, model }: { take: Blob; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
+  const text = result.expected.text;
+  const wanted = checksWordsHere(locale, text) && result.review.verdict !== "wrong";
+  const state = useWordScore(take, text, wanted);
+  if (!wanted) return null;
+  return <WordScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} />;
 }
-type ModelAudio = ReturnType<typeof useModelAudio>;
 
 /** The sentence around a gap: the context with its readings (Mandarin),
  *  the gap a fixed-width box that gives no length away (and no reading:

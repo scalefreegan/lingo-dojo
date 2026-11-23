@@ -2132,9 +2132,10 @@ POST /api/pronunciation/score?text=<Han text>[&readings=all]     body: the WAV (
 pure rules are `scripts/pronunciation-app.mjs`, the scoring runs in a
 worker thread (`scripts/pronunciation-worker.mjs`).
 
-- **Mandarin only.** The language's locale must pass `scoresTones`; any
-  other language is a 422 with code `not_available` and the page shows
-  nothing.
+- **Tones for Mandarin only.** The language's locale must pass
+  `scoresTones` for a tone check. Other languages get the word check
+  (§Words and sounds beyond Mandarin below) on the same route, or a 422
+  `not_available` where there is none, and the page shows nothing.
 - **Validated before any provider call.** The text is 1 to 24 Han
   characters, with punctuation and spaces (which end a tone group and are
   never scored), nothing else, and every character must have a reading
@@ -2653,6 +2654,66 @@ lacks, Azure failing: all are a `skip`, the turn goes on exactly as
 without the feature, and the log says the kind of failure only ("scoring
 failed (crash); the turn goes on without it"). No log line carries the
 transcript, the characters or the audio.
+
+### Words and sounds beyond Mandarin (ld-ne0.16)
+
+The same `POST /api/pronunciation/score?text=` checks a known phrase in
+another language, word by word, with Azure Pronunciation Assessment. The
+measurements and the bars are in docs/pronunciation-proof.md §Words and
+sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
+
+- **Which languages.** The learner's locale (`localeFor`) must be an Azure
+  assessment locale whose language the proof measured (`wordCheckLocale`
+  in `web/shared/word-check.ts`): Spanish (es-MX, es-ES), German (de-DE),
+  French (fr-FR, fr-CA), Japanese, Italian, Korean, Portuguese (pt-BR,
+  pt-PT), Russian, Dutch, Swedish, Hindi, English (en-US, en-GB, en-AU,
+  en-IN) and Arabic (ar-SA, ar-EG). Not: Greek (Azure has none), es-AR,
+  es-CO, de-AT, de-CH, Levantine and Moroccan Arabic, or a locale Azure has
+  that wasn't measured (Cantonese, Polish…). Those are a 422
+  `not_available` and the page shows nothing. Variants are measured only
+  through their language's main locale.
+- **No local fallback.** There is no local word scorer: without Azure keys
+  the answer is 422 `not_available`; when Azure fails it is a 503 ("the
+  words couldn't be checked just now"), and past the user's 12 calls a
+  minute a 429. Never a guess.
+- **The phrase.** NFC, 1 to 12 words (30 characters for Japanese, which has
+  no spaces), the language's own script, letters, marks and punctuation
+  only: no digits or symbols (`readWordText`; 400 otherwise, before any
+  call). The audio limits, the paid slot, the per-user lock and the
+  server's cap are stage 1's; there is no worker thread (nothing is scored
+  locally). Nothing is stored; the log line is `azure (words), N words`.
+- **The marks** (`wordMarks`, `WORD_RULES` in
+  `scripts/pronunciation-words.mjs`), one per word as Azure split the
+  phrase (Japanese is split by Azure: こんばん | は):
+  - **off** when Azure says `Omission` (with miscue detection on, a word
+    said as another comes back as the reference word omitted) or
+    `Mispronunciation` with a score under 30. A low score without Azure's
+    own mark is never off.
+  - **ok** with no error and a score of 85 or more.
+  - **not sure** otherwise, and for a word beside an inserted copy of
+    itself (Azure misaligned it).
+  - On the proof's clips: 2 false alarms in 535 right words, 69 of 105
+    wrong words caught. A single wrong sound inside a word is mostly *not
+    sure*, not off.
+- **No weakest sound.** Azure names phonemes only for en-US; elsewhere a
+  phoneme has a score and a time but an empty name, and its lowest score
+  sat on the changed sound in 4 of 10 one-sound swaps. So a tapped word
+  shows what was heard, Azure's score for it, **▶ Your word** (the take's
+  span for that word, ±80 ms, from Azure's timing, played from the blob in
+  memory) and **🔊 Model** (the phrase's existing audio). The rules keep a
+  `weakSounds` list for a locale the proof later shows to be reliable.
+- **Where.** Practice speak-it (after a grade that isn't wrong; grading is
+  unchanged) and the Phrase bank's phrase card (**Say it, check it**,
+  adults only). `web/src/components/WordCheck.tsx`, `useWordScore.ts`.
+- **Kids.** The recording may go to Azure as stage 1's does; the reply has
+  each word's place only (no verdict, score or timing) and `nudge` when
+  something was off, which the page says as "Let's listen and try that one
+  again!" with a Listen button.
+- **No compare mode.** Compare mode draws pitch against a model's tones;
+  without tones there is no shape to compare, so it stays Mandarin-only.
+- **Not in live turns yet.** `wordMarks` takes Azure's parsed reply and the
+  text only, so a turn's transcript can follow stage 2's path; nothing
+  wires it.
 
 ## The recorder
 

@@ -1663,10 +1663,13 @@ p([
   "- **Free conversation is harder than these phrases**: faster, with tones squeezed by their neighbours, focus and sentence intonation on top, and cuts that depend on the transcript being right. The phrase numbers are an upper bound for it.",
   "- **Neutral tones are not judged**, and sandhi across word groups is taken leniently (both readings accepted), so some real mistakes can never be flagged.",
   azureSection
-    ? "- **Azure is verified live for zh-CN only, on these same synthesized clips.** Not run: zh-TW, Spanish, a recording near the 30-second limit, a learner's voice. `AZURE_RULES` were set from these replies, so the same caveat about tuning applies."
+    ? "- **Azure is verified live for zh-CN only, on these same synthesized clips.** Not run: zh-TW, a recording near the 30-second limit, a learner's voice. (Other languages, for word checks rather than tones: \"Words and sounds beyond Mandarin\" below.) `AZURE_RULES` were set from these replies, so the same caveat about tuning applies."
     : "- **The Azure path is untested against the live service** in this run: no Azure replies are cached (`--azure`).",
 ].join("\n"));
-fs.writeFileSync(REPORT, lines.join("\n").replace(/\n+$/, "\n"));
+// The section beyond Mandarin is written by scripts/pronunciation-proof-words.mjs
+// between its markers: carried over as it stands, at the end.
+const wordsBlock = fs.existsSync(REPORT) ? /<!-- words-proof:start -->[\s\S]*?<!-- words-proof:end -->/.exec(fs.readFileSync(REPORT, "utf8"))?.[0] : null;
+fs.writeFileSync(REPORT, `${lines.join("\n").replace(/\n+$/, "\n")}${wordsBlock ? `\n${wordsBlock}\n` : ""}`);
 console.log(`Wrote ${path.relative(REPO, REPORT)}`);
 if (recordings) writeRecordingsReport();
 for (const [i, r] of results.entries()) console.log(r.key.padEnd(13), JSON.stringify(sums[i]));

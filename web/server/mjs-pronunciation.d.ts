@@ -80,6 +80,19 @@ declare module "*/scripts/pronunciation-app.mjs" {
   ): Reply;
 }
 
+declare module "*/scripts/pronunciation-words.mjs" {
+  type AzureAssessment = import("../../scripts/pronunciation.mjs").AzureAssessment;
+  type Word = import("../shared/wire.ts").PronunciationWord;
+  type Reply = import("../shared/wire.ts").PronunciationWordsReply;
+  /** One word's mark as the engine makes it (the reply strips it for kids). */
+  export type WordMark = Word & { azureError?: string };
+  export const WORD_RULES: Readonly<Record<string, unknown>>;
+  export function wordCheckLocale(locale: string | null | undefined): string | null;
+  export function readWordText(raw: unknown, locale: string): { text: string; error?: undefined } | { error: string; text?: undefined };
+  export function wordMarks(azure: AzureAssessment, text: string, opts?: { locale?: string }): { words: WordMark[]; overall: number | null };
+  export function wordsReply(marks: { words: WordMark[]; overall: number | null }, opts: { kids: boolean; text: string; locale: string }): Reply;
+}
+
 declare module "*/scripts/pronunciation-compare.mjs" {
   type Frames = import("../shared/wire.ts").PronunciationFrames;
   type ModelSyllable = import("../shared/wire.ts").PronunciationModelSyllable;

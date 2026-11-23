@@ -1224,6 +1224,50 @@ export interface PronunciationScoreReply {
   frames?: PronunciationFrames;
 }
 
+/** The same POST /api/pronunciation/score for a language other than
+ *  Mandarin (ld-ne0.16; docs/VOICE.md §Words and sounds beyond Mandarin):
+ *  the phrase's words as Azure heard them, one mark each. Only in a locale
+ *  the proof measured and only with Azure's keys set (else the 422
+ *  `not_available`); there is no local scorer for these languages. */
+export interface PronunciationWord {
+  /** The word as the phrase writes it: `text.slice(start, end)` (UTF-16
+   *  offsets), so the page lays the marks on the phrase, punctuation and
+   *  spaces between the words as written. Azure's own segmentation: in
+   *  Japanese a word is what Azure split out. */
+  text: string;
+  start: number;
+  end: number;
+  /** Absent for kids (no marks). */
+  verdict?: PronunciationVerdict;
+  /** Why it is `off`: Azure heard other sounds there (`sound`), or didn't
+   *  hear the word as itself at all (`missing`: skipped, or said as another). */
+  why?: "sound" | "missing";
+  /** Why it is `unsure`: Azure didn't hear it (`omitted`), or its score is
+   *  between the bars (`unclear`), or it reported something else (`other`). */
+  reason?: "omitted" | "unclear" | "other";
+  /** Azure's 0–100 accuracy for the word (adults only). */
+  score?: number | null;
+  /** Where the word is in the recording (adults only). */
+  startMs?: number | null;
+  endMs?: number | null;
+  /** An off word's weakest sounds, by Azure's name for them, where the
+   *  proof found Azure names them reliably (adults only; else absent). */
+  sounds?: { name: string; score: number }[];
+}
+export interface PronunciationWordsReply {
+  kind: "words";
+  engine: "azure";
+  text: string;
+  /** The Azure locale the words were checked in. */
+  locale: string;
+  words: PronunciationWord[];
+  /** Azure's pronunciation score for the take; null for kids. */
+  overall: number | null;
+  /** Kids only: something was clearly off, so the page offers a gentle
+   *  "listen and try again" (no word is marked). */
+  nudge?: boolean;
+}
+
 /** GET /api/pronunciation/model?sound=<Han>&locale=… | ?phrase=<id> — the
  *  model clip (the narrator's cached audio for that sound or phrase),
  *  analysed on the server once per clip (docs/VOICE.md §Compare mode).

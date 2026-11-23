@@ -130,9 +130,11 @@ test("a score needs a session and the page's own learner; another language is no
   await unpicked.login("nopick");
   const r = await score(unpicked, "大", wav);
   assert.deepEqual([r.status, r.body.code], [409, "stale_learner"]);
-  const spanish = await someone([ADULT]);
+  // Greek: Azure has no pronunciation assessment for it (Spanish and the
+  // other measured languages get the word check: pronunciation-words.http.test.mjs).
+  const greek = await someone([{ ...ADULT, name: "Eleni", targetLanguage: "Greek", targetVariant: "" }]);
   const before = azureCalls.length;
-  const no = await score(spanish, "大", wav);
+  const no = await score(greek, "大", wav);
   assert.deepEqual([no.status, no.body.code], [422, "not_available"]);
   assert.match(no.body.error, /aren't available for this language/);
   assert.equal(azureCalls.length, before, "nothing sent for a language that isn't scored");

@@ -8,6 +8,9 @@ import { ScriptContext, reloadMyReadings, useScript } from "../script/ruby.tsx";
 import { CharTerm, RubyText, RubyToggle } from "./Ruby";
 import { Badge, Button, inputClass } from "./ui";
 import { PictureSection, PicturesBar } from "./WordPictures";
+import { checksWordsHere } from "../pronunciationApi";
+import { SayItCheck } from "./ToneCheck";
+import { useModelAudio } from "./useModelAudio";
 
 /* Phrase bank, in the Library tab: the active language's phrases
  * (docs/DATA.md §Phrase bank), what the dojo master glossed, the scenes'
@@ -538,6 +541,18 @@ function PhraseRow({
 // How long a removed alternate can be put back before it is removed.
 const ALT_UNDO_MS = 5000;
 
+/** Say a phrase and check its words (WordCheck.tsx), with the phrase's
+ *  own audio as the model. Hidden once the server says it doesn't check
+ *  this language (no Azure keys). */
+function SayPhrase({ id, text }: { id: string; text: string }) {
+  const model = useModelAudio(id);
+  return (
+    <section aria-label="Check your pronunciation" className="rounded-lg border border-line p-2" data-testid="phrase-say-it">
+      <SayItCheck text={text} kids={false} words onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} />
+    </section>
+  );
+}
+
 function PhraseDetailView({
   id,
   locale,
@@ -556,6 +571,7 @@ function PhraseDetailView({
   onDeleted: () => void;
 }) {
   const [detail, setDetail] = useState<PhraseDetail | null>(null);
+  const { kids } = useScript();
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -719,6 +735,11 @@ function PhraseDetailView({
               <CharTerm text={detail.text} locale={locale} reading={detail.reading} className="text-lg font-medium text-accent" />
             </p>
           )}
+          {/* Beyond Mandarin (ld-ne0.16): say the phrase and see its words
+              marked. An adult learner's own bank only: a kids learner's
+              bank is the grown-up's side, and Practice's audio (the model)
+              isn't part of kids mode. Mandarin has the character card. */}
+          {!kids && detail.text && !detail.pending && checksWordsHere(locale, detail.text) && <SayPhrase key={`${id}:${detail.text}`} id={id} text={detail.text} />}
           <dl className={`grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 ${fine} text-fg-3`}>
             <dt>First met</dt>
             <dd>

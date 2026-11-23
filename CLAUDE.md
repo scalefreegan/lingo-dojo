@@ -175,6 +175,24 @@ Tone checks in conversation (pronunciation stage 2, ld-ne0.3, migration
   `data/clips/` or `LINGO_CLIPS_DIR` (`scripts/pronunciation-clips.mjs`), at
   most 20 per conversation, served only to its learner
   (`GET /api/pronunciation/clips/:id`), removed with the conversation.
+Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words
+and sounds beyond Mandarin, docs/pronunciation-proof.md's section of that
+name):
+- The same `POST /api/pronunciation/score?text=` for a non-Mandarin locale
+  that `wordCheckLocale` (`web/shared/word-check.ts`) passes: an Azure
+  assessment locale whose language the proof measured. Anything else, or no
+  Azure keys, is 422 `not_available` and the page shows nothing. There is
+  no local fallback: an Azure failure is a 503, the 12-a-minute cap a 429.
+- Pure rules in `scripts/pronunciation-words.mjs` (`WORD_RULES`, `wordMarks`,
+  `wordsReply`): off is Azure's `Omission`, or `Mispronunciation` under 30;
+  ok is no error and 85 or more; the rest not sure. No weakest sound is
+  named (Azure names phonemes only for en-US). Kids get no marks, only
+  `nudge`.
+- UI: `WordCheck.tsx` on Practice speak-it and the Phrase bank's phrase
+  card (adults). Compare mode stays Mandarin-only; live turns aren't wired.
+- The proof is `npm`-less: `node scripts/pronunciation-proof-words.mjs
+  [--say] [--azure]` with replies cached under
+  `data/pronunciation-proof/words/` (gitignored) and a 400-call ledger.
 Kids word game (ld-8zu, migrations 0011 and 0012, docs/DATA.md §Kids word game): a
 kids learner's Practice tab is a by-ear game, where the child hears a word
 and taps its picture.

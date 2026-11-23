@@ -8,6 +8,8 @@ import type { PronunciationScoreReply, PronunciationSyllable } from "../types";
 import { CompareView } from "./CompareView";
 import { Button } from "./ui";
 import { useToneScore, type ScoreState } from "./useToneScore";
+import { useWordScore } from "./useWordScore";
+import { WordScoreView } from "./WordCheck";
 
 /* Tone marks on a recording that was meant to be known text (stage 1 of
  * pronunciation feedback, docs/VOICE.md §Pronunciation in the app): one
@@ -382,8 +384,12 @@ type SayState = { step: "idle" } | { step: "opening" } | { step: "recording"; le
  * Say `text` and see its tones (the character card): Record, stop by hand
  * or after a short pause, then the marks. Recording again replaces them.
  * Keyed on the text by its caller, so another character starts afresh.
+ * `words`: a phrase in a language beyond Mandarin (the Phrase bank's
+ * card, ld-ne0.16): word marks (WordCheck.tsx) instead of tones, recorded
+ * as a voice turn is (the microphone's processing on: only the words are
+ * judged, and no pitch is read).
  */
-export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, compare }: { text: string; kids: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
+export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, compare, words = false }: { text: string; kids: boolean; words?: boolean } & Omit<ToneCheckProps, "reply" | "take" | "kids">) {
   const [say, setSay] = useState<SayState>({ step: "idle" });
   const [take, setTake] = useState<Blob | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -391,7 +397,9 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, com
   const gen = useRef(0);
   // The card's one character: judged against every reading it lists
   // (readings=all), which Practice never asks for.
-  const score = useToneScore(take, text, true, [...text].length === 1);
+  const score = useToneScore(take, text, !words, [...text].length === 1);
+  const wordScore = useWordScore(take, text, words);
+  const check = words ? wordScore : score;
   useEffect(
     () => () => {
       gen.current++;
@@ -408,9 +416,9 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, com
     setSay({ step: "opening" });
     try {
       const r = await startRecording({
-        processing: "pitch",
-        silenceMs: 1000,
-        maxMs: 8000,
+        processing: words ? "conversation" : "pitch",
+        silenceMs: words ? 1200 : 1000,
+        maxMs: words ? 15000 : 8000,
         idleMs: 6000,
         onLevel: (level) => setSay((s) => (s.step === "recording" ? { step: "recording", level } : s)),
         onAutoStop: () => {
@@ -445,7 +453,7 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, com
   }
 
   // The server doesn't score this language: no control at all.
-  if (score.step === "done" && !score.reply) return null;
+  if (check.step === "done" && !check.reply) return null;
   const big = kids ? "px-4 py-2 text-base" : "px-2.5 py-1 text-sm";
   return (
     <div className={`flex flex-col gap-2 ${kids ? "items-center" : "items-start"}`} data-testid="say-it-check">
@@ -455,8 +463,8 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, com
             ■ {kids ? "Done" : "Stop"}
           </Button>
         ) : (
-          <Button variant="primary" className={big} onClick={() => void start()} disabled={say.step !== "idle" || score.step === "scoring"} data-testid="say-it-record">
-            {say.step === "opening" ? "Starting the microphone…" : say.step === "reading" ? "Listening…" : kids ? "🎤 Your turn to say it" : take ? "🎙 Say it again" : "🎙 Say it, check the tone"}
+          <Button variant="primary" className={big} onClick={() => void start()} disabled={say.step !== "idle" || check.step === "scoring"} data-testid="say-it-record">
+            {say.step === "opening" ? "Starting the microphone…" : say.step === "reading" ? "Listening…" : kids ? "🎤 Your turn to say it" : take ? "🎙 Say it again" : words ? "🎙 Say it, check it" : "🎙 Say it, check the tone"}
           </Button>
         )}
         {say.step === "recording" && (
@@ -471,7 +479,7 @@ export function SayItCheck({ text, kids, onPlayModel, modelBusy, modelError, com
         </p>
       )}
       <div className="w-full">
-        <ToneScoreView state={score} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} compare={compare} />
+        {words ? <WordScoreView state={wordScore} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} /> : <ToneScoreView state={score} kids={kids} onPlayModel={onPlayModel} modelBusy={modelBusy} modelError={modelError} compare={compare} />}
       </div>
     </div>
   );
