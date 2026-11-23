@@ -90,7 +90,8 @@ declare module "*/scripts/pronunciation-words.mjs" {
   export function wordCheckLocale(locale: string | null | undefined): string | null;
   export function readWordText(raw: unknown, locale: string): { text: string; error?: undefined } | { error: string; text?: undefined };
   export function wordMarks(azure: AzureAssessment, text: string, opts?: { locale?: string }): { words: WordMark[]; overall: number | null };
-  export function azureHeardNothing(azure: AzureAssessment | null | undefined): boolean;
+  export function azureHeardNothing(azure: AzureAssessment | null | undefined, opts?: { quiet?: boolean }): boolean;
+  export function quietTake(samples: Float32Array, sampleRate: number): boolean;
   export function wordsReply(marks: { words: WordMark[]; overall: number | null }, opts: { kids: boolean; text: string; locale: string }): Reply;
 }
 

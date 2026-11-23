@@ -9,9 +9,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { azurePronunciationResult } from "../pronunciation.mjs";
-import { WORD_RULES, azureHeardNothing, checksWordsHere, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
+import { WORD_RULES, azureHeardNothing, checksWordsHere, quietTake, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
 import { REPO_ROOT } from "../content.mjs";
 import { localeFor } from "../voice.mjs";
 
@@ -71,6 +72,11 @@ test("the phrase: its own script, words and punctuation only, a dozen words at m
   assert.equal(checksWordsHere("es-MX", "hola 3"), false);
 });
 
+/** Live replies (scripts/pronunciation-proof-echo.mjs, synthetic voices,
+ *  reply shape only): what Azure really sends back. */
+const ECHO = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pronunciation", "azure-echo.json"), "utf8"));
+const echo = (id) => azurePronunciationResult(ECHO[id].reply);
+
 /** A reply as the live service sends it for a Latin-script locale. */
 const live = (words) =>
   azurePronunciationResult({
@@ -116,14 +122,42 @@ test("an omitted word is off (missing) with no score; an inserted one isn't show
   assert.deepEqual([soft.verdict, soft.reason, soft.why], ["unsure", "unclear", undefined]);
 });
 
-test("a take Azure heard nothing in: its status, or every word omitted", () => {
+test("no speech: Azure's status says so, or a quiet take with every word omitted and nothing recognised", () => {
   assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "NoMatch" })), true);
   assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "InitialSilenceTimeout" })), true);
-  assert.equal(azureHeardNothing(live([["la", 0, "Omission"], ["cuenta", 0, "Omission"]])), true);
-  // A word said as another (omitted, the other inserted) is speech.
-  assert.equal(azureHeardNothing(live([["perro", 0, "Omission"], ["gato", 90, "Insertion"]])), false);
-  assert.equal(azureHeardNothing(live([["la", 99], ["cuenta", 0, "Omission"]])), false);
   assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "Error" })), false);
+  // Live (fixtures): silence, white noise and a clearly spoken wrong word
+  // all come back the same: Success, every word omitted, no insertion, ".".
+  for (const id of ["es-silence", "es-noise", "de-noise", "es-wrong1", "fr-wrong1", "es-wrong2"]) {
+    const a = echo(id);
+    assert.equal(a.text, ".", id);
+    assert.ok(a.words.every((w) => w.error === "Omission"), id);
+    assert.equal(azureHeardNothing(a, { quiet: true }), true, id);
+    // So only the take's level tells silence from a wrong word.
+    assert.equal(azureHeardNothing(a, { quiet: false }), false, id);
+  }
+  // Live, Danke assessed as Tschüss: a Mispronunciation, recognised text.
+  assert.equal(azureHeardNothing(echo("de-wrong1"), { quiet: true }), false);
+  // Something recognised, or something inserted, is speech even if quiet.
+  const said = azurePronunciationResult({ RecognitionStatus: "Success", NBest: [{ Display: "hola", Words: [{ Word: "gracias", AccuracyScore: 0, ErrorType: "Omission" }] }] });
+  assert.equal(azureHeardNothing(said, { quiet: true }), false);
+  assert.equal(azureHeardNothing(live([["perro", 0, "Omission"], ["gato", 90, "Insertion"]]), { quiet: true }), false);
+  assert.equal(azureHeardNothing(live([["la", 99], ["cuenta", 0, "Omission"]]), { quiet: true }), false);
+  // The wrong word, loud: a normal reply, the word off (missing).
+  const wrong = wordMarks(echo("es-wrong1"), "gracias", { locale: "es-MX" });
+  assert.deepEqual(wrong.words.map((w) => [w.text, w.verdict, w.why]), [["gracias", "off", "missing"]]);
+});
+
+test("a quiet take: its loudest 50 ms under about -40 dBFS", () => {
+  const rate = 16_000;
+  const noise = (amp) => Float32Array.from({ length: rate }, (_, i) => Math.sin(i * 12.9898) * amp);
+  assert.equal(quietTake(new Float32Array(rate), rate), true);
+  assert.equal(quietTake(noise(0.003), rate), true);
+  assert.equal(quietTake(noise(0.15), rate), false);
+  // One loud word in a second of quiet is enough.
+  const word = new Float32Array(rate);
+  word.set(noise(0.2).subarray(0, 4000), 6000);
+  assert.equal(quietTake(word, rate), false);
 });
 
 test("a word beside an inserted copy of itself is unsure, whatever its score (Azure aligned it to the wrong slot)", () => {
@@ -177,6 +211,57 @@ test("in a spaced script, placed only on whole words of the phrase", () => {
   assert.deepEqual(wordMarks(live([["rendez", 90], ["vous", 92]]), "rendez-vous", { locale: "fr-FR" }).words.map((w) => w.text), ["rendez", "vous"]);
   // Japanese has no spaces: Azure's words go anywhere after the last.
   assert.deepEqual(wordMarks(live([["こんばん", 95], ["は", 90]]), "こんばんは", { locale: "ja-JP" }).words.map((w) => w.text), ["こんばん", "は"]);
+});
+
+test("live echoes (fixtures): Azure sends the reference back as written, and every word lands on its own", () => {
+  // Harakat, tanween, tatweel, ß, apostrophes, a hyphen, sí/si, matras and
+  // a nukta, and Japanese split by Azure (私 が 行き ます).
+  for (const id of ["ar-full", "ar-part", "ar-tatweel", "de-ss", "fr-apos", "fr-hyphen", "es-si", "hi-matra", "ja-ga"]) {
+    const { case: c } = ECHO[id];
+    const a = echo(id);
+    const r = wordMarks(a, c.ref, { locale: c.locale });
+    assert.deepEqual(r.words.map((w) => w.text), a.words.map((w) => w.text), id);
+    for (const w of r.words) assert.equal(c.ref.normalize("NFC").slice(w.start, w.end), w.text, id);
+    assert.ok(r.words.every((w) => w.verdict !== "off"), id);
+  }
+  const si = wordMarks(echo("es-si"), "Sí, si quieres.", { locale: "es-MX" }).words;
+  assert.deepEqual(si.map((w) => [w.text, w.start, w.end]), [["Sí", 0, 2], ["si", 4, 6], ["quieres", 7, 14]]);
+});
+
+test("a word found without its marks keeps the marks that follow it: harakat, tanween, the last word to the end", () => {
+  const text = "كَتَبَ الدَّرْسَ";
+  const r = wordMarks(live([["كتب", 95], ["الدرس", 90]]), text, { locale: "ar-SA" });
+  assert.deepEqual(r.words.map((w) => [w.text, w.start, w.end]), [["كَتَبَ", 0, 6], ["الدَّرْسَ", 7, 16]]);
+  assert.equal(r.words.at(-1).end, text.length);
+  const salam = wordMarks(live([["يا", 95], ["سلام", 95]]), "يا سَلامٌ", { locale: "ar-SA" }).words[1];
+  assert.deepEqual([salam.text, salam.end], ["سَلامٌ", "يا سَلامٌ".length]);
+  // Partly vocalised: the exact word where it is written bare, the bare
+  // key where it isn't.
+  const part = wordMarks(live([["شكراً", 95], ["جزيلا", 95]]), "شُكراً جزيلاً", { locale: "ar-SA" }).words;
+  assert.deepEqual(part.map((w) => [w.text, w.start, w.end]), [["شُكراً", 0, 6], ["جزيلاً", 7, 13]]);
+});
+
+test("the nearest place wins, by either key; exact wins a tie", () => {
+  // Azure's first "si" is the written "Sí": the bare key finds it there,
+  // nearer than the exact key's "si", so the second's Mispronunciation
+  // stays on the second word.
+  const r = wordMarks(live([["si", 95], ["si", 20, "Mispronunciation"], ["quieres", 95]]), "Sí, si quieres", { locale: "es-MX" });
+  assert.deepEqual(r.words.map((w) => [w.text, w.start, w.verdict]), [["Sí", 0, "ok"], ["si", 4, "off"], ["quieres", 7, "ok"]]);
+  // Both at the same place: one mark, the exact one's.
+  assert.deepEqual(wordMarks(live([["café", 95]]), "café", { locale: "es-MX" }).words.map((w) => [w.text, w.end]), [["café", 4]]);
+});
+
+test("no bare key where dropping marks makes two words one: Hindi, Japanese, Korean, Russian", () => {
+  // Hindi: की is not क; a matra-final word keeps its matra.
+  assert.deepEqual(wordMarks(live([["क", 95]]), "की", { locale: "hi-IN" }).words, []);
+  const pani = wordMarks(live([["पानी", 95]]), "पानी", { locale: "hi-IN" }).words[0];
+  assert.deepEqual([pani.text, pani.start, pani.end], ["पानी", 0, 4]);
+  // Japanese: が is not か.
+  assert.deepEqual(wordMarks(live([["か", 95]]), "が", { locale: "ja-JP" }).words, []);
+  // Russian: й is not и.
+  assert.deepEqual(wordMarks(live([["мои", 95]]), "мой", { locale: "ru-RU" }).words, []);
+  // Korean: decomposed Hangul jamo are marks no longer; still exact only.
+  assert.deepEqual(wordMarks(live([["물", 95]]), "물", { locale: "ko-KR" }).words.map((w) => w.text), ["물"]);
 });
 
 test("the weakest sound: only where the rules name the locale, and only on an off word", () => {

@@ -403,6 +403,29 @@ p(WORD_RULES.soundsNote);
   const ok = v.filter((x) => x.endsWith(" ok")).length;
   p(`**One wrong sound in a right word is mostly not caught.** The same ten one-sound swaps through the app's rules: ${off} off, ${ok} passed as ok, the rest unsure (${v.join("; ")}). What the check catches is a word said as another word, or said so far off that Azure can't find it; a learner's single wrong vowel will usually read "not sure". That is the safe side, and it is what the page promises: marks per word, no grade per sound.`);
 }
+{
+  // What Azure echoes (scripts/pronunciation-proof-echo.mjs): the cases
+  // the placement and the no-speech rule were set from. Read from the
+  // committed fixtures, which that script writes from its cached replies.
+  const file = path.join(REPO, "scripts", "tests", "fixtures", "pronunciation", "azure-echo.json");
+  if (fs.existsSync(file)) {
+    const echo = JSON.parse(fs.readFileSync(file, "utf8"));
+    const cell = (s) => String(s ?? "–").replace(/\|/g, "\\|");
+    p("### What Azure echoes: spellings, and takes with no speech");
+    p(`${Object.keys(echo).length} more live replies (\`node scripts/pronunciation-proof-echo.mjs\`, counted in the same ledger and under the same cap; macOS voices, a silent clip and a white-noise clip, each with 200 ms of silence each side), sent to check two things the main run couldn't: how Azure writes back a reference with marks, ß, apostrophes and hyphens (\`wordMarks\` places Azure's words on the phrase as written), and what it answers when no word of the reference was said. Their reply shapes are the test fixtures in \`scripts/tests/fixtures/pronunciation/azure-echo.json\`.`);
+    lines.push("| Case | Said | Reference | Status | Recognised (`Lexical`) | Azure's words (ErrorType, score) |", "| --- | --- | --- | --- | --- | --- |");
+    for (const [id, { case: c, reply }] of Object.entries(echo)) {
+      const b = reply.NBest?.[0];
+      const said = c.voice === "silence" ? "(silence)" : c.voice === "noise" ? "(white noise)" : `${c.said} (${c.voice})`;
+      const ws = (b?.Words ?? []).map((w) => `${w.Word} (${w.ErrorType}, ${w.AccuracyScore})`).join(" · ");
+      lines.push(`| ${id}: ${cell(c.why)} | ${cell(said)} | ${cell(c.ref)} | ${reply.RecognitionStatus} | ${cell(b?.Lexical)} | ${cell(ws)} |`);
+    }
+    lines.push("");
+    p(
+      "**Spellings: Azure echoes the reference exactly.** Every word came back as written in the reference: full harakat, partial vocalisation and tanween, tatweel, ß (never SS), apostrophes (J'ai, l'eau, d'accord as one word each), the hyphen (rendez-vous as one word), Sí and si kept apart by the accent, Hindi matras and the nukta. Japanese is split by Azure (私 · が · 行き · ます; Lexical with spaces). Only punctuation differs in the display text (Arabic commas, a final 。 or ।), which placement ignores. So the exact key places every word; the mark-free key is a fallback for a reply that isn't an echo, used only for Arabic and the Latin scripts, only for a word Azure sent without marks or one the exact key can't place, and a word placed that way keeps the marks that follow it.");
+    p("**No speech: Azure can't tell silence from a wrong word.** Silence and white noise came back `Success` with every reference word `Omission`, no `Insertion`, and `.` as the recognised text, never `NoMatch` or `InitialSilenceTimeout`. A clearly spoken wrong single word (hola for *gracias*, bonjour for *merci*) and two wrong words (buenas noches for *muchas gracias*) came back the same way, word for word. (Danke for *Tschüss* was a `Mispronunciation` scoring 0, with Tschüss recognised.) So the reply alone can't say \"no speech was heard\": `azureHeardNothing` answers 422 `no_speech` for Azure's no-speech statuses, or for that all-omitted reply only when the take itself is quiet (its loudest 50 ms under about -40 dBFS, `quietTake`). A loud take with every word omitted, a wrong word or noise, is a normal reply with every word off (missing).");
+  }
+}
 p("### What this does not show");
 p(
   "- **Synthesized speech only**, one or two macOS voices per language, in silence. No learner, no microphone, no room, no child. Every false-alarm count here is a floor.",
@@ -410,7 +433,8 @@ p(
   "- **The accent sample has no truth.** An English voice reading Spanish (or a romanisation) is flagged on 13% of its words; some of those are surely right, and nobody listened.",
   "- **Variants ride on their language.** `es-ES`, `fr-CA`, `pt-PT`, `en-GB`, `en-AU`, `en-IN`, `ar-EG` are Azure locales the app checks, measured here only through `es-MX`, `fr-FR`, `pt-BR`, `en-US` and `ar-SA`. Locales Azure supports but nothing here measured (`zh-HK` Cantonese among them) stay `not_available`.",
   "- **Word splits are Azure's.** Japanese is split by Azure, not by spaces: こんばん | は, し | て | い | ます, and お茶 as お | 茶. A mark may sit on one kana. Korean words are the spaced eojeol (물 | 주세요).",
-  "- **Placement on unusual spellings is unverified live.** Every phrase here was written as Azure echoes it. A phrase with Arabic harakat or tatweel, a German ß (against an echoed SS), or an apostrophe or hyphen Azure splits at is placed by `wordMarks`' folded matching (exact first, then without marks; whole words only) and covered by tests on hand-written replies, not on what Azure actually sends back for them.",
+  "- **Spellings were checked on one clip each.** Harakat, tatweel, ß, apostrophes, a hyphen, sí/si, matras and dakuten: one voice, one sentence each, all echoed exactly. A reference Azure doesn't echo (marks dropped, a word split differently) is placed by the fallback rules, tested on hand-written replies only.",
+  "- **A quiet wrong word is no_speech.** A learner who says the wrong word very softly (quieter than about -40 dBFS at the loudest) is told no speech was heard; a loud noise with no speech is shown as every word missing. The level bar was set by reasoning, not measured on a microphone.",
   "- **Short phrases only** (one to five words here; the route takes twelve, or thirty Japanese characters).",
 );
 

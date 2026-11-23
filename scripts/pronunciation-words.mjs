@@ -59,15 +59,23 @@ const isGap = (c) => /[\p{P}\s]/u.test(c);
  * One character's matching keys, for matching only (what is shown is the
  * phrase as written). Both are case-folded as far as matching needs (ß and
  * ẞ are "ss", so Straße matches STRASSE) and drop Arabic tatweel.
- *  - `exact` keeps every mark: schön is not schon.
- *  - `bare` also drops the marks (accents, Arabic harakat and shadda), so a
- *    phrase written with harakat matches Azure's bare word. Tried only
- *    where the exact key finds no place.
+ *  - `exact` keeps every mark: schön is not schon, si is not sí.
+ *  - `bare` also drops the marks (accents, Arabic harakat and shadda).
+ * Live, Azure echoes the reference as written, harakat, tatweel, ß,
+ * apostrophes and hyphens included (docs/pronunciation-proof.md §What Azure
+ * echoes), so the exact key places every word the proof sent. The bare key
+ * is a fallback for an echo that drops marks, and only where dropping them
+ * can't make two words one (`BARE_LANGUAGES`): Arabic's harakat and the
+ * Latin scripts' accents. Never Hindi (का, की, के, को would all be क),
+ * Japanese (が would be か), Korean or Russian (й would be и).
  */
 const KEYS = {
   exact: (c) => c.replace(/ـ/g, "").toLowerCase().replace(/[ßẞ]/g, "ss"),
   bare: (c) => c.normalize("NFD").replace(/[\p{M}ـ]/gu, "").toLowerCase().replace(/[ßẞ]/g, "ss"),
 };
+const BARE_LANGUAGES = new Set(["ar", "es", "de", "fr", "it", "pt", "nl", "sv", "en"]);
+/** A character that belongs to the letter before it. */
+const TRAILS = /^[\p{M}ـ]$/u;
 
 /** The phrase under one key, with, per key unit, its place in the text
  *  (`at`: the UTF-16 offset of the character it came from, `len` that
@@ -106,26 +114,35 @@ const fold = (t, key) => [...String(t).normalize("NFC")].filter((c) => !isGap(c)
  * shows: `{ words, overall }`. Each word is Azure's own (its segmentation:
  * Japanese is split into words by Azure, as Mandarin is), placed on the
  * phrase as it was written (`start`/`end`, UTF-16 offsets into `text`, so
- * punctuation and spaces between words stay as the phrase has them) with
- * `{ text, verdict, reason?, score?, startMs, endMs, sounds? }`. In a spaced
- * script a word is placed only on whole words of the phrase (an "a" is
- * never put inside "la"); in Japanese anywhere after the last one. A word
+ * punctuation and spaces between words stay as the phrase has them, and a
+ * word's trailing marks (harakat, tanween, matras) stay with it) with
+ * `{ text, verdict, reason?, score?, startMs, endMs, sounds? }`. Each word
+ * takes the nearest place after the last one, by either key (exact wins a
+ * tie). In a spaced script a word is placed only on whole words of the
+ * phrase (an "a" is never put inside "la"); in Japanese anywhere. A word
  * Azure heard but the phrase doesn't have (`Insertion`) is not shown; a
  * word it can't place on the phrase is left out.
  */
 export function wordMarks(azure, text, { locale, rules = WORD_RULES } = {}) {
   const src = String(text).normalize("NFC");
-  const refs = [folded(src, KEYS.exact), folded(src, KEYS.bare)];
+  const lang = String(locale ?? "").split("-")[0];
+  const keys = BARE_LANGUAGES.has(lang) ? [KEYS.exact, KEYS.bare] : [KEYS.exact];
+  const refs = keys.map((key) => folded(src, key));
   const anywhere = unspacedLocale(String(locale ?? ""));
   /** Where `f` sits in `ref` at or after the text offset `from`, on whole
-   *  words where the script has them; -1 if nowhere. */
+   *  words where the script has them, as text offsets; null if nowhere. */
   const place = (ref, f, from) => {
     let i = ref.at.findIndex((p) => p >= from);
-    if (i < 0) return -1;
+    if (i < 0) return null;
     i = ref.s.indexOf(f, i);
     const fits = (j) => anywhere || (ref.starts.has(j) && (j + f.length === ref.s.length || ref.starts.has(j + f.length)));
     while (i >= 0 && !fits(i)) i = ref.s.indexOf(f, i + 1);
-    return i;
+    if (i < 0) return null;
+    let end = ref.at[i + f.length - 1] + ref.len[i + f.length - 1];
+    // The marks after the last letter are the word's (كَتَبَ's last fatha,
+    // سَلامٌ's tanween, पानी's ी), whichever key found it.
+    while (end < src.length && TRAILS.test(String.fromCodePoint(src.codePointAt(end)))) end += src.codePointAt(end) > 0xffff ? 2 : 1;
+    return { start: ref.at[i], end };
   };
   let cursor = 0;
   const words = [];
@@ -133,21 +150,24 @@ export function wordMarks(azure, text, { locale, rules = WORD_RULES } = {}) {
   for (const [k, w] of all.entries()) {
     if (w.error === "Insertion") continue;
     let found = null;
-    for (const [n, key] of [KEYS.exact, KEYS.bare].entries()) {
+    // A word Azure sent with marks (schön) is that word, never a nearer
+    // one without (schon): for it the bare key is only a last resort, when
+    // the exact one finds nothing (marks written differently: شكراً
+    // against شُكراً).
+    const marked = fold(w.text, KEYS.exact) !== fold(w.text, KEYS.bare);
+    keys.forEach((key, n) => {
+      if (n > 0 && marked && found) return;
       const f = fold(w.text, key);
-      const i = f ? place(refs[n], f, cursor) : -1;
-      if (i >= 0) {
-        found = { start: refs[n].at[i], end: refs[n].at[i + f.length - 1] + refs[n].len[i + f.length - 1] };
-        break;
-      }
-    }
+      const at = f ? place(refs[n], f, cursor) : null;
+      if (at && (!found || at.start < found.start)) found = at;
+    });
     if (!found) continue;
     const { start, end } = found;
     cursor = end;
     // Azure heard this very word as an extra one beside it: its alignment
     // put the said word in the wrong slot, and this one's score is about
     // the slot, not the word (the proof's "m'appelle" beside a wrong name).
-    const same = (x) => fold(x.text, KEYS.bare) === fold(w.text, KEYS.bare);
+    const same = (x) => fold(x.text, KEYS.exact) === fold(w.text, KEYS.exact);
     const echoed = rules.insertionGuard && [all[k - 1], all[k + 1]].some((x) => x?.error === "Insertion" && same(x));
     const mark = echoed ? { ...markOf(w, locale, rules), verdict: "unsure", reason: "unclear", why: undefined, sounds: undefined } : markOf(w, locale, rules);
     words.push({ ...mark, text: src.slice(start, end), start, end });
@@ -176,19 +196,51 @@ function weakest(w, locale, rules) {
   return weak.length ? { sounds: weak.map((p) => ({ name: p.name, score: Math.round(p.score) })) } : {};
 }
 
-/** Azure's answers for a take with no speech in it. */
+/** Azure's answers for a take with no speech in it (documented; the probe
+ *  never got one: Azure answered Success to silence and noise alike). */
 const SILENT_STATUSES = new Set(["NoMatch", "InitialSilenceTimeout", "BabbleTimeout"]);
 
+/** The loudest 50 ms of a quiet take: under this RMS (about -40 dBFS) it
+ *  holds no speech. A voice near a laptop microphone is -30 to -15 dBFS at
+ *  its loudest; a quiet room's hiss is under -50. */
+export const QUIET_RMS = 0.01;
+
+/** Whether the take is quiet throughout: its loudest 50 ms window is under
+ *  `QUIET_RMS`. */
+export function quietTake(samples, sampleRate) {
+  const n = Math.max(1, Math.round(sampleRate * 0.05));
+  let loudest = 0;
+  for (let i = 0; i < samples.length; i += n) {
+    let sum = 0;
+    const end = Math.min(samples.length, i + n);
+    for (let j = i; j < end; j++) sum += samples[j] * samples[j];
+    loudest = Math.max(loudest, Math.sqrt(sum / Math.max(1, end - i)));
+  }
+  return loudest < QUIET_RMS;
+}
+
 /**
- * Whether Azure heard no speech in the take: a silent or noise-only
- * recording (its status says so, or, the check being scripted, it omitted
- * every word). Not an outage, and no marks: the learner is told to try
- * louder. Every word "off" here would blame the learner for the microphone.
+ * Whether the take had no speech to check: Azure says so in its status, or
+ * it omitted every word, inserted none, recognised nothing (its text is
+ * empty or only punctuation: live it is ".") and the take itself is quiet
+ * (`quiet`, from `quietTake`). The last is needed because, live, Azure
+ * answers a clearly spoken wrong word (hola assessed as gracias) exactly as
+ * it answers silence or noise: Success, every word omitted, no insertion,
+ * text "." (docs/pronunciation-proof.md §What Azure echoes). A loud take
+ * Azure heard none of the words in is a normal reply, every word off
+ * (missing): "wasn't heard as itself".
  */
-export function azureHeardNothing(azure) {
+export function azureHeardNothing(azure, { quiet = false } = {}) {
   if (!azure) return false;
   if (SILENT_STATUSES.has(azure.status)) return true;
-  return azure.status === "Success" && azure.words.length > 0 && azure.words.every((w) => w.error === "Omission");
+  const words = azure.words ?? [];
+  return (
+    quiet &&
+    azure.status === "Success" &&
+    words.length > 0 &&
+    words.every((w) => w.error === "Omission") &&
+    !/[\p{L}\p{N}]/u.test(String(azure.text ?? ""))
+  );
 }
 
 /** The parsed reply, re-exported so callers need one module. */

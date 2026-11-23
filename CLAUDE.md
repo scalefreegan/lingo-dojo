@@ -183,7 +183,11 @@ name):
   assessment locale whose language the proof measured. Anything else, or no
   Azure keys, is 422 `not_available` and the page shows nothing. There is
   no local fallback: an Azure failure is a 503, the 12-a-minute cap a 429,
-  a take with no speech a 422 `no_speech` (`azureHeardNothing`).
+  a take with no speech a 422 `no_speech` (`azureHeardNothing`: live,
+  Azure answers silence and a loud wrong word alike, so a quiet take
+  decides, `quietTake`). Live replies for spellings and no-speech cases are
+  test fixtures (`scripts/tests/fixtures/pronunciation/azure-echo.json`,
+  from `scripts/pronunciation-proof-echo.mjs`).
 - Pure rules in `scripts/pronunciation-words.mjs` (`WORD_RULES`, `wordMarks`,
   `wordsReply`): off is Azure's `Omission`, or `Mispronunciation` under 30;
   ok is no error and 85 or more; the rest not sure. No weakest sound is

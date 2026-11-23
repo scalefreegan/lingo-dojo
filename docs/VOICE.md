@@ -2675,11 +2675,15 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
 - **No local fallback.** There is no local word scorer: without Azure keys
   the answer is 422 `not_available`; when Azure fails it is a 503 ("the
   words couldn't be checked just now"), and past the user's 12 calls a
-  minute a 429. Never a guess. A take with no speech in it (Azure's
-  `NoMatch`, `InitialSilenceTimeout`, `BabbleTimeout`, or every word
-  omitted: `azureHeardNothing`) is a 422 `no_speech`, "no speech was heard;
-  try again a little louder", with no marks; its call counts against the
-  minute.
+  minute a 429. Never a guess. A take with no speech in it is a 422
+  `no_speech`, "no speech was heard; try again a little louder", with no
+  marks (its call counts against the minute): Azure's `NoMatch`,
+  `InitialSilenceTimeout` or `BabbleTimeout`, or, live, `Success` with
+  every word omitted, none inserted and "." recognised **and** a quiet take
+  (loudest 50 ms under about -40 dBFS; `azureHeardNothing`, `quietTake`).
+  Live, Azure answers a clearly spoken wrong word exactly as it answers
+  silence or noise, so only the take's level separates them: a loud take
+  with every word omitted is a normal reply, every word off (missing).
 - **The phrase.** NFC, 1 to 12 words (30 characters for Japanese, which has
   no spaces), the language's own script, letters, marks and punctuation
   only: no digits or symbols (`readWordText`; 400 otherwise, before any
@@ -2689,11 +2693,15 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
 - **The marks** (`wordMarks`, `WORD_RULES` in
   `scripts/pronunciation-words.mjs`), one per word as Azure split the
   phrase (Japanese is split by Azure: こんばん · は), placed on the phrase
-  as written: case-folded (ß as ss), exact first and then without marks
-  (Arabic harakat, accents) and tatweel, and in a spaced script only on
-  whole words (an "a" is never put inside "la"). That matching is tested
-  on hand-written replies only; what Azure echoes for harakat, ß and
-  split apostrophes was not measured.
+  as written. Live, Azure echoes the reference exactly (harakat, tatweel,
+  ß, apostrophes, hyphens, sí/si, matras: docs/pronunciation-proof.md §What
+  Azure echoes), so the exact key (case-folded, ß as ss, tatweel dropped)
+  places every word. A mark-free key is a fallback for Arabic and the Latin
+  scripts only (never Hindi, Japanese, Korean or Russian, where dropping
+  marks makes two words one), for a word Azure sent without marks or one
+  the exact key can't place; each word takes the nearest place, exact
+  winning a tie, and keeps the marks that follow it. In a spaced script a
+  word goes only on whole words (an "a" is never put inside "la").
   - **off** when Azure says `Omission` (with miscue detection on, a word
     said as another comes back as the reference word omitted) or
     `Mispronunciation` with a score under 30. A low score without Azure's

@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { encodeWav } from "../pronunciation.mjs";
 import { AZURE_PER_MINUTE } from "../pronunciation-app.mjs";
 import { serveApi } from "./connect-stack.mjs";
@@ -80,6 +81,11 @@ async function someone(learners = [ADULT]) {
 }
 /** A second of quiet: the route reads the format, Azure (stubbed) the rest. */
 const wav = new Uint8Array(encodeWav(new Float32Array(16_000), 16_000));
+/** A second of something loud (a tone): not a quiet take. */
+const loud = new Uint8Array(encodeWav(Float32Array.from({ length: 16_000 }, (_, i) => 0.3 * Math.sin((2 * Math.PI * 220 * i) / 16_000)), 16_000));
+/** Live replies (scripts/pronunciation-proof-echo.mjs; reply shape only). */
+const ECHO = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pronunciation", "azure-echo.json"), "utf8"));
+const fixture = (id) => new Response(JSON.stringify(ECHO[id].reply), { status: 200, headers: { "Content-Type": "application/json" } });
 const score = (who, text, body = wav, extra = "") => who.call("POST", `/api/pronunciation/score?text=${encodeURIComponent(text)}${extra}`, body, { "Content-Type": "audio/wav" });
 
 const captured = [];
@@ -215,8 +221,10 @@ test("no speech in the take: a 422 no_speech saying so, not an outage, and no ma
   for (const quiet of [
     () => new Response(JSON.stringify({ RecognitionStatus: "NoMatch" }), { status: 200 }),
     () => new Response(JSON.stringify({ RecognitionStatus: "InitialSilenceTimeout" }), { status: 200 }),
-    // Scripted, Azure may answer Success with every word omitted.
-    () => reply([["la", 0, "Omission"], ["cuenta", 0, "Omission"]]),
+    // Live, a silent take: Success, every word omitted, "." recognised
+    // (the default `wav` here is a second of quiet).
+    () => fixture("es-silence"),
+    () => fixture("es-noise"),
   ]) {
     azure = quiet;
     let r;
@@ -228,6 +236,20 @@ test("no speech in the take: a 422 no_speech saying so, not an outage, and no ma
     assert.ok(!("words" in r.body));
     assert.ok(!log.includes("cuenta"), log);
   }
+});
+
+test("a loud take Azure heard none of the words in (live: a clearly spoken wrong word) is marks, not no_speech", async () => {
+  const sam = await someone();
+  // Live, "hola" said against "gracias" reads exactly like silence: Success,
+  // the word omitted, no insertion, "." recognised. Only the take's level
+  // tells them apart.
+  azure = () => fixture("es-wrong1");
+  const r = await score(sam, "gracias", loud);
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.body.words.map((w) => [w.text, w.verdict, w.why]), [["gracias", "off", "missing"]]);
+  azure = () => fixture("es-wrong2");
+  const two = await score(sam, "muchas gracias", loud);
+  assert.deepEqual(two.body.words.map((w) => w.verdict), ["off", "off"]);
 });
 
 test("Azure failing: a 503 with a fixed sentence, nothing from Azure in the reply or the log", async () => {

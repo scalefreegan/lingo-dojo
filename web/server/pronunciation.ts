@@ -7,7 +7,7 @@ import { azureLimiter, azureUsable, readScoreAudio, readScoreText, scoreReply, s
 import { modelRecord, padSamples, padSpans, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
 import { decodeTo16k } from "../../scripts/audio-decode.mjs";
 import { modelAnalysis } from "../../scripts/model-analysis.mjs";
-import { azureHeardNothing, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../../scripts/pronunciation-words.mjs";
+import { azureHeardNothing, quietTake, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../../scripts/pronunciation-words.mjs";
 import { localeFor, voiceKeys } from "../../scripts/voice.mjs";
 import type { PronunciationModelReply, PronunciationScoreReply, PronunciationWordsReply } from "../shared/wire.ts";
 // The page's own Mandarin reader, the first module the server takes from
@@ -244,6 +244,17 @@ function runScorer(
   });
 }
 
+/** Whether a take (already checked as 16 kHz mono PCM) is quiet throughout;
+ *  an unreadable one is not called quiet. */
+function quietOf(wav: Uint8Array): boolean {
+  try {
+    const { samples, sampleRate } = parseWav(wav);
+    return quietTake(samples, sampleRate);
+  } catch {
+    return false;
+  }
+}
+
 /** One Azure assessment: the parsed reply, or why not. The log names the
  *  kind of failure only (an HTTP status at most), never the request (it
  *  carries the key) or the reply (it quotes what was said). */
@@ -301,10 +312,12 @@ async function assessWithAzure(
     if (json === null) return failed(`answered ${status}`);
     if (json === undefined) return failed("sent a reply that isn't JSON");
     const azure = azurePronunciationResult(json);
-    // A word check of a silent or noise-only take: Azure heard no speech
-    // (or, scripted, every word omitted). Not an outage, and no marks: the
-    // learner is told to try louder. The tone check keeps its local scorer.
-    if (words && azureHeardNothing(azure)) {
+    // A word check of a take with no speech: Azure says so, or heard none
+    // of the words in a quiet take (live, a loud wrong word reads the same
+    // as silence, so the take's own level decides; azureHeardNothing). Not
+    // an outage, and no marks: the learner is told to try louder. The tone
+    // check keeps its local scorer.
+    if (words && azureHeardNothing(azure, { quiet: quietOf(wav) })) {
       console.log("[lingo-dojo] pronunciation: Azure heard no speech");
       return { fallback: "silent" };
     }
