@@ -22,7 +22,7 @@ slots:
     required: true
     # A drill (First steps) has the narrator alone: no helper, no story.
     scene_only: true
-    description: "A sidekick who is always there with one fixed, silly voice: the child's anchor across the whole session."
+    description: "A sidekick with one fixed, silly voice: the child's anchor across the whole session. Speaks at the start, at real moments and in the goodbye, not every turn."
   - id: story
     group: Story shape
     title: Story shape
