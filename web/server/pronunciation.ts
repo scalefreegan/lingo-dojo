@@ -7,8 +7,9 @@ import { azureLimiter, azureUsable, readScoreAudio, readScoreText, scoreReply, s
 import { modelRecord, padSamples, padSpans, unpadRecord, type TakeFrames } from "../../scripts/pronunciation-compare.mjs";
 import { decodeTo16k } from "../../scripts/audio-decode.mjs";
 import { modelAnalysis } from "../../scripts/model-analysis.mjs";
+import { azureHeardNothing, quietTake, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../../scripts/pronunciation-words.mjs";
 import { localeFor, voiceKeys } from "../../scripts/voice.mjs";
-import type { PronunciationModelReply, PronunciationScoreReply } from "../shared/wire.ts";
+import type { PronunciationModelReply, PronunciationScoreReply, PronunciationWordsReply } from "../shared/wire.ts";
 // The page's own Mandarin reader, the first module the server takes from
 // web/src: the readings must be the ones the page shows over the text, or
 // the marks would sit on other syllables. It and what it imports
@@ -243,13 +244,24 @@ function runScorer(
   });
 }
 
+/** Whether a take (already checked as 16 kHz mono PCM) is quiet throughout;
+ *  an unreadable one is not called quiet. */
+function quietOf(wav: Uint8Array): boolean {
+  try {
+    const { samples, sampleRate } = parseWav(wav);
+    return quietTake(samples, sampleRate);
+  } catch {
+    return false;
+  }
+}
+
 /** One Azure assessment: the parsed reply, or why not. The log names the
  *  kind of failure only (an HTTP status at most), never the request (it
  *  carries the key) or the reply (it quotes what was said). */
 async function assessWithAzure(
   res: ServerResponse | null,
   ctx: LearnerCtx,
-  { wav, text, locale, keys }: { wav: Uint8Array; text: string; locale: string; keys: { azureKey: string; azureRegion: string } },
+  { wav, text, locale, keys, words = false }: { wav: Uint8Array; text: string; locale: string; keys: { azureKey: string; azureRegion: string }; words?: boolean },
   /** The model clip's one-call ledger (model-analysis.mjs): asked inside
    *  the paid slot, right before the request goes; false means the clip's
    *  call was made before, and none is made now. */
@@ -258,10 +270,10 @@ async function assessWithAzure(
    *  interactive one, its own short timeout, and the score's signal (an
    *  abort ends the request: a ScoreFailure "cancelled"). */
   live?: { slot: <T>(fn: () => Promise<T>) => Promise<T>; timeoutMs: number; signal: AbortSignal },
-): Promise<{ azure: AzureAssessment } | { fallback: "failed" | "busy" | "limit" }> {
+): Promise<{ azure: AzureAssessment } | { fallback: "failed" | "busy" | "limit" | "silent" }> {
   const timeoutMs = live?.timeoutMs ?? AZURE_TIMEOUT_MS;
   const failed = (why: string) => {
-    console.log(`[lingo-dojo] pronunciation: Azure ${why}; ${claim ? "reading the model clip locally" : "scoring locally"}`);
+    console.log(`[lingo-dojo] pronunciation: Azure ${why}; ${claim ? "reading the model clip locally" : words ? "no word check (there is no local one)" : "scoring locally"}`);
     return { fallback: "failed" as const };
   };
   let request: { url: string; init: RequestInit };
@@ -300,6 +312,15 @@ async function assessWithAzure(
     if (json === null) return failed(`answered ${status}`);
     if (json === undefined) return failed("sent a reply that isn't JSON");
     const azure = azurePronunciationResult(json);
+    // A word check of a take with no speech: Azure says so, or heard none
+    // of the words in a quiet take (live, a loud wrong word reads the same
+    // as silence, so the take's own level decides; azureHeardNothing). Not
+    // an outage, and no marks: the learner is told to try louder. The tone
+    // check keeps its local scorer.
+    if (words && azureHeardNothing(azure, { quiet: quietOf(wav) })) {
+      console.log("[lingo-dojo] pronunciation: Azure heard no speech");
+      return { fallback: "silent" };
+    }
     if (!azureUsable(azure)) return failed("recognised nothing");
     return { azure };
   } catch (e) {
@@ -317,7 +338,7 @@ const MAX_READING_CHARS = 240;
 
 async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
-  if (!scoresTones(locale)) throw new HttpError(422, "pronunciation checks aren't available for this language", "not_available");
+  if (!scoresTones(locale)) return scoreWords(req, res, ctx, locale);
   const mime = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
   if (!["audio/wav", "audio/wave", "audio/x-wav"].includes(mime)) throw new HttpError(415, "a recording must be sent as audio/wav");
   // Before the body: the learner's mode (a `?mode=` that disagrees is a 400).
@@ -362,12 +383,64 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
     if (choice.engine === "azure") {
       const out = await assessWithAzure(res, ctx, { wav, text: t.text, locale, keys: voiceKeys() });
       if ("azure" in out) azure = out.azure;
-      else fallback = out.fallback;
+      else fallback = out.fallback === "silent" ? "failed" : out.fallback; // silent: word checks only
     }
     const { result, frames } = await runScorer(wav, s.syllables, azure);
     const engine = azure ? "azure" : "local";
     console.log(`[lingo-dojo] pronunciation: ${engine}${fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
     sendJson(res, 200, scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale, frames }) satisfies PronunciationScoreReply);
+  } finally {
+    workers--;
+    scoring.delete(ctx.user.id);
+  }
+}
+
+/**
+ * The word check (ld-ne0.16; docs/VOICE.md §Words and sounds beyond
+ * Mandarin): a language other than Mandarin, in a locale the proof measured
+ * (wordCheckLocale), scored by Azure alone. There is no local scorer for
+ * consonants and vowels, so without Azure's keys this is the same 422
+ * `not_available` as an unsupported language, and the page shows nothing;
+ * and where the tone check would fall back to the local scorer (Azure
+ * failing, busy, or the user's per-minute cap), this answers an error with
+ * a fixed sentence (503, 429). The same limits as the tone check, in the
+ * same order: one check per user and two on the server (the worker places:
+ * held through the Azure call, though no worker thread is started, since
+ * reading Azure's reply into marks is a few microseconds), checked before
+ * the body is read; the user's paid slot and AZURE_PER_MINUTE. Nothing is
+ * stored, and the log names the count of words only.
+ */
+async function scoreWords(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, locale: string): Promise<void> {
+  const azureLocale = wordCheckLocale(locale);
+  const keys = voiceKeys();
+  if (!azureLocale || scoringEngine({ keys }).engine !== "azure") throw new HttpError(422, "pronunciation checks aren't available for this language", "not_available");
+  const mime = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!["audio/wav", "audio/wave", "audio/x-wav"].includes(mime)) throw new HttpError(415, "a recording must be sent as audio/wav");
+  const mode = learnerMode(req, ctx);
+  const params = new URL(req.url ?? "/", "http://localhost").searchParams;
+  // The Mandarin readings flags mean nothing here: refused, not ignored.
+  if (params.has("readings") || params.has("reading")) throw new HttpError(400, "readings are for Chinese characters only");
+  const t = readWordText(params.get("text"), azureLocale);
+  if (t.error !== undefined) throw new HttpError(400, t.error);
+  if (scoring.has(ctx.user.id)) throw new HttpError(429, "a recording is already being checked; try again in a moment");
+  if (workers >= MAX_WORKERS) throw new HttpError(429, "pronunciation checks are busy; try again in a moment");
+  scoring.add(ctx.user.id);
+  workers++;
+  try {
+    const wav = await readRecording(req, res);
+    const a = readScoreAudio(wav);
+    if (a.error !== undefined) throw new HttpError(a.status, a.error);
+    const out = await assessWithAzure(res, ctx, { wav, text: t.text, locale: azureLocale, keys, words: true });
+    if (!("azure" in out)) {
+      console.log(`[lingo-dojo] pronunciation: words not checked (${out.fallback})`);
+      if (out.fallback === "busy") throw new HttpError(429, "pronunciation checks are busy; try again in a moment");
+      if (out.fallback === "limit") throw new HttpError(429, "that's a lot of checks in a minute; try again shortly");
+      if (out.fallback === "silent") throw new HttpError(422, "no speech was heard; try again a little louder, closer to the microphone", "no_speech");
+      throw new HttpError(503, WORDS_FAILED);
+    }
+    const marks = wordMarks(out.azure, t.text, { locale: azureLocale });
+    console.log(`[lingo-dojo] pronunciation: azure (words), ${marks.words.length} words`);
+    sendJson(res, 200, wordsReply(marks, { kids: mode === "kids", text: t.text, locale: azureLocale }) satisfies PronunciationWordsReply);
   } finally {
     workers--;
     scoring.delete(ctx.user.id);
@@ -469,7 +542,7 @@ export async function scoreLive(
       // or when the score is dropped.
       const out = await assessWithAzure(null, ctx, { wav, text: t.text, locale, keys }, undefined, { slot, timeoutMs: LIVE_SCORER.azureTimeoutMs, signal });
       if ("azure" in out) azure = out.azure;
-      else fallback = out.fallback;
+      else fallback = out.fallback === "silent" ? "failed" : out.fallback; // silent: word checks only
     }
     const { result, durationMs } = await runScorer(wav, s.syllables, azure, null, signal);
     const engine = azure ? "azure" : "local";
@@ -489,6 +562,9 @@ export async function scoreLive(
 /** Anything thrown from here leaves as an HttpError: wrap() logs a plain
  *  Error with the request's URL, and this URL carries the text. A browser
  *  that went away (an upload dropped, the page left) just ends. */
+/** The word check's outage sentence, on its own path and guarded()'s. */
+const WORDS_FAILED = "the words couldn't be checked just now; try again";
+
 async function guarded(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   try {
     await score(req, res, ctx);
@@ -503,7 +579,7 @@ async function guarded(req: IncomingMessage, res: ServerResponse, ctx: LearnerCt
     const kind = e instanceof ScoreFailure ? e.kind : "error";
     console.error(`[lingo-dojo] pronunciation: scoring failed (${kind})`);
     if (kind === "slow_body") throw new HttpError(408, "the recording took too long to arrive");
-    throw new HttpError(503, "the tones couldn't be checked just now; try again");
+    throw new HttpError(503, scoresTones(localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "") ? "the tones couldn't be checked just now; try again" : WORDS_FAILED);
   }
 }
 

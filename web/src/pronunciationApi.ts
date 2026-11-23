@@ -4,7 +4,7 @@
 
 import { ApiError, req, soundAudio } from "./api";
 import { phraseAudio } from "./practiceApi";
-import type { PronunciationModelReply, PronunciationScoreReply } from "./types";
+import type { PronunciationModelReply, PronunciationScoreReply, PronunciationWordsReply } from "./types";
 
 /** Where compare mode's model comes from: the character card's sound (the
  *  same request /api/voice/sound gets) or a Practice phrase. */
@@ -41,6 +41,30 @@ export async function scorePronunciation(wav: Blob, text: string, signal?: Abort
       body: wav,
       signal,
     });
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "not_available") return null;
+    throw e;
+  }
+}
+
+// Which locales and phrases the word check takes (ld-ne0.16): pure, shared
+// with the server.
+export { checksWordsHere } from "../shared/word-check.ts";
+
+/** POST /api/pronunciation/score for a language other than Mandarin: the
+ *  recording against `text`, one mark per word (docs/VOICE.md §Words and
+ *  sounds beyond Mandarin), or null when this server doesn't check this
+ *  language (no Azure keys, or a locale not measured): nothing is shown. */
+export async function scoreWords(wav: Blob, text: string, signal?: AbortSignal): Promise<PronunciationWordsReply | null> {
+  const q = new URLSearchParams({ text });
+  try {
+    const reply = await req<PronunciationWordsReply | PronunciationScoreReply>(`/api/pronunciation/score?${q}`, {
+      method: "POST",
+      headers: { "Content-Type": wav.type || "audio/wav" },
+      body: wav,
+      signal,
+    });
+    return "kind" in reply && reply.kind === "words" ? reply : null;
   } catch (e) {
     if (e instanceof ApiError && e.code === "not_available") return null;
     throw e;

@@ -1,0 +1,703 @@
+{
+ "ar-full": {
+  "case": {
+   "id": "ar-full",
+   "locale": "ar-SA",
+   "voice": "Majed",
+   "said": "كَتَبَ الطَّالِبُ الدَّرْسَ",
+   "ref": "كَتَبَ الطَّالِبُ الدَّرْسَ",
+   "why": "full harakat"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "كَتَبَ، الطَّالِبُ، الدَّرْسَ",
+   "NBest": [
+    {
+     "Lexical": "كَتَبَ الطَّالِبُ الدَّرْسَ",
+     "ITN": "كَتَبَ الطَّالِبُ الدَّرْسَ",
+     "Display": "كَتَبَ، الطَّالِبُ، الدَّرْسَ",
+     "PronScore": 97.6,
+     "AccuracyScore": 96,
+     "Words": [
+      {
+       "Word": "كَتَبَ",
+       "Offset": 1000000,
+       "Duration": 4500000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "الطَّالِبُ",
+       "Offset": 5600000,
+       "Duration": 6200000,
+       "AccuracyScore": 89,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "الدَّرْسَ",
+       "Offset": 11900000,
+       "Duration": 8400000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "ar-part": {
+  "case": {
+   "id": "ar-part",
+   "locale": "ar-SA",
+   "voice": "Majed",
+   "said": "شُكراً جزيلاً يا سَلامٌ",
+   "ref": "شُكراً جزيلاً يا سَلامٌ",
+   "why": "partly vocalised, tanween"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "شُكراً جزيلاً يا سَلامٌ",
+   "NBest": [
+    {
+     "Lexical": "شُكراً جزيلاً يا سَلامٌ",
+     "ITN": "شُكراً جزيلاً يا سَلامٌ",
+     "Display": "شُكراً جزيلاً يا سَلامٌ",
+     "PronScore": 99.4,
+     "AccuracyScore": 100,
+     "Words": [
+      {
+       "Word": "شُكراً",
+       "Offset": 1200000,
+       "Duration": 5900000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "جزيلاً",
+       "Offset": 7200000,
+       "Duration": 7300000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "يا",
+       "Offset": 14800000,
+       "Duration": 3300000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "سَلامٌ",
+       "Offset": 18200000,
+       "Duration": 8000000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "ar-tatweel": {
+  "case": {
+   "id": "ar-tatweel",
+   "locale": "ar-SA",
+   "voice": "Majed",
+   "said": "شكـــرا جزيلا",
+   "ref": "شكـــرا جزيلا",
+   "why": "tatweel"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "شكـــرا جزيلا.",
+   "NBest": [
+    {
+     "Lexical": "شكـــرا جزيلا",
+     "ITN": "شكـــرا جزيلا",
+     "Display": "شكـــرا جزيلا.",
+     "PronScore": 100,
+     "AccuracyScore": 100,
+     "Words": [
+      {
+       "Word": "شكـــرا",
+       "Offset": 1200000,
+       "Duration": 5900000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "جزيلا",
+       "Offset": 7200000,
+       "Duration": 9200000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "de-ss": {
+  "case": {
+   "id": "de-ss",
+   "locale": "de-DE",
+   "voice": "Anna",
+   "said": "Die Straße ist groß.",
+   "ref": "Die Straße ist groß.",
+   "why": "ß"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "Die Straße ist groß.",
+   "NBest": [
+    {
+     "Lexical": "Die Straße ist groß",
+     "ITN": "Die Straße ist groß",
+     "Display": "Die Straße ist groß.",
+     "PronScore": 92.8,
+     "AccuracyScore": 88,
+     "Words": [
+      {
+       "Word": "Die",
+       "Offset": 1500000,
+       "Duration": 2700000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "Straße",
+       "Offset": 4300000,
+       "Duration": 4900000,
+       "AccuracyScore": 88,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "ist",
+       "Offset": 9300000,
+       "Duration": 2300000,
+       "AccuracyScore": 65,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "groß",
+       "Offset": 11700000,
+       "Duration": 5500000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "fr-apos": {
+  "case": {
+   "id": "fr-apos",
+   "locale": "fr-FR",
+   "voice": "Thomas",
+   "said": "J'ai bu de l'eau.",
+   "ref": "J'ai bu de l'eau.",
+   "why": "apostrophes"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "J'ai bu de l'eau.",
+   "NBest": [
+    {
+     "Lexical": "J'ai bu de l'eau",
+     "ITN": "J'ai bu de l'eau",
+     "Display": "J'ai bu de l'eau.",
+     "PronScore": 97.6,
+     "AccuracyScore": 96,
+     "Words": [
+      {
+       "Word": "J'ai",
+       "Offset": 1900000,
+       "Duration": 3000000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "bu",
+       "Offset": 5000000,
+       "Duration": 2000000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "de",
+       "Offset": 7100000,
+       "Duration": 900000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "l'eau",
+       "Offset": 8100000,
+       "Duration": 1900000,
+       "AccuracyScore": 91,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "fr-hyphen": {
+  "case": {
+   "id": "fr-hyphen",
+   "locale": "fr-FR",
+   "voice": "Thomas",
+   "said": "On a rendez-vous demain, d'accord ?",
+   "ref": "On a rendez-vous demain, d'accord ?",
+   "why": "hyphen"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "On a rendez-vous demain, d'accord ?",
+   "NBest": [
+    {
+     "Lexical": "On a rendez-vous demain d'accord",
+     "ITN": "On a rendez-vous demain d'accord",
+     "Display": "On a rendez-vous demain, d'accord ?",
+     "PronScore": 97.6,
+     "AccuracyScore": 97,
+     "Words": [
+      {
+       "Word": "On",
+       "Offset": 1700000,
+       "Duration": 2800000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "a",
+       "Offset": 4600000,
+       "Duration": 1200000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "rendez-vous",
+       "Offset": 5900000,
+       "Duration": 4700000,
+       "AccuracyScore": 91,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "demain",
+       "Offset": 10700000,
+       "Duration": 4400000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "d'accord",
+       "Offset": 15900000,
+       "Duration": 6900000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "es-si": {
+  "case": {
+   "id": "es-si",
+   "locale": "es-MX",
+   "voice": "Paulina",
+   "said": "Sí, si quieres.",
+   "ref": "Sí, si quieres.",
+   "why": "sí / si"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "Sí, si quieres.",
+   "NBest": [
+    {
+     "Lexical": "Sí si quieres",
+     "ITN": "Sí si quieres",
+     "Display": "Sí, si quieres.",
+     "PronScore": 90,
+     "AccuracyScore": 86,
+     "Words": [
+      {
+       "Word": "Sí",
+       "Offset": 2500000,
+       "Duration": 4100000,
+       "AccuracyScore": 82,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "si",
+       "Offset": 7700000,
+       "Duration": 2500000,
+       "AccuracyScore": 80,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "quieres",
+       "Offset": 10300000,
+       "Duration": 4900000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "hi-matra": {
+  "case": {
+   "id": "hi-matra",
+   "locale": "hi-IN",
+   "voice": "Lekha",
+   "said": "मुझे किताब की ज़रूरत है",
+   "ref": "मुझे किताब की ज़रूरत है",
+   "why": "matras, nukta"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "मुझे किताब की ज़रूरत है।",
+   "NBest": [
+    {
+     "Lexical": "मुझे किताब की ज़रूरत है",
+     "ITN": "मुझे किताब की ज़रूरत है",
+     "Display": "मुझे किताब की ज़रूरत है।",
+     "PronScore": 98.2,
+     "AccuracyScore": 97,
+     "Words": [
+      {
+       "Word": "मुझे",
+       "Offset": 1900000,
+       "Duration": 4600000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "किताब",
+       "Offset": 6600000,
+       "Duration": 3600000,
+       "AccuracyScore": 100,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "की",
+       "Offset": 10300000,
+       "Duration": 1600000,
+       "AccuracyScore": 99,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "ज़रूरत",
+       "Offset": 12000000,
+       "Duration": 4100000,
+       "AccuracyScore": 99,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "है",
+       "Offset": 16200000,
+       "Duration": 2400000,
+       "AccuracyScore": 86,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "ja-ga": {
+  "case": {
+   "id": "ja-ga",
+   "locale": "ja-JP",
+   "voice": "Kyoko",
+   "said": "私が行きます",
+   "ref": "私が行きます",
+   "why": "dakuten"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "私が行きます。",
+   "NBest": [
+    {
+     "Lexical": "私 が 行き ます",
+     "ITN": "私 が 行き ます",
+     "Display": "私が行きます。",
+     "PronScore": 96.4,
+     "AccuracyScore": 94,
+     "Words": [
+      {
+       "Word": "私",
+       "Offset": 1500000,
+       "Duration": 5800000,
+       "AccuracyScore": 94,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "が",
+       "Offset": 7400000,
+       "Duration": 1300000,
+       "AccuracyScore": 97,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "行き",
+       "Offset": 8800000,
+       "Duration": 2900000,
+       "AccuracyScore": 94,
+       "ErrorType": "None"
+      },
+      {
+       "Word": "ます",
+       "Offset": 11800000,
+       "Duration": 4100000,
+       "AccuracyScore": 91,
+       "ErrorType": "None"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "es-wrong1": {
+  "case": {
+   "id": "es-wrong1",
+   "locale": "es-MX",
+   "voice": "Paulina",
+   "said": "hola",
+   "ref": "gracias",
+   "why": "one word said, another referenced"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "gracias",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "fr-wrong1": {
+  "case": {
+   "id": "fr-wrong1",
+   "locale": "fr-FR",
+   "voice": "Thomas",
+   "said": "bonjour",
+   "ref": "merci",
+   "why": "one word said, another referenced"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "merci",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "de-wrong1": {
+  "case": {
+   "id": "de-wrong1",
+   "locale": "de-DE",
+   "voice": "Anna",
+   "said": "Danke",
+   "ref": "Tschüss",
+   "why": "one word said, another referenced"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": "Tschüss.",
+   "NBest": [
+    {
+     "Lexical": "Tschüss",
+     "ITN": "Tschüss",
+     "Display": "Tschüss.",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "Tschüss",
+       "Offset": 4100000,
+       "Duration": 3200000,
+       "AccuracyScore": 0,
+       "ErrorType": "Mispronunciation"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "es-wrong2": {
+  "case": {
+   "id": "es-wrong2",
+   "locale": "es-MX",
+   "voice": "Paulina",
+   "said": "buenas noches",
+   "ref": "muchas gracias",
+   "why": "two words said, two others referenced"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "muchas",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      },
+      {
+       "Word": "gracias",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "es-silence": {
+  "case": {
+   "id": "es-silence",
+   "locale": "es-MX",
+   "voice": "silence",
+   "said": "",
+   "ref": "hola",
+   "why": "silence"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "hola",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "es-noise": {
+  "case": {
+   "id": "es-noise",
+   "locale": "es-MX",
+   "voice": "noise",
+   "said": "",
+   "ref": "hola",
+   "why": "white noise"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "hola",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "de-noise": {
+  "case": {
+   "id": "de-noise",
+   "locale": "de-DE",
+   "voice": "noise",
+   "said": "",
+   "ref": "Danke schön",
+   "why": "white noise"
+  },
+  "reply": {
+   "RecognitionStatus": "Success",
+   "DisplayText": ".",
+   "NBest": [
+    {
+     "Lexical": ".",
+     "ITN": ".",
+     "Display": ".",
+     "PronScore": 0,
+     "AccuracyScore": 0,
+     "Words": [
+      {
+       "Word": "Danke",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      },
+      {
+       "Word": "schön",
+       "Offset": 0,
+       "Duration": 0,
+       "AccuracyScore": 0,
+       "ErrorType": "Omission"
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -482,7 +482,7 @@ export interface ErrorReply {
   error: string;
   code?: ErrorCode;
 }
-export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation" | "not_available" | "already_spoken" | "no_other_scene";
+export type ErrorCode = "stale_learner" | "conversation_ended" | "no_conversation" | "not_available" | "already_spoken" | "no_other_scene" | "no_speech";
 /** The request header naming the learner the page is rendering. */
 export type LearnerHeader = "X-Learner-Id";
 /** The request header naming the language (profile) the page is rendering. */
@@ -1222,6 +1222,55 @@ export interface PronunciationScoreReply {
   retry: "clipped" | null;
   /** The take frame by frame, for compare mode (never kept on the server). */
   frames?: PronunciationFrames;
+}
+
+/** The same POST /api/pronunciation/score for a language other than
+ *  Mandarin (ld-ne0.16; docs/VOICE.md §Words and sounds beyond Mandarin):
+ *  the phrase's words as Azure heard them, one mark each. Only in a locale
+ *  the proof measured and only with Azure's keys set (else the 422
+ *  `not_available`); there is no local scorer for these languages. */
+export interface PronunciationWord {
+  /** The word as the phrase writes it: `text.slice(start, end)` (UTF-16
+   *  offsets), so the page lays the marks on the phrase, punctuation and
+   *  spaces between the words as written. Azure's own segmentation: in
+   *  Japanese a word is what Azure split out. */
+  text: string;
+  start: number;
+  end: number;
+  /** Absent for kids (no marks). */
+  verdict?: PronunciationVerdict;
+  /** Why it is `off`: Azure heard other sounds there (`sound`), or didn't
+   *  hear the word as itself at all (`missing`: skipped, or said as another). */
+  why?: "sound" | "missing";
+  /** Why it is `unsure`: its score is between the bars or Azure misaligned
+   *  it (`unclear`), or Azure reported something else (`other`). */
+  reason?: "unclear" | "other";
+  /** Azure's 0–100 accuracy for the word (adults only). */
+  score?: number | null;
+  /** Where the word is in the recording (adults only). */
+  startMs?: number | null;
+  endMs?: number | null;
+  /** An off word's weakest sounds, by Azure's name for them, where the
+   *  proof found Azure names them reliably (adults only; else absent). */
+  sounds?: { name: string; score: number }[];
+}
+export interface PronunciationWordsReply {
+  kind: "words";
+  engine: "azure";
+  text: string;
+  /** The Azure locale the words were checked in. */
+  locale: string;
+  words: PronunciationWord[];
+  /** Azure's pronunciation score for the take; null for kids and when
+   *  `heard` is "none". */
+  overall: number | null;
+  /** "none": Azure heard none of the phrase's words in a take that wasn't
+   *  quiet. Silence, noise and a wrong word all look like this, so the words
+   *  come with no verdicts and the page says one neutral line. */
+  heard?: "none";
+  /** Kids only: something was clearly off (or nothing was heard), so the
+   *  page offers a gentle "listen and try again" (no word is marked). */
+  nudge?: boolean;
 }
 
 /** GET /api/pronunciation/model?sound=<Han>&locale=… | ?phrase=<id> — the
