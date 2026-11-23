@@ -21,7 +21,7 @@ import type {
   PackMoveRequest, PackRenameRequest, PackWriteReply, PacksReply, ProfileReply, ProfileRequest, RecapReply, SettingsReply, SettingsRequest,
   VoiceCastReply, VoiceCastRequest, PhraseInput, PhraseLookupReply, PhraseReply, PhraseShow, PhraseSort, PhrasesReply, MasteryBand,
   HiddenSceneReply, HiddenScenesReply, UnhideSceneReply,
-  LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
+  Coaching, LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
 import type { MyReadingsReply, WaitingWordsReply, ReadingSaveReply, ReadingSaveRequest, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
@@ -513,10 +513,14 @@ export function listVoices(provider: TtsProvider, locale: string, signal?: Abort
 /** `locales[0]` is the target language the speech is taken to be in;
  *  `terms` are target phrases to expect (the server trims them to keyterms).
  *  `conversationId` lets the server add the scene's own vocab and the
- *  learner's recent phrases (it reads them itself; nothing else is sent). */
-export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal, terms: string[] = [], conversationId?: string): Promise<TranscribeReply> {
+ *  learner's recent phrases (it reads them itself; nothing else is sent).
+ *  `coaching`: an adult Go-tab session's pronunciation dial; with a
+ *  conversation the server starts the turn's tone check here (docs/VOICE.md
+ *  §Pronunciation in conversation). Left out for kids. */
+export function transcribe(audio: Blob, locales: string[], signal?: AbortSignal, terms: string[] = [], conversationId?: string, coaching?: Coaching): Promise<TranscribeReply> {
   const q = new URLSearchParams({ locales: locales.join(",") });
   if (conversationId) q.set("conversation", conversationId);
+  if (coaching) q.set("coaching", coaching);
   for (const t of terms) q.append("term", t);
   return whenFree(() => req<TranscribeReply>(`/api/voice/transcribe?${q}`, { method: "POST", headers: { "Content-Type": audio.type || "audio/wav" }, body: audio, signal }), signal);
 }

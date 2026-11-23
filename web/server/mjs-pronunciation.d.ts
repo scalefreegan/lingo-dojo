@@ -142,3 +142,35 @@ declare module "*/scripts/model-analysis.mjs" {
     now?: number;
   }): Promise<{ record: ModelRecord; cached: boolean } | { unavailable: "no_decoder" | "unreadable" }>;
 }
+
+declare module "*/scripts/pronunciation-live.mjs" {
+  type ScoreResult = import("../../scripts/pronunciation.mjs").ScoreResult;
+  type Reply = import("../shared/wire.ts").PronunciationScoreReply;
+  type Coaching = import("../shared/wire.ts").Coaching;
+  /** One flagged syllable as the dojo master is told it. */
+  export interface FlagNote {
+    char: string;
+    place: number;
+    pinyin: string;
+    expectedTone: number;
+    heardTone: number | null;
+  }
+  export const COACHING: readonly Coaching[];
+  export const DEFAULT_COACHING: Coaching;
+  export function coachingOf(v: unknown): Coaching | null;
+  export function hanOf(text: unknown): string;
+  export function liveTarget(raw: unknown): { text: string; skip?: undefined } | { skip: "no_han" | "mixed" | "long"; text?: undefined };
+  export const LIVE_RULES: Readonly<{ minMarginSt: number; minConfidence: number; minQuality: number; minVoicedMs: number; maxOffShare: number; quiet: string }>;
+  export function liveFlags(result: ScoreResult, rules?: typeof LIVE_RULES): number[];
+  export function flagNote(result: ScoreResult, i: number): FlagNote;
+  export function liveReply(reply: Reply, flags: number[]): Reply;
+  export function liveRecord(result: ScoreResult, flags: number[]): Record<string, unknown>[];
+}
+
+declare module "*/scripts/pronunciation-clips.mjs" {
+  export function clipsDir(env?: NodeJS.ProcessEnv): string;
+  export function writeClip(conversationId: string, id: string, bytes: Uint8Array, opts?: { dir?: string }): string;
+  export function readClip(conversationId: string, file: string, opts?: { dir?: string }): Buffer | null;
+  export function removeClip(conversationId: string, file: string, opts?: { dir?: string }): void;
+  export function removeConversationClips(conversationId: string, opts?: { dir?: string }): void;
+}

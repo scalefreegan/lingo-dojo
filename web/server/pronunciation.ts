@@ -16,7 +16,10 @@ import type { PronunciationModelReply, PronunciationScoreReply } from "../shared
 // browser globals at the top level; scripts/tests/server-imports.test.mjs
 // loads this chain under plain node to catch that.
 import { charReadings, readCodePoints, validateHint, withHints } from "../src/script/zh.ts";
+import { clipOf } from "../../scripts/db/pronunciation.ts";
+import { readClip } from "../../scripts/pronunciation-clips.mjs";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
+import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, sendJson, subPath } from "./sse.ts";
@@ -360,6 +363,59 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   }
 }
 
+/** A live turn's score (stage 2, livePronunciation.ts), or why there is
+ *  none: the same limits, engine and worker as the score route. */
+export type LiveScore =
+  | { result: ScoreResult; reply: PronunciationScoreReply; engine: "azure" | "local"; durationMs: number }
+  | { skip: "busy" | "audio" | "reading" | "failed" };
+
+/**
+ * Score a Go-tab turn's recording against what transcription heard (stage
+ * 2, ld-ne0.3; docs/VOICE.md §Pronunciation in conversation): the score
+ * route's engine, worker, slots and per-minute Azure cap, called by the
+ * server in the background (livePronunciation.ts startLive), never by a
+ * request of its own. Nothing here may fail the turn: every way out that
+ * isn't a score is a `skip`, and a busy user or server is a skip at once
+ * (no queue: the turn would not wait for it anyway). The reply is shaped as
+ * stage 1's (`kids`: no score); the caller applies the live bar.
+ */
+export async function scoreLive(ctx: LearnerCtx, { wav, text, locale, kids }: { wav: Uint8Array; text: string; locale: string; kids: boolean }): Promise<LiveScore> {
+  if (scoring.has(ctx.user.id) || workers >= MAX_WORKERS) return { skip: "busy" };
+  const a = readScoreAudio(wav);
+  if (a.error !== undefined) return { skip: "audio" };
+  const t = readScoreText(text);
+  if (t.error !== undefined) return { skip: "reading" };
+  const s = scoreSyllables(t.text, readCodePoints(t.text, locale, { cache: false }));
+  if (s.error !== undefined) return { skip: "reading" };
+  scoring.add(ctx.user.id);
+  workers++;
+  try {
+    const keys = voiceKeys();
+    const choice = scoringEngine({ keys });
+    let azure: AzureAssessment | null = null;
+    let fallback: PronunciationScoreReply["fallback"] = choice.why;
+    if (choice.engine === "azure") {
+      // No `res`: nothing waits on this request's connection (the
+      // transcription has answered); the call is bounded by its own timeout.
+      const out = await assessWithAzure(null, ctx, { wav, text: t.text, locale, keys });
+      if ("azure" in out) azure = out.azure;
+      else fallback = out.fallback;
+    }
+    const { result, durationMs } = await runScorer(wav, s.syllables, azure);
+    const engine = azure ? "azure" : "local";
+    // The engine and the count only, as the score route logs: never the text.
+    console.log(`[lingo-dojo] pronunciation (live): ${engine}${!azure && fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
+    return { result, engine, durationMs, reply: scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids, text: t.text, locale }) };
+  } catch (e) {
+    const kind = e instanceof ScoreFailure ? e.kind : "error";
+    console.error(`[lingo-dojo] pronunciation (live): scoring failed (${kind}); the turn goes on without it`);
+    return { skip: "failed" };
+  } finally {
+    workers--;
+    scoring.delete(ctx.user.id);
+  }
+}
+
 /** Anything thrown from here leaves as an HttpError: wrap() logs a plain
  *  Error with the request's URL, and this URL carries the text. A browser
  *  that went away (an upload dropped, the page left) just ends. */
@@ -519,6 +575,24 @@ async function guardedModel(req: IncomingMessage, res: ServerResponse, ctx: Lear
   }
 }
 
+const CHECK_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * GET /api/pronunciation/clips/:id: a flagged turn's kept clip (stage 2,
+ * docs/DATA.md §Pronunciation in sessions), by its check's id, to the
+ * learner and language it belongs to only: any other id (another learner's,
+ * another language's, a check that kept no audio, a deleted conversation's)
+ * is the same 404. Never cached by the browser beyond the page.
+ */
+async function serveClip(res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
+  if (!CHECK_ID_RE.test(id)) throw new HttpError(404, "no such clip");
+  const clip = await clipOf(rawDb(), ctx.language, id.toLowerCase());
+  const bytes = clip ? readClip(clip.conversationId, clip.file) : null;
+  if (!bytes) throw new HttpError(404, "no such clip");
+  res.writeHead(200, { "Content-Type": "audio/wav", "Content-Length": bytes.length, "Cache-Control": "private, no-store" });
+  res.end(bytes);
+}
+
 /** /api/pronunciation, mounted with wrap's `learner: true`. */
 export async function handlePronunciation(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx): Promise<void> {
   const parts = subPath(req).split("/").filter(Boolean);
@@ -529,6 +603,10 @@ export async function handlePronunciation(req: IncomingMessage, res: ServerRespo
   if (parts.length === 1 && parts[0] === "model") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     return guardedModel(req, res, ctx);
+  }
+  if (parts.length === 2 && parts[0] === "clips") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return serveClip(res, ctx, parts[1]);
   }
   sendJson(res, 404, { error: "no such route" });
 }

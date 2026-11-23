@@ -143,6 +143,34 @@ by Practice), is judged against every reading the card shows; nothing is stored,
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
 Practice's speak-it (grading unchanged) and the character card; First steps
 drills are not wired (no reliable target text per turn).
+Tone checks in conversation (pronunciation stage 2, ld-ne0.3, migration
+0022; docs/VOICE.md §Pronunciation in conversation, docs/DATA.md
+§Pronunciation in sessions):
+- A Mandarin Go-tab listening turn is scored against its own transcript
+  (Han only, at most 24 characters; mixed or longer turns aren't), started
+  by `/api/voice/transcribe` in the background (`startLive`,
+  `web/server/livePronunciation.ts`; engine, worker, slots and Azure cap
+  are stage 1's, `scoreLive`) and taken by the turn whose message has the
+  same Han characters, waited for at most `LIVE.waitMs` (1.2 s) from the
+  turn's arrival; late, failed or busy: the turn goes on unchanged.
+- Only the live bar flags (`liveFlags` in `scripts/pronunciation-live.mjs`:
+  the engine's `off` plus 1 st of margin, confidence, quality, no creak, no
+  sound-only flag, no particles, nothing when over a third of a turn is
+  off). One flag at most goes into the turn prompt as a fixed-format
+  `[PRONUNCIATION CHECK]` block with the dial's rule (`pronunciationBlock`,
+  `PRONUNCIATION_RULES` in `scripts/voice.mjs`); nothing flagged or the
+  dial off: the prompt is byte for byte unchanged.
+- The dial `coaching` (`off` | `light` default | `strict`, a word like
+  `pace`, else 400) goes on the transcription and the turn; off scores
+  nothing at all. Kids: no dial (a value is a 400), the gentle rule, no
+  marks, nothing stored.
+- Adults get the line's marks in the reply (`pronunciation`, a miss below
+  the bar shown as not sure) under their line in the Go tab (`ToneCheck`).
+  Each scored adult turn keeps a `pronunciation_checks` row
+  (`scripts/db/pronunciation.ts`); a flagged one keeps its WAV in
+  `data/clips/` or `LINGO_CLIPS_DIR` (`scripts/pronunciation-clips.mjs`), at
+  most 20 per conversation, served only to its learner
+  (`GET /api/pronunciation/clips/:id`), removed with the conversation.
 Kids word game (ld-8zu, migrations 0011 and 0012, docs/DATA.md §Kids word game): a
 kids learner's Practice tab is a by-ear game, where the child hears a word
 and taps its picture.

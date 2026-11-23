@@ -1,0 +1,202 @@
+import { randomUUID } from "node:crypto";
+import type { IncomingMessage } from "node:http";
+import { scoresTones } from "../../scripts/pronunciation.mjs";
+import { readScoreAudio } from "../../scripts/pronunciation-app.mjs";
+import { removeClip, writeClip } from "../../scripts/pronunciation-clips.mjs";
+import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget } from "../../scripts/pronunciation-live.mjs";
+import { pronunciationBlock } from "../../scripts/voice.mjs";
+import type { CheckDraft } from "../../scripts/db/pronunciation.ts";
+import type { Coaching, LivePronunciation } from "../shared/wire.ts";
+import type { LearnerCtx } from "./auth.ts";
+import { scoreLive, type LiveScore } from "./pronunciation.ts";
+import { HttpError } from "./sse.ts";
+
+// Pronunciation in live conversation (stage 2, ld-ne0.3; docs/VOICE.md
+// §Pronunciation in conversation). A Go-tab turn reaches the server as two
+// requests: the recording to /api/voice/transcribe, then the words to
+// /api/voice/turn. Scoring needs both halves (the audio from the first, the
+// words the learner actually sent from the second), so it starts as soon as
+// the transcription is known and runs while the browser shows the words and
+// sends the turn; the turn then waits for it a short, bounded time
+// (LIVE.waitMs from the turn's arrival, beside the turn's own reads), and
+// goes on without it past that. A late score is dropped, not carried to the
+// next turn: a step-in about a word from two turns back reads as a non
+// sequitur, and its marks would land on a line long passed.
+//
+// What is held between the two requests, in this process's memory only:
+// one entry per learner and language (so at most one recording, of at most
+// 30 seconds, per learner: a page can't pile them up by naming made-up
+// conversations), holding the conversation it was for, the latest
+// transcription's score (a promise), its Han characters, and the recording
+// itself (needed only if the turn flags it and keeps the clip). Held at most
+// LIVE.ttlMs, taken by the first turn of that conversation, and replaced by
+// any newer transcription. A turn whose words aren't what was scored
+// (edited in the box, typed, another transcription) uses none of it. The
+// conversation id is checked by the turn (openConversation), not here.
+
+/** The turn's wait and how long a score is held. Mutable for the tests,
+ *  like pronunciation.ts SCORER. */
+export const LIVE = {
+  /** How long a turn waits for its score, counted from the turn's arrival
+   *  (the turn's recall reads run meanwhile). The local scorer is done in a
+   *  few hundred ms, usually before the turn arrives; Azure answers short
+   *  audio in about a second. */
+  waitMs: 1200,
+  /** How long a score waits for its turn (the box may hold the words while
+   *  the learner edits them). */
+  ttlMs: 120_000,
+};
+
+type Outcome = LiveScore;
+interface Pending {
+  conversationId: string;
+  han: string;
+  locale: string;
+  kids: boolean;
+  wav: Uint8Array;
+  at: number;
+  done: Promise<Outcome>;
+}
+
+const pending = new Map<string, Pending>();
+const keyOf = (ctx: LearnerCtx) => `${ctx.learner.id}:${ctx.language.id}`;
+
+function sweep(now = Date.now()): void {
+  for (const [k, p] of pending) if (now - p.at > LIVE.ttlMs) pending.delete(k);
+}
+
+/** For the tests: forget everything held. */
+export function clearLive(): void {
+  pending.clear();
+}
+
+/**
+ * The dial a request carries (`coaching`, a query parameter on the
+ * transcription, a body field on the turn): one of the three words for an
+ * adult (absent: "light"), else a 400; a kids session has no dial, and any
+ * value from one is a 400 too. → the adult's word, or "kids".
+ */
+export function requestCoaching(ctx: LearnerCtx, raw: unknown): Coaching | "kids" {
+  if (ctx.learner.mode === "kids") {
+    if (raw != null && raw !== "") throw new HttpError(400, "kids sessions have no coaching dial");
+    return "kids";
+  }
+  const c = coachingOf(raw);
+  if (!c) throw new HttpError(400, "coaching must be off, light or strict");
+  return c;
+}
+
+/** The transcription's `coaching` parameter, checked before anything is
+ *  read or paid for (a 400 costs no transcription). */
+export function transcribeCoaching(req: IncomingMessage, ctx: LearnerCtx): Coaching | "kids" {
+  return requestCoaching(ctx, new URL(req.url ?? "/", "http://localhost").searchParams.get("coaching"));
+}
+
+/**
+ * Start scoring a Go-tab transcription (called by the transcribe route once
+ * it has the text, never awaited: the words go back to the page at once).
+ * Only a listening turn of a saved conversation, in a Mandarin locale
+ * (`locale`: the transcription's target, the page's first locale), with the
+ * dial on, whose transcript is Mandarin alone and short (liveTarget).
+ * Anything else clears what was held for the conversation, so a turn never
+ * picks up an older recording's score.
+ */
+export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, coaching }: { conversationId: string; text: string; wav: Uint8Array; locale: string; coaching: Coaching | "kids" }): void {
+  const key = keyOf(ctx);
+  pending.delete(key);
+  sweep();
+  if (coaching === "off" || !scoresTones(locale)) return;
+  const target = liveTarget(text);
+  if (target.skip !== undefined) return;
+  // Only a recording the scorer takes (16 kHz mono PCM, 0.25 to 30 s) is
+  // held: anything else would be a skip anyway.
+  if (readScoreAudio(wav).error !== undefined) return;
+  const kids = coaching === "kids";
+  const done = scoreLive(ctx, { wav, text: target.text, locale, kids }).catch((): Outcome => ({ skip: "failed" }));
+  pending.set(key, { conversationId, han: hanOf(target.text), locale, kids, wav, at: Date.now(), done });
+}
+
+/** A scored turn's check, its audio written to the clips directory first
+ *  when it was flagged (named by the check's id), for saveTurn to keep or
+ *  refuse (the per-session cap). A write that fails costs the clip only:
+ *  the check is kept without audio. */
+export function offerClip(conversationId: string, check: NonNullable<LiveTurn["check"]>): CheckDraft {
+  const { wav, durationMs, ...draft } = check;
+  if (!wav) return { ...draft, clip: null };
+  try {
+    const file = writeClip(conversationId, check.id, wav);
+    return { ...draft, clip: { file, bytes: wav.length, ms: Math.max(1, durationMs) } };
+  } catch (e) {
+    console.error(`[lingo-dojo] pronunciation (live): a clip couldn't be written (${(e as NodeJS.ErrnoException)?.code ?? "error"}); the check is kept without it`);
+    return { ...draft, clip: null };
+  }
+}
+
+/** Remove a clip offered but not kept (past the cap, or the turn unsaved). */
+export function dropClip(conversationId: string, file: string): void {
+  try {
+    removeClip(conversationId, file);
+  } catch (e) {
+    console.error(`[lingo-dojo] pronunciation (live): a clip that wasn't kept couldn't be removed (${(e as NodeJS.ErrnoException)?.code ?? "error"})`);
+  }
+}
+
+/** What a turn takes from its score: the block for the prompt ("" with
+ *  nothing to say), the marks (adults), and what the turn's row keeps. */
+export interface LiveTurn {
+  block: string;
+  marks: LivePronunciation | null;
+  /** Adults only: the check to store with the turn (saveTurn). */
+  check: (CheckDraft & { wav: Uint8Array | null; durationMs: number }) | null;
+}
+
+/**
+ * The score of the transcription this turn's message came from, waited for
+ * until `deadline` (ms since the epoch), or null: none held, another
+ * session's or language's, words that aren't what was scored, the dial
+ * turned off since, a skip, or late. Taken either way (a score is used by
+ * one turn at most). Never throws.
+ */
+export async function takeLive(ctx: LearnerCtx, { conversationId, message, locale, coaching, deadline }: { conversationId: string; message: string; locale: string; coaching: Coaching | "kids"; deadline: number }): Promise<LiveTurn | null> {
+  const key = keyOf(ctx);
+  const p = pending.get(key);
+  if (!p || p.conversationId !== conversationId) return null;
+  pending.delete(key);
+  if (Date.now() - p.at > LIVE.ttlMs) return null;
+  const kids = coaching === "kids";
+  if (coaching === "off" || kids !== p.kids || p.locale !== locale || !p.han || hanOf(message) !== p.han) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => {
+    timer = setTimeout(() => resolve("late"), Math.max(0, deadline - Date.now()));
+  });
+  const out = await Promise.race([p.done, late]);
+  clearTimeout(timer);
+  if (out === "late") {
+    console.log("[lingo-dojo] pronunciation (live): the score came too late for its turn; dropped");
+    return null;
+  }
+  if ("skip" in out) return null;
+  const flags = liveFlags(out.result);
+  const notes = flags.map((i) => flagNote(out.result, i));
+  // The dial as the turn sent it (light or strict), for an adult; kids get
+  // the gentle rule whatever.
+  const dial: "light" | "strict" = kids ? "light" : coaching === "strict" ? "strict" : "light";
+  const block = pronunciationBlock(notes, { mode: kids ? "kids" : "adult", coaching: dial });
+  if (kids) return { block, marks: null, check: null };
+  const id = randomUUID();
+  return {
+    block,
+    marks: liveReply(out.reply, flags) as LivePronunciation,
+    check: {
+      id,
+      engine: out.engine,
+      coaching: dial,
+      syllables: liveRecord(out.result, flags),
+      flagged: flags.length,
+      clip: null,
+      // Only a flagged turn's audio is ever offered for keeping.
+      wav: flags.length ? p.wav : null,
+      durationMs: Math.round(out.durationMs),
+    },
+  };
+}

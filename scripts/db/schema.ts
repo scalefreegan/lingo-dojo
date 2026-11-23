@@ -1351,3 +1351,63 @@ export const sharedReadingUses = pgTable(
   },
   (t) => [check("shared_reading_uses_changed", sql`${t.changed} >= 0`), index("shared_reading_uses_counted_idx").on(t.countedAt)],
 );
+
+/* ------------------------ pronunciation in sessions ----------------------- */
+
+/**
+ * One row per scored learner turn of an adult voice session (migration
+ * 0022, bead ld-ne0.3; docs/DATA.md §Pronunciation in sessions): the tone
+ * check of what the learner said, measured against what transcription
+ * heard (web/server/livePronunciation.ts, pure rules
+ * scripts/pronunciation-live.mjs). `syllables` is the compact per-syllable
+ * result stage 3 (ld-ne0.4: the recap's tone score, the Practice feed, the
+ * per-tone trend) reads; `flagged` how many syllables passed the live bar.
+ * Only a turn with a flag keeps its audio: `clip_file` names a WAV in the
+ * clips directory (scripts/pronunciation-clips.mjs), at most
+ * MAX_CLIPS_PER_CONVERSATION per conversation; null for the rest. Kids
+ * sessions write no row at all. The row goes with its turn and its
+ * conversation (cascade); the conversation's delete also removes its clip
+ * files. Queries only in scripts/db/pronunciation.ts.
+ */
+export const pronunciationChecks = pgTable(
+  "pronunciation_checks",
+  {
+    id: id(),
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    conversationId: uuid("conversation_id").notNull(),
+    /** The learner turn that was scored. */
+    turnId: uuid("turn_id").notNull(),
+    engine: text("engine").$type<"azure" | "local">().notNull(),
+    /** The session's coaching dial as the turn was sent ("off" is never
+     *  scored, so never stored). */
+    coaching: text("coaching").$type<"light" | "strict">().notNull(),
+    syllables: jsonb("syllables").$type<Record<string, unknown>[]>().notNull(),
+    flagged: integer("flagged").notNull(),
+    clipFile: text("clip_file"),
+    clipBytes: integer("clip_bytes"),
+    clipMs: integer("clip_ms"),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    check("pronunciation_checks_engine", sql`${t.engine} in ('azure', 'local')`),
+    check("pronunciation_checks_coaching", sql`${t.coaching} in ('light', 'strict')`),
+    check("pronunciation_checks_flagged", sql`${t.flagged} >= 0`),
+    // A clip only with a flag, and its three columns together; the file
+    // name is one this app made (a uuid), never anything a client sent.
+    // Spelled with `is not null` throughout: a CHECK passes on NULL, so
+    // `clip_bytes > 0` alone would let a NULL through.
+    check(
+      "pronunciation_checks_clip",
+      sql`(${t.clipFile} is null and ${t.clipBytes} is null and ${t.clipMs} is null) or (${t.clipFile} is not null and ${t.clipBytes} is not null and ${t.clipMs} is not null and ${t.flagged} > 0 and ${t.clipFile} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[.]wav$' and ${t.clipBytes} > 0 and ${t.clipMs} > 0)`,
+    ),
+    foreignKey({ name: "pronunciation_checks_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+    foreignKey({ name: "pronunciation_checks_conversation_fk", columns: [t.conversationId, t.languageProfileId], foreignColumns: [conversations.id, conversations.languageProfileId] }).onDelete("cascade"),
+    foreignKey({ name: "pronunciation_checks_turn_fk", columns: [t.turnId, t.languageProfileId], foreignColumns: [turns.id, turns.languageProfileId] }).onDelete("cascade"),
+    unique("pronunciation_checks_turn").on(t.turnId),
+    // A conversation's clips (the per-session cap, the delete) and a
+    // language's checks over time (stage 3).
+    index("pronunciation_checks_conversation_idx").on(t.conversationId),
+    index("pronunciation_checks_profile_idx").on(t.languageProfileId, t.createdAt),
+  ],
+);

@@ -9,6 +9,8 @@ import { languageProfileRefsOfUser, type LanguageProfile } from "../../scripts/d
 import { hiddenSet } from "../../scripts/db/hidden.ts";
 import { forLanguageProfile, type LanguageProfileRef } from "../../scripts/db/owned.ts";
 import { addScenarioPhrases, forgetUnused, lockTurnWrite, recordGlosses, unrecordGlosses } from "../../scripts/db/phrases.ts";
+import { recordCheck, type CheckDraft } from "../../scripts/db/pronunciation.ts";
+import { removeConversationClips } from "../../scripts/pronunciation-clips.mjs";
 import { bankLocale as sessionBankLocale, glossCaptures, scenarioEntries } from "../../scripts/phrases.mjs";
 import { scenarioKeyterms } from "../../scripts/keyterms.mjs";
 import { readMinutes } from "../../scripts/plan.mjs";
@@ -313,9 +315,21 @@ export async function saveTurn(
      *  (one started before reviews were stored: web/server/recall.ts
      *  turnRecall), kept so its later turns and recap offer the same. */
     review?: { phraseIds: string[] } | null;
+    /** The learner message's tone check (an adult Mandarin turn,
+     *  livePronunciation.ts), stored with the message's row; its clip, if
+     *  offered, is kept unless the conversation already holds its cap. */
+    pronunciation?: CheckDraft | null;
   },
+  /** Filled once the write has committed: whether an offered clip was kept
+   *  (the caller removes its file otherwise). */
+  out: SaveTurnOut = {},
 ): Promise<boolean> {
-  return rawDb().transaction(async (tx) => {
+  // A message's check (and its clip) sits on a learner row, and no write
+  // here ever drops one: planTurnWrite deletes at most a final master reply.
+  // Were that to change, the check's row goes with its turn by cascade and
+  // its file with the conversation's folder.
+  let clipKept = false;
+  const saved = await rawDb().transaction(async (tx) => {
     const mine = forLanguageProfile(tx, profile);
     const [conv] = await tx.select().from(conversations).where(mine.where(conversations, eq(conversations.id, conversationId))).for("update");
     if (!conv || conv.endedAt) return false;
@@ -357,6 +371,12 @@ export async function saveTurn(
       const n = await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
       if (n == null) await forgetUnused(tx, profile, made);
     }
+    // The message's tone check, on the learner row this write inserted for
+    // it (the last one: the message comes just before the reply). None when
+    // the message wasn't inserted (a retry of a stored turn keeps its row,
+    // and its check from then).
+    const said = turn.pronunciation && turn.message ? written.findLast((t) => t.role === "learner" && t.text === turn.message) : undefined;
+    if (said && turn.pronunciation) clipKept = (await recordCheck(tx, profile, conversationId, said.id, turn.pronunciation)).clipKept;
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.
     // A review chosen by this turn is kept only if none is stored yet
@@ -369,6 +389,13 @@ export async function saveTurn(
     );
     return true;
   });
+  out.clipKept = saved && clipKept;
+  return saved;
+}
+
+/** What saveTurn reports after it commits. */
+export interface SaveTurnOut {
+  clipKept?: boolean;
 }
 
 /* --------------------------------- routes ---------------------------------- */
@@ -710,6 +737,14 @@ async function remove(res: ServerResponse, ctx: LearnerCtx, id: string): Promise
   // row gone when it comes to write, and answers unsaved.
   const gone = await profileRows(ctx.language).remove(conversations, eq(conversations.id, id));
   if (!gone.length) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
+  // Its pronunciation checks went with it (cascade); their kept clips are
+  // files (docs/DATA.md §Pronunciation in sessions): the whole folder goes.
+  // A failure here is logged, never the learner's: the conversation is gone.
+  try {
+    removeConversationClips(id);
+  } catch (e) {
+    console.error(`[lingo-dojo] conversation ${id}: its clips couldn't be removed (${(e as NodeJS.ErrnoException)?.code ?? "error"})`);
+  }
   sendJson(res, 200, { deleted: true });
 }
 
