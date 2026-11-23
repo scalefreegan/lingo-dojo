@@ -16,6 +16,7 @@ import { azurePronunciationResult } from "./pronunciation.mjs";
 
 // Which locales and texts: one copy for the server and the page.
 export { AZURE_ASSESSMENT_LOCALES, WORD_CHECK_LANGUAGES, WORD_MAX_UNSPACED, WORD_MAX_WORDS, checksWordsHere, readWordText, wordCheckLocale } from "../web/shared/word-check.ts";
+import { unspacedLocale } from "../web/shared/word-check.ts";
 
 /* ---------------------------------- rules ---------------------------------- */
 
@@ -52,30 +53,53 @@ export const WORD_RULES = Object.freeze({
 
 /* --------------------------------- marking --------------------------------- */
 
-const isMark = (c) => /[\p{P}\s]/u.test(c);
+const isGap = (c) => /[\p{P}\s]/u.test(c);
 
-/** The phrase with a map from its letters (lowercased, NFC, punctuation and
- *  spaces dropped) back to their places in the text. */
-function folded(text) {
+/**
+ * One character's matching keys, for matching only (what is shown is the
+ * phrase as written). Both are case-folded as far as matching needs (ß and
+ * ẞ are "ss", so Straße matches STRASSE) and drop Arabic tatweel.
+ *  - `exact` keeps every mark: schön is not schon.
+ *  - `bare` also drops the marks (accents, Arabic harakat and shadda), so a
+ *    phrase written with harakat matches Azure's bare word. Tried only
+ *    where the exact key finds no place.
+ */
+const KEYS = {
+  exact: (c) => c.replace(/ـ/g, "").toLowerCase().replace(/[ßẞ]/g, "ss"),
+  bare: (c) => c.normalize("NFD").replace(/[\p{M}ـ]/gu, "").toLowerCase().replace(/[ßẞ]/g, "ss"),
+};
+
+/** The phrase under one key, with, per key unit, its place in the text
+ *  (`at`: the UTF-16 offset of the character it came from, `len` that
+ *  character's length) and whether a word of the phrase starts there
+ *  (`starts`: after a space or a punctuation mark, apostrophes and hyphens
+ *  included, so j'ai's "ai" may stand alone when Azure splits it). */
+function folded(text, key) {
   let s = "";
   const at = [];
-  const cps = [...text];
+  const len = [];
+  const starts = new Set();
+  let gap = true;
   let pos = 0;
-  for (const c of cps) {
-    if (!isMark(c)) {
-      const low = c.toLowerCase();
-      // One entry per UTF-16 unit, as indexOf counts: a character outside
-      // the BMP is two.
-      for (let k = 0; k < low.length; k++) {
-        s += low[k];
-        at.push(pos);
+  for (const c of text) {
+    if (isGap(c)) gap = true;
+    else {
+      const k = key(c);
+      if (k) {
+        if (gap) starts.add(s.length);
+        gap = false;
+        for (let i = 0; i < k.length; i++) {
+          s += k[i];
+          at.push(pos);
+          len.push(c.length);
+        }
       }
     }
     pos += c.length;
   }
-  return { s, at };
+  return { s, at, len, starts };
 }
-const fold = (t) => [...String(t).normalize("NFC")].filter((c) => !isMark(c)).join("").toLowerCase();
+const fold = (t, key) => [...String(t).normalize("NFC")].filter((c) => !isGap(c)).map(key).join("");
 
 /**
  * Azure's reply (parsed by `azurePronunciationResult`) → the marks the page
@@ -83,30 +107,48 @@ const fold = (t) => [...String(t).normalize("NFC")].filter((c) => !isMark(c)).jo
  * Japanese is split into words by Azure, as Mandarin is), placed on the
  * phrase as it was written (`start`/`end`, UTF-16 offsets into `text`, so
  * punctuation and spaces between words stay as the phrase has them) with
- * `{ text, verdict, reason?, score?, startMs, endMs, sounds? }`. A word
+ * `{ text, verdict, reason?, score?, startMs, endMs, sounds? }`. In a spaced
+ * script a word is placed only on whole words of the phrase (an "a" is
+ * never put inside "la"); in Japanese anywhere after the last one. A word
  * Azure heard but the phrase doesn't have (`Insertion`) is not shown; a
  * word it can't place on the phrase is left out.
  */
 export function wordMarks(azure, text, { locale, rules = WORD_RULES } = {}) {
-  const ref = folded(String(text).normalize("NFC"));
   const src = String(text).normalize("NFC");
+  const refs = [folded(src, KEYS.exact), folded(src, KEYS.bare)];
+  const anywhere = unspacedLocale(String(locale ?? ""));
+  /** Where `f` sits in `ref` at or after the text offset `from`, on whole
+   *  words where the script has them; -1 if nowhere. */
+  const place = (ref, f, from) => {
+    let i = ref.at.findIndex((p) => p >= from);
+    if (i < 0) return -1;
+    i = ref.s.indexOf(f, i);
+    const fits = (j) => anywhere || (ref.starts.has(j) && (j + f.length === ref.s.length || ref.starts.has(j + f.length)));
+    while (i >= 0 && !fits(i)) i = ref.s.indexOf(f, i + 1);
+    return i;
+  };
   let cursor = 0;
   const words = [];
   const all = azure?.words ?? [];
   for (const [k, w] of all.entries()) {
     if (w.error === "Insertion") continue;
-    const f = fold(w.text);
-    if (!f) continue;
-    const i = ref.s.indexOf(f, cursor);
-    if (i < 0) continue;
-    cursor = i + f.length;
-    const start = ref.at[i];
-    const lastAt = ref.at[i + f.length - 1];
-    const end = lastAt + (src.codePointAt(lastAt) > 0xffff ? 2 : 1);
+    let found = null;
+    for (const [n, key] of [KEYS.exact, KEYS.bare].entries()) {
+      const f = fold(w.text, key);
+      const i = f ? place(refs[n], f, cursor) : -1;
+      if (i >= 0) {
+        found = { start: refs[n].at[i], end: refs[n].at[i + f.length - 1] + refs[n].len[i + f.length - 1] };
+        break;
+      }
+    }
+    if (!found) continue;
+    const { start, end } = found;
+    cursor = end;
     // Azure heard this very word as an extra one beside it: its alignment
     // put the said word in the wrong slot, and this one's score is about
-    // the slot, not the word (the proof's "Guten" beside a wrong "Abend").
-    const echoed = rules.insertionGuard && [all[k - 1], all[k + 1]].some((x) => x?.error === "Insertion" && fold(x.text) === f);
+    // the slot, not the word (the proof's "m'appelle" beside a wrong name).
+    const same = (x) => fold(x.text, KEYS.bare) === fold(w.text, KEYS.bare);
+    const echoed = rules.insertionGuard && [all[k - 1], all[k + 1]].some((x) => x?.error === "Insertion" && same(x));
     const mark = echoed ? { ...markOf(w, locale, rules), verdict: "unsure", reason: "unclear", why: undefined, sounds: undefined } : markOf(w, locale, rules);
     words.push({ ...mark, text: src.slice(start, end), start, end });
   }
@@ -118,7 +160,7 @@ function markOf(w, locale, rules) {
   const span = { startMs: Number.isFinite(w.startMs) ? w.startMs : null, endMs: Number.isFinite(w.endMs) ? w.endMs : null };
   const base = { score, azureError: w.error, ...span };
   // An omitted word has no score worth showing (Azure sends 0): it wasn't heard.
-  if (w.error === "Omission") return rules.omissionOff ? { ...base, score: null, verdict: "off", why: "missing" } : { ...base, score: null, verdict: "unsure", reason: "omitted" };
+  if (w.error === "Omission") return rules.omissionOff ? { ...base, score: null, verdict: "off", why: "missing" } : { ...base, score: null, verdict: "unsure", reason: "unclear" };
   if (w.error === "Mispronunciation" && score !== null && score < rules.offBelow) {
     return { ...base, verdict: "off", why: "sound", ...weakest(w, locale, rules) };
   }
@@ -132,6 +174,21 @@ function weakest(w, locale, rules) {
   const named = (w.phonemes ?? []).filter((p) => p.name && Number.isFinite(p.score));
   const weak = named.filter((p) => p.score < rules.weakBelow).sort((a, b) => a.score - b.score).slice(0, 2);
   return weak.length ? { sounds: weak.map((p) => ({ name: p.name, score: Math.round(p.score) })) } : {};
+}
+
+/** Azure's answers for a take with no speech in it. */
+const SILENT_STATUSES = new Set(["NoMatch", "InitialSilenceTimeout", "BabbleTimeout"]);
+
+/**
+ * Whether Azure heard no speech in the take: a silent or noise-only
+ * recording (its status says so, or, the check being scripted, it omitted
+ * every word). Not an outage, and no marks: the learner is told to try
+ * louder. Every word "off" here would blame the learner for the microphone.
+ */
+export function azureHeardNothing(azure) {
+  if (!azure) return false;
+  if (SILENT_STATUSES.has(azure.status)) return true;
+  return azure.status === "Success" && azure.words.length > 0 && azure.words.every((w) => w.error === "Omission");
 }
 
 /** The parsed reply, re-exported so callers need one module. */

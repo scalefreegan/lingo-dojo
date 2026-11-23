@@ -16,7 +16,6 @@ import os from "node:os";
 import path from "node:path";
 import { encodeWav } from "../pronunciation.mjs";
 import { AZURE_PER_MINUTE } from "../pronunciation-app.mjs";
-import { WORD_RULES } from "../pronunciation-words.mjs";
 import { serveApi } from "./connect-stack.mjs";
 import { copyFixture } from "./helpers.mjs";
 import { ADULT, KID, addUser, client } from "./http-session.mjs";
@@ -160,14 +159,26 @@ test("an adult: one mark per word, laid on the phrase as written", async () => {
   assert.ok(!("nudge" in r.body));
 });
 
-test("a word Azure didn't hear is unsure, never off; a word it added isn't shown", async () => {
+test("a word Azure didn't hear as itself is off (missing), with no score; a word it added isn't shown", async () => {
   const sam = await someone();
-  azure = () => reply([["quiero", 95], ["un", null, "Omission"], ["uh", 40, "Insertion"], ["café", 91]]);
+  azure = () => reply([["quiero", 95], ["un", 0, "Omission"], ["uh", 40, "Insertion"], ["café", 91]]);
   const r = await score(sam, "quiero un café");
+  assert.deepEqual(r.body.words.map((w) => [w.text, w.verdict, w.why ?? null, w.score]), [
+    ["quiero", "ok", null, 95],
+    ["un", "off", "missing", null],
+    ["café", "ok", null, 91],
+  ]);
+});
+
+test("a word beside an inserted copy of itself is not sure, not off", async () => {
+  const sam = await someone([{ ...ADULT, name: "Mo", targetLanguage: "French", targetVariant: "" }]);
+  azure = () => reply([["je", 97], ["m'appelle", 100, "Insertion"], ["m'appelle", 26, "Mispronunciation"], ["Paul", 92]]);
+  const r = await score(sam, "je m'appelle Paul");
+  assert.equal(r.status, 200, r.text);
   assert.deepEqual(r.body.words.map((w) => [w.text, w.verdict, w.reason ?? null]), [
-    ["quiero", "ok", null],
-    ["un", WORD_RULES.omissionOff ? "off" : "unsure", WORD_RULES.omissionOff ? null : "omitted"],
-    ["café", "ok", null],
+    ["je", "ok", null],
+    ["m'appelle", "unsure", "unclear"],
+    ["Paul", "ok", null],
   ]);
 });
 
@@ -199,11 +210,31 @@ test("a kids learner: Azure as for an adult, but no marks, no scores; a nudge wh
   assert.equal((await score(pip, "Guten Morgen")).body.nudge, false);
 });
 
-test("Azure failing or hearing nothing: a 503 with a fixed sentence, nothing from Azure in the reply or the log", async () => {
+test("no speech in the take: a 422 no_speech saying so, not an outage, and no marks", async () => {
+  const sam = await someone();
+  for (const quiet of [
+    () => new Response(JSON.stringify({ RecognitionStatus: "NoMatch" }), { status: 200 }),
+    () => new Response(JSON.stringify({ RecognitionStatus: "InitialSilenceTimeout" }), { status: 200 }),
+    // Scripted, Azure may answer Success with every word omitted.
+    () => reply([["la", 0, "Omission"], ["cuenta", 0, "Omission"]]),
+  ]) {
+    azure = quiet;
+    let r;
+    const log = await logsOf(async () => {
+      r = await score(sam, "la cuenta");
+    });
+    assert.deepEqual([r.status, r.body.code], [422, "no_speech"], r.text);
+    assert.match(r.body.error, /no speech was heard/);
+    assert.ok(!("words" in r.body));
+    assert.ok(!log.includes("cuenta"), log);
+  }
+});
+
+test("Azure failing: a 503 with a fixed sentence, nothing from Azure in the reply or the log", async () => {
   const sam = await someone();
   for (const fail of [
     () => new Response("{}", { status: 500 }),
-    () => new Response(JSON.stringify({ RecognitionStatus: "NoMatch" }), { status: 200 }),
+    () => new Response(JSON.stringify({ RecognitionStatus: "Error" }), { status: 200 }),
     () => new Response("<html>secret-body</html>", { status: 200 }),
     () => {
       throw new TypeError("fetch failed");
@@ -215,7 +246,7 @@ test("Azure failing or hearing nothing: a 503 with a fixed sentence, nothing fro
       r = await score(sam, "la cuenta, por favor");
     });
     assert.equal(r.status, 503, r.text);
-    assert.match(r.body.error, /couldn't be checked/);
+    assert.equal(r.body.error, "the words couldn't be checked just now; try again");
     assert.ok(!log.includes("cuenta") && !log.includes("secret-body"), log);
     assert.ok(!JSON.stringify(r.body).includes("test-key"));
   }

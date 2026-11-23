@@ -42,7 +42,6 @@ function wordLine(w: PronunciationWord): string {
   if (w.verdict === "ok") return "Sounded right.";
   if (w.verdict === "off" && w.why === "missing") return "This word wasn't heard as itself: it may have been skipped, or said as another word. Listen to the model and try it again.";
   if (w.verdict === "off") return "This didn't sound like the word: other sounds were heard here. Listen to the model and try it again.";
-  if (w.reason === "omitted") return "Not sure: this word wasn't heard.";
   return "Not sure: the check couldn't tell clearly here.";
 }
 
@@ -206,12 +205,20 @@ function useSpanPlayer(take: Blob | null) {
   return { play: (a: number, b: number) => void play(a, b), playing, error };
 }
 
+/** The server's sentence ("no speech was heard; try again…", "the words
+ *  couldn't be checked just now; try again") as the page's line: it already
+ *  says what happened, so it is shown alone, capitalised and stopped. */
+function sentence(message: string): string {
+  const m = message.trim().replace(/[.\s]+$/, "");
+  return m ? `${m[0].toUpperCase()}${m.slice(1)}.` : "The words couldn't be checked. Try again.";
+}
+
 /** The marks for a recording already made, or a quiet line while they
  *  come; one live region, as ToneScoreView has. */
 export function WordScoreView({ state, kids, onPlayModel, modelBusy, modelError }: { state: WordScoreState; kids: boolean } & Omit<WordCheckProps, "reply" | "take" | "kids">) {
   const said =
     state.step === "scoring" ? (kids ? "Listening…" : "Checking the words…")
-    : state.step === "failed" ? (kids ? "Couldn't listen that time. Try once more!" : `The words couldn't be checked: ${state.message}`)
+    : state.step === "failed" ? (kids ? "Couldn't listen that time. Try once more!" : sentence(state.message))
     : state.step === "done" && state.reply ? wordSummary(state.reply, kids)
     : "";
   return (

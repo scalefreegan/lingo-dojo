@@ -230,7 +230,7 @@ function noteShape(shapes, locale, json) {
       if (sy.Syllable) s.namedSyllables++;
     }
   }
-  if (s.examples.length < 2 && (best.Words ?? []).length > 1) s.examples.push((best.Words ?? []).map((w) => w.Word).join(" | "));
+  if (s.examples.length < 2 && (best.Words ?? []).length > 1) s.examples.push((best.Words ?? []).map((w) => w.Word).join(" · "));
 }
 
 const { rows, shapes, replies, missing, failed } = collect();
@@ -301,7 +301,7 @@ p("Synthesized speech is not a learner: the \"wrong\" words here are whole other
 
 p("### Azure's word score and ErrorType, by locale");
 p("Words as Azure segments them, against the truth. \"Mis\" is `ErrorType: Mispronunciation`, \"Omit\" is `Omission` (the reference word was not heard); the scores are each word's `AccuracyScore` (0–100; an omitted word has none).");
-p("| Locale | Right words | median (10th pct) | Mis / Omit on right | Swapped words | median (90th pct) | Mis / Omit on swapped | Accent words | median | Mis / Omit on accent |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+lines.push("| Locale | Right words | median (10th pct) | Mis / Omit on right | Swapped words | median (90th pct) | Mis / Omit on swapped | Accent words | median | Mis / Omit on accent |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const loc of locales) {
   const r = stats(words((w) => isLocale(loc)(w) && right(w)));
   const x = stats(words((w) => isLocale(loc)(w) && wrong(w)));
@@ -410,6 +410,7 @@ p(
   "- **The accent sample has no truth.** An English voice reading Spanish (or a romanisation) is flagged on 13% of its words; some of those are surely right, and nobody listened.",
   "- **Variants ride on their language.** `es-ES`, `fr-CA`, `pt-PT`, `en-GB`, `en-AU`, `en-IN`, `ar-EG` are Azure locales the app checks, measured here only through `es-MX`, `fr-FR`, `pt-BR`, `en-US` and `ar-SA`. Locales Azure supports but nothing here measured (`zh-HK` Cantonese among them) stay `not_available`.",
   "- **Word splits are Azure's.** Japanese is split by Azure, not by spaces: こんばん | は, し | て | い | ます, and お茶 as お | 茶. A mark may sit on one kana. Korean words are the spaced eojeol (물 | 주세요).",
+  "- **Placement on unusual spellings is unverified live.** Every phrase here was written as Azure echoes it. A phrase with Arabic harakat or tatweel, a German ß (against an echoed SS), or an apostrophe or hyphen Azure splits at is placed by `wordMarks`' folded matching (exact first, then without marks; whole words only) and covered by tests on hand-written replies, not on what Azure actually sends back for them.",
   "- **Short phrases only** (one to five words here; the route takes twelve, or thirty Japanese characters).",
 );
 

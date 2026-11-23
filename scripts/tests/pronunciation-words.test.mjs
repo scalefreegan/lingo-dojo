@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import YAML from "yaml";
 import { azurePronunciationResult } from "../pronunciation.mjs";
-import { WORD_RULES, checksWordsHere, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
+import { WORD_RULES, azureHeardNothing, checksWordsHere, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
 import { REPO_ROOT } from "../content.mjs";
 import { localeFor } from "../voice.mjs";
 
@@ -59,6 +59,13 @@ test("the phrase: its own script, words and punctuation only, a dozen words at m
   assert.ok(readWordText(Array(13).fill("uno").join(" "), "es-MX").error);
   assert.ok(!readWordText(Array(12).fill("uno").join(" "), "es-MX").error);
   assert.ok(readWordText("あ".repeat(31), "ja-JP").error);
+  // Arabic tatweel stretches a word; it is not another script.
+  assert.deepEqual(readWordText("شكـرا", "ar-SA"), { text: "شكـرا" });
+  // Punctuation separates words: "a,b,…" is thirteen words, not one;
+  // apostrophes and hyphens don't split one.
+  assert.ok(readWordText(Array(13).fill("uno").join(","), "es-MX").error);
+  assert.ok(!readWordText(Array(6).fill("rendez-vous").join(" "), "fr-FR").error);
+  assert.ok(!readWordText(Array(12).fill("j'ai").join(" "), "fr-FR").error);
   assert.equal(checksWordsHere("es-MX", "hola"), true);
   assert.equal(checksWordsHere("es-AR", "hola"), false);
   assert.equal(checksWordsHere("es-MX", "hola 3"), false);
@@ -97,25 +104,37 @@ test("the bars: off needs Azure's Mispronunciation and a low score; ok needs no 
   assert.equal(wordMarks(live([["hola", WORD_RULES.okFrom]]), "hola", { locale: "es-MX" }).words[0].verdict, "ok");
 });
 
-test("an omitted word is never off; an inserted one isn't shown; a word not in the phrase is left out", () => {
-  const r = wordMarks(live([["quiero", 95], ["un", null, "Omission"], ["eh", 50, "Insertion"], ["zzz", 90], ["café", 91]]), "quiero un café", { locale: "es-MX" });
-  assert.deepEqual(r.words.map((w) => [w.text, w.verdict]), [
-    ["quiero", "ok"],
-    ["un", WORD_RULES.omissionOff ? "off" : "unsure"],
-    ["café", "ok"],
+test("an omitted word is off (missing) with no score; an inserted one isn't shown; a word not in the phrase is left out", () => {
+  const r = wordMarks(live([["quiero", 95], ["un", 0, "Omission"], ["eh", 50, "Insertion"], ["zzz", 90], ["café", 91]]), "quiero un café", { locale: "es-MX" });
+  assert.deepEqual(r.words.map((w) => [w.text, w.verdict, w.why ?? null, w.score]), [
+    ["quiero", "ok", null, 95],
+    ["un", "off", "missing", null],
+    ["café", "ok", null, 91],
   ]);
+  // The other setting, asked for explicitly: an omission is only not sure.
+  const soft = wordMarks(live([["un", 0, "Omission"]]), "un", { locale: "es-MX", rules: { ...WORD_RULES, omissionOff: false } }).words[0];
+  assert.deepEqual([soft.verdict, soft.reason, soft.why], ["unsure", "unclear", undefined]);
+});
+
+test("a take Azure heard nothing in: its status, or every word omitted", () => {
+  assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "NoMatch" })), true);
+  assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "InitialSilenceTimeout" })), true);
+  assert.equal(azureHeardNothing(live([["la", 0, "Omission"], ["cuenta", 0, "Omission"]])), true);
+  // A word said as another (omitted, the other inserted) is speech.
+  assert.equal(azureHeardNothing(live([["perro", 0, "Omission"], ["gato", 90, "Insertion"]])), false);
+  assert.equal(azureHeardNothing(live([["la", 99], ["cuenta", 0, "Omission"]])), false);
+  assert.equal(azureHeardNothing(azurePronunciationResult({ RecognitionStatus: "Error" })), false);
 });
 
 test("a word beside an inserted copy of itself is unsure, whatever its score (Azure aligned it to the wrong slot)", () => {
   // The proof's "je m'appelle Paul" said for "je m'appelle Marie": Azure
   // hears m'appelle as an extra word, then scores the reference's m'appelle 26.
   const r = wordMarks(live([["je", 97], ["m'appelle", 100, "Insertion"], ["m'appelle", 26, "Mispronunciation"], ["Paul", null, "Omission"]]), "je m'appelle Paul", { locale: "fr-FR" });
-  assert.deepEqual(r.words.map((w) => [w.text, w.verdict]), [
-    ["je", "ok"],
-    ["m'appelle", WORD_RULES.insertionGuard ? "unsure" : "off"],
-    ["Paul", WORD_RULES.omissionOff ? "off" : "unsure"],
+  assert.deepEqual(r.words.map((w) => [w.text, w.verdict, w.why ?? w.reason]), [
+    ["je", "ok", undefined],
+    ["m'appelle", "unsure", "unclear"],
+    ["Paul", "off", "missing"],
   ]);
-  assert.equal(r.words[2].why, WORD_RULES.omissionOff ? "missing" : undefined);
   // Without the guard the same reply flags the right word.
   const raw = wordMarks(live([["m'appelle", 100, "Insertion"], ["m'appelle", 26, "Mispronunciation"]]), "m'appelle", { locale: "fr-FR", rules: { ...WORD_RULES, insertionGuard: false } });
   assert.equal(raw.words[0].verdict, "off");
@@ -132,6 +151,32 @@ test("placed on the phrase as written: case, accents, apostrophes and characters
   // 𠮷 is two UTF-16 units: the slice keeps it whole.
   const wide = wordMarks(live([["𠮷野", 95]]), "𠮷野", { locale: "ja-JP" });
   assert.deepEqual([wide.words[0].start, wide.words[0].end, wide.words[0].text], [0, 3, "𠮷野"]);
+});
+
+test("placed by a folded form: Arabic harakat and tatweel, ß as ss, accents; shown as written", () => {
+  const ar = wordMarks(live([["شكرا", 95], ["جزيلا", 91]]), "شُكْرًا جَزِيـلًا", { locale: "ar-SA" });
+  assert.deepEqual(ar.words.map((w) => w.text), ["شُكْرًا", "جَزِيـلًا"]);
+  assert.equal("شُكْرًا جَزِيـلًا".slice(ar.words[1].start, ar.words[1].end), "جَزِيـلًا");
+  const de = wordMarks(live([["STRASSE", 95], ["schön", 90]]), "Die Straße ist schon schön.", { locale: "de-DE" });
+  assert.deepEqual(de.words.map((w) => [w.text, w.start, w.end]), [
+    ["Straße", 4, 10],
+    ["schön", 21, 26],
+  ]);
+  // The other way round, and an accent Azure leaves off.
+  assert.deepEqual(wordMarks(live([["straße", 95], ["cafe", 90]]), "Strasse café", { locale: "de-DE" }).words.map((w) => w.text), ["Strasse", "café"]);
+});
+
+test("in a spaced script, placed only on whole words of the phrase", () => {
+  // "a" is not the a inside "la"; it has no word of its own, so it's left out.
+  const r = wordMarks(live([["a", 40, "Mispronunciation"], ["casa", 95]]), "la casa", { locale: "es-MX" });
+  assert.deepEqual(r.words.map((w) => [w.text, w.start]), [["casa", 3]]);
+  // A later whole word is found past a part of an earlier one.
+  assert.deepEqual(wordMarks(live([["el", 95]]), "del el", { locale: "es-MX" }).words.map((w) => w.start), [4]);
+  // Apostrophes and hyphens join a word, and Azure may split it there.
+  assert.deepEqual(wordMarks(live([["j'", 90], ["ai", 90], ["rendez-vous", 95]]), "J'ai rendez-vous", { locale: "fr-FR" }).words.map((w) => w.text), ["J", "ai", "rendez-vous"]);
+  assert.deepEqual(wordMarks(live([["rendez", 90], ["vous", 92]]), "rendez-vous", { locale: "fr-FR" }).words.map((w) => w.text), ["rendez", "vous"]);
+  // Japanese has no spaces: Azure's words go anywhere after the last.
+  assert.deepEqual(wordMarks(live([["こんばん", 95], ["は", 90]]), "こんばんは", { locale: "ja-JP" }).words.map((w) => w.text), ["こんばん", "は"]);
 });
 
 test("the weakest sound: only where the rules name the locale, and only on an off word", () => {

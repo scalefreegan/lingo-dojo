@@ -2667,7 +2667,7 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   in `web/shared/word-check.ts`): Spanish (es-MX, es-ES), German (de-DE),
   French (fr-FR, fr-CA), Japanese, Italian, Korean, Portuguese (pt-BR,
   pt-PT), Russian, Dutch, Swedish, Hindi, English (en-US, en-GB, en-AU,
-  en-IN) and Arabic (ar-SA, ar-EG). Not: Greek (Azure has none), es-AR,
+  en-CA, en-IN) and Arabic (ar-SA, ar-EG). Not: Greek (Azure has none), es-AR,
   es-CO, de-AT, de-CH, Levantine and Moroccan Arabic, or a locale Azure has
   that wasn't measured (Cantonese, Polish…). Those are a 422
   `not_available` and the page shows nothing. Variants are measured only
@@ -2675,7 +2675,11 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
 - **No local fallback.** There is no local word scorer: without Azure keys
   the answer is 422 `not_available`; when Azure fails it is a 503 ("the
   words couldn't be checked just now"), and past the user's 12 calls a
-  minute a 429. Never a guess.
+  minute a 429. Never a guess. A take with no speech in it (Azure's
+  `NoMatch`, `InitialSilenceTimeout`, `BabbleTimeout`, or every word
+  omitted: `azureHeardNothing`) is a 422 `no_speech`, "no speech was heard;
+  try again a little louder", with no marks; its call counts against the
+  minute.
 - **The phrase.** NFC, 1 to 12 words (30 characters for Japanese, which has
   no spaces), the language's own script, letters, marks and punctuation
   only: no digits or symbols (`readWordText`; 400 otherwise, before any
@@ -2684,7 +2688,12 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   locally). Nothing is stored; the log line is `azure (words), N words`.
 - **The marks** (`wordMarks`, `WORD_RULES` in
   `scripts/pronunciation-words.mjs`), one per word as Azure split the
-  phrase (Japanese is split by Azure: こんばん | は):
+  phrase (Japanese is split by Azure: こんばん · は), placed on the phrase
+  as written: case-folded (ß as ss), exact first and then without marks
+  (Arabic harakat, accents) and tatweel, and in a spaced script only on
+  whole words (an "a" is never put inside "la"). That matching is tested
+  on hand-written replies only; what Azure echoes for harakat, ß and
+  split apostrophes was not measured.
   - **off** when Azure says `Omission` (with miscue detection on, a word
     said as another comes back as the reference word omitted) or
     `Mispronunciation` with a score under 30. A low score without Azure's
@@ -2707,8 +2716,11 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   adults only). `web/src/components/WordCheck.tsx`, `useWordScore.ts`.
 - **Kids.** The recording may go to Azure as stage 1's does; the reply has
   each word's place only (no verdict, score or timing) and `nudge` when
-  something was off, which the page says as "Let's listen and try that one
-  again!" with a Listen button.
+  something was off. No kids view asks for it today (a kids learner's
+  Practice is the picture game, and the Phrase bank's check is adults
+  only), so the kids reply is the route's alone; `WordCheck`'s kids
+  rendering ("Let's listen and try that one again!" with a Listen button)
+  is there for a kids surface that adds it.
 - **No compare mode.** Compare mode draws pitch against a model's tones;
   without tones there is no shape to compare, so it stays Mandarin-only.
 - **Not in live turns yet.** `wordMarks` takes Azure's parsed reply and the

@@ -541,7 +541,6 @@ Words as Azure segments them, against the truth. "Mis" is `ErrorType: Mispronunc
 
 | Locale | Right words | median (10th pct) | Mis / Omit on right | Swapped words | median (90th pct) | Mis / Omit on swapped | Accent words | median | Mis / Omit on accent |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-
 | `es-MX` | 59 | 94 (80) | 1 / 0 | 10 | 24 (68) | 4 / 4 | 23 | 94 | 0 / 0 |
 | `de-DE` | 65 | 94 (65) | 5 / 0 | 10 | 4.5 (53) | 6 / 4 | 25 | 85 | 3 / 0 |
 | `fr-FR` | 62 | 94 (85) | 2 / 0 | 10 | 2 (80) | 2 / 5 | 24 | 78 | 3 / 6 |
@@ -615,19 +614,19 @@ The trade-off on the same clips (right words flagged off / wrong words caught / 
 
 | Locale | Replies | Scores | Phonemes per word | Phonemes named | Phonemes scored | Syllables (named) | Example word split |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `es-MX` | 40 | flat 40 | 3.9 | 0 of 361 | 361 of 361 | 158 (0) | buenos | días |
-| `de-DE` | 40 | flat 40 | 3.6 | 0 of 364 | 364 of 364 | 150 (0) | Danke | schön |
-| `fr-FR` | 40 | flat 40 | 2.8 | 0 of 272 | 272 of 272 | 119 (0) | merci | beaucoup |
-| `ja-JP` | 40 | flat 40 | 4.1 | 0 of 561 | 561 of 561 | 250 (0) | こんばん | は |
-| `it-IT` | 40 | flat 40 | 3.7 | 0 of 323 | 323 of 323 | 0 (0) | grazie | mille |
-| `ko-KR` | 40 | flat 40 | 5.8 | 0 of 391 | 391 of 391 | 185 (0) | 물 | 주세요 |
-| `pt-BR` | 18 | flat 18 | 3.0 | 0 of 127 | 127 of 127 | 67 (0) | bom | dia |
-| `ru-RU` | 18 | flat 18 | 3.8 | 0 of 139 | 139 of 139 | 0 (0) | я | хочу | чаю |
-| `nl-NL` | 18 | flat 18 | 3.8 | 0 of 159 | 159 of 159 | 50 (0) | dank | je | wel |
-| `sv-SE` | 18 | flat 18 | 3.1 | 0 of 155 | 155 of 155 | 0 (0) | tack | så | mycket |
-| `hi-IN` | 18 | flat 18 | 3.6 | 0 of 150 | 150 of 150 | 66 (0) | मुझे | पानी | चाहिए |
-| `en-US` | 18 | flat 18 | 2.7 | 183 of 183 (`th` `ae` `ng` `k` `y` `uw`) | 183 of 183 | 81 (81) | thank | you | very | much |
-| `ar-SA` | 18 | flat 18 | 3.2 | 0 of 104 | 104 of 104 | 28 (0) | شكرا | جزيلا |
+| `es-MX` | 40 | flat 40 | 3.9 | 0 of 361 | 361 of 361 | 158 (0) | buenos · días |
+| `de-DE` | 40 | flat 40 | 3.6 | 0 of 364 | 364 of 364 | 150 (0) | Danke · schön |
+| `fr-FR` | 40 | flat 40 | 2.8 | 0 of 272 | 272 of 272 | 119 (0) | merci · beaucoup |
+| `ja-JP` | 40 | flat 40 | 4.1 | 0 of 561 | 561 of 561 | 250 (0) | こんばん · は |
+| `it-IT` | 40 | flat 40 | 3.7 | 0 of 323 | 323 of 323 | 0 (0) | grazie · mille |
+| `ko-KR` | 40 | flat 40 | 5.8 | 0 of 391 | 391 of 391 | 185 (0) | 물 · 주세요 |
+| `pt-BR` | 18 | flat 18 | 3.0 | 0 of 127 | 127 of 127 | 67 (0) | bom · dia |
+| `ru-RU` | 18 | flat 18 | 3.8 | 0 of 139 | 139 of 139 | 0 (0) | я · хочу · чаю |
+| `nl-NL` | 18 | flat 18 | 3.8 | 0 of 159 | 159 of 159 | 50 (0) | dank · je · wel |
+| `sv-SE` | 18 | flat 18 | 3.1 | 0 of 155 | 155 of 155 | 0 (0) | tack · så · mycket |
+| `hi-IN` | 18 | flat 18 | 3.6 | 0 of 150 | 150 of 150 | 66 (0) | मुझे · पानी · चाहिए |
+| `en-US` | 18 | flat 18 | 2.7 | 183 of 183 (`th` `ae` `ng` `k` `y` `uw`) | 183 of 183 | 81 (81) | thank · you · very · much |
+| `ar-SA` | 18 | flat 18 | 3.2 | 0 of 104 | 104 of 104 | 28 (0) | شكرا · جزيلا |
 
 **The weakest sound.** Ten swaps change a single sound (perro said, *pero* the reference; schön, *schon*; three, *tree*). If Azure's per-phoneme scores can point at a sound, the lowest one in the swapped word should sit where the two words differ:
 
@@ -657,5 +656,6 @@ The lowest phoneme lands on the changed sound in 4 of 10.
 - **The accent sample has no truth.** An English voice reading Spanish (or a romanisation) is flagged on 13% of its words; some of those are surely right, and nobody listened.
 - **Variants ride on their language.** `es-ES`, `fr-CA`, `pt-PT`, `en-GB`, `en-AU`, `en-IN`, `ar-EG` are Azure locales the app checks, measured here only through `es-MX`, `fr-FR`, `pt-BR`, `en-US` and `ar-SA`. Locales Azure supports but nothing here measured (`zh-HK` Cantonese among them) stay `not_available`.
 - **Word splits are Azure's.** Japanese is split by Azure, not by spaces: こんばん | は, し | て | い | ます, and お茶 as お | 茶. A mark may sit on one kana. Korean words are the spaced eojeol (물 | 주세요).
+- **Placement on unusual spellings is unverified live.** Every phrase here was written as Azure echoes it. A phrase with Arabic harakat or tatweel, a German ß (against an echoed SS), or an apostrophe or hyphen Azure splits at is placed by `wordMarks`' folded matching (exact first, then without marks; whole words only) and covered by tests on hand-written replies, not on what Azure actually sends back for them.
 - **Short phrases only** (one to five words here; the route takes twelve, or thirty Japanese characters).
 <!-- words-proof:end -->

@@ -1242,9 +1242,9 @@ export interface PronunciationWord {
   /** Why it is `off`: Azure heard other sounds there (`sound`), or didn't
    *  hear the word as itself at all (`missing`: skipped, or said as another). */
   why?: "sound" | "missing";
-  /** Why it is `unsure`: Azure didn't hear it (`omitted`), or its score is
-   *  between the bars (`unclear`), or it reported something else (`other`). */
-  reason?: "omitted" | "unclear" | "other";
+  /** Why it is `unsure`: its score is between the bars or Azure misaligned
+   *  it (`unclear`), or Azure reported something else (`other`). */
+  reason?: "unclear" | "other";
   /** Azure's 0–100 accuracy for the word (adults only). */
   score?: number | null;
   /** Where the word is in the recording (adults only). */

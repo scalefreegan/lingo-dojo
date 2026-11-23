@@ -45,6 +45,20 @@ const LATIN = /^\p{Script=Latin}$/u;
 /** Languages written without spaces between words: counted in letters. */
 const UNSPACED = new Set(["ja"]);
 
+/** Whether the language writes its words without spaces (Japanese): its
+ *  words are Azure's split, placed anywhere in the phrase. */
+export function unspacedLocale(locale: string): boolean {
+  return UNSPACED.has(String(locale).split("-")[0]);
+}
+
+/** Arabic tatweel (kashida): a letter-stretching mark of the Common script,
+ *  written inside Arabic words. */
+const TATWEEL = "ـ";
+
+/** What separates words in a spaced script: spaces, and punctuation other
+ *  than the apostrophes and hyphens that join one (j'ai, rendez-vous). */
+const WORD_GAP = /(?:\s|(?![-'’‐‑])\p{P})+/u;
+
 /** At most this many words in one check, or letters where words aren't
  *  spaced (Japanese): short phrases, what Practice and the bank hold and
  *  what the proof measured (one to five words). */
@@ -65,13 +79,13 @@ export function readWordText(raw: unknown, locale: string): { text: string; erro
   let letters = 0;
   for (const c of cps) {
     if (/\p{L}/u.test(c)) {
-      if (!own.test(c)) return { error: "the phrase has letters of another script" };
+      if (!own.test(c) && !(lang === "ar" && c === TATWEEL)) return { error: "the phrase has letters of another script" };
       letters++;
     } else if (!/[\p{M}\p{P}\s]/u.test(c)) return { error: "the phrase can hold only words and punctuation (no digits or symbols)" };
   }
   if (!letters) return { error: "the phrase has no words" };
   const spaced = !UNSPACED.has(lang);
-  const count = spaced ? text.split(/\s+/).filter((w) => /\p{L}/u.test(w)).length : letters;
+  const count = spaced ? text.split(WORD_GAP).filter((w) => /\p{L}/u.test(w)).length : letters;
   if (cps.length > WORD_MAX_LENGTH || count > (spaced ? WORD_MAX_WORDS : WORD_MAX_UNSPACED)) {
     return { error: spaced ? `a phrase to check is at most ${WORD_MAX_WORDS} words` : `a phrase to check is at most ${WORD_MAX_UNSPACED} characters` };
   }
