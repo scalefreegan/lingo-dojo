@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { azurePronunciationResult } from "../pronunciation.mjs";
-import { WORD_RULES, azureHeardNothing, checksWordsHere, quietTake, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
+import { WORD_RULES, azureHeardNothing, checksWordsHere, heardNoneOf, quietTake, readWordText, wordCheckLocale, wordMarks, wordsReply } from "../pronunciation-words.mjs";
 import { REPO_ROOT } from "../content.mjs";
 import { localeFor } from "../voice.mjs";
 
@@ -118,7 +118,7 @@ test("an omitted word is off (missing) with no score; an inserted one isn't show
     ["café", "ok", null, 91],
   ]);
   // The other setting, asked for explicitly: an omission is only not sure.
-  const soft = wordMarks(live([["un", 0, "Omission"]]), "un", { locale: "es-MX", rules: { ...WORD_RULES, omissionOff: false } }).words[0];
+  const soft = wordMarks(live([["quiero", 95], ["un", 0, "Omission"]]), "quiero un", { locale: "es-MX", rules: { ...WORD_RULES, omissionOff: false } }).words[1];
   assert.deepEqual([soft.verdict, soft.reason, soft.why], ["unsure", "unclear", undefined]);
 });
 
@@ -143,9 +143,33 @@ test("no speech: Azure's status says so, or a quiet take with every word omitted
   assert.equal(azureHeardNothing(said, { quiet: true }), false);
   assert.equal(azureHeardNothing(live([["perro", 0, "Omission"], ["gato", 90, "Insertion"]]), { quiet: true }), false);
   assert.equal(azureHeardNothing(live([["la", 99], ["cuenta", 0, "Omission"]]), { quiet: true }), false);
-  // The wrong word, loud: a normal reply, the word off (missing).
-  const wrong = wordMarks(echo("es-wrong1"), "gracias", { locale: "es-MX" });
-  assert.deepEqual(wrong.words.map((w) => [w.text, w.verdict, w.why]), [["gracias", "off", "missing"]]);
+});
+
+test("Azure heard none of the words (live: a wrong word, noise, silence): no verdicts, heard none", () => {
+  for (const [id, text] of [["es-wrong1", "gracias"], ["fr-wrong1", "merci"], ["es-wrong2", "muchas gracias"], ["es-noise", "hola"], ["de-noise", "Danke schön"]]) {
+    const a = echo(id);
+    assert.equal(heardNoneOf(a), true, id);
+    const m = wordMarks(a, text, { locale: ECHO[id].case.locale });
+    assert.equal(m.heard, "none", id);
+    assert.equal(m.overall, null, id);
+    assert.ok(m.words.length > 0 && m.words.every((w) => w.verdict === undefined), id);
+    const adult = wordsReply(m, { kids: false, text, locale: ECHO[id].case.locale });
+    assert.equal(adult.heard, "none");
+    assert.equal(adult.overall, null);
+    for (const w of adult.words) assert.deepEqual(Object.keys(w).sort(), ["end", "start", "text"]);
+    const kid = wordsReply(m, { kids: true, text, locale: ECHO[id].case.locale });
+    assert.deepEqual([kid.heard, kid.nudge], ["none", true]);
+  }
+  // Any partial reply keeps its marks: a word heard, an insertion, or
+  // recognised text with letters.
+  assert.equal(heardNoneOf(echo("de-wrong1")), false);
+  const partial = wordMarks(live([["la", 99], ["cuenta", 0, "Omission"]]), "la cuenta", { locale: "es-MX" });
+  assert.equal(partial.heard, undefined);
+  assert.deepEqual(partial.words.map((w) => [w.verdict, w.why]), [["ok", undefined], ["off", "missing"]]);
+  const swapped = wordMarks(live([["perro", 0, "Omission"], ["gato", 90, "Insertion"]]), "perro", { locale: "es-MX" });
+  assert.deepEqual([swapped.heard, swapped.words[0].verdict], [undefined, "off"]);
+  const recognised = azurePronunciationResult({ RecognitionStatus: "Success", NBest: [{ Display: "hola", Words: [{ Word: "gracias", AccuracyScore: 0, ErrorType: "Omission" }] }] });
+  assert.deepEqual([heardNoneOf(recognised), wordMarks(recognised, "gracias", { locale: "es-MX" }).words[0].verdict], [false, "off"]);
 });
 
 test("a quiet take: its loudest 50 ms under about -40 dBFS", () => {
@@ -158,6 +182,18 @@ test("a quiet take: its loudest 50 ms under about -40 dBFS", () => {
   const word = new Float32Array(rate);
   word.set(noise(0.2).subarray(0, 4000), 6000);
   assert.equal(quietTake(word, rate), false);
+  // A DC offset is not sound: a quiet take sitting at 0.2 is still quiet.
+  assert.equal(quietTake(noise(0.003).map((x) => x + 0.2), rate), true);
+  assert.equal(quietTake(noise(0.15).map((x) => x + 0.2), rate), false);
+  // A few stray samples at the end join the window before: a click of
+  // three samples there isn't a loud window of its own.
+  const tail = new Float32Array(rate + 3);
+  tail.set([0.05, -0.05, 0.05], rate);
+  assert.equal(quietTake(tail, rate), true);
+  // A full last window is its own.
+  const end = new Float32Array(rate);
+  end.set(noise(0.2).subarray(0, 800), rate - 800);
+  assert.equal(quietTake(end, rate), false);
 });
 
 test("a word beside an inserted copy of itself is unsure, whatever its score (Azure aligned it to the wrong slot)", () => {

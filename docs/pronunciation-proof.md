@@ -571,13 +571,17 @@ All locales together. Words scoring under each bar (in brackets: those Azure als
 
 The bar chosen: a word is **off** when Azure marks it `Mispronunciation` with a score under 30, or `Omission`; **ok** when Azure marks no error and the score is 85 or more; **unsure** otherwise. A word Azure didn't hear as itself is off: with miscue detection on, a word said as another comes back as the reference word omitted (and the other inserted), and no correctly read word was omitted here. A low score without Azure's own `Mispronunciation` is never off. A word beside an inserted copy of itself (Azure heard it, then aligned it to an extra slot: "m'appelle" inserted, then "m'appelle" 26) is unsure whatever its score (`insertionGuard`). The bars were chosen on these same clips, so this is in-sample: `offBelow` sits just under the one correctly read word that scored lowest with a `Mispronunciation` (Luciana's pão, 31).
 
-| | Words | off | ok | unsure |
-| --- | --- | --- | --- | --- |
-| Right (own text, and the unchanged words of a swapped one) | 535 | **2 (0.4%)** false alarms | 435 (81.3%) | 98 |
-| Swapped (wrong) | 105 | **69 (65.7%)** caught | 4 (3.8%) passed as ok | 32 |
-| Accent sample | 247 | 32 (13.0%) | 112 (45.3%) | 103 |
+**When Azure heard none of the words, no word is judged.** A reply with every word `Omission`, none inserted and nothing recognised is, live, the same for silence, for white noise and for a clearly spoken wrong word (§What Azure echoes below). From a quiet take it is `no_speech`; from any other take the page shows the phrase with no marks and one neutral line ("None of the words were recognised as this phrase…"), not every word off. Those words are counted in the "neutral line" column, not as off.
 
-Precision of an off flag as measured: 97.2%; for a learner who gets one word in five wrong (the right and wrong rates reweighted): 97.8%. With 2 false alarms in 535 right words, the 95% upper bound on the false-alarm rate is 1.2%.
+| | Words | off | ok | unsure | neutral line |
+| --- | --- | --- | --- | --- | --- |
+| Right (own text, and the unchanged words of a swapped one) | 535 | **2 (0.4%)** false alarms | 435 (81.3%) | 98 | 0 |
+| Swapped (wrong) | 105 | **62 (59.0%)** caught | 4 (3.8%) passed as ok | 32 | 7 |
+| Accent sample | 247 | 25 (10.1%) | 112 (45.3%) | 103 | 7 |
+
+The neutral line takes 7 of 102 swapped takes (7 wrong words, 0 right ones), 3 accent takes and 0 correctly read ones. Marking every word of those takes off instead would have caught 69 wrong words rather than 62, with 2 false alarms rather than 2. The swapped takes that show it: pt-BR obrigado said, *desculpe* referenced ("desculpe"); pt-BR pão said, *pau* referenced ("pau"); ru-RU привет said, *пока* referenced ("пока"); ru-RU спасибо said, *пожалуйста* referenced ("пожалуйста"); hi-IN नमस्ते said, *धन्यवाद* referenced ("धन्यवाद"); hi-IN धन्यवाद said, *शुक्रिया* referenced ("शुक्रिया"); ar-SA مرحبا said, *شكرا* referenced ("شكرا"). Each was a one-word reference, so the learner's word was missed and there was nothing else to hear; the page now says it heard none of the phrase instead of marking the word off.
+
+Precision of an off flag as measured: 96.9%; for a learner who gets one word in five wrong (the right and wrong rates reweighted): 97.5%. With 2 false alarms in 535 right words, the 95% upper bound on the false-alarm rate is 1.2%.
 
 Of the right words, 391 are in correctly read phrases (0 flagged off) and 144 are the unchanged words beside a swapped one (2 flagged off): a wrong word can pull Azure's alignment onto its neighbours.
 
@@ -587,28 +591,28 @@ The trade-off on the same clips (right words flagged off / wrong words caught / 
 
 | `offBelow` | Omission off, guard on (chosen) | Omission off, no guard | Omission unsure, guard on |
 | --- | --- | --- | --- |
-| 20 | 1 of 535 / 66 of 105 / 26 of 247 | 2 of 535 / 66 of 105 / 27 of 247 | 1 of 535 / 13 of 105 / 11 of 247 |
-| 25 | 1 of 535 / 67 of 105 / 28 of 247 | 2 of 535 / 67 of 105 / 29 of 247 | 1 of 535 / 14 of 105 / 13 of 247 |
-| 30 (chosen) | 2 of 535 / 69 of 105 / 32 of 247 | 4 of 535 / 69 of 105 / 33 of 247 | 2 of 535 / 16 of 105 / 17 of 247 |
-| 35 | 4 of 535 / 72 of 105 / 34 of 247 | 6 of 535 / 72 of 105 / 35 of 247 | 4 of 535 / 19 of 105 / 19 of 247 |
-| 40 | 5 of 535 / 74 of 105 / 38 of 247 | 8 of 535 / 74 of 105 / 39 of 247 | 5 of 535 / 21 of 105 / 23 of 247 |
-| 50 | 14 of 535 / 78 of 105 / 50 of 247 | 17 of 535 / 78 of 105 / 51 of 247 | 14 of 535 / 25 of 105 / 35 of 247 |
+| 20 | 1 of 535 / 59 of 105 / 19 of 247 | 2 of 535 / 59 of 105 / 20 of 247 | 1 of 535 / 13 of 105 / 11 of 247 |
+| 25 | 1 of 535 / 60 of 105 / 21 of 247 | 2 of 535 / 60 of 105 / 22 of 247 | 1 of 535 / 14 of 105 / 13 of 247 |
+| 30 (chosen) | 2 of 535 / 62 of 105 / 25 of 247 | 4 of 535 / 62 of 105 / 26 of 247 | 2 of 535 / 16 of 105 / 17 of 247 |
+| 35 | 4 of 535 / 65 of 105 / 27 of 247 | 6 of 535 / 65 of 105 / 28 of 247 | 4 of 535 / 19 of 105 / 19 of 247 |
+| 40 | 5 of 535 / 67 of 105 / 31 of 247 | 8 of 535 / 67 of 105 / 32 of 247 | 5 of 535 / 21 of 105 / 23 of 247 |
+| 50 | 14 of 535 / 71 of 105 / 43 of 247 | 17 of 535 / 71 of 105 / 44 of 247 | 14 of 535 / 25 of 105 / 35 of 247 |
 
-| Locale | Right: off | Swapped: caught | Swapped: passed as ok | Accent: off |
-| --- | --- | --- | --- | --- |
-| `es-MX` | 0 of 59 | 6 of 10 | 0 | 0 of 23 |
-| `de-DE` | 0 of 65 | 7 of 10 | 0 | 2 of 25 |
-| `fr-FR` | 0 of 62 | 6 of 10 | 0 | 6 of 24 |
-| `ja-JP` | 0 of 88 | 6 of 13 | 2 | 3 of 33 |
-| `it-IT` | 1 of 56 | 7 of 10 | 0 | 3 of 22 |
-| `ko-KR` | 0 of 41 | 2 of 10 | 1 | 1 of 17 |
-| `pt-BR` | 0 of 22 | 6 of 6 | 0 | 1 of 14 |
-| `ru-RU` | 0 of 18 | 6 of 6 | 0 | 5 of 12 |
-| `nl-NL` | 0 of 22 | 3 of 6 | 0 | 1 of 14 |
-| `sv-SE` | 1 of 26 | 5 of 6 | 0 | 3 of 16 |
-| `hi-IN` | 0 of 22 | 6 of 6 | 0 | 3 of 14 |
-| `en-US` | 0 of 38 | 5 of 6 | 1 | 0 of 22 |
-| `ar-SA` | 0 of 16 | 4 of 6 | 0 | 4 of 11 |
+| Locale | Right: off | Swapped: caught | Swapped: passed as ok | Swapped: neutral line (takes) | Accent: off | Accent: neutral line (takes) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `es-MX` | 0 of 59 | 6 of 10 | 0 | 0 (0) | 0 of 23 | 0 (0) |
+| `de-DE` | 0 of 65 | 7 of 10 | 0 | 0 (0) | 2 of 25 | 0 (0) |
+| `fr-FR` | 0 of 62 | 6 of 10 | 0 | 0 (0) | 2 of 24 | 4 (1) |
+| `ja-JP` | 0 of 88 | 6 of 13 | 2 | 0 (0) | 3 of 33 | 0 (0) |
+| `it-IT` | 1 of 56 | 7 of 10 | 0 | 0 (0) | 3 of 22 | 0 (0) |
+| `ko-KR` | 0 of 41 | 2 of 10 | 1 | 0 (0) | 1 of 17 | 0 (0) |
+| `pt-BR` | 0 of 22 | 4 of 6 | 0 | 2 (2) | 0 of 14 | 1 (1) |
+| `ru-RU` | 0 of 18 | 4 of 6 | 0 | 2 (2) | 5 of 12 | 0 (0) |
+| `nl-NL` | 0 of 22 | 3 of 6 | 0 | 0 (0) | 1 of 14 | 0 (0) |
+| `sv-SE` | 1 of 26 | 5 of 6 | 0 | 0 (0) | 3 of 16 | 0 (0) |
+| `hi-IN` | 0 of 22 | 4 of 6 | 0 | 2 (2) | 3 of 14 | 0 (0) |
+| `en-US` | 0 of 38 | 5 of 6 | 1 | 0 (0) | 0 of 22 | 0 (0) |
+| `ar-SA` | 0 of 16 | 3 of 6 | 0 | 1 (1) | 2 of 11 | 2 (1) |
 
 ### What the replies look like, per locale
 
@@ -647,7 +651,7 @@ The lowest phoneme lands on the changed sound in 4 of 10.
 
 **Sounds: not shown.** Azure names its phonemes only for `en-US` (SAPI names: `th`, `ae`, …); in every other locale measured the `Phoneme` field is empty, so a weak sound has a score and a time but no name. And the scores don't point reliably: on the ten one-sound swaps the lowest phoneme sat on the changed sound in four. So the app shows no weakest sound; tapping a word plays the learner's own take of that word (its span in the recording) and the model phrase instead.
 
-**One wrong sound in a right word is mostly not caught.** The same ten one-sound swaps through the app's rules: 2 off, 2 passed as ok, the rest unsure (perro → pero unsure; schön → schon unsure; tu → tout unsure; nonno → nono unsure; 물 → 불 unsure; 맛있어요 → 멋있어요 ok; pão → pau off; huis → hoes unsure; sju → sjö off; three → tree ok). What the check catches is a word said as another word, or said so far off that Azure can't find it; a learner's single wrong vowel will usually read "not sure". That is the safe side, and it is what the page promises: marks per word, no grade per sound.
+**One wrong sound in a right word is mostly not caught.** The same ten one-sound swaps through the app's rules: 1 off, 2 passed as ok, the rest unsure (perro → pero unsure; schön → schon unsure; tu → tout unsure; nonno → nono unsure; 물 → 불 unsure; 맛있어요 → 멋있어요 ok; pão → pau neutral line; huis → hoes unsure; sju → sjö off; three → tree ok). What the check catches is a word said as another word, or said so far off that Azure can't find it; a learner's single wrong vowel will usually read "not sure". That is the safe side, and it is what the page promises: marks per word, no grade per sound.
 
 ### What Azure echoes: spellings, and takes with no speech
 
@@ -674,7 +678,7 @@ The lowest phoneme lands on the changed sound in 4 of 10.
 
 **Spellings: Azure echoes the reference exactly.** Every word came back as written in the reference: full harakat, partial vocalisation and tanween, tatweel, ß (never SS), apostrophes (J'ai, l'eau, d'accord as one word each), the hyphen (rendez-vous as one word), Sí and si kept apart by the accent, Hindi matras and the nukta. Japanese is split by Azure (私 · が · 行き · ます; Lexical with spaces). Only punctuation differs in the display text (Arabic commas, a final 。 or ।), which placement ignores. So the exact key places every word; the mark-free key is a fallback for a reply that isn't an echo, used only for Arabic and the Latin scripts, only for a word Azure sent without marks or one the exact key can't place, and a word placed that way keeps the marks that follow it.
 
-**No speech: Azure can't tell silence from a wrong word.** Silence and white noise came back `Success` with every reference word `Omission`, no `Insertion`, and `.` as the recognised text, never `NoMatch` or `InitialSilenceTimeout`. A clearly spoken wrong single word (hola for *gracias*, bonjour for *merci*) and two wrong words (buenas noches for *muchas gracias*) came back the same way, word for word. (Danke for *Tschüss* was a `Mispronunciation` scoring 0, with Tschüss recognised.) So the reply alone can't say "no speech was heard": `azureHeardNothing` answers 422 `no_speech` for Azure's no-speech statuses, or for that all-omitted reply only when the take itself is quiet (its loudest 50 ms under about -40 dBFS, `quietTake`). A loud take with every word omitted, a wrong word or noise, is a normal reply with every word off (missing).
+**No speech: Azure can't tell silence from a wrong word.** Silence and white noise came back `Success` with every reference word `Omission`, no `Insertion`, and `.` as the recognised text, never `NoMatch` or `InitialSilenceTimeout`. A clearly spoken wrong single word (hola for *gracias*, bonjour for *merci*) and two wrong words (buenas noches for *muchas gracias*) came back the same way, word for word. (Danke for *Tschüss* was a `Mispronunciation` scoring 0, with Tschüss recognised.) So the reply alone can't say "no speech was heard": `azureHeardNothing` answers 422 `no_speech` for Azure's no-speech statuses, or for that all-omitted reply only when the take itself is quiet (its loudest 50 ms under about -40 dBFS, `quietTake`). A take that isn't quiet with that reply (a wrong word, or noise) shows no verdict on any word, only the neutral line "None of the words were recognised as this phrase" (`heard: "none"`, `heardNoneOf`).
 
 ### What this does not show
 
@@ -684,6 +688,6 @@ The lowest phoneme lands on the changed sound in 4 of 10.
 - **Variants ride on their language.** `es-ES`, `fr-CA`, `pt-PT`, `en-GB`, `en-AU`, `en-IN`, `ar-EG` are Azure locales the app checks, measured here only through `es-MX`, `fr-FR`, `pt-BR`, `en-US` and `ar-SA`. Locales Azure supports but nothing here measured (`zh-HK` Cantonese among them) stay `not_available`.
 - **Word splits are Azure's.** Japanese is split by Azure, not by spaces: こんばん | は, し | て | い | ます, and お茶 as お | 茶. A mark may sit on one kana. Korean words are the spaced eojeol (물 | 주세요).
 - **Spellings were checked on one clip each.** Harakat, tatweel, ß, apostrophes, a hyphen, sí/si, matras and dakuten: one voice, one sentence each, all echoed exactly. A reference Azure doesn't echo (marks dropped, a word split differently) is placed by the fallback rules, tested on hand-written replies only.
-- **A quiet wrong word is no_speech.** A learner who says the wrong word very softly (quieter than about -40 dBFS at the loudest) is told no speech was heard; a loud noise with no speech is shown as every word missing. The level bar was set by reasoning, not measured on a microphone.
+- **A quiet wrong word is no_speech.** A learner who says the wrong word very softly (quieter than about -40 dBFS at the loudest) is told no speech was heard; loud noise with no speech gets the neutral line, as a wrong word does. The level bar was set by reasoning, not measured on a microphone.
 - **Short phrases only** (one to five words here; the route takes twelve, or thirty Japanese characters).
 <!-- words-proof:end -->

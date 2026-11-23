@@ -33,8 +33,9 @@ import { unspacedLocale } from "../web/shared/word-check.ts";
  *  - `unsure` otherwise, which the page shows quietly; and, whatever its
  *    score, a word beside an inserted copy of itself (`insertionGuard`).
  * At these bars: no false alarm on 391 words of correctly read phrases,
- * 2 on 144 correct words beside a swapped one, 69 of 105 wrong words
- * caught. The bars were chosen on those same clips (in-sample): `offBelow`
+ * 2 on 144 correct words beside a swapped one, 62 of 105 wrong words
+ * caught (7 more, one-word swaps Azure heard none of, get the neutral line:
+ * `heardNoneOf`). The bars were chosen on those same clips (in-sample): `offBelow`
  * sits just under a correctly read word that scored 31.
  * `weakSounds`: locales where an off word's weakest phonemes may be shown by
  * name. None: Azure names phonemes only for en-US (SAPI), and on ten
@@ -172,6 +173,11 @@ export function wordMarks(azure, text, { locale, rules = WORD_RULES } = {}) {
     const mark = echoed ? { ...markOf(w, locale, rules), verdict: "unsure", reason: "unclear", why: undefined, sounds: undefined } : markOf(w, locale, rules);
     words.push({ ...mark, text: src.slice(start, end), start, end });
   }
+  // Azure heard none of the words: one reply shape for silence, noise and
+  // a wrong word alike, so no word gets a verdict (heardNoneOf).
+  if (!rules.judgeHeardNone && heardNoneOf(azure)) {
+    return { words: words.map((w) => ({ text: w.text, start: w.start, end: w.end, score: null, startMs: null, endMs: null, azureError: w.azureError })), overall: null, heard: "none" };
+  }
   return { words, overall: Number.isFinite(azure?.overall) ? Math.round(azure.overall) : null };
 }
 
@@ -205,42 +211,56 @@ const SILENT_STATUSES = new Set(["NoMatch", "InitialSilenceTimeout", "BabbleTime
  *  its loudest; a quiet room's hiss is under -50. */
 export const QUIET_RMS = 0.01;
 
-/** Whether the take is quiet throughout: its loudest 50 ms window is under
- *  `QUIET_RMS`. */
+/** Whether the take is quiet throughout: its loudest 50 ms window, less
+ *  that window's mean (a microphone's DC offset is not sound), is under
+ *  `QUIET_RMS`. A last window shorter than half of one joins the one
+ *  before, so a few stray samples at the end are not a window of their own. */
 export function quietTake(samples, sampleRate) {
   const n = Math.max(1, Math.round(sampleRate * 0.05));
   let loudest = 0;
   for (let i = 0; i < samples.length; i += n) {
+    let end = Math.min(samples.length, i + n);
+    if (samples.length - end > 0 && samples.length - end < n / 2) end = samples.length;
+    let mean = 0;
+    for (let j = i; j < end; j++) mean += samples[j];
+    mean /= Math.max(1, end - i);
     let sum = 0;
-    const end = Math.min(samples.length, i + n);
-    for (let j = i; j < end; j++) sum += samples[j] * samples[j];
+    for (let j = i; j < end; j++) sum += (samples[j] - mean) ** 2;
     loudest = Math.max(loudest, Math.sqrt(sum / Math.max(1, end - i)));
+    if (end === samples.length) break;
   }
   return loudest < QUIET_RMS;
 }
 
 /**
- * Whether the take had no speech to check: Azure says so in its status, or
- * it omitted every word, inserted none, recognised nothing (its text is
- * empty or only punctuation: live it is ".") and the take itself is quiet
- * (`quiet`, from `quietTake`). The last is needed because, live, Azure
- * answers a clearly spoken wrong word (hola assessed as gracias) exactly as
- * it answers silence or noise: Success, every word omitted, no insertion,
- * text "." (docs/pronunciation-proof.md §What Azure echoes). A loud take
- * Azure heard none of the words in is a normal reply, every word off
- * (missing): "wasn't heard as itself".
+ * Whether Azure heard none of the phrase's words: `Success`, every word
+ * omitted, none inserted, and nothing recognised (its text empty or only
+ * punctuation: live it is "."). Live, that one reply shape is what silence,
+ * white noise and a clearly spoken wrong word all get (hola assessed as
+ * gracias; docs/pronunciation-proof.md §What Azure echoes), so it says
+ * nothing about any one word: the page shows no verdicts for it, only that
+ * the words weren't recognised (or, from a quiet take, `no_speech`).
  */
-export function azureHeardNothing(azure, { quiet = false } = {}) {
-  if (!azure) return false;
-  if (SILENT_STATUSES.has(azure.status)) return true;
-  const words = azure.words ?? [];
+export function heardNoneOf(azure) {
+  const words = azure?.words ?? [];
   return (
-    quiet &&
-    azure.status === "Success" &&
+    azure?.status === "Success" &&
     words.length > 0 &&
     words.every((w) => w.error === "Omission") &&
     !/[\p{L}\p{N}]/u.test(String(azure.text ?? ""))
   );
+}
+
+/**
+ * Whether the take had no speech to check: Azure says so in its status, or
+ * it heard none of the words (`heardNoneOf`) and the take itself is quiet
+ * (`quiet`, from `quietTake`). The level is needed because the reply alone
+ * can't tell silence from a wrong word.
+ */
+export function azureHeardNothing(azure, { quiet = false } = {}) {
+  if (!azure) return false;
+  if (SILENT_STATUSES.has(azure.status)) return true;
+  return quiet && heardNoneOf(azure);
 }
 
 /** The parsed reply, re-exported so callers need one module. */
@@ -251,11 +271,15 @@ export const azureWords = azurePronunciationResult;
  * word's place on the phrase only, no verdict, no score, no timing, and
  * `nudge` when something was clearly off (the page says "let's listen and
  * try again" without pointing at a word), the same gentleness as the tone
- * check's kids path. Azure's own error word stays on the server.
+ * check's kids path. A take Azure heard none of the words in
+ * (`marks.heard === "none"`) gets the same bare words for adults too, with
+ * `heard: "none"` and no overall: one neutral line, no word blamed. Azure's
+ * own error word stays on the server.
  */
 export function wordsReply(marks, { kids, text, locale }) {
+  const none = marks.heard === "none";
   const words = marks.words.map((w) =>
-    kids
+    kids || none
       ? { text: w.text, start: w.start, end: w.end }
       : {
           text: w.text, start: w.start, end: w.end, verdict: w.verdict,
@@ -270,7 +294,8 @@ export function wordsReply(marks, { kids, text, locale }) {
     text,
     locale,
     words,
-    overall: kids ? null : marks.overall,
-    ...(kids ? { nudge: marks.words.some((w) => w.verdict === "off") } : {}),
+    overall: kids || none ? null : marks.overall,
+    ...(none ? { heard: "none" } : {}),
+    ...(kids ? { nudge: none || marks.words.some((w) => w.verdict === "off") } : {}),
   };
 }

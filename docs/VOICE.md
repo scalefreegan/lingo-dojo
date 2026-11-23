@@ -2682,8 +2682,14 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   every word omitted, none inserted and "." recognised **and** a quiet take
   (loudest 50 ms under about -40 dBFS; `azureHeardNothing`, `quietTake`).
   Live, Azure answers a clearly spoken wrong word exactly as it answers
-  silence or noise, so only the take's level separates them: a loud take
-  with every word omitted is a normal reply, every word off (missing).
+  silence or noise, so only the take's level separates them. A take that
+  isn't quiet with that reply (a wrong word, noise, off-topic talk) is
+  `heard: "none"`: the words with no verdicts, no overall, and one neutral
+  line, "None of the words were recognised as this phrase. Check it's the
+  phrase shown, then try again." (no red marks; the Model button stays;
+  kids get the nudge). A reply where anything was heard (one word, an
+  insertion, recognised letters) keeps its marks, an omitted word off
+  (missing).
 - **The phrase.** NFC, 1 to 12 words (30 characters for Japanese, which has
   no spaces), the language's own script, letters, marks and punctuation
   only: no digits or symbols (`readWordText`; 400 otherwise, before any
@@ -2709,8 +2715,9 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   - **ok** with no error and a score of 85 or more.
   - **not sure** otherwise, and for a word beside an inserted copy of
     itself (Azure misaligned it).
-  - On the proof's clips: 2 false alarms in 535 right words, 69 of 105
-    wrong words caught. A single wrong sound inside a word is mostly *not
+  - On the proof's clips: 2 false alarms in 535 right words, 62 of 105
+    wrong words caught, 7 more (one-word swaps) shown the neutral line.
+    A single wrong sound inside a word is mostly *not
     sure*, not off.
 - **No weakest sound.** Azure names phonemes only for en-US; elsewhere a
   phoneme has a score and a time but an empty name, and its lowest score

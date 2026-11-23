@@ -27,9 +27,14 @@ function markClass(v: PronunciationWord["verdict"]): string {
   return "border-dotted border-fg-3 text-fg";
 }
 
+/** Azure heard none of the words (silence, noise and a wrong word all read
+ *  the same), so no word is judged: one neutral line. */
+const HEARD_NONE = "None of the words were recognised as this phrase. Check it's the phrase shown, then try again.";
+
 /** The line under the marks. */
 function wordSummary(reply: PronunciationWordsReply, kids: boolean): string {
   if (kids) return reply.nudge ? "Let's listen and try that one again!" : "";
+  if (reply.heard === "none") return HEARD_NONE;
   const w = reply.words;
   const ok = w.filter((x) => x.verdict === "ok").length;
   const off = w.filter((x) => x.verdict === "off").length;
@@ -77,7 +82,7 @@ export function WordCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
   if (kids) {
     return (
       <div className="flex flex-col items-center gap-2" data-testid="word-check">
-        <p lang={reply.locale} className="text-center text-2xl">
+        <p lang={reply.locale} dir="auto" className="text-center text-2xl">
           {reply.text}
         </p>
         {summary && (
@@ -93,10 +98,32 @@ export function WordCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
       </div>
     );
   }
+  if (reply.heard === "none") {
+    return (
+      <div className="flex flex-col gap-2" data-testid="word-check">
+        <p lang={reply.locale} dir="auto" className="text-xl leading-relaxed">
+          {reply.text}
+        </p>
+        <p className={`${fine} text-fg-2`} data-testid="word-summary">
+          <span aria-hidden="true">{summary}</span>
+          {onPlayModel && (
+            <Button className="ml-2 px-2.5 py-1 text-sm" onClick={onPlayModel} disabled={modelBusy} data-testid="word-play-model">
+              🔊 Model
+            </Button>
+          )}
+        </p>
+        {modelError && (
+          <p className={`${fine} text-err`} role="status">
+            Couldn't play it: {modelError}
+          </p>
+        )}
+      </div>
+    );
+  }
   const shown = open !== null ? reply.words[open] : null;
   return (
     <div className="flex flex-col gap-2" data-testid="word-check">
-      <p lang={reply.locale} className="flex flex-wrap items-end text-xl leading-relaxed" role="group" aria-label="Word marks">
+      <p lang={reply.locale} dir="auto" className="flex flex-wrap items-end text-xl leading-relaxed" role="group" aria-label="Word marks">
         {segments(reply).map((s, k) =>
           s.word ? (
             <button

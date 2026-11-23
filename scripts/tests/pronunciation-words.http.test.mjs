@@ -216,13 +216,14 @@ test("a kids learner: Azure as for an adult, but no marks, no scores; a nudge wh
   assert.equal((await score(pip, "Guten Morgen")).body.nudge, false);
 });
 
-test("no speech in the take: a 422 no_speech saying so, not an outage, and no marks", async () => {
+test("a quiet take with no speech: a 422 no_speech saying so, not an outage, and no marks", async () => {
   const sam = await someone();
   for (const quiet of [
     () => new Response(JSON.stringify({ RecognitionStatus: "NoMatch" }), { status: 200 }),
     () => new Response(JSON.stringify({ RecognitionStatus: "InitialSilenceTimeout" }), { status: 200 }),
-    // Live, a silent take: Success, every word omitted, "." recognised
-    // (the default `wav` here is a second of quiet).
+    // Live replies for a take with no word of the phrase in it (silence or
+    // noise; Azure answers both the same), here with a quiet take: the
+    // default `wav` is a second of silence.
     () => fixture("es-silence"),
     () => fixture("es-noise"),
   ]) {
@@ -238,18 +239,36 @@ test("no speech in the take: a 422 no_speech saying so, not an outage, and no ma
   }
 });
 
-test("a loud take Azure heard none of the words in (live: a clearly spoken wrong word) is marks, not no_speech", async () => {
+test("a loud take Azure heard none of the words in (live: a wrong word, or noise): heard none, no verdicts", async () => {
+  // Live, "hola" said against "gracias" reads exactly like noise: Success,
+  // every word omitted, no insertion, "." recognised. No word is judged.
+  for (const [id, text, who] of [
+    ["es-wrong1", "gracias", ADULT],
+    ["es-wrong2", "muchas gracias", ADULT],
+    ["es-noise", "hola", ADULT],
+    ["fr-wrong1", "merci", { ...ADULT, name: "Mo", targetLanguage: "French", targetVariant: "" }],
+    ["de-noise", "Danke schön", { ...ADULT, name: "Res", targetLanguage: "German", targetVariant: "" }],
+  ]) {
+    const sam = await someone([who]);
+    azure = () => fixture(id);
+    const r = await score(sam, text, loud);
+    assert.equal(r.status, 200, `${id} ${r.text}`);
+    assert.equal(r.body.heard, "none", id);
+    assert.equal(r.body.overall, null, id);
+    assert.ok(r.body.words.length > 0, id);
+    for (const w of r.body.words) assert.deepEqual(Object.keys(w).sort(), ["end", "start", "text"], id);
+  }
+  // Kids: the nudge, as for anything off.
+  const pip = await someone([KID]);
+  azure = () => fixture("de-noise");
+  const kid = await score(pip, "Danke schön", loud);
+  assert.deepEqual([kid.status, kid.body.heard, kid.body.nudge], [200, "none", true]);
+  // A partial reply keeps its marks: one word heard, the other off.
   const sam = await someone();
-  // Live, "hola" said against "gracias" reads exactly like silence: Success,
-  // the word omitted, no insertion, "." recognised. Only the take's level
-  // tells them apart.
-  azure = () => fixture("es-wrong1");
-  const r = await score(sam, "gracias", loud);
-  assert.equal(r.status, 200, r.text);
-  assert.deepEqual(r.body.words.map((w) => [w.text, w.verdict, w.why]), [["gracias", "off", "missing"]]);
-  azure = () => fixture("es-wrong2");
-  const two = await score(sam, "muchas gracias", loud);
-  assert.deepEqual(two.body.words.map((w) => w.verdict), ["off", "off"]);
+  azure = () => reply([["la", 95], ["cuenta", 0, "Omission"]]);
+  const part = await score(sam, "la cuenta", loud);
+  assert.equal(part.body.heard, undefined);
+  assert.deepEqual(part.body.words.map((w) => [w.verdict, w.why ?? null]), [["ok", null], ["off", "missing"]]);
 });
 
 test("Azure failing: a 503 with a fixed sentence, nothing from Azure in the reply or the log", async () => {

@@ -1261,10 +1261,15 @@ export interface PronunciationWordsReply {
   /** The Azure locale the words were checked in. */
   locale: string;
   words: PronunciationWord[];
-  /** Azure's pronunciation score for the take; null for kids. */
+  /** Azure's pronunciation score for the take; null for kids and when
+   *  `heard` is "none". */
   overall: number | null;
-  /** Kids only: something was clearly off, so the page offers a gentle
-   *  "listen and try again" (no word is marked). */
+  /** "none": Azure heard none of the phrase's words in a take that wasn't
+   *  quiet. Silence, noise and a wrong word all look like this, so the words
+   *  come with no verdicts and the page says one neutral line. */
+  heard?: "none";
+  /** Kids only: something was clearly off (or nothing was heard), so the
+   *  page offers a gentle "listen and try again" (no word is marked). */
   nudge?: boolean;
 }
 

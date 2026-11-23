@@ -185,7 +185,8 @@ name):
   no local fallback: an Azure failure is a 503, the 12-a-minute cap a 429,
   a take with no speech a 422 `no_speech` (`azureHeardNothing`: live,
   Azure answers silence and a loud wrong word alike, so a quiet take
-  decides, `quietTake`). Live replies for spellings and no-speech cases are
+  decides, `quietTake`; from a take that isn't quiet the same reply is
+  `heard: "none"`: no verdicts, one neutral line). Live replies for spellings and no-speech cases are
   test fixtures (`scripts/tests/fixtures/pronunciation/azure-echo.json`,
   from `scripts/pronunciation-proof-echo.mjs`).
 - Pure rules in `scripts/pronunciation-words.mjs` (`WORD_RULES`, `wordMarks`,

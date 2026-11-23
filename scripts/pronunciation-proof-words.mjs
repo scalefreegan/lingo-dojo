@@ -255,19 +255,26 @@ if (args.has("--dump")) {
 /** The marks the app would show (wordMarks over WORD_RULES), counted
  *  against the truth: a word unit is wrong when it overlaps the swap. */
 function appCounts(filter = () => true, rules = null) {
-  const t = { right: 0, rightOff: 0, rightOk: 0, own: 0, ownOff: 0, wrong: 0, wrongOff: 0, wrongOk: 0, accent: 0, accentOff: 0, accentOk: 0, alarms: [] };
+  const t = { right: 0, rightOff: 0, rightOk: 0, rightNone: 0, own: 0, ownOff: 0, wrong: 0, wrongOff: 0, wrongOk: 0, wrongNone: 0, accent: 0, accentOff: 0, accentOk: 0, accentNone: 0, alarms: [], noneSwaps: [], takesNone: { right: 0, swap: 0, accent: 0 } };
   for (const r0 of rows) {
     if (!r0.marks || !filter(r0)) continue;
     const r = rules ? { ...r0, marks: wordMarks(r0.az, r0.p.ref, { locale: r0.p.lang.locale, rules }) } : r0;
     const swap = r.p.kind === "swap" ? swappedRange(r.p.item) : null;
     let at = 0;
     const ref = norm(r.p.ref);
+    // Azure heard none of the words: the page shows one neutral line and
+    // no verdict on any word (wordMarks' heard "none").
+    if (r.marks.heard === "none") {
+      t.takesNone[r.p.kind]++;
+      if (r.p.kind === "swap") t.noneSwaps.push(`${r.p.lang.locale} ${r.p.item.swap[0]} said, *${r.p.item.swap[1]}* referenced ("${r.p.ref}")`);
+    }
     for (const m of r.marks.words) {
       const n = norm(m.text);
       const s = ref.indexOf(n, at);
       at = s >= 0 ? s + n.length : at;
       const truth = r.p.kind === "accent" ? "accent" : r.p.kind === "right" ? "right" : s >= 0 && s < swap.end && s + n.length > swap.start ? "wrong" : "right";
       t[truth]++;
+      if (r.marks.heard === "none") t[`${truth}None`]++;
       if (m.verdict === "off") t[`${truth}Off`]++;
       if (r.p.kind === "right") {
         t.own++;
@@ -335,11 +342,17 @@ p(`The bar chosen: a word is **off** when Azure marks it \`Mispronunciation\` wi
   const fa = t.right ? t.rightOff / t.right : 0;
   const catchRate = t.wrong ? t.wrongOff / t.wrong : 0;
   const at5 = catchRate + fa ? (100 * catchRate * 0.2) / (catchRate * 0.2 + fa * 0.8) : null;
-  lines.push("| | Words | off | ok | unsure |", "| --- | --- | --- | --- | --- |");
-  lines.push(`| Right (own text, and the unchanged words of a swapped one) | ${t.right} | **${t.rightOff} (${pct(t.rightOff, t.right)})** false alarms | ${t.rightOk} (${pct(t.rightOk, t.right)}) | ${t.right - t.rightOff - t.rightOk} |`);
-  lines.push(`| Swapped (wrong) | ${t.wrong} | **${t.wrongOff} (${pct(t.wrongOff, t.wrong)})** caught | ${t.wrongOk} (${pct(t.wrongOk, t.wrong)}) passed as ok | ${t.wrong - t.wrongOff - t.wrongOk} |`);
-  lines.push(`| Accent sample | ${t.accent} | ${t.accentOff} (${pct(t.accentOff, t.accent)}) | ${t.accentOk} (${pct(t.accentOk, t.accent)}) | ${t.accent - t.accentOff - t.accentOk} |`);
+  p("**When Azure heard none of the words, no word is judged.** A reply with every word `Omission`, none inserted and nothing recognised is, live, the same for silence, for white noise and for a clearly spoken wrong word (§What Azure echoes below). From a quiet take it is `no_speech`; from any other take the page shows the phrase with no marks and one neutral line (\"None of the words were recognised as this phrase…\"), not every word off. Those words are counted in the \"neutral line\" column, not as off.");
+  lines.push("| | Words | off | ok | unsure | neutral line |", "| --- | --- | --- | --- | --- | --- |");
+  lines.push(`| Right (own text, and the unchanged words of a swapped one) | ${t.right} | **${t.rightOff} (${pct(t.rightOff, t.right)})** false alarms | ${t.rightOk} (${pct(t.rightOk, t.right)}) | ${t.right - t.rightOff - t.rightOk - t.rightNone} | ${t.rightNone} |`);
+  lines.push(`| Swapped (wrong) | ${t.wrong} | **${t.wrongOff} (${pct(t.wrongOff, t.wrong)})** caught | ${t.wrongOk} (${pct(t.wrongOk, t.wrong)}) passed as ok | ${t.wrong - t.wrongOff - t.wrongOk - t.wrongNone} | ${t.wrongNone} |`);
+  lines.push(`| Accent sample | ${t.accent} | ${t.accentOff} (${pct(t.accentOff, t.accent)}) | ${t.accentOk} (${pct(t.accentOk, t.accent)}) | ${t.accent - t.accentOff - t.accentOk - t.accentNone} | ${t.accentNone} |`);
   lines.push("");
+  {
+    // What the neutral line costs: the same replies with every word marked.
+    const before = appCounts(() => true, { ...WORD_RULES, judgeHeardNone: true });
+    p(`The neutral line takes ${t.takesNone.swap} of ${rows.filter((r) => r.marks && r.p.kind === "swap").length} swapped takes (${t.wrongNone} wrong words, ${t.rightNone} right ones), ${t.takesNone.accent} accent takes and ${t.takesNone.right} correctly read ones. Marking every word of those takes off instead would have caught ${before.wrongOff} wrong words rather than ${t.wrongOff}, with ${before.rightOff} false alarms rather than ${t.rightOff}. The swapped takes that show it: ${t.noneSwaps.join("; ")}. Each was a one-word reference, so the learner's word was missed and there was nothing else to hear; the page now says it heard none of the phrase instead of marking the word off.`);
+  }
   p(`Precision of an off flag as measured: ${prec === null ? "n/a" : `${prec.toFixed(1)}%`}; for a learner who gets one word in five wrong (the right and wrong rates reweighted): ${at5 === null ? "n/a" : `${at5.toFixed(1)}%`}. With ${t.rightOff} false alarms in ${t.right} right words, the 95% upper bound on the false-alarm rate is ${upper(t.rightOff, t.right)}.`);
   p(`Of the right words, ${t.own} are in correctly read phrases (${t.ownOff} flagged off) and ${t.right - t.own} are the unchanged words beside a swapped one (${t.rightOff - t.ownOff} flagged off): a wrong word can pull Azure's alignment onto its neighbours.`);
   if (t.alarms.length) p(`The false alarms: ${t.alarms.join("; ")}.`);
@@ -353,10 +366,10 @@ p(`The bar chosen: a word is **off** when Azure marks it \`Mispronunciation\` wi
     lines.push(`| ${ob}${ob === WORD_RULES.offBelow ? " (chosen)" : ""} | ${cell({})} | ${cell({ insertionGuard: false })} | ${cell({ omissionOff: false })} |`);
   }
   lines.push("");
-  lines.push("| Locale | Right: off | Swapped: caught | Swapped: passed as ok | Accent: off |", "| --- | --- | --- | --- | --- |");
+  lines.push("| Locale | Right: off | Swapped: caught | Swapped: passed as ok | Swapped: neutral line (takes) | Accent: off | Accent: neutral line (takes) |", "| --- | --- | --- | --- | --- | --- | --- |");
   for (const loc of locales) {
     const c = appCounts((r) => r.p.lang.locale === loc);
-    lines.push(`| \`${loc}\` | ${c.rightOff} of ${c.right} | ${c.wrongOff} of ${c.wrong} | ${c.wrongOk} | ${c.accentOff} of ${c.accent} |`);
+    lines.push(`| \`${loc}\` | ${c.rightOff} of ${c.right} | ${c.wrongOff} of ${c.wrong} | ${c.wrongOk} | ${c.wrongNone} (${c.takesNone.swap}) | ${c.accentOff} of ${c.accent} | ${c.accentNone} (${c.takesNone.accent}) |`);
   }
   lines.push("");
 }
@@ -397,7 +410,7 @@ p(WORD_RULES.soundsNote);
   const v = pairs.map((r) => {
     const to = norm(r.p.item.swap[1]);
     const m = r.marks.words.find((x) => norm(x.text) === to);
-    return `${r.p.item.swap[0]} → ${r.p.item.swap[1]} ${m?.verdict ?? "not placed"}`;
+    return `${r.p.item.swap[0]} → ${r.p.item.swap[1]} ${r.marks.heard === "none" ? "neutral line" : (m?.verdict ?? "not placed")}`;
   });
   const off = v.filter((x) => x.endsWith(" off")).length;
   const ok = v.filter((x) => x.endsWith(" ok")).length;
@@ -423,7 +436,7 @@ p(WORD_RULES.soundsNote);
     lines.push("");
     p(
       "**Spellings: Azure echoes the reference exactly.** Every word came back as written in the reference: full harakat, partial vocalisation and tanween, tatweel, ß (never SS), apostrophes (J'ai, l'eau, d'accord as one word each), the hyphen (rendez-vous as one word), Sí and si kept apart by the accent, Hindi matras and the nukta. Japanese is split by Azure (私 · が · 行き · ます; Lexical with spaces). Only punctuation differs in the display text (Arabic commas, a final 。 or ।), which placement ignores. So the exact key places every word; the mark-free key is a fallback for a reply that isn't an echo, used only for Arabic and the Latin scripts, only for a word Azure sent without marks or one the exact key can't place, and a word placed that way keeps the marks that follow it.");
-    p("**No speech: Azure can't tell silence from a wrong word.** Silence and white noise came back `Success` with every reference word `Omission`, no `Insertion`, and `.` as the recognised text, never `NoMatch` or `InitialSilenceTimeout`. A clearly spoken wrong single word (hola for *gracias*, bonjour for *merci*) and two wrong words (buenas noches for *muchas gracias*) came back the same way, word for word. (Danke for *Tschüss* was a `Mispronunciation` scoring 0, with Tschüss recognised.) So the reply alone can't say \"no speech was heard\": `azureHeardNothing` answers 422 `no_speech` for Azure's no-speech statuses, or for that all-omitted reply only when the take itself is quiet (its loudest 50 ms under about -40 dBFS, `quietTake`). A loud take with every word omitted, a wrong word or noise, is a normal reply with every word off (missing).");
+    p("**No speech: Azure can't tell silence from a wrong word.** Silence and white noise came back `Success` with every reference word `Omission`, no `Insertion`, and `.` as the recognised text, never `NoMatch` or `InitialSilenceTimeout`. A clearly spoken wrong single word (hola for *gracias*, bonjour for *merci*) and two wrong words (buenas noches for *muchas gracias*) came back the same way, word for word. (Danke for *Tschüss* was a `Mispronunciation` scoring 0, with Tschüss recognised.) So the reply alone can't say \"no speech was heard\": `azureHeardNothing` answers 422 `no_speech` for Azure's no-speech statuses, or for that all-omitted reply only when the take itself is quiet (its loudest 50 ms under about -40 dBFS, `quietTake`). A take that isn't quiet with that reply (a wrong word, or noise) shows no verdict on any word, only the neutral line \"None of the words were recognised as this phrase\" (`heard: \"none\"`, `heardNoneOf`).");
   }
 }
 p("### What this does not show");
@@ -434,7 +447,7 @@ p(
   "- **Variants ride on their language.** `es-ES`, `fr-CA`, `pt-PT`, `en-GB`, `en-AU`, `en-IN`, `ar-EG` are Azure locales the app checks, measured here only through `es-MX`, `fr-FR`, `pt-BR`, `en-US` and `ar-SA`. Locales Azure supports but nothing here measured (`zh-HK` Cantonese among them) stay `not_available`.",
   "- **Word splits are Azure's.** Japanese is split by Azure, not by spaces: こんばん | は, し | て | い | ます, and お茶 as お | 茶. A mark may sit on one kana. Korean words are the spaced eojeol (물 | 주세요).",
   "- **Spellings were checked on one clip each.** Harakat, tatweel, ß, apostrophes, a hyphen, sí/si, matras and dakuten: one voice, one sentence each, all echoed exactly. A reference Azure doesn't echo (marks dropped, a word split differently) is placed by the fallback rules, tested on hand-written replies only.",
-  "- **A quiet wrong word is no_speech.** A learner who says the wrong word very softly (quieter than about -40 dBFS at the loudest) is told no speech was heard; a loud noise with no speech is shown as every word missing. The level bar was set by reasoning, not measured on a microphone.",
+  "- **A quiet wrong word is no_speech.** A learner who says the wrong word very softly (quieter than about -40 dBFS at the loudest) is told no speech was heard; loud noise with no speech gets the neutral line, as a wrong word does. The level bar was set by reasoning, not measured on a microphone.",
   "- **Short phrases only** (one to five words here; the route takes twelve, or thirty Japanese characters).",
 );
 
