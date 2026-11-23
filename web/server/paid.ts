@@ -12,6 +12,9 @@ import { HttpError } from "./sse.ts";
 //  - background (backgroundSlot): writing cloze sentences and the word
 //    game's pictures, which nothing waits for. A picture run that finds it
 //    taken waits its turn (backgroundSlotWhenFree); cloze skips.
+// A live turn's Azure tone check is in neither: it has its own one-per-user
+// slot and short timeout (pronunciation.ts LIVE_SCORER), so it never takes
+// what the reply's speech needs next, nor waits behind a picture run.
 // The Go tab's turn is not here: it runs `claude -p` on the owner's login,
 // one at a time per conversation already (conversations.ts takeTurnLock).
 

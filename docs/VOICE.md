@@ -2456,8 +2456,10 @@ A Go-tab turn of a Mandarin session is scored too: what the learner said
 against what transcription heard, the marks shown under their own line,
 and a clear tone miss told to the dojo master in the next reply's prompt.
 Pure rules `scripts/pronunciation-live.mjs`; the hand-off between the two
-requests `web/server/livePronunciation.ts`; the engine, worker, slots and
-Azure cap are stage 1's (`scoreLive` in `web/server/pronunciation.ts`);
+requests `web/server/livePronunciation.ts`; the engine, worker script and
+per-minute Azure cap are stage 1's, on live scoring's own worker and Azure
+slot (`scoreLive`, `LIVE_SCORER` in `web/server/pronunciation.ts`; "Cost
+per turn and its limits" below);
 the prompt block and its rules are the voice adapter's
 (`pronunciationBlock`, `PRONUNCIATION_RULES` in `scripts/voice.mjs`).
 
@@ -2516,10 +2518,12 @@ the learner is speaking freely in a real room, so a flag needs more:
   heard tone that is itself accepted;
 - never an interjection or a particle whose tone moves with feeling (啊
   呀 哇 嗯 哦 呃 唉 哈 吧 呢 嘛 吗 啦 …: `LIVE_RULES.quiet`);
-- **a turn with more than a third of its syllables off flags nothing**
-  (one of one, one of three, two of six at most): that many misses is
-  more likely a misheard transcript or cuts in the wrong places than a
-  learner;
+- **a turn with more than a third of its syllables off flags nothing**,
+  with a floor of one (`max(1, floor(n / 3))` offs at most): one of one
+  and **one of two** still flag (a two-character word with one clear miss
+  is the most useful case there is), two of two flag nothing; then one of
+  three, two of six, three of nine. More misses than that is more likely
+  a misheard transcript or cuts in the wrong places than a learner;
 - anything `unsure` is silence, as everywhere.
 
 On generated speech (`npm test`, `pronunciation-live.test.mjs`): 妈 said
@@ -2587,7 +2591,8 @@ marks, so the child never sees a mark or a number; nothing is stored.
 
 **On screen (adults).** The turn reply's `pronunciation` is stage 1's
 reply with the live bar applied (`liveReply`): an engine `off` below the
-bar is shown "not sure" (reason `live_bar`), so the screen never shows a
+bar is shown "not sure" (reason `live_bar`: "possibly a slip, but not
+certain enough to flag in conversation"), so the screen never shows a
 miss the dojo master wasn't told about; no `overall` (one number for a
 sentence said in conversation reads as a grade), no compare frames. The
 Go tab draws it under the learner's own line with `ToneCheck`, the same
@@ -2607,13 +2612,40 @@ scorer, a worker thread, a few hundred ms of one core). With Azure keys:
 at most one Azure Pronunciation Assessment call per scored turn (about a
 second of short audio, under Azure's per-hour audio pricing: a fraction of
 a cent), and only for a Mandarin-only, short, listening turn with the dial
-on. Every stage 1 limit holds and is shared with it: the user's
-`AZURE_PER_MINUTE` (12 calls a minute, past which the local scorer
-answers), the interactive paid slot (taken only around the call; when both
-are busy, the local scorer answers rather than queue, so the reply's
-speech is never held up), one score per user at a time and two workers on
-the server (past either, the turn is simply not scored). No `claude` call
-is added: the block rides on the turn's own run.
+on. Live scoring never competes with what a learner is waiting on; it has
+its own budgets (`LIVE_SCORER` in `web/server/pronunciation.ts`):
+
+- **Its own worker**: one worker thread on the whole server for live
+  turns, beside the score route's two, never out of them. An explicit
+  check (Practice's speak-it, the character card) is never turned away
+  because a live score is running; a live turn that finds the live worker
+  taken (another learner's turn, at the same moment) is simply not scored.
+  At most three scorer threads run at once.
+- **Its own Azure slot**: one live call per user at a time, out of neither
+  the interactive paid slots (the reply's speech needs them right after
+  the turn) nor the background slot. The background slot was considered
+  and rejected: a picture or cloze run holds it for minutes, so every live
+  score would be skipped or late. When the live slot is taken, the local
+  scorer answers.
+- **A short Azure timeout**: 2 s (`azureTimeoutMs`), not stage 1's 15 s. The
+  turn waits at most 1.2 s from its arrival, a few hundred ms after the
+  transcription that started the call; past ~2 s nobody would use the
+  answer. Past it the local scorer answers (usually too late as well, and
+  then dropped).
+- **Stopped when dropped**: a score that comes too late for its turn, is
+  replaced by a newer transcription, expires, or belongs to words the turn
+  didn't send is aborted at once (an `AbortController` per held score): the
+  Azure request is cancelled, the worker terminated, and both places given
+  back before the next transcription asks for them.
+- **Shared with stage 1**: only the user's `AZURE_PER_MINUTE` (12 calls a
+  minute). Live calls count against it, and past it every check, live or
+  explicit, is scored locally: never a 429.
+
+No `claude` call is added: the block rides on the turn's own run. The
+recording held between the two requests is at most the scorer's
+`SCORE_MAX_BYTES` (just under 1 MB, 30 s of 16 kHz mono and 4 KiB of
+header room); a larger body, whatever its header says, is not held, sent
+to Azure or kept as a clip.
 
 **Failure never breaks a turn.** A busy scorer, a worker that crashes,
 hangs or answers nonsense, an unreadable recording, a reading the reader

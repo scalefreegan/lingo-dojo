@@ -619,7 +619,14 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     // way dies with the page).
     const onPageHide = () => void closeConversation(true);
     window.addEventListener("pagehide", onPageHide);
-    const offSwitch = onBeforeSwitch(() => closeConversation(true));
+    const offSwitch = onBeforeSwitch(() => {
+      // The tone-coaching dial is the session's, and so the learner's and
+      // language's: the next one starts at the default. (The tab is keyed
+      // only by mode, so this panel stays mounted across the switch.)
+      coachingRef.current = "light";
+      setCoachingState("light");
+      return closeConversation(true);
+    });
     return () => {
       window.removeEventListener("pagehide", onPageHide);
       offSwitch();
@@ -2789,9 +2796,7 @@ function VoiceWave() {
   );
 }
 
-
-
-/** A quick-request chip above the composer, or a check-in answer. */
+/** The dial's three settings, each with the note shown beside it. */
 const COACHING_CHOICES: { value: Coaching; label: string; note: string }[] = [
   { value: "off", label: "Off", note: "No tone checks: nothing is scored, shown or kept." },
   { value: "light", label: "Light", note: "Tone marks under your lines; the dojo master steps in briefly on a clear miss, at most once a turn." },
@@ -2825,6 +2830,7 @@ function CoachingDial({ value, onChange }: { value: Coaching; onChange: (c: Coac
   );
 }
 
+/** A quick-request chip above the composer, or a check-in answer. */
 function QuickButton({ onClick, disabled, title, testid, variant = "quick", children }: { onClick: (e: MouseEvent<HTMLButtonElement>) => void; disabled?: boolean; title?: string; testid?: string; variant?: "quick" | "choice"; children: ReactNode }) {
   const look = variant === "choice"
     ? "border-accent bg-accent-soft text-fg hover:bg-accent hover:text-accent-ink"

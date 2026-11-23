@@ -371,11 +371,13 @@ export async function saveTurn(
       const n = await recordGlosses(tx, profile, { lang, conversationId, turnId: reply.id, items });
       if (n == null) await forgetUnused(tx, profile, made);
     }
-    // The message's tone check, on the learner row this write inserted for
-    // it (the last one: the message comes just before the reply). None when
-    // the message wasn't inserted (a retry of a stored turn keeps its row,
-    // and its check from then).
-    const said = turn.pronunciation && turn.message ? written.findLast((t) => t.role === "learner" && t.text === turn.message) : undefined;
+    // The message's tone check, on the row this write inserted for the
+    // message itself: planTurnWrite puts it just before the reply, at that
+    // idx (never a learner row copied from the screen that happens to say
+    // the same words). None found: no check, and the turn route removes the
+    // clip.
+    const messageIdx = turn.message ? insert.at(-2)?.idx : undefined;
+    const said = turn.pronunciation && messageIdx != null ? written.find((t) => t.idx === messageIdx && t.role === "learner" && t.text === turn.message) : undefined;
     if (said && turn.pronunciation) clipKept = (await recordCheck(tx, profile, conversationId, said.id, turn.pronunciation)).clipKept;
     // The length and the model as of this turn: +5 min, a length picked
     // mid-session and a model switched in the settings all show in History.

@@ -149,10 +149,14 @@ Tone checks in conversation (pronunciation stage 2, ld-ne0.3, migration
 - A Mandarin Go-tab listening turn is scored against its own transcript
   (Han only, at most 24 characters; mixed or longer turns aren't), started
   by `/api/voice/transcribe` in the background (`startLive`,
-  `web/server/livePronunciation.ts`; engine, worker, slots and Azure cap
-  are stage 1's, `scoreLive`) and taken by the turn whose message has the
-  same Han characters, waited for at most `LIVE.waitMs` (1.2 s) from the
-  turn's arrival; late, failed or busy: the turn goes on unchanged.
+  `web/server/livePronunciation.ts`; stage 1's engine and per-minute Azure
+  cap, `scoreLive`) and taken by the turn whose message has the same Han
+  characters, waited for at most `LIVE.waitMs` (1.2 s) from the turn's
+  arrival; late, failed or busy: the turn goes on unchanged. Live scoring
+  has its own budgets (`LIVE_SCORER`: one worker server-wide, one Azure
+  call per user, a 2 s Azure timeout), never an interactive paid slot or
+  the score route's workers, so it never 429s an explicit check; a dropped
+  score (late, replaced, expired) is aborted at once.
 - Only the live bar flags (`liveFlags` in `scripts/pronunciation-live.mjs`:
   the engine's `off` plus 1 st of margin, confidence, quality, no creak, no
   sound-only flag, no particles, nothing when over a third of a turn is

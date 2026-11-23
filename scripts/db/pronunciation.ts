@@ -12,9 +12,11 @@ import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { pronunciationChecks } from "./schema.ts";
 
-/** Clips kept per conversation: each is one turn of at most 30 seconds of
- *  16 kHz 16-bit mono (under 1 MB), so a session keeps under 20 MB. Past
- *  it a flagged turn still gets its row, without audio. */
+/** Clips kept per conversation: each is one turn's WAV, at most the
+ *  scorer's SCORE_MAX_BYTES (30 seconds of 16 kHz 16-bit mono plus 4 KiB of
+ *  header room: under 1 MB; livePronunciation.ts holds and writes nothing
+ *  larger), so a session keeps under 20 MB. Past it a flagged turn still
+ *  gets its row, without audio. */
 export const MAX_CLIPS_PER_CONVERSATION = 20;
 
 /** What a scored turn keeps. `clip`: a file already written under the

@@ -90,7 +90,14 @@ test("liveFlags: each bar only ever withholds; unsure, sound, creak, quiet words
   const six = (n) => liveFlags({ syllables: Array.from({ length: 6 }, (_, i) => (i < n ? off({ margin: 2 + i }) : ok())) });
   assert.deepEqual(six(2), [1, 0], "most certain first");
   assert.deepEqual(six(3), []);
+  // The floor of one: a two-character word with one clear miss flags (the
+  // most useful case), two of two flags nothing.
+  assert.deepEqual(liveFlags({ syllables: [off(), ok()] }), [0], "one of two");
+  assert.deepEqual(liveFlags({ syllables: [ok(), off()] }), [1], "one of two, second");
   assert.deepEqual(liveFlags({ syllables: [off(), off()] }), [], "both of two");
+  const three = (n) => liveFlags({ syllables: Array.from({ length: 3 }, (_, i) => (i < n ? off() : ok())) });
+  assert.deepEqual(three(1), [0], "one of three");
+  assert.deepEqual(three(2), [], "two of three");
   assert.deepEqual(liveFlags({ syllables: [] }), []);
   assert.deepEqual(liveFlags(null), []);
 });

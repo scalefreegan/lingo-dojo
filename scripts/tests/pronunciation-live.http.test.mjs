@@ -19,6 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { encodeWav } from "../pronunciation.mjs";
+import { readScoreAudio, SCORE_MAX_BYTES } from "../pronunciation-app.mjs";
 import { speak } from "../pronunciation-synth.mjs";
 import { PRONUNCIATION_CLOSE, PRONUNCIATION_OPEN, PRONUNCIATION_RULES } from "../voice.mjs";
 import { serveApi } from "./connect-stack.mjs";
@@ -49,8 +50,48 @@ globalThis.fetch = async (input, init) => {
     sttCalls++;
     return new Response(JSON.stringify({ text: heard }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
+  // Azure, stubbed (only in the tests that write its keys): a call that
+  // never answers until its signal aborts (`azureHangs`), else a 500 (the
+  // local scorer answers instead). Nothing reaches Azure.
+  if (url.hostname.endsWith(".stt.speech.microsoft.com")) {
+    azureStarted++;
+    if (!azureHangs) return new Response("{}", { status: 500 });
+    return new Promise((_, reject) => {
+      const signal = init?.signal;
+      const stop = () => {
+        azureAborted++;
+        reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+      };
+      if (signal?.aborted) stop();
+      else signal?.addEventListener("abort", stop, { once: true });
+    });
+  }
   throw new Error(`unexpected fetch to ${url.hostname}`);
 };
+let azureHangs = false;
+let azureStarted = 0;
+let azureAborted = 0;
+/** Azure's keys in the env file for the length of `fn` (read per call, as
+ *  the app reads them: no restart). */
+async function withAzure(fn) {
+  const file = process.env.LINGO_ENV_FILE;
+  const saved = fs.readFileSync(file, "utf8");
+  fs.writeFileSync(file, `${saved}AZURE_SPEECH_KEY=test-azure\nAZURE_SPEECH_REGION=eastus\n`);
+  try {
+    return await fn();
+  } finally {
+    fs.writeFileSync(file, saved);
+    azureHangs = false;
+  }
+}
+/** Wait (at most 2 s) until `ok()`. */
+async function until(ok, what) {
+  const end = Date.now() + 2000;
+  while (!ok()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 /* A stand-in `claude` first on PATH: it keeps each run's arguments (the
  * system prompt and the turn prompt) and answers one line. */
@@ -257,6 +298,100 @@ test("words that aren't what was scored, English, a mixed or another conversatio
   const other = await start(lin);
   await transcribe(lin, id, MISSED);
   assert.equal((await turn(lin, other, "妈")).body.pronunciation, undefined);
+});
+
+const score = (who, text, wav) => who.call("POST", `/api/pronunciation/score?text=${encodeURIComponent(text)}`, wav, { "Content-Type": "audio/wav" });
+
+test("a live score dropped as late stops its Azure call at once, and its places are free for the next turn", async () => {
+  const lin = await someone();
+  const savedLive = { ...LIVE };
+  try {
+    await withAzure(async () => {
+      azureHangs = true;
+      LIVE.waitMs = 100;
+      const id = await start(lin);
+      const s0 = azureStarted;
+      const a0 = azureAborted;
+      await transcribe(lin, id, MISSED);
+      await until(() => azureStarted === s0 + 1, "the live Azure call");
+      const r = await turn(lin, id, "妈");
+      assert.equal(r.status, 200, r.text);
+      assert.equal(r.body.pronunciation, undefined);
+      await until(() => azureAborted === a0 + 1, "the late call's abort");
+      // The next turn's call goes out (nothing left busy) and its answer is
+      // used: Azure fails (a 500 here), the local scorer answers in time.
+      azureHangs = false;
+      LIVE.waitMs = savedLive.waitMs;
+      await transcribe(lin, id, MISSED);
+      const r2 = await turn(lin, id, "妈", {}, [{ role: "learner", text: "妈" }, { role: "master", lines: r.body.lines }]);
+      assert.equal(r2.status, 200, r2.text);
+      assert.equal(azureStarted, s0 + 2);
+      assert.deepEqual([r2.body.pronunciation?.engine, r2.body.pronunciation?.fallback], ["local", "failed"]);
+    });
+  } finally {
+    Object.assign(LIVE, savedLive);
+  }
+});
+
+test("a newer transcription stops the older one's scoring at once and starts its own", async () => {
+  const lin = await someone();
+  await withAzure(async () => {
+    azureHangs = true;
+    const id = await start(lin);
+    const s0 = azureStarted;
+    const a0 = azureAborted;
+    await transcribe(lin, id, MISSED);
+    await until(() => azureStarted === s0 + 1, "the first call");
+    await transcribe(lin, id, RIGHT);
+    await until(() => azureAborted === a0 + 1, "the first call's abort");
+    // Not skipped as busy: the replaced score's places were given back
+    // when it was stopped.
+    await until(() => azureStarted === s0 + 2, "the second call");
+    clearLive();
+    await until(() => azureAborted === a0 + 2, "the second call's abort");
+  });
+});
+
+test("an explicit tone check is never turned away by a live score in flight", async () => {
+  const lin = await someone();
+  const other = await someone();
+  await withAzure(async () => {
+    azureHangs = true;
+    const id = await start(lin);
+    const s0 = azureStarted;
+    const a0 = azureAborted;
+    await transcribe(lin, id, MISSED);
+    await until(() => azureStarted === s0 + 1, "the live call");
+    // While it hangs in Azure holding live scoring's worker and Azure slot,
+    // the same learner's and another's explicit checks are answered (Azure
+    // answers them 500: the local scorer, not a 429).
+    azureHangs = false;
+    for (const who of [lin, other]) {
+      const r = await score(who, "妈", MISSED);
+      assert.equal(r.status, 200, r.text);
+      assert.deepEqual([r.body.engine, r.body.fallback], ["local", "failed"]);
+      assert.equal(r.body.syllables[0].verdict, "off");
+    }
+    clearLive();
+    await until(() => azureAborted === a0 + 1, "the live call's abort");
+  });
+});
+
+test("a recording over the scorer's byte cap is never held, scored or kept", async () => {
+  const lin = await someone();
+  const id = await start(lin);
+  // A valid 30-second-or-less header, then over a megabyte of junk after it.
+  const big = new Uint8Array(MISSED.length + 1_200_000);
+  big.set(MISSED);
+  assert.equal(readScoreAudio(big).error, undefined, "the header alone would pass");
+  assert.ok(big.length > SCORE_MAX_BYTES);
+  assert.equal((await transcribe(lin, id, big)).status, 200);
+  const r = await turn(lin, id, "妈");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.pronunciation, undefined);
+  assert.doesNotMatch(prompt(), /PRONUNCIATION/);
+  assert.deepEqual(await checksOf(testDb.db, profileOf(lin), id), []);
+  assert.equal(fs.existsSync(path.join(clipsDir, id)), false);
 });
 
 test("a scorer that fails or is too late never breaks the turn", async () => {

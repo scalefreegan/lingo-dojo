@@ -112,6 +112,11 @@ export const LIVE_RULES = Object.freeze({
 export function liveFlags(result, rules = LIVE_RULES) {
   const syl = Array.isArray(result?.syllables) ? result.syllables : [];
   if (!syl.length || result?.timingsProblem) return [];
+  // Too many misses is more likely a misheard transcript than a learner:
+  // past max(1, floor(n × maxOffShare)) offs, nothing. The floor of one is
+  // deliberate: one off of one or of two still flags (a two-character word
+  // with one clear miss is the most useful case there is), two of two
+  // flags nothing; then one of three, two of six, three of nine.
   const offs = syl.filter((s) => s?.verdict === "off").length;
   if (offs > Math.max(1, Math.floor(syl.length * rules.maxOffShare))) return [];
   const flagged = [];

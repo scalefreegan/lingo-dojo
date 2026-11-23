@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { scoresTones } from "../../scripts/pronunciation.mjs";
-import { readScoreAudio } from "../../scripts/pronunciation-app.mjs";
+import { readScoreAudio, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
 import { removeClip, writeClip } from "../../scripts/pronunciation-clips.mjs";
 import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget } from "../../scripts/pronunciation-live.mjs";
 import { pronunciationBlock } from "../../scripts/voice.mjs";
@@ -56,18 +56,30 @@ interface Pending {
   wav: Uint8Array;
   at: number;
   done: Promise<Outcome>;
+  /** Aborted when the score is dropped unused: the Azure request and the
+   *  worker stop and give their places back (pronunciation.ts scoreLive). */
+  stop: AbortController;
 }
 
 const pending = new Map<string, Pending>();
 const keyOf = (ctx: LearnerCtx) => `${ctx.learner.id}:${ctx.language.id}`;
 
-function sweep(now = Date.now()): void {
-  for (const [k, p] of pending) if (now - p.at > LIVE.ttlMs) pending.delete(k);
+/** Forget what is held under `key`, stopping its scoring if it still runs
+ *  (a no-op once it has finished). */
+function drop(key: string): void {
+  const p = pending.get(key);
+  if (!p) return;
+  pending.delete(key);
+  p.stop.abort();
 }
 
-/** For the tests: forget everything held. */
+function sweep(now = Date.now()): void {
+  for (const [k, p] of pending) if (now - p.at > LIVE.ttlMs) drop(k);
+}
+
+/** For the tests: forget everything held, stopping what still runs. */
 export function clearLive(): void {
-  pending.clear();
+  for (const k of [...pending.keys()]) drop(k);
 }
 
 /**
@@ -103,17 +115,21 @@ export function transcribeCoaching(req: IncomingMessage, ctx: LearnerCtx): Coach
  */
 export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, coaching }: { conversationId: string; text: string; wav: Uint8Array; locale: string; coaching: Coaching | "kids" }): void {
   const key = keyOf(ctx);
-  pending.delete(key);
+  // A newer transcription replaces the older one's score, stopping it.
+  drop(key);
   sweep();
   if (coaching === "off" || !scoresTones(locale)) return;
   const target = liveTarget(text);
   if (target.skip !== undefined) return;
-  // Only a recording the scorer takes (16 kHz mono PCM, 0.25 to 30 s) is
-  // held: anything else would be a skip anyway.
-  if (readScoreAudio(wav).error !== undefined) return;
+  // Only a recording the scorer takes is held: within the scorer's byte cap
+  // (a WAV whose header says 30 s but carries megabytes after it is never
+  // held, sent to Azure or kept as a clip) and 16 kHz mono PCM of 0.25 to
+  // 30 s; anything else would be a skip anyway.
+  if (wav.length > SCORE_MAX_BYTES || readScoreAudio(wav).error !== undefined) return;
   const kids = coaching === "kids";
-  const done = scoreLive(ctx, { wav, text: target.text, locale, kids }).catch((): Outcome => ({ skip: "failed" }));
-  pending.set(key, { conversationId, han: hanOf(target.text), locale, kids, wav, at: Date.now(), done });
+  const stop = new AbortController();
+  const done = scoreLive(ctx, { wav, text: target.text, locale, kids, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
+  pending.set(key, { conversationId, han: hanOf(target.text), locale, kids, wav, at: Date.now(), done, stop });
 }
 
 /** A scored turn's check, its audio written to the clips directory first
@@ -122,7 +138,8 @@ export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, 
  *  the check is kept without audio. */
 export function offerClip(conversationId: string, check: NonNullable<LiveTurn["check"]>): CheckDraft {
   const { wav, durationMs, ...draft } = check;
-  if (!wav) return { ...draft, clip: null };
+  // startLive held nothing larger; checked again where the file is made.
+  if (!wav || wav.length > SCORE_MAX_BYTES) return { ...draft, clip: null };
   try {
     const file = writeClip(conversationId, check.id, wav);
     return { ...draft, clip: { file, bytes: wav.length, ms: Math.max(1, durationMs) } };
@@ -162,9 +179,12 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
   const p = pending.get(key);
   if (!p || p.conversationId !== conversationId) return null;
   pending.delete(key);
-  if (Date.now() - p.at > LIVE.ttlMs) return null;
   const kids = coaching === "kids";
-  if (coaching === "off" || kids !== p.kids || p.locale !== locale || !p.han || hanOf(message) !== p.han) return null;
+  if (Date.now() - p.at > LIVE.ttlMs || coaching === "off" || kids !== p.kids || p.locale !== locale || !p.han || hanOf(message) !== p.han) {
+    // Not this turn's: nothing will ever use it.
+    p.stop.abort();
+    return null;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<"late">((resolve) => {
     timer = setTimeout(() => resolve("late"), Math.max(0, deadline - Date.now()));
@@ -172,6 +192,9 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
   const out = await Promise.race([p.done, late]);
   clearTimeout(timer);
   if (out === "late") {
+    // Stop it: the Azure request and the worker give their places back now,
+    // not when they would have finished.
+    p.stop.abort();
     console.log("[lingo-dojo] pronunciation (live): the score came too late for its turn; dropped");
     return null;
   }
