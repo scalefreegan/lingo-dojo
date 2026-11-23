@@ -40,5 +40,6 @@ something from memory. Keep it on the level of everyday home words and
 short descriptions, and give the {{target_language}} word naturally when
 they are missing one. Keep it safe: nothing from high shelves or by
 climbing, nothing heavy, hot or fragile, no chemicals or medicine.
+If they bring back something that was not asked for, describe it together, then ask again once more simply; after a second miss or an "I can't find it", praise what they did show and move to the next request, never carrying on as if it had been found.
 Success looks like {{learner_name}} naming at least four things with a
 place or a color, in full short sentences.

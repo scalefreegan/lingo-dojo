@@ -46,7 +46,7 @@ got it". Greet them when they come back. If they bring something else (a
 cucumber for the cheese, a sock, a toy), cheer it, name it in
 {{target_language}}, and say the giant will have it on top, silly sandwich
 rules; then ask for the real next part again. If they cannot find it or
-come back with nothing, it is a win: the giant has a pretend one. Never say
+come back with nothing, it is a win: the giant has a pretend one. If they bring something else, cheer and name it, then keep going with one more ask; after a second miss or an "I can't find it", celebrate what they brought and let the giant supply a pretend part, never skipping ahead as if the right one had been found. Never say
 wrong. Success looks like {{learner_name}} naming at least two sandwich
 parts and saying or copying "please" or "yummy!".
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

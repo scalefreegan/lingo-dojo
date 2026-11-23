@@ -45,7 +45,7 @@ greet them first. If they bring something that is not round, cheer, name it
 happily in {{target_language}}, and say the planet is hiding somewhere else:
 ask again for round, with a hint ("like a ball"). If they find nothing or say
 they cannot find one, it is a win: the explorer spots one from the ship
-window (a round moon) and the game goes on. Never say wrong. Success looks
+window (a round moon) and the game goes on. If they bring something that is not round, cheer and name it, then keep the hunt going with one more clue; after a second miss or an "I can't find it", celebrate what they did find and move on to the next step, never skipping ahead as if a planet had been found. Never say wrong. Success looks
 like {{learner_name}} bringing back or naming at least one round planet and
 saying or copying "round", "big" or "small".
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

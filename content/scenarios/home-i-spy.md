@@ -36,6 +36,7 @@ with something different, accept it, say what it is and why it could fit,
 and ask the question again. If they cannot find it, give a clue or reveal
 it and swap. Keep it light and a game, with praise for any full-sentence
 guess. Keep it safe: fetch only from within easy reach, nothing hot, heavy,
-fragile or from a high shelf, no chemicals or medicine. Success looks like
+fragile or from a high shelf, no chemicals or medicine. If they come back with something that is not it, name it with them and ask once more, more simply; after a second miss or an "I can't find it", celebrate what they did find, give the answer or a clue, and swap turns, never carrying on as if it had been found.
+Success looks like
 {{learner_name}} making at least four guesses or clues in {{target_language}}
 with at least two in full sentences.

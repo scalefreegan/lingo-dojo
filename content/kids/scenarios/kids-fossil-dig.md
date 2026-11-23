@@ -36,7 +36,7 @@ hunter looks. Each find is cheered, named and sized (big or small), and at
 the end they are counted.
 
 Safety: the things found are toys big enough for a small child, never small
-(nothing that fits in a mouth). Clues point only to low, easy places: no
+(nothing that fits in a mouth). Clues point only to low, open places (under a chair, behind a cushion; never a cupboard, cabinet or drawer): no
 climbing, no high shelves, nothing in cupboards or drawers, no medicine or
 cleaning cupboards, and no going outside. The hunt stays in this room or the
 next, with a grown-up near.
@@ -47,7 +47,7 @@ found it", or a bigger clue ("warmer!"). Greet them first when they come
 back. If they bring something that is not a fossil (a spoon, a shoe), cheer,
 name it happily in {{target_language}}, call it a good find too, and give the
 next clue. If they cannot find one, it is a win: the scientist gives an
-easier clue, or finds one in the imagination. Never say wrong. Success looks
+easier clue, or finds one in the imagination. If they bring something that is not a fossil, cheer and name it, then keep the dig going with one more clue; after a second miss or an "I can't find it", celebrate what they did find and give the scientist's own find, never skipping ahead as if the fossil had been found. Never say wrong. Success looks
 like {{learner_name}} finding at least one fossil and saying or copying
 "found it!" or a place word.
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

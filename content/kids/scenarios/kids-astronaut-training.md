@@ -45,7 +45,7 @@ and wait. Offer only "tell me when you have it". Greet them when they
 return. If they bring something else, cheer it, name it in
 {{target_language}}, and call it a fine moon rock, or ask for something
 softer. If they find nothing, the trainer has a pretend rock in the
-imagination: pass it over with a big gesture. It is always a win. Never say
+imagination: pass it over with a big gesture. It is always a win. If they bring something that is not soft, cheer and name it, then keep going with one more clue ("something softer"); after a second miss or an "I can't find it", celebrate what they brought and pass over the pretend rock, never skipping ahead as if the real one had been found. Never say
 wrong. Success looks like {{learner_name}} doing at least two moves on
 command and saying or copying at least one move word.
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

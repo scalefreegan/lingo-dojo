@@ -44,7 +44,7 @@ and wait. A later prompt is only "tell me when you've got it". Greet them
 when they come back. If they fetch a different fruit, cheer, name it in
 {{target_language}}, say it goes in the salad too, and ask for another color.
 If they come back with nothing or cannot find it, it is a win: the chef
-finds one in the show basket. Never say wrong. Success looks like
+finds one in the show basket. If they fetch a different fruit, cheer and name it, then keep going with one more ask; after a second miss or an "I can't find it", celebrate what they did fetch and let the chef supply the rest, never skipping ahead as if the right fruit had been found. Never say wrong. Success looks like
 {{learner_name}} naming at least two fruits or colors and saying or copying
 "yummy!".
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.

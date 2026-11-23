@@ -37,5 +37,6 @@ colder" or describe where it is. Never rush.
 Safety: keep to flat, familiar rooms, with no running, no rushing on
 stairs, no climbing, no touching hot, sharp or fragile things, and no
 cupboards with chemicals or medicine. Stairs only if they are safe, "at your
-own pace". Success looks like {{learner_name}} following at least three
+own pace". If they walk to the wrong place, describe where they are with them, then give one more direction; after a second miss or an "I can't find it", praise the attempt, reveal where it is and swap roles, never carrying on as if it had been found.
+Success looks like {{learner_name}} following at least three
 directions and giving at least three of their own, correctly.

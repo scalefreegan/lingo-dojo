@@ -43,7 +43,7 @@ wait. A later prompt is only "tell me when you've got it". Greet them when
 they come back. If it is not what was ordered, the customer loves it
 anyway, names it in {{target_language}}, and orders something new. If they
 cannot find it or come back with nothing, it is a win: a pretend one, from
-the imagination, is great. Never say wrong. Success looks like
+the imagination, is great. If they bring something other than the order, cheer and name it, then keep going with one more ask; after a second miss or an "I can't find it", celebrate what they brought and serve a pretend one, never skipping ahead as if the order had been filled. Never say wrong. Success looks like
 {{learner_name}} bringing at least one order and saying or copying "here you
 are" or "please".
 Add a light touch of a place where {{target_variant}} is spoken: a snack, an animal, a song or a game a child there would know, named simply. Keep it to one or two touches; the story comes first.
