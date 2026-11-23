@@ -4335,7 +4335,11 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   beside `submit_id` (docs/DATA.md's practice extras), the grade the words
   had before a flag at the live bar made the answer a miss. Read back as
   the reply's `toneMiss`; the override restores `rating`. No column, no
-  migration: the verdict stays `wrong` (the CHECK's own word).
+  migration: the verdict stays `wrong` (the CHECK's own word). Settling a
+  doubtful flag reads the learner's hand-made `reading_corrections` and
+  the active `shared_readings` (`settlingReadings` in toneReview.ts,
+  through `listCorrections` and `activeList`), only when a flag is in
+  doubt; nothing is written.
 - Tests: `scripts/tests/db-migration-0022.test.mjs` (the table, its
   checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`
   (written with the turn, the cap, served to its learner only, gone with

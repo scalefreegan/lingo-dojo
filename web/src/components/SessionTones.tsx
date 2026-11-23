@@ -112,11 +112,11 @@ function VsLastTones({ vs }: { vs: ToneVsLast }) {
       <ul className="mt-0.5 flex flex-col gap-0.5 text-sm text-fg-2">
         {line("All tones", vs.overall.now, vs.overall.was, vs.overall.move, "all")}
         {vs.tones.map((t) => line(TONE_LABEL[t.tone], t.now, t.was, t.move, `t${t.tone}`))}
-        {vs.flagged.now !== vs.flagged.was && (
+        {(vs.flagged.now.off > 0 || vs.flagged.was.off > 0) && (
           <li key="flagged">
-            <span className={vs.flagged.now < vs.flagged.was ? "text-accent" : "text-fg-3"}>{vs.flagged.now < vs.flagged.was ? "↑" : "↓"}</span> Flagged:{" "}
+            <span className={MOVE[vs.flagged.move].cls}>{MOVE[vs.flagged.move].sign}</span> Flagged:{" "}
             <span className="text-fg-3">
-              {vs.flagged.was} → {vs.flagged.now}
+              {pct(vs.flagged.was.off, vs.flagged.was.checked)} ({vs.flagged.was.off} of {vs.flagged.was.checked}) → {pct(vs.flagged.now.off, vs.flagged.now.checked)} ({vs.flagged.now.off} of {vs.flagged.now.checked})
             </span>
           </li>
         )}

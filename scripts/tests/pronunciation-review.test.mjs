@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  COMPARE_MIN, MAX_FLAGGED_SHOWN, MAX_TONE_MISS, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
+  COMPARE_MIN, MAX_FLAGGED_SHOWN, settleFlags, settledPlaces, MAX_TONE_MISS, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
 } from "../pronunciation-review.mjs";
 
 const syl = (char, expectedTone, verdict, extra = {}) => ({ char, pinyin: `${char}?`, expectedTone, verdict, startMs: 100, endMs: 300, ...extra });
@@ -68,7 +68,11 @@ test("compareTones: overall and per tone, a move only past 10 points, tones both
     { tone: 1, now: { ok: 3, checked: 4 }, was: { ok: 3, checked: 4 }, move: "same" },
     { tone: 3, now: { ok: 4, checked: 4 }, was: { ok: 1, checked: 4 }, move: "up" },
   ], "tone 4 has fewer than COMPARE_MIN either side");
-  assert.deepEqual(vs.flagged, { now: 2, was: 4 });
+  // A rate over tones 1–4, not a count: 2 of 10 now against 4 of 10.
+  assert.deepEqual(vs.flagged, { now: { off: 2, checked: 10 }, was: { off: 4, checked: 10 }, move: "up" });
+  // Fewer flags in a shorter session that is no better: not "up".
+  const short = compareTones(tones({ 1: [3, 4] }), tones({ 1: [6, 8] }));
+  assert.deepEqual(short.flagged, { now: { off: 1, checked: 4 }, was: { off: 2, checked: 8 }, move: "same" });
   assert.equal(compareTones(was, now).overall.move, "down");
   // Exactly ten points is a move; nine isn't.
   assert.equal(compareTones(tones({ 1: [6, 10] }), tones({ 1: [5, 10] })).overall.move, "up");
@@ -122,17 +126,18 @@ const flag = (char, place = 1) => ({ char, place, pinyin: "mā", expectedTone: 1
 
 test("practiceToneMiss: right words with a flag become a miss that remembers the grade; anything else unchanged", () => {
   const exact = { verdict: "exact", rating: 3, note: null };
-  const out = practiceToneMiss(exact, [flag("妈")]);
+  const said = { answer: "妈", text: "妈" };
+  const out = practiceToneMiss(exact, [flag("妈")], said);
   assert.deepEqual(out.outcome, { verdict: "wrong", rating: 1, note: null });
   assert.deepEqual(out.toneMiss, { rating: 3, verdict: "exact", syllables: [{ char: "妈", place: 1, pinyin: "mā", expectedTone: 1, heardTone: 4 }] });
   const close = { verdict: "close", rating: 2, note: "Check the tone mark." };
-  assert.deepEqual(practiceToneMiss(close, [flag("妈")]).outcome, { verdict: "wrong", rating: 1, note: "Check the tone mark." }, "the note stays");
-  assert.equal(practiceToneMiss({ verdict: "accepted", rating: 3, note: null }, [flag("妈")]).toneMiss.verdict, "accepted");
+  assert.deepEqual(practiceToneMiss(close, [flag("妈")], said).outcome, { verdict: "wrong", rating: 1, note: "Check the tone mark." }, "the note stays");
+  assert.equal(practiceToneMiss({ verdict: "accepted", rating: 3, note: null }, [flag("妈")], { answer: "妈！", text: "妈" }).toneMiss.verdict, "accepted", "punctuation aside, the same characters");
   for (const o of [{ verdict: "wrong", rating: 1, note: null }, { verdict: "self", rating: 3, note: null }]) {
-    assert.deepEqual(practiceToneMiss(o, [flag("妈")]), { outcome: o, toneMiss: null });
+    assert.deepEqual(practiceToneMiss(o, [flag("妈")], said), { outcome: o, toneMiss: null });
   }
-  for (const flags of [null, [], undefined]) assert.deepEqual(practiceToneMiss(exact, flags), { outcome: exact, toneMiss: null });
-  const lots = practiceToneMiss(exact, ["一", "二", "三", "四", "五"].map((c, i) => flag(c, i + 1)));
+  for (const flags of [null, [], undefined]) assert.deepEqual(practiceToneMiss(exact, flags, said), { outcome: exact, toneMiss: null });
+  const lots = practiceToneMiss(exact, ["一", "二", "三", "四", "五"].map((c, i) => flag(c, i + 1)), { answer: "一二三四五", text: "一二三四五" });
   assert.equal(lots.toneMiss.syllables.length, MAX_TONE_MISS);
 });
 
@@ -148,4 +153,42 @@ test("readToneHold: both ids or neither", () => {
   assert.deepEqual(readToneHold(null, null), { hold: null });
   assert.deepEqual(readToneHold(a, b), { hold: { phraseId: a, submitId: b.toLowerCase() } });
   for (const [p, s] of [[a, null], [null, b], ["x", b], [a, "1 or 1=1"]]) assert.match(readToneHold(p, s).error, /go together/);
+});
+
+test("practiceToneMiss: only when what was said is the phrase's own characters", () => {
+  const exact = { verdict: "exact", rating: 3, note: null };
+  const f = [{ char: "忙", place: 2, pinyin: "máng", expectedTone: 2, heardTone: 4 }];
+  // A saved alternate graded exact (帮助 for 帮忙), a synonym the grader
+  // accepted, nothing said, no text: unchanged.
+  for (const said of [{ answer: "帮助", text: "帮忙" }, { answer: "请帮我", text: "帮忙" }, { answer: "", text: "帮忙" }, { answer: "help", text: "" }, {}]) {
+    assert.deepEqual(practiceToneMiss(exact, f, said), { outcome: exact, toneMiss: null }, JSON.stringify(said));
+  }
+  assert.equal(practiceToneMiss(exact, f, { answer: "帮忙。", text: "帮忙" }).outcome.rating, 1);
+});
+
+test("settleFlags: a heard tone another reading has fails nothing unless that place is settled", () => {
+  const readings = { 空: ["kōng", "kòng"], 长: ["cháng", "zhǎng"], 妈: ["mā"] };
+  const readingsOf = (c) => readings[c] ?? [];
+  const kong = { char: "空", place: 1, pinyin: "kōng", expectedTone: 1, heardTone: 4 };
+  const chang = { char: "长", place: 2, pinyin: "cháng", expectedTone: 2, heardTone: 3 };
+  const ma = { char: "妈", place: 3, pinyin: "mā", expectedTone: 1, heardTone: 4 };
+  assert.deepEqual(settleFlags([kong, chang, ma], { readingsOf }), [ma]);
+  // Heard a tone no reading has: still a flag.
+  const kong3 = { ...kong, heardTone: 3 };
+  assert.deepEqual(settleFlags([kong3], { readingsOf }), [kong3]);
+  assert.deepEqual(settleFlags([kong, chang], { readingsOf, settled: new Set([1]) }), [kong]);
+  assert.deepEqual(settleFlags([kong, chang], { readingsOf, all: true }), [kong, chang]);
+});
+
+test("settledPlaces: an entry in the text giving that place the syllable it was scored as", () => {
+  const scored = new Map([[2, "kōng"], [4, "cháng"]]);
+  const text = "有空，很长";
+  // The learner's 有空 yǒu kōng settles place 2; 很长 read hěn zhǎng doesn't
+  // settle 长 scored cháng (the score was against a reading they were told
+  // is wrong).
+  const entries = [{ word: "有空", key: "有空", reading: "yǒu kōng" }, { word: "很长", key: "很长", reading: "hěn zhǎng" }];
+  assert.deepEqual([...settledPlaces(text, entries, scored)], [2]);
+  // A traditional spelling matched by its key; a malformed entry ignored.
+  assert.deepEqual([...settledPlaces("時間長", [{ word: "時間長", key: "时间长", reading: "shí jiān cháng" }, { word: "时", key: "时", reading: "" }], new Map([[3, "cháng"]]))], [3]);
+  assert.deepEqual([...settledPlaces(text, [], scored)], []);
 });

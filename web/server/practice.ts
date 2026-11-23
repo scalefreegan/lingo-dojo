@@ -237,12 +237,13 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     // Speak-it with its tone check held (stage 3, ld-ne0.4): right words
     // with a syllable flagged at the live bar count as a miss for the card,
     // the grade they had kept for "I said it right" (an override). Only a
-    // score the server made for this submit, phrase and these characters;
-    // none held (the check failed, was busy, or isn't Mandarin): graded as
-    // before.
+    // score the server made for this submit, phrase and these characters,
+    // and only when what was said is those characters (practiceToneMiss:
+    // an alternate or an accepted synonym is other words); none held (the
+    // check failed, was busy, or isn't Mandarin): graded as before.
     if (a.tones) {
       const flags = heldPracticeTones(ctx, { phraseId: phrase.id, submitId: a.submitId, han: hanOf(phrase.text ?? "") });
-      ({ outcome, toneMiss } = practiceToneMiss(outcome, flags));
+      ({ outcome, toneMiss } = practiceToneMiss(outcome, flags, { answer: a.answer, text: phrase.text }));
     }
     // Only typed flashcard words are kept as another way to say it: a
     // meaning in phrases.alternates would grade as the target (practice.mjs

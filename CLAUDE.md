@@ -141,7 +141,8 @@ learner mode); the card's one character, with `readings=all` (never sent
 by Practice), is judged against every reading the card shows; nothing is stored, and every failure leaves as an
 `HttpError` so no log line carries the text in the URL.
 Marks and the tone picture are `web/src/components/ToneCheck.tsx`, on
-Practice's speak-it (grading unchanged) and the character card; First steps
+Practice's speak-it (since stage 3 a clear tone miss can fail right words:
+below) and the character card; First steps
 drills are not wired (no reliable target text per turn).
 Tone checks in conversation (pronunciation stage 2, ld-ne0.3, migration
 0022; docs/VOICE.md §Pronunciation in conversation, docs/DATA.md
@@ -192,6 +193,12 @@ docs/VOICE.md §Tones after the session; pure rules
   `tones: true` on the answer then makes right words with a flag a miss,
   the old grade kept in `card_before.tone_miss` (the reply's `toneMiss`,
   replays too) and restored by **I said it right** (the override).
+  Only when what was said is the phrase's own Han characters (never an
+  alternate or an accepted synonym), and only flags the reading vouches
+  for (`settleFlags`: a heard tone of another reading of that character,
+  空 kōng/kòng, is dropped unless a stored phrase reading, the learner's
+  own choice or the shared list settles it). Check waits at most 2.5 s;
+  leaving sends the answer without `tones`; one check per take.
 - Kids: nothing shown (the routes answer empty), nothing stored, no hold.
 Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words
 and sounds beyond Mandarin, docs/pronunciation-proof.md's section of that

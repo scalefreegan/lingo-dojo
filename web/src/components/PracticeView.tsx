@@ -66,6 +66,10 @@ const MODES: { value: UiMode; label: string; hint: string }[] = [
   { value: "mixed", label: "Mixed", hint: "A bit of everything" },
 ];
 
+/** How long Check waits for a speak-it answer's tone check (stage 3) before
+ *  sending the answer without it (the grade then as it would be). */
+const TONE_WAIT_MS = 2500;
+
 const RATINGS: { value: PracticeRating; label: string; hint: string }[] = [
   { value: 1, label: "Again", hint: "Didn't know it: see it again soon" },
   { value: 2, label: "Hard", hint: "Got it, with effort" },
@@ -857,7 +861,8 @@ type RecState =
   | { step: "recording"; rec: Recording; level: number }
   | { step: "hearing" }
   // The recording stays with what was heard: speak-it checks its tones
-  // once the answer is graded (ToneCheck), and nothing keeps it after.
+  // when Check is pressed, before the answer is sent (stage 3), and
+  // nothing keeps it after.
   | { step: "heard"; text: string; wav: Blob };
 
 /** Why the microphone couldn't start, in words a learner can act on. */
@@ -1037,16 +1042,23 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
   );
 }
 
+/** A take's tone check (speak-it, stage 3): the reply, or why there is
+ *  none (failed, or not in time). */
+type TakeCheck = { take: Blob; reply: PronunciationScoreReply | null; message: string | null };
+
 /**
  * Speak-it: the meaning shown, the learner says the words. The recording
  * is transcribed (with no hint of the expected answer), what was heard is
  * shown, and only Check records it: a mishearing can be recorded again,
  * and a blocked microphone, an empty recording or a failed transcription
  * never becomes a review. "Type it instead" makes it a typed produce
- * flashcard. For Mandarin, once a spoken answer is graded, its recording
- * is checked for tones (SpokenTones): marks on the phrase, which never
- * change the grade (stage 1). In a language the word check covers, for
- * its words (SpokenWords, ld-ne0.16), likewise.
+ * flashcard. For Mandarin, Check first checks the recording's tones (at
+ * most TONE_WAIT_MS, once per take) and then sends the answer: right words
+ * with a syllable flagged at the live bar are a miss, with "I said it
+ * right" (stage 3, ToneMissNote); the marks are shown on the phrase
+ * (SpokenTones). In a language the word check covers, its words are
+ * checked once the answer is graded (SpokenWords, ld-ne0.16), which never
+ * changes the grade.
  */
 function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardProps) {
   // Raw for the tone check where there will be one (Mandarin, a phrase it
@@ -1060,31 +1072,58 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
   // ld-ne0.4): the server holds its live-bar flags for this submit, and
   // the grade may then count right words with a clear tone miss as a miss.
   // Any failure here just sends the answer as before, without the flag.
-  const [pre, setPre] = useState<{ take: Blob; reply: PronunciationScoreReply | null; message: string | null } | null>(null);
+  // Each take's check is kept with its blob: a second Check of the same
+  // recording (after a failed answer) reuses it, never scoring, and maybe
+  // paying for, the same take again.
+  const [pre, setPre] = useState<TakeCheck | null>(null);
+  const preRef = useRef<TakeCheck | null>(null);
   const [scoring, setScoring] = useState(false);
-  // False once the card has gone: a check that ends after it sends nothing.
-  const here = useRef(true);
+  // The check under way: its abort, and the words to send if the card goes
+  // first (End, another tab): the answer is then sent at once, as before
+  // stage 3, without `tones`, and the check is dropped.
+  const pending = useRef<{ ctrl: AbortController; heard: string } | null>(null);
+  const submitRef = useRef(answer.submit);
   useEffect(() => {
-    here.current = true;
-    return () => {
-      here.current = false;
-    };
-  }, []);
+    submitRef.current = answer.submit;
+  });
+  useEffect(
+    () => () => {
+      const p = pending.current;
+      if (!p) return;
+      pending.current = null;
+      p.ctrl.abort();
+      void submitRef.current({ answer: p.heard });
+    },
+    [],
+  );
   async function check(heard: string, wav: Blob) {
     setTake(wav);
     let held = false;
     if (scoresTonesHere(locale) && scorableText(item.text)) {
-      setScoring(true);
-      try {
-        const reply = await scorePronunciation(wav, item.text, undefined, { reading: item.reading ?? null, hold: { phraseId: item.phraseId, submitId: answer.submitId } });
-        held = !!reply?.held;
-        setPre({ take: wav, reply, message: null });
-      } catch (e) {
-        setPre({ take: wav, reply: null, message: errText(e) });
-      } finally {
+      let got = preRef.current?.take === wav ? preRef.current : null;
+      if (!got) {
+        const ctrl = new AbortController();
+        pending.current = { ctrl, heard };
+        // Check never waits on the scorer for long: past the deadline the
+        // check is dropped and the answer graded as it would be without it.
+        const timer = setTimeout(() => ctrl.abort(), TONE_WAIT_MS);
+        setScoring(true);
+        try {
+          const reply = await scorePronunciation(wav, item.text, ctrl.signal, { reading: item.reading ?? null, hold: { phraseId: item.phraseId, submitId: answer.submitId } });
+          got = { take: wav, reply, message: null };
+        } catch (e) {
+          got = { take: wav, reply: null, message: ctrl.signal.aborted ? "they weren't checked in time" : errText(e) };
+        } finally {
+          clearTimeout(timer);
+        }
+        // The card went meanwhile: its cleanup has sent the answer.
+        if (pending.current?.ctrl !== ctrl) return;
+        pending.current = null;
+        preRef.current = got;
+        setPre(got);
         setScoring(false);
       }
-      if (!here.current) return;
+      held = !!got.reply?.held;
     }
     void answer.submit({ answer: heard, ...(held ? { tones: true } : {}) });
   }
@@ -1401,18 +1440,26 @@ function Result({
  *  the wrong place). */
 function ToneMissNote({ result, answer }: { result: PracticeAnswerReply; answer: Answer }) {
   const miss = result.toneMiss!;
-  const restored = result.review.rating === miss.rating;
+  // The note follows the grade as recorded now: the miss, the grade the
+  // words had (I said it right), or another one the learner picked.
+  const rating = result.review.rating;
+  const missed = rating === 1;
   const which = miss.syllables
     .map((s) => `${s.char} (${s.pinyin}: tone ${s.expectedTone}${s.heardTone != null ? `, heard ${s.heardTone}` : ""})`)
     .join(", ");
+  const after = missed
+    ? ". Counted as a miss, so it comes back soon."
+    : rating === miss.rating
+      ? `. You said it was right, so it's graded ${RATINGS[rating - 1].label}.`
+      : `. You graded it ${RATINGS[rating - 1].label}.`;
   return (
     <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-fg" data-testid="practice-tone-miss">
       <p>
-        {restored ? "Right words; the tone check flagged " : "Right words, tone off on "}
+        {missed ? "Right words, tone off on " : "Right words; the tone check flagged "}
         <span lang="zh">{which}</span>
-        {restored ? `. You said it was right, so it's graded ${RATINGS[miss.rating - 1].label}.` : ". Counted as a miss, so it comes back soon."}
+        {after}
       </p>
-      {!restored && (
+      {missed && (
         <div>
           <Button onClick={() => void answer.regrade(miss.rating)} disabled={answer.busy} data-testid="practice-tone-override">
             I said it right

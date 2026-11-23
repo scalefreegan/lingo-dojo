@@ -26,6 +26,8 @@
 
 import { isUuid } from "./phrases.mjs";
 import { dayStart } from "./practice.mjs";
+import { parsePinyin } from "./pronunciation.mjs";
+import { hanOf } from "./pronunciation-live.mjs";
 
 /** The tones a breakdown lists, in the order shown: the four, then the
  *  neutral tone (expectedTone 0). */
@@ -148,8 +150,8 @@ const moveOf = (now, was) => {
  * This session's tones against the attempt it built on (both from
  * `sessionTones`), or null when either has fewer than COMPARE_MIN syllables
  * of tones 1–4. `tones`: each of tones 1–4 both sessions have at least
- * COMPARE_MIN of, with the two counts and the move; `flagged`: how many
- * syllables were flagged then and now.
+ * COMPARE_MIN of, with the two counts and the move; `flagged`: the share of
+ * tone 1–4 syllables flagged then and now ("up": fewer now).
  */
 export function compareTones(now, was, { min = COMPARE_MIN } = {}) {
   if (!now || !was || now.judged.checked < min || was.judged.checked < min) return null;
@@ -166,7 +168,15 @@ export function compareTones(now, was, { min = COMPARE_MIN } = {}) {
   return {
     overall: { now: now.judged, was: was.judged, move: moveOf(now.judged, was.judged) },
     tones,
-    flagged: { now: now.off, was: was.off },
+    // A rate, not a count: a shorter session has fewer flags without being
+    // any better. Flags are only ever on tones 1–4 (the live bar), so the
+    // rate is over the same syllables as the shares, under the same minimum
+    // (checked above) and the same step; `move` "up" is fewer flagged.
+    flagged: {
+      now: { off: now.off, checked: now.judged.checked },
+      was: { off: was.off, checked: was.judged.checked },
+      move: moveOf({ ok: now.judged.checked - now.off, checked: now.judged.checked }, { ok: was.judged.checked - was.off, checked: was.judged.checked }),
+    },
   };
 }
 
@@ -270,8 +280,14 @@ export const MAX_TONE_MISS = 3;
  * high-precision bar, because this changes a schedule and the scorer is
  * known to be wrong sometimes (an echoing room, spans in the wrong place).
  */
-export function practiceToneMiss(outcome, flags) {
+export function practiceToneMiss(outcome, flags, { answer, text } = {}) {
   if (!outcome || !Array.isArray(flags) || !flags.length) return { outcome, toneMiss: null };
+  // The tones were scored against the phrase's own characters: they say
+  // something about this answer only when it *is* those characters. A saved
+  // alternate graded exact (帮助 for 帮忙) or a synonym the grader accepted
+  // is other words, and its recording was never these syllables.
+  const said = hanOf(answer);
+  if (!said || said !== hanOf(text)) return { outcome, toneMiss: null };
   if (!["exact", "close", "accepted"].includes(outcome.verdict)) return { outcome, toneMiss: null };
   const syllables = flags.slice(0, MAX_TONE_MISS).map((f) => ({
     char: String(f.char ?? ""),
@@ -284,6 +300,66 @@ export function practiceToneMiss(outcome, flags) {
     outcome: { verdict: "wrong", rating: 1, note: outcome.note ?? null },
     toneMiss: { rating: outcome.rating, verdict: outcome.verdict, syllables },
   };
+}
+
+/* ----------------------- characters read more than one way ----------------------- */
+
+const samePinyin = (a, b) => String(a ?? "").normalize("NFC").trim().toLowerCase() === String(b ?? "").normalize("NFC").trim().toLowerCase();
+
+/**
+ * The places (1-based, among `text`'s Han characters) whose reading is
+ * settled for this learner as the score read it: an entry (`{ word, key,
+ * reading }`: the learner's own correction or an active shared reading,
+ * one syllable per character) found in the text that gives the character
+ * at that place the very syllable it was scored as (`scored`: place →
+ * pinyin). An entry that reads it otherwise doesn't settle it: the score
+ * was then against a reading the learner was told is wrong.
+ */
+export function settledPlaces(text, entries, scored) {
+  const cps = [...String(text ?? "")];
+  const placeAt = [];
+  let n = 0;
+  for (const c of cps) placeAt.push(/\p{Script=Han}/u.test(c) ? ++n : 0);
+  const out = new Set();
+  for (const e of entries ?? []) {
+    const syl = String(e?.reading ?? "").trim().split(/\s+/).filter(Boolean);
+    for (const form of new Set([e?.word, e?.key].filter((f) => typeof f === "string" && f))) {
+      const f = [...form];
+      if (f.length !== syl.length || !f.every((c) => /\p{Script=Han}/u.test(c))) continue;
+      for (let i = 0; i + f.length <= cps.length; i++) {
+        if (!f.every((c, j) => cps[i + j] === c)) continue;
+        f.forEach((_, j) => {
+          const place = placeAt[i + j];
+          if (scored.has(place) && samePinyin(scored.get(place), syl[j])) out.add(place);
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The flags that may fail a Practice answer: a flag whose heard tone is the
+ * tone of *another* known reading of its character (空 scored kōng, heard
+ * kòng) is dropped, since the learner may well have said a right reading the
+ * reader didn't pick (it doesn't mark 空 as uncertain), unless that place's
+ * reading is settled (`settled`: a stored phrase reading the score used, the
+ * learner's own correction, the shared list: settledPlaces). When in doubt,
+ * no miss. `readingsOf(char)`: every reading of the character (zh.ts
+ * charReadings).
+ */
+export function settleFlags(flags, { readingsOf, settled = new Set(), all = false }) {
+  return (flags ?? []).filter((f) => {
+    if (all || settled.has(f.place)) return true;
+    const others = (readingsOf(f.char) ?? []).filter((r) => !samePinyin(r, f.pinyin)).map((r) => parsePinyin(r).tone);
+    return !others.includes(f.heardTone);
+  });
+}
+
+/** Whether any flag is one settleFlags would drop without a settled
+ *  reading (so the settling entries need reading at all). */
+export function doubtfulFlags(flags, readingsOf) {
+  return settleFlags(flags, { readingsOf }).length !== (flags ?? []).length;
 }
 
 /** A stored tone miss (reviews.card_before.tone_miss) read back for the

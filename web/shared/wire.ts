@@ -1276,7 +1276,9 @@ export interface ToneVsLast {
   startedAt: string;
   overall: { now: ShareCount; was: ShareCount; move: ToneMove };
   tones: { tone: number; now: ShareCount; was: ShareCount; move: ToneMove }[];
-  flagged: { now: number; was: number };
+  /** Flagged over tones 1–4 syllables, then and now; `move` "up" is a
+   *  lower rate now (fewer flagged), by the same 10-point step. */
+  flagged: { now: { off: number; checked: number }; was: { off: number; checked: number }; move: ToneMove };
 }
 
 /** GET /api/pronunciation/sessions/:conversationId. `tones` null: nothing

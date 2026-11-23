@@ -2,6 +2,8 @@ import type { ServerResponse } from "node:http";
 import { compareTones, readTrendDays, sessionTones, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
 import { readUtcOffset } from "../../scripts/practice.mjs";
 import { sessionChecks, toneConversation, trendChecks } from "../../scripts/db/pronunciation.ts";
+import { listCorrections } from "../../scripts/db/readings.ts";
+import { activeList } from "../../scripts/db/sharedReadings.ts";
 import type { FlagNote } from "../../scripts/pronunciation-live.mjs";
 import type { SessionTonesReply, ToneTrendReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
@@ -70,8 +72,9 @@ export async function toneTrendRoute(res: ServerResponse, ctx: LearnerCtx, param
 // answer (a lost reply) whose first try was never recorded still finds it.
 
 /** How long a score waits for its answer: Check follows the score at
- *  once, but a grader call or a retry may come a while later. */
-export const HOLD_MS = 10 * 60_000;
+ *  once, but a grader call or a retry may come a while later. Mutable for
+ *  the tests, like pronunciation.ts SCORER. */
+export const PRACTICE_HOLD = { ms: 10 * 60_000 };
 
 interface Held {
   phraseId: string;
@@ -87,7 +90,7 @@ const keyOf = (ctx: LearnerCtx) => `${ctx.learner.id}:${ctx.language.id}`;
  *  theirs). */
 export function holdPracticeTones(ctx: LearnerCtx, h: Omit<Held, "at">): void {
   const now = Date.now();
-  for (const [k, v] of held) if (now - v.at > HOLD_MS) held.delete(k);
+  for (const [k, v] of held) if (now - v.at > PRACTICE_HOLD.ms) held.delete(k);
   held.set(keyOf(ctx), { ...h, at: now });
 }
 
@@ -95,7 +98,7 @@ export function holdPracticeTones(ctx: LearnerCtx, h: Omit<Held, "at">): void {
  *  characters, or null (none, another card's or another take's, expired). */
 export function heldPracticeTones(ctx: LearnerCtx, { phraseId, submitId, han }: { phraseId: string; submitId: string; han: string }): FlagNote[] | null {
   const h = held.get(keyOf(ctx));
-  if (!h || Date.now() - h.at > HOLD_MS) return null;
+  if (!h || Date.now() - h.at > PRACTICE_HOLD.ms) return null;
   if (h.phraseId !== phraseId || h.submitId !== submitId || h.han !== han) return null;
   return h.flags;
 }
@@ -103,4 +106,26 @@ export function heldPracticeTones(ctx: LearnerCtx, { phraseId, submitId, han }: 
 /** For the tests. */
 export function clearPracticeTones(): void {
   held.clear();
+}
+
+/** For the tests: the flags held for a learner and language, whatever
+ *  their submit (so a test knows its negative case had a flag to drop). */
+export function peekPracticeTones(learnerId: string, languageId: string): FlagNote[] | null {
+  return held.get(`${learnerId}:${languageId}`)?.flags ?? null;
+}
+
+/**
+ * What settles a Mandarin word's reading for this learner, beyond a stored
+ * phrase reading (pronunciation-review.mjs settleFlags): their own
+ * corrections and confirmations made by hand, and the shared list's active
+ * entries (Taiwan-only ones in a zh-TW language only). A recap's guess isn't
+ * the learner's choice and settles nothing here.
+ */
+export async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
+  const [mine, shared] = await Promise.all([listCorrections(rawDb(), ctx.language), activeList(rawDb())]);
+  const tw = /-TW$/i.test(locale);
+  return [
+    ...mine.filter((c) => c.source === "user" && (c.kind === "corrected" || c.kind === "confirmed")).map(({ word, key, reading }) => ({ word, key, reading })),
+    ...shared.entries.filter((e) => e.scope === "all" || tw).map(({ word, key, reading }) => ({ word, key, reading })),
+  ];
 }

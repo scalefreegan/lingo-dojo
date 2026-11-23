@@ -2697,7 +2697,9 @@ a share (the engine doesn't judge them).
 - **Since last time** (`compareTones`): when the conversation built on an
   earlier attempt (`previous_conversation_id`, Revisit) that kept checks
   of its own, the share of tones 1–4 then → now, each tone both sessions
-  have at least `COMPARE_MIN` (3) syllables of, and the flagged count; ↑ or
+  have at least `COMPARE_MIN` (3) syllables of, and the flagged *rate*
+  (flagged over tones 1–4 syllables, shown with its counts: a shorter
+  session has fewer flags without being better; ↑ is a lower rate); ↑ or
   ↓ only for a move of at least `COMPARE_STEP` (10 points), else =. The
   earlier session deleted: the link nulls and the comparison goes.
 - **The trend** (`ToneTrend.tsx`, in History under the 7-day card,
@@ -2719,21 +2721,38 @@ a share (the engine doesn't judge them).
   language, a newer score replaces it, 10 minutes, kept after use so a
   resend whose first try never recorded still finds it) and answers
   `held: true`. The answer then sends `tones: true` (speak drill only, a
-  boolean, else 400). An answer graded right (exact, close or accepted)
-  whose held flags (same phrase, submit and Han characters) are not empty
-  is recorded as Again, verdict `wrong`, its own note kept, and the review
+  boolean, else 400). **Only what the reading vouches for is held**
+  (`settleFlags`): a flag whose heard tone is the tone of another known
+  reading of that character (`charReadings`: 空 scored kōng and heard
+  kòng, 中 zhōng heard zhòng) is dropped, since the reader may have picked
+  the wrong one (it doesn't mark 空), unless the place's reading is
+  settled: a stored phrase reading sent with the score (`reading`), the
+  learner's own choice by hand (`reading_corrections`, source `user`) or an
+  active shared-list entry giving that character the very syllable it was
+  scored as (`settledPlaces`). A recap's guess settles nothing. When in
+  doubt, no miss. An answer graded right (exact, close or accepted) **whose
+  Han characters are the phrase's** (an alternate graded exact or a
+  synonym the grader accepted is other words: never a tone miss) and whose
+  held flags (same phrase, submit and Han characters) are not empty is
+  recorded as Again, verdict `wrong`, its own note kept, and the review
   keeps `card_before.tone_miss` (`{ rating, verdict, syllables }`: what the
   grade would have been, at most 3 syllables); every reply of that review
   (the answer, a replay, an override) carries it as `toneMiss`. The page
   shows "Tone off" and "Right words, tone off on 好 (hǎo: tone 3, heard
   2)" with **I said it right**, which is the existing override to
   `toneMiss.rating` (the card restored from `card_before` and reviewed
-  again: no lapse is left behind). The page never sends a verdict: the
+  again: no lapse is left behind); the note follows the grade recorded
+  now (another override: "You graded it Easy"). The page never sends a verdict: the
   grade changes only on a score the server made itself. A failed, busy or
   unavailable check, a hold for another card or take, a wrong answer: the
-  grade is as before. The score's Azure call now happens for wrong answers
-  too (their marks still aren't shown); a speak-it answer still makes at
-  most one check.
+  grade is as before. **Check waits at most 2.5 s** (`TONE_WAIT_MS`, the
+  request aborted): later, the answer goes without `tones`, graded as it
+  would be. Leaving the card while it waits (End, another tab) sends the
+  answer at once, as before stage 3, and aborts the check. The score's
+  Azure call now happens for wrong answers too (their marks still aren't
+  shown). **One check per take:** a second Check of the same recording
+  (after a failed answer) reuses the first check's result, held or not,
+  and sends `tones` again when it was held; a new recording is a new check.
 - **Not done: the recap feeding the bank.** A flagged syllable inside a
   bank phrase giving that phrase a failing review at the recap was left
   out: the recap's reviews are one per phrase per session, written once
