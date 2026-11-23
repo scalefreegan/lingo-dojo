@@ -591,6 +591,11 @@ export function readAnswerInput(body) {
   // Nothing heard is not an answer (the page asks to record again), so it
   // never records a miss.
   if (spoken && !text) return { error: "nothing was heard: record your answer again" };
+  // Speak-it whose recording's tone check the server holds for this
+  // submit (stage 3, pronunciation-review.mjs practiceToneMiss): only the
+  // flag goes from the page, never a verdict.
+  if (body.tones !== undefined && typeof body.tones !== "boolean") return { error: "tones must be true or false" };
+  if (body.tones && drill !== "speak") return { error: "tones goes with a speak-it answer" };
   let r = null;
   if (reveal) {
     if (!Number.isInteger(rating) || rating < 1 || rating > 4) return { error: "a revealed card needs your rating: 1 (Again) to 4 (Easy)" };
@@ -603,7 +608,7 @@ export function readAnswerInput(body) {
     value: {
       phraseId: phraseId.toLowerCase(), skill, drill, version, revision, submitId: submitId.toLowerCase(), answer: picked ?? text, choice: picked !== null,
       reveal: !!reveal, rating: r, durationMs: d, utcOffsetMinutes: readUtcOffset(tz),
-      clozeId: drill === "cloze" ? clozeId.toLowerCase() : null, spoken,
+      clozeId: drill === "cloze" ? clozeId.toLowerCase() : null, spoken, tones: body.tones === true,
     },
   };
 }

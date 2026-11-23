@@ -8,9 +8,9 @@
 // Owner scoping lives here: every query goes through forLanguageProfile
 // (scripts/db/owned.ts). Erasable TypeScript only, like schema.ts.
 
-import { and, eq, isNotNull, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, sql, type SQL } from "drizzle-orm";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
-import { pronunciationChecks } from "./schema.ts";
+import { conversations, pronunciationChecks, turns } from "./schema.ts";
 
 /** Clips kept per conversation: each is one turn's WAV, at most the
  *  scorer's SCORE_MAX_BYTES (30 seconds of 16 kHz 16-bit mono plus 4 KiB of
@@ -72,4 +72,47 @@ export async function clipOf(db: Db, profile: LanguageProfileRef, id: string): P
  *  the tests). */
 export async function checksOf(db: Db, profile: LanguageProfileRef, conversationId: string) {
   return forLanguageProfile(db, profile).list(pronunciationChecks, eq(pronunciationChecks.conversationId, conversationId), { orderBy: pronunciationChecks.createdAt });
+}
+
+/* ------------------------------ stage 3 reads ------------------------------ */
+// The recap's Tones section and the trend (ld-ne0.4, docs/DATA.md
+// §Pronunciation in sessions): only reads, each through this language's
+// scope, so another learner's or language's conversation is the same
+// "nothing" as one that doesn't exist.
+
+/** A conversation of this language's, as the tone summary needs it (its
+ *  mode, and the attempt it built on), or null when it isn't one. */
+export async function toneConversation(db: Db, profile: LanguageProfileRef, id: string): Promise<{ id: string; mode: "adult" | "kids"; startedAt: Date; previousConversationId: string | null } | null> {
+  const row = await forLanguageProfile(db, profile).get(conversations, eq(conversations.id, id));
+  return row ? { id: row.id, mode: row.mode, startedAt: row.startedAt, previousConversationId: row.previousConversationId } : null;
+}
+
+/** One conversation's checks, oldest first, each with the line it scored
+ *  (the learner turn's text) and whether its clip was kept. Both tables
+ *  are read through this language's scope. */
+export async function sessionChecks(db: Db, profile: LanguageProfileRef, conversationId: string): Promise<{ id: string; syllables: unknown; clip: boolean; line: string }[]> {
+  const mine = forLanguageProfile(db, profile);
+  const rows = await db
+    .select({ id: pronunciationChecks.id, syllables: pronunciationChecks.syllables, clipFile: pronunciationChecks.clipFile, line: turns.text })
+    .from(pronunciationChecks)
+    .innerJoin(turns, eq(turns.id, pronunciationChecks.turnId))
+    .where(and(mine.where(pronunciationChecks, eq(pronunciationChecks.conversationId, conversationId)), mine.where(turns)) as SQL)
+    .orderBy(asc(pronunciationChecks.createdAt), asc(turns.idx));
+  return rows.map((r) => ({ id: r.id, syllables: r.syllables, clip: !!r.clipFile, line: r.line ?? "" }));
+}
+
+/** The most checks the trend reads (newest first): far past what the
+ *  longest window holds for one learner (180 days of an hour's session a
+ *  day is about 11,000 turns). */
+export const TREND_MAX_ROWS = 20_000;
+
+/** This language's checks since `since` (the (language, time) index), for
+ *  the trend: when, and the syllables. */
+export async function trendChecks(db: Db, profile: LanguageProfileRef, since: Date): Promise<{ createdAt: Date; syllables: unknown }[]> {
+  return db
+    .select({ createdAt: pronunciationChecks.createdAt, syllables: pronunciationChecks.syllables })
+    .from(pronunciationChecks)
+    .where(forLanguageProfile(db, profile).where(pronunciationChecks, gte(pronunciationChecks.createdAt, since)))
+    .orderBy(desc(pronunciationChecks.createdAt))
+    .limit(TREND_MAX_ROWS);
 }

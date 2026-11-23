@@ -175,6 +175,24 @@ Tone checks in conversation (pronunciation stage 2, ld-ne0.3, migration
   `data/clips/` or `LINGO_CLIPS_DIR` (`scripts/pronunciation-clips.mjs`), at
   most 20 per conversation, served only to its learner
   (`GET /api/pronunciation/clips/:id`), removed with the conversation.
+Tones after the session (pronunciation stage 3, ld-ne0.4; no migration,
+docs/VOICE.md §Tones after the session; pure rules
+`scripts/pronunciation-review.mjs`, routes `web/server/toneReview.ts`):
+- The recap card's **Tones** section (`SessionTones.tsx`, `GET
+  /api/pronunciation/sessions/:id`): counted from the stored checks with no
+  model call (the recap prompt unchanged): right / off / not sure, by tone,
+  each flagged syllable in its line with its clip (the syllable's stretch
+  or the line), and the scene's last attempt compared (`compareTones`).
+  A share is `ok` over every tone 1–4 syllable; neutral is never in one.
+- History's per-tone **trend** (`ToneTrend.tsx`, `GET
+  /api/pronunciation/trend`): share right per tone per learner day, a
+  point only from 10 syllables of that tone (`TREND_MIN_SYLLABLES`).
+- Practice speak-it scores **before** its answer (`phrase` + `submit` on
+  the score route: the live bar's flags held in memory for that submit);
+  `tones: true` on the answer then makes right words with a flag a miss,
+  the old grade kept in `card_before.tone_miss` (the reply's `toneMiss`,
+  replays too) and restored by **I said it right** (the override).
+- Kids: nothing shown (the routes answer empty), nothing stored, no hold.
 Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words
 and sounds beyond Mandarin, docs/pronunciation-proof.md's section of that
 name):

@@ -183,6 +183,30 @@ declare module "*/scripts/pronunciation-live.mjs" {
   export function liveRecord(result: ScoreResult, flags: number[]): Record<string, unknown>[];
 }
 
+declare module "*/scripts/pronunciation-review.mjs" {
+  type SessionTones = import("../shared/wire.ts").SessionTones;
+  type ToneVsLast = import("../shared/wire.ts").ToneVsLast;
+  type TrendPoint = import("../shared/wire.ts").ToneTrendReply["points"][number];
+  type ToneMiss = import("../shared/practice.ts").PracticeToneMiss;
+  type FlagNote = import("../../scripts/pronunciation-live.mjs").FlagNote;
+  type Outcome = import("../../scripts/practice.mjs").Outcome;
+  export const TONES: readonly number[];
+  export const MAX_FLAGGED_SHOWN: number;
+  export function sessionTones(rows: { id: string; syllables: unknown; clip: boolean; line: string }[]): SessionTones | null;
+  export const COMPARE_MIN: number;
+  export const COMPARE_STEP: number;
+  export function compareTones(now: SessionTones | null, was: SessionTones | null, opts?: { min?: number }): Omit<ToneVsLast, "from" | "startedAt"> | null;
+  export const TREND_MIN_SYLLABLES: number;
+  export const TREND_DAYS: Readonly<{ min: number; max: number; default: number }>;
+  export function readTrendDays(v: unknown): number;
+  export function trendWindow(now: Date, days: number, utcOffsetMinutes?: number): { from: string; to: string; since: Date };
+  export function toneTrend(rows: { createdAt: Date | string; syllables: unknown }[], opts?: { utcOffsetMinutes?: number; min?: number }): TrendPoint[];
+  export function readToneHold(phrase: unknown, submit: unknown): { hold: { phraseId: string; submitId: string } | null; error?: undefined } | { error: string; hold?: undefined };
+  export const MAX_TONE_MISS: number;
+  export function practiceToneMiss(outcome: Outcome, flags: FlagNote[] | null): { outcome: Outcome; toneMiss: ToneMiss | null };
+  export function storedToneMiss(v: unknown): ToneMiss | null;
+}
+
 declare module "*/scripts/pronunciation-clips.mjs" {
   export function clipsDir(env?: NodeJS.ProcessEnv): string;
   export function writeClip(conversationId: string, id: string, bytes: Uint8Array, opts?: { dir?: string }): string;

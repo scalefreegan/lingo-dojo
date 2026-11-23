@@ -18,12 +18,15 @@ import type { PronunciationModelReply, PronunciationScoreReply, PronunciationWor
 // loads this chain under plain node to catch that.
 import { charReadings, readCodePoints, validateHint, withHints } from "../src/script/zh.ts";
 import { clipOf } from "../../scripts/db/pronunciation.ts";
+import { flagNote, hanOf, liveFlags } from "../../scripts/pronunciation-live.mjs";
+import { readToneHold } from "../../scripts/pronunciation-review.mjs";
 import { readClip } from "../../scripts/pronunciation-clips.mjs";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, sendJson, subPath } from "./sse.ts";
+import { holdPracticeTones, sessionTonesRoute, toneTrendRoute } from "./toneReview.ts";
 import { isSoundText, soundClip } from "./voice.ts";
 
 // Pronunciation scoring where the text is known (stage 1, ld-ne0.2;
@@ -32,6 +35,12 @@ import { isSoundText, soundClip } from "./voice.ts";
 //   POST /api/pronunciation/score?text=<Han>   WAV body → PronunciationScoreReply
 //   GET  /api/pronunciation/model?sound=<Han>&locale=<loc>  → PronunciationModelReply
 //   GET  /api/pronunciation/model?phrase=<id>               → PronunciationModelReply
+//   GET  /api/pronunciation/sessions/:conversationId         → SessionTonesReply (stage 3, toneReview.ts)
+//   GET  /api/pronunciation/trend?days=&tz=                  → ToneTrendReply (stage 3)
+//   GET  /api/pronunciation/clips/:id                        a flagged turn's kept clip (stage 2)
+//
+// The score route takes `phrase` and `submit` from Practice's speak-it
+// (stage 3): its flags are then held for that answer (toneReview.ts).
 //
 // The second is compare mode's (ld-ne0.9, docs/VOICE.md §Compare mode):
 // the model clip's pitch, loudness and syllable timings, from the audio
@@ -354,6 +363,14 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
   const han = [...t.text].filter((c) => /\p{Script=Han}/u.test(c));
   if (all && han.length !== 1) throw new HttpError(400, "every reading is only for one character alone");
   const alternatives = all ? charReadings(han[0], locale) : null;
+  // `phrase` and `submit`: Practice speak-it, scoring before its answer is
+  // sent (stage 3, ld-ne0.4): the live bar's flags are held for that
+  // submit (toneReview.ts), which may then count right words as a miss.
+  // Never with `readings=all` (the character card's), never for a kids
+  // learner (Practice is the adults').
+  const h = readToneHold(params.get("phrase"), params.get("submit"));
+  if (h.error !== undefined) throw new HttpError(400, h.error);
+  if (h.hold && (all || mode === "kids")) throw new HttpError(400, "only Practice's speak-it holds a tone check for its answer");
   // `reading`: a bank phrase's stored reading (phrases.reading, ld-op2),
   // sent back by Practice. Checked again here as any hint is (validateHint:
   // only readings the characters have), so the page can't have a recording
@@ -388,7 +405,12 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
     const { result, frames } = await runScorer(wav, s.syllables, azure);
     const engine = azure ? "azure" : "local";
     console.log(`[lingo-dojo] pronunciation: ${engine}${fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
-    sendJson(res, 200, scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale, frames }) satisfies PronunciationScoreReply);
+    const reply: PronunciationScoreReply = scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale, frames });
+    if (h.hold) {
+      holdPracticeTones(ctx, { ...h.hold, han: hanOf(t.text), flags: liveFlags(result).map((i) => flagNote(result, i)) });
+      reply.held = true;
+    }
+    sendJson(res, 200, reply);
   } finally {
     workers--;
     scoring.delete(ctx.user.id);
@@ -749,6 +771,14 @@ export async function handlePronunciation(req: IncomingMessage, res: ServerRespo
   if (parts.length === 1 && parts[0] === "model") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");
     return guardedModel(req, res, ctx);
+  }
+  if (parts.length === 2 && parts[0] === "sessions") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return sessionTonesRoute(res, ctx, parts[1]);
+  }
+  if (parts.length === 1 && parts[0] === "trend") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    return toneTrendRoute(res, ctx, new URL(req.url ?? "/", "http://localhost").searchParams);
   }
   if (parts.length === 2 && parts[0] === "clips") {
     if (req.method !== "GET") return methodNotAllowed(res, "GET");

@@ -5,6 +5,7 @@ import type { ConversationSummary, ConversationTurnsReply, OverviewReply, SceneG
 import { inBankLanguage } from "./shared";
 import { RubyToggle } from "./Ruby";
 import { SessionRecap } from "./SessionRecap";
+import { ToneTrendCard } from "./ToneTrend";
 import { Transcript } from "./Transcript";
 import { Badge, Button, Card, TrashGlyph } from "./ui";
 
@@ -172,6 +173,7 @@ export default function HistoryView({ bankLanguage, kids = false, onPracticeAgai
   return (
     <div className="flex flex-col gap-3" data-testid="history">
       {!kids && <WeekCard />}
+      {!kids && <ToneTrendCard />}
       <h2 className="text-sm font-medium text-fg">Past sessions</h2>
       {error && <p className="rounded-md bg-err-soft p-3 text-sm text-err">{error}</p>}
       {!loading && !error && groups.length === 0 ? (

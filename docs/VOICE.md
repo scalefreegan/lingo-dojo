@@ -2106,8 +2106,8 @@ already read them. Only Azure's word timings go in as `timings`.
 **Later stages**: live turns with a coaching dial, the transcript's
 per-syllable marks and flagged clips are stage 2 (ld-ne0.3, §Pronunciation
 in conversation, below; a per-session `speaker` range is not done); the
-recap's tone score and the Practice feed (speak-it failing a wrong tone)
-are stage 3 (ld-ne0.4).
+recap's tone section, the per-tone trend and the Practice feed (speak-it
+failing a wrong tone) are stage 3 (ld-ne0.4, §Tones after the session).
 
 ### Pronunciation in the app (stage 1, ld-ne0.2)
 
@@ -2219,10 +2219,12 @@ couldn't play; and on the card, a microphone problem. A tap opens the
 syllable's picture: the textbook shape dashed against what was heard, the
 learner's own take (the blob in memory) and the model sound.
 
-- **Practice speak-it**: once a spoken answer is graded, its recording is
-  scored against the phrase's words, only when the grade is not "wrong" (a
-  wrong answer said other words) and the phrase is scorable. The grade
-  never changes (stage 3 fails a wrong tone). Model: the phrase's audio
+- **Practice speak-it**: the recording is scored against the phrase's
+  words when the phrase is scorable, since stage 3 *before* the answer is
+  sent (with `phrase` and `submit`: §Tones after the session), and its
+  marks are shown once the grade is not "wrong" (a wrong answer said other
+  words) or is a tone miss. Right words with a syllable flagged at the
+  live bar are a miss (stage 3). Model: the phrase's audio
   (`/api/practice/audio/:id`), fetched on the first tap.
 - **Character card**: "Say it, check the tone" ("Your turn to say it" for
   kids) records the character (stopping after a second's pause) and shows
@@ -2654,6 +2656,91 @@ lacks, Azure failing: all are a `skip`, the turn goes on exactly as
 without the feature, and the log says the kind of failure only ("scoring
 failed (crash); the turn goes on without it"). No log line carries the
 transcript, the characters or the audio.
+
+### Tones after the session (stage 3, ld-ne0.4)
+
+What stage 2 keeps (one `pronunciation_checks` row per scored adult turn,
+docs/DATA.md §Pronunciation in sessions) read back to the adult learner,
+and one way a tone check may now change a Practice grade. Pure rules
+`scripts/pronunciation-review.mjs`; routes `web/server/toneReview.ts`
+(mounted by `pronunciation.ts`, `learner: true`); queries
+`scripts/db/pronunciation.ts` (`sessionChecks`, `trendChecks`,
+`toneConversation`, all through `forLanguageProfile`). **No model call and
+no migration**; the recap prompt is byte for byte unchanged.
+
+```
+GET /api/pronunciation/sessions/:conversationId  → { tones: SessionTones & { vsLast } | null }
+GET /api/pronunciation/trend?days=30&tz=<min>    → { days, from, to, minSyllables, points }
+POST /api/pronunciation/score?text=…&phrase=<id>&submit=<id>   Practice speak-it: holds the flags
+```
+
+**"Right".** The stored live verdict `ok`. A share is ok over *every*
+syllable of tones 1–4 (ok, off and not sure alike): a syllable the scorer
+couldn't read isn't counted right, so a noisy room lowers a share rather
+than raising it. Neutral-tone syllables are counted and listed but never in
+a share (the engine doesn't judge them).
+
+- **The recap's Tones section** (`SessionTones.tsx`, inside
+  `SessionRecap.tsx`, so on the Go tab after End and in History): the
+  syllables checked in how many lines, right / off / not sure, a table by
+  tone (1–4, neutral) with each tone's share, then each flagged syllable
+  (`off`: the live bar was applied when stored) in its line with the
+  character marked, expected and heard tone, and ▶ buttons: the
+  syllable's stretch of the kept clip (`startMs`–`endMs` with 120 ms
+  either side, decoded and cut in the page with Web Audio) and the whole
+  line. A flag whose turn kept no clip (past the 20-per-session cap) says
+  so. At most 30 flagged are listed (`MAX_FLAGGED_SHOWN`); all are
+  counted. Shown whatever became of the recap (pending, failed, done);
+  absent when the session has no checks (the dial off, another language)
+  and for kids (the route answers `null` for a kids learner or a kids
+  conversation, and nothing is stored for them anyway).
+- **Since last time** (`compareTones`): when the conversation built on an
+  earlier attempt (`previous_conversation_id`, Revisit) that kept checks
+  of its own, the share of tones 1–4 then → now, each tone both sessions
+  have at least `COMPARE_MIN` (3) syllables of, and the flagged count; ↑ or
+  ↓ only for a move of at least `COMPARE_STEP` (10 points), else =. The
+  earlier session deleted: the link nulls and the comparison goes.
+- **The trend** (`ToneTrend.tsx`, in History under the 7-day card,
+  adults): share right per tone per day over the last 30 or 90 days
+  (`?days=` 7–180, default 30), in the learner's days (the browser's UTC
+  offset and Practice's 4 a.m. rollover, `dayStart`). Four small panels,
+  one per tone, in the accent colour (no tone needs a hue of its own; each
+  reads alone at phone width); a line joins neighbouring points only. **A
+  point needs `TREND_MIN_SYLLABLES` (10) syllables of that tone that day**
+  (fewer: counted, `share: null`, not drawn); tapping or hovering a point
+  says what it rests on ("7 of 12 syllables right"), and "Show the numbers"
+  is the table of every day's counts. Hidden while the window has no
+  checks at all. At most 20,000 rows are read (`TREND_MAX_ROWS`).
+- **Practice feed.** Speak-it now scores the recording *before* sending the
+  answer, with the card's `phrase` and the answer's `submit` id. The score
+  route keeps the live bar's flags (`liveFlags` + `flagNote`, the strict
+  high-precision bar of a conversation turn, never the engine's plain
+  `off`) in memory for that submit (`toneReview.ts`: one per learner and
+  language, a newer score replaces it, 10 minutes, kept after use so a
+  resend whose first try never recorded still finds it) and answers
+  `held: true`. The answer then sends `tones: true` (speak drill only, a
+  boolean, else 400). An answer graded right (exact, close or accepted)
+  whose held flags (same phrase, submit and Han characters) are not empty
+  is recorded as Again, verdict `wrong`, its own note kept, and the review
+  keeps `card_before.tone_miss` (`{ rating, verdict, syllables }`: what the
+  grade would have been, at most 3 syllables); every reply of that review
+  (the answer, a replay, an override) carries it as `toneMiss`. The page
+  shows "Tone off" and "Right words, tone off on 好 (hǎo: tone 3, heard
+  2)" with **I said it right**, which is the existing override to
+  `toneMiss.rating` (the card restored from `card_before` and reviewed
+  again: no lapse is left behind). The page never sends a verdict: the
+  grade changes only on a score the server made itself. A failed, busy or
+  unavailable check, a hold for another card or take, a wrong answer: the
+  grade is as before. The score's Azure call now happens for wrong answers
+  too (their marks still aren't shown); a speak-it answer still makes at
+  most one check.
+- **Not done: the recap feeding the bank.** A flagged syllable inside a
+  bank phrase giving that phrase a failing review at the recap was left
+  out: the recap's reviews are one per phrase per session, written once
+  under the extraction claim from the model's events, and a second source
+  of reviews there needs its own rules (which phrase holds a syllable
+  said in free speech, how it meets the model's event for the same
+  phrase). A bead can take it up.
 
 ### Words and sounds beyond Mandarin (ld-ne0.16)
 

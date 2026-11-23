@@ -5,6 +5,7 @@ import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
 import { ReadingFix } from "./ReadingFix";
+import { SessionTonesSection } from "./SessionTones";
 import { reloadMyReadings, useCorrectionsVersion, useScript, useZhReader } from "../script/ruby.tsx";
 import { Badge, Button } from "./ui";
 
@@ -277,6 +278,9 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
           )}
         </>
       )}
+      {/* The session's tone checks (stage 3): counted from its stored rows,
+          with no model call, so they show whatever became of the recap. */}
+      {recap && !kids && status !== "open" && <SessionTonesSection id={id} locale={locale} />}
     </section>
   );
 }

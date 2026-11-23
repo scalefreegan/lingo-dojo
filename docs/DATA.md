@@ -1958,7 +1958,9 @@ modes leave the `listen` skill's cards alone (listening and speak-it:
   `card_before` jsonb carries, beside the FSRS fields (`fromRow`,
   `cardVersion` and the trouble query read only those), `submit_id` (the
   page's id for the answer that wrote it) and `added_alternate` (the answer
-  it added to the alternates, if any). No column was added.
+  it added to the alternates, if any), and on a speak-it answer recorded
+  as a miss for a tone, `tone_miss` (stage 3, §Pronunciation in sessions).
+  No column was added.
 - **One write per answer.** In one transaction: the phrase row locked, then
   its card (made if missing) locked: phrase before card, the order a
   capture takes them in, and one phrase only, so no learner, profile or
@@ -4308,8 +4310,8 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
 - **Served** by `GET /api/pronunciation/clips/:id` (`wrap`, `learner:
   true`): the check must be the active language's (`clipOf`) and keep a
   file; anything else is the same 404. `Cache-Control: private,
-  no-store`. Nothing in the app plays them yet (stage 3, ld-ne0.4, and a
-  History player are where they'd be used); the Go tab plays the take it
+  no-store`. The recap's Tones section plays them (stage 3: a flagged
+  syllable's stretch, or the whole line); the Go tab plays the take it
   holds in memory.
 - **Deleted with the conversation**: the rows by cascade, the folder by
   `DELETE /api/conversations/:id` (a failure to remove it is logged, never
@@ -4321,13 +4323,28 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   decision). If the owner wants kids' checks for a grown-up's view later,
   storing the row (not the audio) is a one-line change in
   `web/server/livePronunciation.ts` `takeLive`.
-- **For stage 3** (ld-ne0.4: the recap's tone score against last time, the
-  Practice feed, the per-tone trend) the per-syllable record above is
-  what it reads; the transcript itself is on the turn row.
+- **Read by stage 3** (ld-ne0.4, docs/VOICE.md §Tones after the session;
+  no migration): the recap's Tones section (`sessionChecks`: a
+  conversation's rows joined to their learner turns' text, both tables
+  through the language's scope, and the previous attempt's through
+  `toneConversation`) and the per-tone trend (`trendChecks`: the
+  (language, time) index, newest first, at most `TREND_MAX_ROWS`), counted
+  in `scripts/pronunciation-review.mjs`. Neither writes anything.
+- **Practice speak-it's tone miss** (stage 3) is kept on its review, not
+  here: `reviews.card_before.tone_miss` `{ rating, verdict, syllables }`,
+  beside `submit_id` (docs/DATA.md's practice extras), the grade the words
+  had before a flag at the live bar made the answer a miss. Read back as
+  the reply's `toneMiss`; the override restores `rating`. No column, no
+  migration: the verdict stays `wrong` (the CHECK's own word).
 - Tests: `scripts/tests/db-migration-0022.test.mjs` (the table, its
   checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`
   (written with the turn, the cap, served to its learner only, gone with
   the conversation, nothing for kids).
+  Stage 3: `scripts/tests/pronunciation-review.test.mjs` (the counting,
+  comparing, trend and tone-miss rules) and
+  `scripts/tests/pronunciation-review.http.test.mjs` (the routes, another
+  learner's or language's session and clip unreachable, kids nothing, the
+  speak-it miss with its replay and override).
 
 ## Docs to update as phases land
 

@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
-import { checksWordsHere, scorableText, scoresTonesHere } from "../pronunciationApi";
+import { checksWordsHere, scorableText, scorePronunciation, scoresTonesHere } from "../pronunciationApi";
 import { speakItProcessing } from "../../shared/tone-text.ts";
 import { startRecording, type MicProcessing, type Recording } from "../recorder";
 import type {
-  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict,
+  PracticeAnswerReply, PracticeAnswerRequest, PracticeDirection, PracticeItem, PracticeMode, PracticeRating, PracticeSentence, PracticeStatsReply, PracticeVerdict, PronunciationScoreReply,
 } from "../types";
 import { MarkedText, RubyText, RubyToggle } from "./Ruby";
 import PictureGameView from "./PictureGameView";
 import { ToneScoreView } from "./ToneCheck";
-import { useToneScore } from "./useToneScore";
+import type { ScoreState } from "./useToneScore";
 import { WordScoreView } from "./WordCheck";
 import { useWordScore } from "./useWordScore";
 import { useModelAudio, type ModelAudio } from "./useModelAudio";
@@ -448,7 +448,7 @@ function useAnswer(item: PracticeItem) {
     }
   }
 
-  return { busy, result, error, setError, submit, regrade };
+  return { busy, result, error, setError, submit, regrade, submitId };
 }
 
 type Answer = ReturnType<typeof useAnswer>;
@@ -1056,6 +1056,38 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
   const [typing, setTyping] = useState(false);
   // The recording of the answer sent, for its tone check.
   const [take, setTake] = useState<Blob | null>(null);
+  // Its tone check (Mandarin), made before the answer is sent (stage 3,
+  // ld-ne0.4): the server holds its live-bar flags for this submit, and
+  // the grade may then count right words with a clear tone miss as a miss.
+  // Any failure here just sends the answer as before, without the flag.
+  const [pre, setPre] = useState<{ take: Blob; reply: PronunciationScoreReply | null; message: string | null } | null>(null);
+  const [scoring, setScoring] = useState(false);
+  // False once the card has gone: a check that ends after it sends nothing.
+  const here = useRef(true);
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+    };
+  }, []);
+  async function check(heard: string, wav: Blob) {
+    setTake(wav);
+    let held = false;
+    if (scoresTonesHere(locale) && scorableText(item.text)) {
+      setScoring(true);
+      try {
+        const reply = await scorePronunciation(wav, item.text, undefined, { reading: item.reading ?? null, hold: { phraseId: item.phraseId, submitId: answer.submitId } });
+        held = !!reply?.held;
+        setPre({ take: wav, reply, message: null });
+      } catch (e) {
+        setPre({ take: wav, reply: null, message: errText(e) });
+      } finally {
+        setScoring(false);
+      }
+      if (!here.current) return;
+    }
+    void answer.submit({ answer: heard, ...(held ? { tones: true } : {}) });
+  }
   // One player for the result's Play and the tone check's model sound: one
   // fetch (a miss is paid once) and one clip, never two over each other.
   const phrasePlayer = useModelAudio(item.phraseId);
@@ -1072,12 +1104,9 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           <p className={`${fine} text-fg-2`}>Say it in {target}</p>
           <SpokenControls
             spoken={spoken}
-            busy={busy}
+            busy={busy || scoring}
             lang={item.lang || undefined}
-            onCheck={(heard, wav) => {
-              setTake(wav);
-              void answer.submit({ answer: heard });
-            }}
+            onCheck={(heard, wav) => void check(heard, wav)}
             extra={
               <>
                 <Button variant="ghost" className="px-2 py-1 text-sm" disabled={!idle} onClick={() => setTyping(true)}>
@@ -1105,7 +1134,7 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           onNext={onNext}
           how={typing ? "wrote" : "said"}
           play={phrasePlayer}
-          extra={!typing && take ? scoresTonesHere(locale) ? <SpokenTones take={take} result={result} locale={locale} model={phrasePlayer} /> : <SpokenWords take={take} result={result} locale={locale} model={phrasePlayer} /> : undefined}
+          extra={!typing && take ? scoresTonesHere(locale) ? <SpokenTones pre={pre && pre.take === take ? pre : null} result={result} locale={locale} model={phrasePlayer} /> : <SpokenWords take={take} result={result} locale={locale} model={phrasePlayer} /> : undefined}
         />
       )}
     </>
@@ -1120,11 +1149,13 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
  * the phrase's own audio (the listening drill's, cached on the server),
  * fetched on the first tap.
  */
-function SpokenTones({ take, result, locale, model }: { take: Blob; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
+function SpokenTones({ pre, result, locale, model }: { pre: { take: Blob; reply: PronunciationScoreReply | null; message: string | null } | null; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
   const text = result.expected.text;
-  const wanted = scoresTonesHere(locale) && scorableText(text) && result.review.verdict !== "wrong";
-  const state = useToneScore(take, text, wanted, false, result.expected.reading);
-  if (!wanted) return null;
+  // A tone miss is graded "wrong" for the card, yet its words were right:
+  // its marks are what it is about.
+  const wanted = scoresTonesHere(locale) && scorableText(text) && (result.review.verdict !== "wrong" || !!result.toneMiss);
+  if (!wanted || !pre) return null;
+  const state: ScoreState = pre.message !== null ? { step: "failed", message: pre.message } : { step: "done", reply: pre.reply, take: pre.take };
   return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId: model.phraseId }} />;
 }
 
@@ -1324,7 +1355,8 @@ function Result({
    *  drill has its own, and a cloze's phrase is not the card's audio). */
   play?: ModelAudio;
 }) {
-  const verdict = VERDICT[result.review.verdict];
+  // Right words with a tone flagged: say so on the badge, not "Not quite".
+  const verdict = result.toneMiss && result.review.verdict === "wrong" ? { label: "Tone off", tone: "err" as const } : VERDICT[result.review.verdict];
   const lead = how === "said" ? "Heard" : how === "picked" ? "You picked" : "You wrote";
   const said = result.review.answer ? `${lead}: “${result.review.answer}”` : null;
   return (
@@ -1333,6 +1365,7 @@ function Result({
         <Badge tone={verdict.tone}>{verdict.label}</Badge>
         {said && <span className="text-sm text-fg-2">{said}</span>}
       </div>
+      {result.toneMiss && <ToneMissNote result={result} answer={answer} />}
       {result.review.note && <p className="text-sm text-fg-2" data-testid="practice-note">{result.review.note}</p>}
       <div className="rounded-xl bg-raised px-3 py-2" data-testid="practice-answer-shown">
         <p className="text-lg font-medium text-fg" lang={item.lang || undefined}>
@@ -1358,6 +1391,34 @@ function Result({
           {last ? "Finish" : "Next"}
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** Speak-it's right words counted as a miss for a tone (stage 3): which
+ *  syllable, and "I said it right", which restores the grade the words had
+ *  (an override; the scorer is sometimes wrong: an echoing room, a span in
+ *  the wrong place). */
+function ToneMissNote({ result, answer }: { result: PracticeAnswerReply; answer: Answer }) {
+  const miss = result.toneMiss!;
+  const restored = result.review.rating === miss.rating;
+  const which = miss.syllables
+    .map((s) => `${s.char} (${s.pinyin}: tone ${s.expectedTone}${s.heardTone != null ? `, heard ${s.heardTone}` : ""})`)
+    .join(", ");
+  return (
+    <div className="flex flex-col gap-2 rounded-md bg-err-soft p-3 text-sm text-fg" data-testid="practice-tone-miss">
+      <p>
+        {restored ? "Right words; the tone check flagged " : "Right words, tone off on "}
+        <span lang="zh">{which}</span>
+        {restored ? `. You said it was right, so it's graded ${RATINGS[miss.rating - 1].label}.` : ". Counted as a miss, so it comes back soon."}
+      </p>
+      {!restored && (
+        <div>
+          <Button onClick={() => void answer.regrade(miss.rating)} disabled={answer.busy} data-testid="practice-tone-override">
+            I said it right
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -100,6 +100,8 @@ declare module "*/scripts/practice.mjs" {
     clozeId: string | null;
     /** The answer is a transcript (speak-it, or a cloze said aloud). */
     spoken: boolean;
+    /** Speak-it: its recording's tone check is held for this submit. */
+    tones: boolean;
   }
   export function readAnswerInput(body: unknown): { value: AnswerInput; error?: undefined } | { error: string; value?: undefined };
   export function readOverrideInput(body: unknown): { value: { rating: Rating; utcOffsetMinutes: number }; error?: undefined } | { error: string; value?: undefined };
