@@ -305,7 +305,7 @@ export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerRes
   // of the words going back.
   const conversation = params.get("conversation");
   if (conversation && CONVERSATION_ID_RE.test(conversation) && text) {
-    startLive(ctx, { conversationId: conversation.toLowerCase(), text, wav: audio, locale: locales[0] ?? "", coaching });
+    startLive(ctx, { conversationId: conversation.toLowerCase(), text, wav: audio, locale: locales[0] ?? "", nativeLocale: locales[1] ?? "", coaching });
   }
   sendJson(res, 200, { text, provider } satisfies TranscribeReply);
 }

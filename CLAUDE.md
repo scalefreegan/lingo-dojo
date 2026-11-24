@@ -231,7 +231,10 @@ name):
   conversation): a Go-tab turn in a `wordCheckLocale` language, with
   Azure's keys and the dial on, is checked against its own transcript
   (`liveWordTarget`, `scoreLiveWords` on `LIVE_SCORER`'s Azure slot and
-  timeout, no worker), matched to its turn by letters (`wordsKey`). The
+  timeout, no worker), matched to its turn by letters (`wordsKey`). A line
+  in the learner's own language is never checked (`ownLanguageLine`: more
+  everyday words of the native language than of the target's, fixed lists
+  for eight Latin-script languages; Azure would score English as Spanish). The
   live bar (`liveWordFlags`, `LIVE_WORD_RULES`): only `Mispronunciation`
   under 20, nothing when Azure omitted or inserted any word. One word at
   most goes into the prompt (`wordPronunciationBlock`,

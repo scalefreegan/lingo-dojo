@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { scoresTones } from "../../scripts/pronunciation.mjs";
 import { readScoreAudio, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
 import { removeClip, writeClip } from "../../scripts/pronunciation-clips.mjs";
-import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget, liveWordFlags, liveWordNote, liveWordsReply, liveWordTarget, wordsKey } from "../../scripts/pronunciation-live.mjs";
+import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, wordsKey } from "../../scripts/pronunciation-live.mjs";
 import { wordsReply } from "../../scripts/pronunciation-words.mjs";
 import { pronunciationBlock, wordPronunciationBlock } from "../../scripts/voice.mjs";
 import type { CheckDraft } from "../../scripts/db/pronunciation.ts";
@@ -126,11 +126,13 @@ export function transcribeCoaching(req: IncomingMessage, ctx: LearnerCtx): Coach
  * (`locale`: the transcription's target, the page's first locale), with the
  * dial on, whose transcript is Mandarin alone and short (liveTarget); or,
  * in a locale the word check measures, with Azure's keys set, whose
- * transcript is a phrase the word check takes (liveWordTarget).
+ * transcript is a phrase the word check takes and not a line in the
+ * learner's own language (liveWordTarget; `nativeLocale`: the page's second
+ * locale).
  * Anything else clears what was held for the conversation, so a turn never
  * picks up an older recording's score.
  */
-export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, coaching }: { conversationId: string; text: string; wav: Uint8Array; locale: string; coaching: Coaching | "kids" }): void {
+export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, nativeLocale = "", coaching }: { conversationId: string; text: string; wav: Uint8Array; locale: string; nativeLocale?: string; coaching: Coaching | "kids" }): void {
   const key = keyOf(ctx);
   // A newer transcription replaces the older one's score, stopping it.
   drop(key);
@@ -139,7 +141,7 @@ export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, 
   const tones = scoresTones(locale);
   // Words: only where Azure can answer (there is no local word scorer), so
   // no recording is held for a check that can't run.
-  const words = tones ? null : liveWordsReady() ? liveWordTarget(text, locale) : null;
+  const words = tones ? null : liveWordsReady() ? liveWordTarget(text, locale, nativeLocale) : null;
   const target = tones ? liveTarget(text) : null;
   if (tones ? target!.skip !== undefined : !words || words.skip !== undefined) return;
   // Only a recording the scorer takes is held: within the scorer's byte cap
@@ -235,12 +237,15 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
     // stored, so no check and no clip.
     const flagged = liveWordFlags(out.marks, out.azure);
     const block = wordPronunciationBlock(flagged.map((i) => liveWordNote(out.marks, i, p.azureLocale)), { mode: kids ? "kids" : "adult", coaching: dial });
-    // Azure heard none of the words the transcriber wrote: the two
-    // disagree about the whole line, so there is nothing to show (the
-    // explicit check's "none of the words were recognised as this phrase"
-    // would be about a phrase nobody asked for).
-    if (kids || out.marks.heard === "none") return { block, marks: null, check: null };
-    return { block, marks: liveWordsReply(wordsReply(out.marks, { kids: false, text: p.text, locale: p.azureLocale }), flagged), check: null };
+    // No marks for kids, nor for a line Azure heard none of or mostly
+    // didn't recognise (liveWordsShown: a misheard transcript): the
+    // explicit check's "none of
+    // the words were recognised as this phrase" would be about a phrase
+    // nobody asked for.
+    if (kids || !liveWordsShown(out.marks)) return { block, marks: null, check: null };
+    // A flag the block couldn't carry (a word it won't quote: over 40
+    // letters) isn't shown as a miss either: the dojo master wasn't told.
+    return { block, marks: liveWordsReply(wordsReply(out.marks, { kids: false, text: p.text, locale: p.azureLocale }), block ? flagged : []), check: null };
   }
   const flags = liveFlags(out.result);
   const notes = flags.map((i) => flagNote(out.result, i));

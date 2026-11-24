@@ -39,6 +39,8 @@ const clipsDir = path.join(dataDir, "clips");
 let heard = "Quiero un café.";
 let azure = null;
 const azureCalls = [];
+/** The latest Azure request's abort signal (for the calls that hang). */
+let lastSignal = null;
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (input, init) => {
   const url = new URL(typeof input === "string" ? input : input.url);
@@ -49,6 +51,7 @@ globalThis.fetch = async (input, init) => {
   if (url.hostname.endsWith(".stt.speech.microsoft.com")) {
     const header = JSON.parse(Buffer.from(init.headers["Pronunciation-Assessment"], "base64").toString("utf8"));
     azureCalls.push({ language: url.searchParams.get("language"), reference: header.ReferenceText });
+    lastSignal = init.signal;
     return azure(header.ReferenceText);
   }
   throw new Error(`unexpected fetch to ${url.hostname}`);
@@ -81,7 +84,7 @@ process.env.PATH = `${bin}${path.delimiter}${savedPath}`;
 const prompt = () => JSON.parse(fs.readFileSync(argsFile, "utf8")).join("\n");
 
 const { apiPlugins } = await import("../../web/server/api.ts");
-const { clearLive } = await import("../../web/server/livePronunciation.ts");
+const { LIVE, clearLive } = await import("../../web/server/livePronunciation.ts");
 const { checksOf } = await import("../db/pronunciation.ts");
 
 const testDb = await freshDb();
@@ -194,10 +197,17 @@ test("said right, or a miss the live bar doesn't vouch for: marks, and a prompt 
   assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
   assert.deepEqual(low.body.pronunciation.words.map((w) => [w.verdict, w.reason ?? null]), [["ok", null], ["ok", null], ["unsure", "live_bar"]]);
   // A word Azure didn't hear: the transcript and Azure disagree, nothing flags.
-  azure = () => reply([["Quiero", 0, "Omission"], ["un", 97], ["café", 3, "Mispronunciation"]]);
+  heard = "Quiero un café con leche y pan";
+  azure = () => reply([["Quiero", 95], ["un", 0, "Omission"], ["café", 3, "Mispronunciation"], ["con", 95], ["leche", 95], ["y", 95], ["pan", 95]]);
   const om = await say(sam, id);
   assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
-  assert.deepEqual(om.body.pronunciation.words.map((w) => w.verdict), ["unsure", "ok", "unsure"]);
+  assert.deepEqual(om.body.pronunciation.words.map((w) => w.verdict), ["ok", "unsure", "unsure", "ok", "ok", "ok", "ok"]);
+  // Most of a short line off: more likely a misheard line. No marks at all.
+  heard = "Quiero un café.";
+  azure = () => reply([["Quiero", 0, "Omission"], ["un", 97], ["café", 3, "Mispronunciation"]]);
+  const most = await say(sam, id);
+  assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
+  assert.equal(most.body.pronunciation, undefined);
   // Azure heard none of it: no marks at all.
   azure = () => reply([["Quiero", 0, "Omission"], ["un", 0, "Omission"], ["café", 0, "Omission"]]);
   const none = await say(sam, id);
@@ -257,6 +267,87 @@ test("no check is started without Azure's keys, for a phrase the check doesn't t
   assert.equal((await turn(eleni, gid, heard, { coaching: "light" })).body.pronunciation, undefined);
   assert.equal(azureCalls.length, 0);
   assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
+});
+
+test("a line in the learner's own language is never sent to Azure", async () => {
+  const sam = await someone();
+  const id = await start(sam);
+  for (const text of ["Sorry, I don't understand.", "Can you say that again please"]) {
+    heard = text;
+    const r = await say(sam, id);
+    assert.equal(r.body.pronunciation, undefined, text);
+    assert.ok(!prompt().includes(PRONUNCIATION_OPEN), text);
+  }
+  assert.equal(azureCalls.length, 0);
+  // One borrowed word in a line of the language is still a line of it.
+  heard = "Quiero un coffee, por favor";
+  azure = () => reply([["Quiero", 95], ["un", 97], ["coffee", 94], ["por", 99], ["favor", 90]]);
+  const mixed = await say(sam, id);
+  assert.equal(azureCalls.length, 1);
+  assert.equal(mixed.body.pronunciation?.kind, "words");
+});
+
+/** An Azure call that never answers until its signal aborts. */
+function hanging(counts) {
+  return () =>
+    new Promise((_, reject) => {
+      counts.started++;
+      const signal = counts.signal();
+      const stop = () => {
+        counts.aborted++;
+        reject(signal.reason ?? new DOMException("aborted", "AbortError"));
+      };
+      if (signal?.aborted) stop();
+      else signal?.addEventListener("abort", stop, { once: true });
+    });
+}
+async function until(ok, what) {
+  const end = Date.now() + 2000;
+  while (!ok()) {
+    if (Date.now() > end) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+test("a word check that comes too late is dropped and stopped at once, and the next turn's check runs", async () => {
+  const sam = await someone();
+  const id = await start(sam);
+  const counts = { started: 0, aborted: 0, signal: () => lastSignal };
+  const savedLive = { ...LIVE };
+  try {
+    azure = hanging(counts);
+    LIVE.waitMs = 100;
+    assert.equal((await transcribe(sam, id, "&coaching=light")).status, 200);
+    await until(() => counts.started === 1, "the live Azure call");
+    const late = await turn(sam, id, heard, { coaching: "light" });
+    assert.equal(late.status, 200, late.text);
+    assert.equal(late.body.pronunciation, undefined);
+    assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
+    await until(() => counts.aborted === 1, "the late call's abort");
+    // The user's live Azure slot was given back: the next check is made and used.
+    Object.assign(LIVE, savedLive);
+    azure = MISSED;
+    const next = await say(sam, id);
+    assert.equal(next.body.pronunciation?.kind, "words");
+    assert.ok(prompt().includes(PRONUNCIATION_OPEN));
+  } finally {
+    Object.assign(LIVE, savedLive);
+  }
+});
+
+test("a newer transcription stops the older one's word check and starts its own", async () => {
+  const sam = await someone();
+  const id = await start(sam);
+  const counts = { started: 0, aborted: 0, signal: () => lastSignal };
+  azure = hanging(counts);
+  assert.equal((await transcribe(sam, id, "&coaching=light")).status, 200);
+  await until(() => counts.started === 1, "the first call");
+  assert.equal((await transcribe(sam, id, "&coaching=light")).status, 200);
+  await until(() => counts.aborted === 1, "the first call's abort");
+  // Not skipped as busy: the replaced check's slot was given back.
+  await until(() => counts.started === 2, "the second call");
+  clearLive();
+  await until(() => counts.aborted === 2, "the second call's abort");
 });
 
 test("Azure failing never breaks the turn: no marks, nothing added, the failure's kind in the log only", async () => {

@@ -215,18 +215,70 @@ const GAPS = /[\p{P}\s]/gu;
 export const wordsKey = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(GAPS, "");
 
 /**
+ * Everyday words that mark a line as being in one Latin-script language
+ * and not another: articles, pronouns, the commonest verbs and courtesies.
+ * Only for `ownLanguageLine`: two languages of one script can't be told
+ * apart by their letters, and the transcriber is asked for the target
+ * language outright, so nothing else names the language of a line.
+ */
+const COMMON_WORDS = Object.fromEntries(
+  Object.entries({
+    en: "the and you that this what with have is are was it i my your don't can't i'm it's not do does how where why yes please sorry can of to for we they he she but again understand know hello hi thanks thank",
+    es: "el la los las un una y que de en no sí por para con es está yo tú me mi lo se pero qué cómo dónde muy quiero tengo gracias hola del al su más este esta",
+    fr: "le la les un une et que de des du en je tu il elle nous vous ne pas est c'est j'ai pour avec dans sur mais oui merci bonjour ce cette qui où très mon ma au",
+    de: "der die das und ich du nicht ist ein eine mit für auf zu den dem es wir sie er was wie wo ja nein bitte danke haben habe bin sind aber auch mein noch sehr möchte",
+    it: "il lo la i gli le un una e che di in non per con è sono io tu mi ma sì grazie ciao come dove cosa questo questa molto del della vorrei ho anche più",
+    pt: "o a os as um uma e que de em não sim por para com é está eu você me mas obrigado obrigada olá como onde muito do da no na quero tenho isso este mais",
+    nl: "de het een en ik je jij niet is dat van in op met voor te we wij zij hij wat hoe waar ja nee alsjeblieft dank bedankt heb ben zijn maar ook mijn nog heel wil graag",
+    sv: "och jag du inte är en ett det att på med för i vi de han hon vad hur var ja nej tack hej har men också min mycket vill den som till av kan",
+  }).map(([lang, words]) => [lang, new Set(words.split(" "))]),
+);
+const WORD_SPLIT = /(?:\s|(?![-'’‐‑])\p{P})+/u;
+
+/**
+ * Whether a line reads as the learner's own language, not the one they are
+ * practising: more of its words are everyday words of `nativeLocale` than
+ * of `targetLocale` (a word both languages have counts for both, so it
+ * settles nothing). Only where both are Latin-script languages in
+ * COMMON_WORDS and differ; false otherwise, and for a line with none of
+ * either ("OK", a name). "Sorry, I don't understand" in a Spanish session
+ * is the learner's own language; "Quiero un coffee, por favor" is not.
+ *
+ * Why it is needed: Azure scores a line against the reference it is given,
+ * whatever the language. Asked live (2026-11-24, an English voice, es-MX),
+ * it gave "Can you say that again please" three words right and "you" a 6,
+ * which the live bar would have flagged as a Spanish word.
+ */
+export function ownLanguageLine(text, targetLocale, nativeLocale) {
+  const target = COMMON_WORDS[String(targetLocale ?? "").split("-")[0].toLowerCase()];
+  const own = COMMON_WORDS[String(nativeLocale ?? "").split("-")[0].toLowerCase()];
+  if (!target || !own || target === own) return false;
+  let t = 0;
+  let n = 0;
+  for (const raw of String(text ?? "").normalize("NFC").toLowerCase().replace(/’/g, "'").split(WORD_SPLIT)) {
+    if (!raw) continue;
+    if (target.has(raw)) t++;
+    if (own.has(raw)) n++;
+  }
+  return n > t;
+}
+
+/**
  * What a turn's transcript is checked against: `{ text, locale }` (the
  * Azure locale), or `{ skip }`: "locale" (not a language the word check
- * measures) or "text" (not a phrase it takes: readWordText's rules, so no
- * digits or symbols, no letters of another script (a code-switched turn),
- * and at most twelve words, thirty characters in Japanese; a longer turn is
- * not cut into pieces, as a Mandarin one isn't).
+ * measures), "text" (not a phrase it takes: readWordText's rules, so no
+ * digits or symbols, no letters of another script, and at most twelve
+ * words, thirty characters in Japanese; a longer turn is not cut into
+ * pieces, as a Mandarin one isn't) or "native" (a line in the learner's own
+ * language: ownLanguageLine, with `nativeLocale` the transcription's second
+ * locale).
  */
-export function liveWordTarget(raw, locale) {
+export function liveWordTarget(raw, locale, nativeLocale = "") {
   const azure = wordCheckLocale(locale);
   if (!azure) return { skip: "locale" };
   const t = readWordText(raw, azure);
   if (t.error !== undefined) return { skip: "text" };
+  if (ownLanguageLine(t.text, azure, nativeLocale)) return { skip: "native" };
   return { text: t.text, locale: azure };
 }
 
@@ -282,6 +334,22 @@ export function liveWordFlags(marks, azure, rules = LIVE_WORD_RULES) {
   return flagged.sort((a, b) => words[a].score - words[b].score || a - b);
 }
 
+/**
+ * Whether a turn's word marks are worth showing at all. Not when Azure
+ * heard none of the transcript's words, and not when more than
+ * `maxOffShare` of them (floor of one) came out off by the word check's own
+ * rules: the same sign that stops every flag (a misheard transcript, cuts
+ * in the wrong places). Marks under such a line would be about words nobody
+ * said. (A line in the learner's own language is not caught here: Azure
+ * scores it much like any other. ownLanguageLine is what keeps it out.)
+ */
+export function liveWordsShown(marks, rules = LIVE_WORD_RULES) {
+  const words = Array.isArray(marks?.words) ? marks.words : [];
+  if (!words.length || marks.heard === "none") return false;
+  const offs = words.filter((w) => w?.verdict === "off").length;
+  return offs <= Math.max(1, Math.floor(words.length * rules.maxOffShare));
+}
+
 /** What the dojo master is told about one flagged word (scripts/voice.mjs
  *  wordPronunciationBlock): the word as the line writes it and its place
  *  among the line's words (1-based, so a word said twice is told apart).
@@ -295,8 +363,10 @@ export function liveWordNote(marks, i, locale = "") {
 /**
  * The Go tab's marks for the learner's line, from the word check's reply
  * (wordsReply, adults): an `off` that isn't in `flags` is shown as "not
- * sure" (reason "live_bar"), so the screen never shows a miss the dojo
- * master wasn't told about, a word Azure didn't hear among them. No
+ * sure" (reason "live_bar"), a word Azure didn't hear among them, so the
+ * screen never shows a miss the live bar didn't vouch for. Every flag stays
+ * off on screen; the dojo master is told the first only (one step-in a
+ * turn), as for tones. No
  * `overall`: one number for a sentence said in conversation would read as a
  * grade. A reply that heard none of the words stays as it is (no verdicts).
  */

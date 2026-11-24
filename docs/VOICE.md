@@ -2903,8 +2903,24 @@ same wait of at most 1.2 s, a late score dropped). What differs:
   word scorer: without them nothing is held and nothing happens), whose
   transcript is a phrase the word check takes (`readWordText`: the
   language's own script, no digits or symbols, at most 12 words, 30
-  characters in Japanese). A code-switched turn, one with a number in it,
-  or a longer one is not checked at all, and not cut into pieces.
+  characters in Japanese). A turn with letters of another script, one with
+  a number in it, or a longer one is not checked at all, and not cut into
+  pieces.
+- **Not the learner's own language** (`ownLanguageLine`). Azure scores a
+  line against whatever reference it is given: asked live (2026-11-24, an
+  English voice, es-MX) it gave "Can you say that again please" three
+  words right and "you" a 6, which the bar below would have flagged as a
+  Spanish word. Letters can't tell Spanish from English, and ElevenLabs is
+  asked for the target language outright, so nothing names a transcript's
+  language. So a line is left unchecked when more of its words are everyday
+  words of the native language (the transcription's second locale) than of
+  the target's (fixed lists of about forty articles, pronouns, common verbs
+  and courtesies for English, Spanish, French, German, Italian, Portuguese,
+  Dutch and Swedish; a word both have counts for both). "Sorry, I don't
+  understand" is skipped; "Quiero un coffee, por favor" is checked. **A
+  heuristic, tested on a handful of lines**: a native-language line with
+  none of the listed words is still checked, and other native languages of
+  the same script are not covered.
 - **Matched by letters.** The turn uses the score only when its message has
   the scored text's letters (`wordsKey`: case, spaces and punctuation don't
   count, an edited letter does), as a Mandarin turn must have the scored
@@ -2959,8 +2975,12 @@ same wait of at most 1.2 s, a late score dropped). What differs:
   (`liveWordsReply`): an off the bar didn't vouch for, an omitted word
   among them, is "not sure" (`reason: "live_bar"`), and there is no
   `overall`. `WordCheck` draws it under the learner's line (`live`: no
-  model clip, "Your word" plays the take's span). When Azure heard none of
-  the transcript's words, no marks are shown at all.
+  model clip, "Your word" plays the take's span). Every flagged word is
+  off on screen; the dojo master is told the first only. No marks at all
+  (`liveWordsShown`) when Azure heard none of the transcript's words or
+  more than a third of them (floor of one) came out off by the word
+  check's own rules: most likely a misheard transcript.
+  A flagged word the block won't quote (over 40 letters) is shown not sure.
 - **The dial** is the same `coaching` word. The Go tab shows it as
   "Pronunciation coaching" in these languages, and only when Azure is
   configured (`configured.azure` in the voice settings reply).

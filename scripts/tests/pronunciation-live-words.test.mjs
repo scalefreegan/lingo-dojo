@@ -5,7 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LIVE_WORD_RULES, liveWordFlags, liveWordNote, liveWordsReply, liveWordTarget, wordsKey } from "../pronunciation-live.mjs";
+import { LIVE_WORD_RULES, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, ownLanguageLine, wordsKey } from "../pronunciation-live.mjs";
 import { WORD_RULES, wordMarks, wordsReply } from "../pronunciation-words.mjs";
 import { PRONUNCIATION_CLOSE, PRONUNCIATION_OPEN, PRONUNCIATION_RULES, WORD_PRONUNCIATION_RULES, wordPronunciationBlock } from "../voice.mjs";
 
@@ -29,6 +29,40 @@ test("what may be checked: a measured locale and a phrase the word check takes",
   for (const locale of ["el-GR", "es-AR", "zh-CN", "", "pl-PL"]) assert.deepEqual(liveWordTarget("hola", locale), { skip: "locale" }, locale);
   // Digits, another script (a code-switched turn), nothing, or too long.
   for (const text of ["quiero 3 tacos", "quiero 茶", "", "…", Array(13).fill("hola").join(" ")]) assert.deepEqual(liveWordTarget(text, "es-MX"), { skip: "text" }, text);
+});
+
+test("a line in the learner's own language is not checked: more everyday words of theirs than of the target's", () => {
+  // Azure would score these as Spanish (live, "you" came back 6 and would flag).
+  for (const text of ["Sorry, I don't understand", "Sorry, I don’t understand", "Can you say that again please", "What?", "Hello", "How do you say that"]) {
+    assert.equal(ownLanguageLine(text, "es-MX", "en-US"), true, text);
+    assert.deepEqual(liveWordTarget(text, "es-MX", "en-US"), { skip: "native" }, text);
+  }
+  // The target language, a borrowed word in it, a word both have, or none of either.
+  for (const text of ["Quiero un café, por favor.", "Quiero un coffee, por favor", "No", "ok", "Oaxaca", "I want un café"]) {
+    assert.equal(ownLanguageLine(text, "es-MX", "en-US"), false, text);
+  }
+  assert.deepEqual(liveWordTarget("Quiero un coffee, por favor", "es-MX", "en-US"), { text: "Quiero un coffee, por favor", locale: "es-MX" });
+  // Words two languages share settle nothing: German "was", Dutch "is", Italian "i".
+  for (const [text, target] of [["Was ist das?", "de-DE"], ["Is dat van jou?", "nl-NL"], ["I ragazzi sono qui", "it-IT"], ["Ich möchte einen Kaffee", "de-DE"], ["Je voudrais un café", "fr-FR"]]) {
+    assert.equal(ownLanguageLine(text, target, "en-US"), false, text);
+  }
+  // The other way round, and the same language: an English session.
+  assert.equal(ownLanguageLine("No entiendo, lo siento", "en-US", "es-MX"), true);
+  assert.equal(ownLanguageLine("Sorry, I don't understand", "en-US", "en-GB"), false);
+  // Only where both languages are listed; no native locale known: checked.
+  assert.equal(ownLanguageLine("Sorry, I don't understand", "es-MX", "ja-JP"), false);
+  assert.equal(ownLanguageLine("Sorry, I don't understand", "es-MX", ""), false);
+  assert.equal(ownLanguageLine("ありがとう", "ja-JP", "en-US"), false);
+  assert.deepEqual(liveWordTarget("Sorry, I don't understand", "es-MX"), { text: "Sorry, I don't understand", locale: "es-MX" });
+});
+
+test("marks are not shown for a line Azure heard none of, or mostly didn't recognise", () => {
+  const shown = (text, words) => liveWordsShown(check(text, words).marks);
+  assert.equal(shown("Quiero un café.", [["quiero", 95], ["un", 97], ["café", 12, "Mispronunciation"]]), true);
+  assert.equal(shown("Quiero un café.", [["quiero", 95], ["un", 0, "Omission"], ["café", 95]]), true);
+  assert.equal(shown("Quiero un café.", [["quiero", 5, "Mispronunciation"], ["un", 0, "Omission"], ["café", 95]]), false);
+  assert.equal(shown("Quiero un café.", [["quiero", 0, "Omission"], ["un", 0, "Omission"], ["café", 0, "Omission"]]), false);
+  assert.equal(liveWordsShown(null), false);
 });
 
 test("a turn's words are matched by their letters: punctuation, spaces and case don't count, a letter does", () => {

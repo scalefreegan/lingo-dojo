@@ -188,9 +188,11 @@ declare module "*/scripts/pronunciation-live.mjs" {
     place?: number;
   }
   export function wordsKey(text: unknown): string;
-  export function liveWordTarget(raw: unknown, locale: string): { text: string; locale: string; skip?: undefined } | { skip: "locale" | "text"; text?: undefined; locale?: undefined };
+  export function ownLanguageLine(text: unknown, targetLocale: string, nativeLocale: string): boolean;
+  export function liveWordTarget(raw: unknown, locale: string, nativeLocale?: string): { text: string; locale: string; skip?: undefined } | { skip: "locale" | "text" | "native"; text?: undefined; locale?: undefined };
   export const LIVE_WORD_RULES: Readonly<{ flagBelow: number; maxOffShare: number }>;
   export function liveWordFlags(marks: WordMarks, azure: import("../../scripts/pronunciation.mjs").AzureAssessment, rules?: typeof LIVE_WORD_RULES): number[];
+  export function liveWordsShown(marks: WordMarks, rules?: typeof LIVE_WORD_RULES): boolean;
   export function liveWordNote(marks: WordMarks, i: number, locale?: string): WordNote;
   export function liveWordsReply(reply: WordsReply, flags: number[]): WordsReply;
 }
