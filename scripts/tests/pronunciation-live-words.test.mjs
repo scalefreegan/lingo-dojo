@@ -5,7 +5,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LIVE_WORD_RULES, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, ownLanguageLine, wordsKey } from "../pronunciation-live.mjs";
+import { LIVE_WORD_RULES, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, ownLanguageLine, ownLanguageWord, wordsKey } from "../pronunciation-live.mjs";
+import { COMMON_WORD_LISTS } from "../common-words.mjs";
 import { WORD_RULES, wordMarks, wordsReply } from "../pronunciation-words.mjs";
 import { PRONUNCIATION_CLOSE, PRONUNCIATION_OPEN, PRONUNCIATION_RULES, WORD_PRONUNCIATION_RULES, wordPronunciationBlock } from "../voice.mjs";
 
@@ -32,28 +33,76 @@ test("what may be checked: a measured locale and a phrase the word check takes",
 });
 
 test("a line in the learner's own language is not checked: more everyday words of theirs than of the target's", () => {
-  // Azure would score these as Spanish (live, "you" came back 6 and would flag).
-  for (const text of ["Sorry, I don't understand", "Sorry, I don’t understand", "Can you say that again please", "What?", "Hello", "How do you say that"]) {
-    assert.equal(ownLanguageLine(text, "es-MX", "en-US"), true, text);
-    assert.deepEqual(liveWordTarget(text, "es-MX", "en-US"), { skip: "native" }, text);
+  // Azure would score these as the target language (live, "you" came back 6 and would flag).
+  const own = [
+    ["es", "en", ["Sorry, I don't understand", "Sorry, I don’t understand", "Can you say that again please", "What?", "Hello", "How do you say that", "Excuse me", "Never mind", "Good morning", "Okay, one more time", "Hold on", "Let me think", "I don't know", "Slower please", "Thanks"]],
+    ["fr", "en", ["One moment please"]],
+    ["de", "en", ["Could you repeat that"]],
+    ["it", "en", ["I forgot the word"]],
+    ["en", "es", ["No entiendo, lo siento", "¿Cómo se dice?"]],
+    ["es", "de", ["Ich verstehe nicht"]],
+    ["es", "fr", ["Je ne comprends pas"]],
+  ];
+  for (const [target, native, lines] of own) {
+    for (const text of lines) {
+      assert.equal(ownLanguageLine(text, `${target}-XX`, `${native}-XX`), true, `${target} < ${native}: ${text}`);
+    }
   }
-  // The target language, a borrowed word in it, a word both have, or none of either.
-  for (const text of ["Quiero un café, por favor.", "Quiero un coffee, por favor", "No", "ok", "Oaxaca", "I want un café"]) {
-    assert.equal(ownLanguageLine(text, "es-MX", "en-US"), false, text);
+  assert.deepEqual(liveWordTarget("Sorry, I don't understand", "es-MX", "en-US"), { skip: "native" });
+  // The target language, with the words two languages share (he, a, o, le,
+  // tu, di, come, se, no, die, wie, in, me, met, is, was, i): they count
+  // for both, so they settle nothing.
+  const theirs = [
+    ["es", "en", ["Quiero un café, por favor.", "Quiero un coffee, por favor", "He comido", "No", "Me llamo Tess", "Sí, me gusta", "Lo de siempre", "Hace sol hoy"]],
+    ["es", "pt", ["Voy a Madrid", "Vamos a comer", "Café o té", "Um, no sé"]],
+    ["es", "it", ["¿Le gusta?", "Tu hermano", "Di algo", "Ella come pan"]],
+    ["it", "es", ["Vado al mare", "Se vuoi", "No"]],
+    ["it", "pt", ["Vado a Roma", "Vengo da Roma"]],
+    ["it", "en", ["I ragazzi sono qui", "Un caffè, per favore"]],
+    ["pt", "en", ["Se for possível"]],
+    ["pt", "es", ["Eu quero um café"]],
+    ["nl", "de", ["Die man", "Wie weet"]],
+    ["nl", "en", ["Is dat van jou?"]],
+    ["de", "nl", ["In Berlin"]],
+    ["de", "en", ["Was ist das?", "Ich möchte einen Kaffee", "Ich bin müde"]],
+    ["fr", "en", ["Je voudrais un café", "Comment ça va", "C'est bon", "J'ai faim", "L'addition s'il vous plaît"]],
+    ["sv", "en", ["Jag vill ha en kaffe"]],
+    ["en", "es", ["Excuse me", "Tell me more", "No problem"]],
+    ["en", "pt", ["A beer", "As soon as possible", "Um, a coffee please"]],
+    ["en", "it", ["Come in", "Come here", "Ten euros per day"]],
+    ["en", "nl", ["We met in Paris", "I met him in Rome", "Ben is in the kitchen"]],
+  ];
+  for (const [target, native, lines] of theirs) {
+    for (const text of lines) {
+      assert.equal(ownLanguageLine(text, `${target}-XX`, `${native}-XX`), false, `${target} < ${native}: ${text}`);
+    }
   }
   assert.deepEqual(liveWordTarget("Quiero un coffee, por favor", "es-MX", "en-US"), { text: "Quiero un coffee, por favor", locale: "es-MX" });
-  // Words two languages share settle nothing: German "was", Dutch "is", Italian "i".
-  for (const [text, target] of [["Was ist das?", "de-DE"], ["Is dat van jou?", "nl-NL"], ["I ragazzi sono qui", "it-IT"], ["Ich möchte einen Kaffee", "de-DE"], ["Je voudrais un café", "fr-FR"]]) {
-    assert.equal(ownLanguageLine(text, target, "en-US"), false, text);
-  }
-  // The other way round, and the same language: an English session.
-  assert.equal(ownLanguageLine("No entiendo, lo siento", "en-US", "es-MX"), true);
+  // None of either's words, the same language, a language with no list, or
+  // no native locale known: checked.
+  assert.equal(ownLanguageLine("Oaxaca", "es-MX", "en-US"), false);
   assert.equal(ownLanguageLine("Sorry, I don't understand", "en-US", "en-GB"), false);
-  // Only where both languages are listed; no native locale known: checked.
   assert.equal(ownLanguageLine("Sorry, I don't understand", "es-MX", "ja-JP"), false);
   assert.equal(ownLanguageLine("Sorry, I don't understand", "es-MX", ""), false);
+  assert.equal(ownLanguageLine("Sorry, I don't understand", "es-MX", "constructor"), false);
   assert.equal(ownLanguageLine("ありがとう", "ja-JP", "en-US"), false);
   assert.deepEqual(liveWordTarget("Sorry, I don't understand", "es-MX"), { text: "Sorry, I don't understand", locale: "es-MX" });
+});
+
+test("a word of the learner's own language and not the target's is never one to flag", () => {
+  assert.equal(ownLanguageWord("coffee", "es-MX", "en-US"), true);
+  assert.equal(ownLanguageWord("Coffee", "es-MX", "en-US"), true);
+  assert.equal(ownLanguageWord("café", "es-MX", "en-US"), false);
+  assert.equal(ownLanguageWord("no", "es-MX", "en-US"), false); // both languages'
+  assert.equal(ownLanguageWord("Oaxaca", "es-MX", "en-US"), false); // neither's
+  assert.equal(ownLanguageWord("coffee", "es-MX", ""), false);
+  assert.equal(ownLanguageWord("coffee", "es-MX", "ja-JP"), false);
+});
+
+test("the everyday word lists: one cut for every language, words only", () => {
+  const sizes = Object.entries(COMMON_WORD_LISTS).map(([lang, words]) => [lang, words.split(" ").length]);
+  assert.deepEqual(sizes, ["en", "es", "fr", "de", "it", "pt", "nl", "sv"].map((lang) => [lang, 3000]));
+  for (const words of Object.values(COMMON_WORD_LISTS)) assert.match(words, /^[\p{L}\p{M}' -]+$/u);
 });
 
 test("marks are not shown for a line Azure heard none of, or mostly didn't recognise", () => {

@@ -285,6 +285,15 @@ test("a line in the learner's own language is never sent to Azure", async () => 
   const mixed = await say(sam, id);
   assert.equal(azureCalls.length, 1);
   assert.equal(mixed.body.pronunciation?.kind, "words");
+  // ...and the borrowed word is never the one flagged, whatever its score.
+  azure = () => reply([["Quiero", 95], ["un", 97], ["coffee", 4, "Mispronunciation"], ["por", 99], ["favor", 90]]);
+  const borrowed = await say(sam, id);
+  assert.ok(!prompt().includes(PRONUNCIATION_OPEN));
+  assert.deepEqual(borrowed.body.pronunciation.words.map((w) => w.verdict), ["ok", "ok", "unsure", "ok", "ok"]);
+  heard = "Quiero un café, por favor";
+  azure = () => reply([["Quiero", 95], ["un", 97], ["café", 4, "Mispronunciation"], ["por", 99], ["favor", 90]]);
+  await say(sam, id);
+  assert.ok(prompt().includes(PRONUNCIATION_OPEN));
 });
 
 /** An Azure call that never answers until its signal aborts. */

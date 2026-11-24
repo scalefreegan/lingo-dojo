@@ -233,8 +233,11 @@ name):
   (`liveWordTarget`, `scoreLiveWords` on `LIVE_SCORER`'s Azure slot and
   timeout, no worker), matched to its turn by letters (`wordsKey`). A line
   in the learner's own language is never checked (`ownLanguageLine`: more
-  everyday words of the native language than of the target's, fixed lists
-  for eight Latin-script languages; Azure would score English as Spanish). The
+  everyday words of the native language than of the target's; Azure would
+  score English as Spanish), and a word that is the native language's alone
+  never flagged (`ownLanguageWord`). The lists are the generated
+  `scripts/common-words.mjs` (wordfreq's top 3,000 for eight Latin-script
+  languages, CC BY-SA 4.0 data, `npm run words:common`). The
   live bar (`liveWordFlags`, `LIVE_WORD_RULES`): only `Mispronunciation`
   under 20, nothing when Azure omitted or inserted any word. One word at
   most goes into the prompt (`wordPronunciationBlock`,

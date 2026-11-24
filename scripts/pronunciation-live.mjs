@@ -25,6 +25,7 @@
 
 import { SCORE_MAX_CHARS } from "./pronunciation-app.mjs";
 import { readWordText, wordCheckLocale } from "./pronunciation-words.mjs";
+import { COMMON_WORD_LISTS } from "./common-words.mjs";
 import { unspacedLocale } from "../web/shared/word-check.ts";
 
 /* --------------------------------- the dial -------------------------------- */
@@ -215,34 +216,42 @@ const GAPS = /[\p{P}\s]/gu;
 export const wordsKey = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(GAPS, "");
 
 /**
- * Everyday words that mark a line as being in one Latin-script language
- * and not another: articles, pronouns, the commonest verbs and courtesies.
- * Only for `ownLanguageLine`: two languages of one script can't be told
- * apart by their letters, and the transcriber is asked for the target
- * language outright, so nothing else names the language of a line.
+ * Each Latin-script language's everyday words (scripts/common-words.mjs:
+ * the 3,000 most frequent of each, generated from one source at one cut,
+ * so a word two languages share is in both lists). Only for
+ * `ownLanguageLine` and `ownLanguageWord`: two languages of one script
+ * can't be told apart by their letters, and the transcriber is asked for
+ * the target language outright (ElevenLabs then reports that language for
+ * an English line too, with probability 1: asked live, 2026-11-24), so
+ * nothing else names the language of a line. Sets are built on first use.
  */
-const COMMON_WORDS = Object.fromEntries(
-  Object.entries({
-    en: "the and you that this what with have is are was it i my your don't can't i'm it's not do does how where why yes please sorry can of to for we they he she but again understand know hello hi thanks thank",
-    es: "el la los las un una y que de en no sí por para con es está yo tú me mi lo se pero qué cómo dónde muy quiero tengo gracias hola del al su más este esta",
-    fr: "le la les un une et que de des du en je tu il elle nous vous ne pas est c'est j'ai pour avec dans sur mais oui merci bonjour ce cette qui où très mon ma au",
-    de: "der die das und ich du nicht ist ein eine mit für auf zu den dem es wir sie er was wie wo ja nein bitte danke haben habe bin sind aber auch mein noch sehr möchte",
-    it: "il lo la i gli le un una e che di in non per con è sono io tu mi ma sì grazie ciao come dove cosa questo questa molto del della vorrei ho anche più",
-    pt: "o a os as um uma e que de em não sim por para com é está eu você me mas obrigado obrigada olá como onde muito do da no na quero tenho isso este mais",
-    nl: "de het een en ik je jij niet is dat van in op met voor te we wij zij hij wat hoe waar ja nee alsjeblieft dank bedankt heb ben zijn maar ook mijn nog heel wil graag",
-    sv: "och jag du inte är en ett det att på med för i vi de han hon vad hur var ja nej tack hej har men också min mycket vill den som till av kan",
-  }).map(([lang, words]) => [lang, new Set(words.split(" "))]),
-);
+const commonSets = new Map();
+function commonWords(locale) {
+  const lang = String(locale ?? "").split("-")[0].toLowerCase();
+  if (!Object.hasOwn(COMMON_WORD_LISTS, lang)) return null;
+  if (!commonSets.has(lang)) commonSets.set(lang, new Set(COMMON_WORD_LISTS[lang].split(" ")));
+  return commonSets.get(lang);
+}
 const WORD_SPLIT = /(?:\s|(?![-'’‐‑])\p{P})+/u;
+const INNER = /['‐‑-]/;
+/** A word is one of a language's when the list has it, or has every piece
+ *  of it (j'ai is j' and ai in the list's own cut; a hyphenated word). */
+function isCommon(set, word) {
+  if (set.has(word)) return true;
+  if (!INNER.test(word)) return false;
+  const parts = word.split(INNER).filter(Boolean);
+  return parts.length > 1 && parts.every((part, k) => set.has(part) || (k < parts.length - 1 && set.has(`${part}'`)));
+}
+const folded = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(/’/g, "'");
 
 /**
  * Whether a line reads as the learner's own language, not the one they are
  * practising: more of its words are everyday words of `nativeLocale` than
  * of `targetLocale` (a word both languages have counts for both, so it
- * settles nothing). Only where both are Latin-script languages in
- * COMMON_WORDS and differ; false otherwise, and for a line with none of
- * either ("OK", a name). "Sorry, I don't understand" in a Spanish session
- * is the learner's own language; "Quiero un coffee, por favor" is not.
+ * settles nothing; a tie is checked). Only where both are languages of
+ * common-words.mjs and differ; false otherwise, and for a line with none
+ * of either (a name). "Sorry, I don't understand" in a Spanish session is
+ * the learner's own language; "Quiero un coffee, por favor" is not.
  *
  * Why it is needed: Azure scores a line against the reference it is given,
  * whatever the language. Asked live (2026-11-24, an English voice, es-MX),
@@ -250,17 +259,31 @@ const WORD_SPLIT = /(?:\s|(?![-'’‐‑])\p{P})+/u;
  * which the live bar would have flagged as a Spanish word.
  */
 export function ownLanguageLine(text, targetLocale, nativeLocale) {
-  const target = COMMON_WORDS[String(targetLocale ?? "").split("-")[0].toLowerCase()];
-  const own = COMMON_WORDS[String(nativeLocale ?? "").split("-")[0].toLowerCase()];
+  const target = commonWords(targetLocale);
+  const own = commonWords(nativeLocale);
   if (!target || !own || target === own) return false;
   let t = 0;
   let n = 0;
-  for (const raw of String(text ?? "").normalize("NFC").toLowerCase().replace(/’/g, "'").split(WORD_SPLIT)) {
-    if (!raw) continue;
-    if (target.has(raw)) t++;
-    if (own.has(raw)) n++;
+  for (const word of folded(text).split(WORD_SPLIT)) {
+    if (!word) continue;
+    if (isCommon(target, word)) t++;
+    if (isCommon(own, word)) n++;
   }
   return n > t;
+}
+
+/**
+ * Whether one word is the learner's own language's and not the target's
+ * ("coffee" in "Quiero un coffee, por favor"): such a word is never
+ * flagged, whatever Azure made of it, since it was never a word of the
+ * language being scored. Same lists and limits as ownLanguageLine.
+ */
+export function ownLanguageWord(word, targetLocale, nativeLocale) {
+  const target = commonWords(targetLocale);
+  const own = commonWords(nativeLocale);
+  if (!target || !own || target === own) return false;
+  const w = folded(word);
+  return isCommon(own, w) && !isCommon(target, w);
 }
 
 /**

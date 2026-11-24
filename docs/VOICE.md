@@ -2911,16 +2911,23 @@ same wait of at most 1.2 s, a late score dropped). What differs:
   English voice, es-MX) it gave "Can you say that again please" three
   words right and "you" a 6, which the bar below would have flagged as a
   Spanish word. Letters can't tell Spanish from English, and ElevenLabs is
-  asked for the target language outright, so nothing names a transcript's
-  language. So a line is left unchecked when more of its words are everyday
-  words of the native language (the transcription's second locale) than of
-  the target's (fixed lists of about forty articles, pronouns, common verbs
-  and courtesies for English, Spanish, French, German, Italian, Portuguese,
-  Dutch and Swedish; a word both have counts for both). "Sorry, I don't
-  understand" is skipped; "Quiero un coffee, por favor" is checked. **A
-  heuristic, tested on a handful of lines**: a native-language line with
-  none of the listed words is still checked, and other native languages of
-  the same script are not covered.
+  asked for the target language outright (it then reports that language
+  for an English line too, with probability 1), so nothing names a
+  transcript's language. So a line is left unchecked when more of its
+  words are everyday words of the native language (the transcription's
+  second locale) than of the target's. The lists are generated
+  (`scripts/common-words.mjs`, `npm run words:common`: wordfreq's 3,000
+  most frequent words of English, Spanish, French, German, Italian,
+  Portuguese, Dutch and Swedish, CC BY-SA 4.0 data,
+  `scripts/COMMON-WORDS-LICENSE.txt`): one source and one cut, so a word
+  two languages share (no, me, a, come, die) is in both and settles
+  nothing. "Sorry, I don't understand" is skipped; "He comido" and
+  "Quiero un coffee, por favor" are checked, and a word that is the native
+  language's alone ("coffee") is never the one flagged
+  (`ownLanguageWord`). **A heuristic**: right on the hundred or so lines
+  in the tests, measured on nothing larger. A tie is checked, a line of
+  names is checked, and a native language with no list (any outside those
+  eight) is not guarded at all.
 - **Matched by letters.** The turn uses the score only when its message has
   the scored text's letters (`wordsKey`: case, spaces and punctuation don't
   count, an edited letter does), as a Mandarin turn must have the scored

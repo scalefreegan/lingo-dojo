@@ -1,0 +1,20 @@
+common-words.mjs (the everyday words of eight Latin-script languages, used
+only to tell which language a spoken line is in) is a derived table, built
+by scripts/gen-common-words.mjs. It holds the three thousand most frequent
+words of English, Spanish, French, German, Italian, Portuguese, Dutch and
+Swedish, most frequent first. It holds no definitions and no frequencies.
+
+It is derived from, and licensed like, this source:
+
+wordfreq's word lists (the `small` list of each language)
+  Robyn Speer, https://github.com/rspeer/wordfreq
+  (commit 912caf64b657478d1dff1138efdc078947d54bb1)
+  Data: Creative Commons Attribution-ShareAlike 4.0 International
+  (CC BY-SA 4.0), https://creativecommons.org/licenses/by-sa/4.0/
+  wordfreq's data draws on many sources, each credited in its README
+  ("License" and "Citing wordfreq"), among them Wikipedia, OPUS
+  OpenSubtitles 2018, the Google Books Ngrams, SUBTLEX and the Leeds
+  Internet Corpus.
+
+The table is therefore under CC BY-SA 4.0, separate from the AGPL-licensed
+code that reads it.

@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { scoresTones } from "../../scripts/pronunciation.mjs";
 import { readScoreAudio, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
 import { removeClip, writeClip } from "../../scripts/pronunciation-clips.mjs";
-import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, wordsKey } from "../../scripts/pronunciation-live.mjs";
+import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget, liveWordFlags, liveWordNote, liveWordsReply, liveWordsShown, liveWordTarget, ownLanguageWord, wordsKey } from "../../scripts/pronunciation-live.mjs";
 import { wordsReply } from "../../scripts/pronunciation-words.mjs";
 import { pronunciationBlock, wordPronunciationBlock } from "../../scripts/voice.mjs";
 import type { CheckDraft } from "../../scripts/db/pronunciation.ts";
@@ -66,6 +66,8 @@ interface Pending {
    *  marks. */
   text: string;
   azureLocale: string;
+  /** The learner's own language (the transcription's second locale), for words. */
+  nativeLocale: string;
   locale: string;
   kids: boolean;
   wav: Uint8Array;
@@ -153,12 +155,12 @@ export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, 
   const stop = new AbortController();
   if (words && words.skip === undefined) {
     const done = scoreLiveWords(ctx, { wav, text: words.text, locale: words.locale, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
-    pending.set(key, { conversationId, kind: "words", key: wordsKey(words.text), text: words.text, azureLocale: words.locale, locale, kids, wav, at: Date.now(), done, stop });
+    pending.set(key, { conversationId, kind: "words", key: wordsKey(words.text), text: words.text, azureLocale: words.locale, nativeLocale, locale, kids, wav, at: Date.now(), done, stop });
     return;
   }
   const scored = target!.text!;
   const done = scoreLive(ctx, { wav, text: scored, locale, kids, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
-  pending.set(key, { conversationId, kind: "tones", key: hanOf(scored), text: scored, azureLocale: "", locale, kids, wav, at: Date.now(), done, stop });
+  pending.set(key, { conversationId, kind: "tones", key: hanOf(scored), text: scored, azureLocale: "", nativeLocale: "", locale, kids, wav, at: Date.now(), done, stop });
 }
 
 /** A scored turn's check, its audio written to the clips directory first
@@ -235,7 +237,9 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
   if ("marks" in out) {
     // A word check (ld-ne0.17): the block and the marks only. Nothing is
     // stored, so no check and no clip.
-    const flagged = liveWordFlags(out.marks, out.azure);
+    // A word of the learner's own language in a line of the target's
+    // ("coffee" in a Spanish line) is never a miss of the target language.
+    const flagged = liveWordFlags(out.marks, out.azure).filter((i: number) => !ownLanguageWord(out.marks.words[i]?.text, p.azureLocale, p.nativeLocale));
     const block = wordPronunciationBlock(flagged.map((i) => liveWordNote(out.marks, i, p.azureLocale)), { mode: kids ? "kids" : "adult", coaching: dial });
     // No marks for kids, nor for a line Azure heard none of or mostly
     // didn't recognise (liveWordsShown: a misheard transcript): the
