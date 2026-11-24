@@ -31,7 +31,10 @@
 // `card_before` jsonb, beside the FSRS fields (fromRow and cardVersion
 // read only those): `submit_id` (the submit that wrote it) and
 // `added_alternate` (the answer this review added to the phrase's
-// alternates, so an override can take it back whatever the verdict says).
+// alternates, so an override can take it back whatever the verdict says)
+// and `tone_miss` (speak-it's right words recorded as a miss for a tone,
+// with the grade they had: the reply's `toneMiss`, replay and override
+// alike).
 //
 // Erasable TypeScript only, like phrases.ts: the tests import it as is.
 
@@ -39,7 +42,8 @@ import { and, desc, eq, inArray, isNotNull, ne, sql, type SQL } from "drizzle-or
 import { fromRow, masteryBand, review as fsrsReview, toRow, type CardState, type Rating } from "../../scripts/fsrs.mjs";
 import { clozeKey } from "../../scripts/cloze.mjs";
 import { cardVersion, phraseRevision, withAlternate, withoutAlternate, type CandidatePhrase, type Outcome } from "../../scripts/practice.mjs";
-import type { PracticeAnswerReply, PracticeDrill, PracticeSkill, PracticeVerdict } from "../../web/shared/practice.ts";
+import { storedToneMiss } from "../../scripts/pronunciation-review.mjs";
+import type { PracticeAnswerReply, PracticeDrill, PracticeSkill, PracticeToneMiss, PracticeVerdict } from "../../web/shared/practice.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { cards, clozeItems, phrases, reviews } from "./schema.ts";
 
@@ -142,6 +146,7 @@ function reply(row: ReviewRow, card: CardRow, phrase: PhraseRow, extra: { altern
       s != null && cloze!.blankStart != null && cloze!.blankEnd != null
         ? { before: s.slice(0, cloze!.blankStart), blank: s.slice(cloze!.blankStart, cloze!.blankEnd), after: s.slice(cloze!.blankEnd) }
         : null,
+    toneMiss: storedToneMiss(extrasOf(row).tone_miss),
     ...extra,
   };
 }
@@ -176,6 +181,9 @@ interface ReviewExtras {
   added_alternate?: string;
   /** A cloze answer's sentence (cloze_items.id). */
   cloze_id?: string;
+  /** Speak-it's right words recorded as a miss for a tone (stage 3,
+   *  pronunciation-review.mjs practiceToneMiss). */
+  tone_miss?: unknown;
 }
 const extrasOf = (row: ReviewRow): ReviewExtras => (row.cardBefore ?? {}) as ReviewExtras;
 
@@ -219,6 +227,10 @@ export interface AnswerWrite {
   /** A cloze answer: the sentence it was shown, and the clozeKey the
    *  phrase had when it was graded. Checked again under the lock. */
   cloze?: { id: string; key: string } | null;
+  /** Speak-it's right words recorded as a miss for a tone (stage 3): what
+   *  the grade would have been, kept with the review (card_before
+   *  .tone_miss) so a replay and an override's reply say why. */
+  toneMiss?: PracticeToneMiss | null;
   now: Date;
 }
 
@@ -285,6 +297,7 @@ export async function recordAnswer(db: Db, profile: LanguageProfileRef, w: Answe
         submit_id: w.submitId,
         ...(alternateAdded ? { added_alternate: alternates[alternates.length - 1] } : {}),
         ...(cloze ? { cloze_id: cloze.id } : {}),
+        ...(w.toneMiss ? { tone_miss: w.toneMiss } : {}),
       },
     });
     const [p] = await mine.update(

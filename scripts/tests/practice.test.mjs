@@ -142,9 +142,13 @@ test("readAnswerInput: ids, skills, versions, lengths, NUL and control character
   assert.equal(r.error, undefined);
   assert.deepEqual(r.value, {
     phraseId: ok.phraseId, skill: "produce", drill: "flashcard", version: "0:", revision: "0123456789abcdef", submitId: SUBMIT, answer: "la vuelta", choice: false, reveal: false,
-    rating: null, durationMs: 4200, utcOffsetMinutes: -420, clozeId: null, spoken: false,
+    rating: null, durationMs: 4200, utcOffsetMinutes: -420, clozeId: null, spoken: false, tones: false,
   });
   const bad = (patch, re) => assert.match(readAnswerInput({ ...ok, ...patch }).error ?? "", re, JSON.stringify(patch));
+  // tones (stage 3): a boolean, with a speak-it answer only.
+  bad({ tones: true }, /speak-it/);
+  bad({ tones: "yes" }, /true or false/);
+  assert.equal(readAnswerInput({ ...ok, drill: "speak", tones: true }).value.tones, true);
   bad({ phraseId: "x" }, /phraseId/);
   // Shaped like a uuid, not one: refused here, never a Postgres cast error.
   bad({ phraseId: "-".repeat(36) }, /phraseId/);

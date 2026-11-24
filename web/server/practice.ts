@@ -10,12 +10,15 @@ import {
   buildQueue, choiceMatch, dayStart, offeredChoices, sameChoice, gradeOutcome, graderQuestion, listenMatch, localMatch, needsGrader, readAnswerInput, readDirection, readLength, readMode,
   readOverrideInput, readUtcOffset, cardVersion, phraseRevision,
 } from "../../scripts/practice.mjs";
+import { hanOf } from "../../scripts/pronunciation-live.mjs";
+import { practiceToneMiss } from "../../scripts/pronunciation-review.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
-import type { PracticeAnswerReply, PracticeFlagReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
+import type { PracticeAnswerReply, PracticeToneMiss, PracticeFlagReply, PracticeQueueReply, PracticeStatsReply, PracticeTranscribeReply } from "../shared/practice.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { clozeStatus, fillCloze, withCloze } from "./cloze.ts";
 import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
+import { heldPracticeTones, settleHeld } from "./toneReview.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 import { outsideClip, readAudio, sttReady, transcribeAudio, voiceNote, voiceReady } from "./voice.ts";
@@ -27,7 +30,7 @@ import { outsideClip, readAudio, sttReady, transcribeAudio, voiceNote, voiceRead
 //   GET  /api/practice                       ?mode=&direction=&tz= → {stats, language, setup, cloze}: what is due and new, today's progress
 //   GET  /api/practice/queue                 ?length=5|10|20&mode=flashcards|listening|speak|cloze|mixed&direction=mixed|recognize|produce&tz=
 //                                            → {items, stats, language, cloze}
-//   POST /api/practice/answer                {phraseId, skill, drill?, version, revision, submitId, answer? | choice? | reveal + rating, clozeId?, spoken?, durationMs?, tz?}
+//   POST /api/practice/answer                {phraseId, skill, drill?, version, revision, submitId, answer? | choice? | reveal + rating, clozeId?, spoken?, tones?, durationMs?, tz?}
 //                                            → the review
 //   POST /api/practice/reviews/:id/override  {rating, tz?} → the review, regraded
 //   POST /api/practice/cloze/:id/flag        a bad cloze sentence: never shown again; records nothing
@@ -191,6 +194,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
   // refuses (409), and never records one.
   let outcome = stale ? null : a.reveal ? gradeOutcome({ reveal: true, rating: a.rating }) : null;
   let keepAlternate = false;
+  let toneMiss: PracticeToneMiss | null = null;
   if (!a.reveal && !stale) {
     const locales = { targetLocale: targetLocale(ctx), nativeLocale: nativeLocale(ctx) };
     let match;
@@ -230,6 +234,19 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
       });
     }
     outcome = gradeOutcome({ match, grader: check.grader, graderFailed: check.failed, answer: a.answer });
+    // Speak-it with its tone check held (stage 3, ld-ne0.4): right words
+    // with a syllable flagged at the live bar count as a miss for the card,
+    // the grade they had kept for "I said it right" (an override). Only a
+    // score the server made for this submit, phrase and these characters,
+    // and only when what was said is those characters (practiceToneMiss:
+    // an alternate or an accepted synonym is other words), and only flags
+    // the reading vouches for (settleHeld, decided now); none held (the
+    // check failed, was busy, or isn't Mandarin): graded as before.
+    if (a.tones) {
+      const held = heldPracticeTones(ctx, { phraseId: phrase.id, submitId: a.submitId, han: hanOf(phrase.text ?? "") });
+      const flags = held && (await settleHeld(ctx, phrase.text ?? "", held));
+      ({ outcome, toneMiss } = practiceToneMiss(outcome, flags, { answer: a.answer, text: phrase.text }));
+    }
     // Only typed flashcard words are kept as another way to say it: a
     // meaning in phrases.alternates would grade as the target (practice.mjs
     // withAlternate), a transcript's spelling is the recogniser's, and a
@@ -240,7 +257,7 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     recordAnswer(rawDb(), ctx.language, {
       phraseId: a.phraseId, skill: a.skill, drill: a.drill, version: a.version, revision: a.revision, submitId: a.submitId, outcome,
       answer: a.reveal ? null : a.answer || null, durationMs: a.durationMs, utcOffsetMinutes: a.utcOffsetMinutes, keepAlternate,
-      targetLocale: targetLocale(ctx), cloze: a.clozeId ? { id: a.clozeId, key: clozeKey(phrase) } : null, now: new Date(),
+      targetLocale: targetLocale(ctx), cloze: a.clozeId ? { id: a.clozeId, key: clozeKey(phrase) } : null, toneMiss, now: new Date(),
     }),
   );
   sendJson(res, 200, out satisfies PracticeAnswerReply);

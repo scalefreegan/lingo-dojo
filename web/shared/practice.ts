@@ -161,10 +161,26 @@ export interface PracticeAnswerRequest {
   clozeId?: string;
   /** A cloze answer said aloud: `answer` is the transcript (never empty). */
   spoken?: boolean;
+  /** Speak-it (Mandarin): the recording's tone check was held for this
+   *  submit (POST /api/pronunciation/score with `phrase` and `submit`), so
+   *  the grade may use it (PracticeToneMiss). Only with drill `speak`. */
+  tones?: boolean;
   reveal?: boolean;
   rating?: PracticeRating;
   durationMs?: number;
   tz?: number;
+}
+
+/** Speak-it's right words with a tone flagged at the live bar (stage 3,
+ *  ld-ne0.4; scripts/pronunciation-review.mjs practiceToneMiss): the answer
+ *  was recorded as a miss, and this is what it would have been. Overriding
+ *  the review to `rating` ("I said it right") restores it. */
+export interface PracticeToneMiss {
+  rating: PracticeRating;
+  verdict: "exact" | "close" | "accepted";
+  /** The flagged syllables, most certain first (at most 3). `place`: the
+   *  character's place among the phrase's Han characters, 1-based. */
+  syllables: { char: string; place: number; pinyin: string; expectedTone: number; heardTone: number | null }[];
 }
 
 /** An answer as recorded: the review, the card after it, both sides of the
@@ -187,6 +203,9 @@ export interface PracticeAnswerReply {
   alternateAdded: boolean;
   /** This submit repeated one already recorded: nothing new was written. */
   replayed: boolean;
+  /** Set when the tone check turned right words into a miss (kept with the
+   *  review, so a replay and an override reply carry it too); else null. */
+  toneMiss: PracticeToneMiss | null;
 }
 
 /** POST /api/practice/transcribe (a speak-it recording): what was heard,

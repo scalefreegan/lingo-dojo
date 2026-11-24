@@ -1222,6 +1222,85 @@ export interface PronunciationScoreReply {
   retry: "clipped" | null;
   /** The take frame by frame, for compare mode (never kept on the server). */
   frames?: PronunciationFrames;
+  /** Practice speak-it (`phrase` and `submit` sent): this check is held
+   *  for that answer, which may then send `tones: true` (stage 3). */
+  held?: boolean;
+}
+
+/** Counts of syllables by the live verdict (stage 3, ld-ne0.4). */
+export interface ToneCount {
+  checked: number;
+  ok: number;
+  off: number;
+  unsure: number;
+}
+
+/** One flagged syllable of a session, with the line it was in. */
+export interface ToneFlag {
+  /** The check whose clip holds it (GET /api/pronunciation/clips/:id);
+   *  null when that turn's audio wasn't kept (past the cap). */
+  checkId: string | null;
+  line: string;
+  /** Its place among the line's Han characters, 1-based. */
+  place: number;
+  char: string;
+  pinyin: string;
+  expectedTone: number;
+  heardTone: number | null;
+  /** Where it sits in the clip, when the engine placed it. */
+  startMs: number | null;
+  endMs: number | null;
+}
+
+/** A session's tones, from its stored checks (scripts/pronunciation-review.mjs
+ *  sessionTones): no model call. */
+export interface SessionTones extends ToneCount {
+  /** Learner turns scored. */
+  turns: number;
+  /** Tones 1–4 only: what a share is taken over (neutral isn't judged). */
+  judged: { ok: number; checked: number };
+  byTone: (ToneCount & { tone: number })[];
+  flagged: ToneFlag[];
+}
+
+export type ToneMove = "up" | "down" | "same";
+interface ShareCount {
+  ok: number;
+  checked: number;
+}
+
+/** This session's tones against the attempt it built on (compareTones). */
+export interface ToneVsLast {
+  /** The earlier session and when it started. */
+  from: string;
+  startedAt: string;
+  overall: { now: ShareCount; was: ShareCount; move: ToneMove };
+  tones: { tone: number; now: ShareCount; was: ShareCount; move: ToneMove }[];
+  /** Flagged over tones 1–4 syllables, then and now; `move` "up" is a
+   *  lower rate now (fewer flagged), by the same 10-point step. */
+  flagged: { now: { off: number; checked: number }; was: { off: number; checked: number }; move: ToneMove };
+}
+
+/** GET /api/pronunciation/sessions/:conversationId. `tones` null: nothing
+ *  to show (no checks: the dial off, another language, a kids learner). */
+export interface SessionTonesReply {
+  tones: (SessionTones & { vsLast: ToneVsLast | null }) | null;
+}
+
+/** GET /api/pronunciation/trend?days=&tz=: share right per tone per day
+ *  (toneTrend). `share` null: fewer than `minSyllables` that day. */
+export interface ToneTrendReply {
+  days: number;
+  /** The window's first and last day (today), YYYY-MM-DD in the learner's
+   *  days. */
+  from: string;
+  to: string;
+  minSyllables: number;
+  points: {
+    day: string;
+    tones: { tone: number; ok: number; n: number; share: number | null }[];
+    all: { ok: number; n: number; share: number | null };
+  }[];
 }
 
 /** The same POST /api/pronunciation/score for a language other than
