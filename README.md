@@ -240,3 +240,6 @@ words read as CC-CEDICT reads them, are derived from CC-CEDICT and
 wordfreq and are licensed
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), separate from
 the AGPL code; their attributions are in `web/src/script/ZH-FREQ-LICENSE.txt`.
+`scripts/common-words.mjs`, the everyday words of eight languages (used to
+tell which language a spoken line is in), is derived from wordfreq and is CC
+BY-SA 4.0 too; its attribution is in `scripts/COMMON-WORDS-LICENSE.txt`.

@@ -24,7 +24,8 @@
     "pinyin:freq": "node scripts/gen-zh-freq.mjs",
     "pinyin:words": "node scripts/gen-zh-words.mjs",
     "pinyin:hsk-audit": "node scripts/pinyin-hsk-audit.mjs",
-    "pinyin:homophones": "node scripts/gen-zh-homophones.mjs"
+    "pinyin:homophones": "node scripts/gen-zh-homophones.mjs",
+    "words:common": "node scripts/gen-common-words.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",

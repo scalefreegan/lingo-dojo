@@ -226,7 +226,26 @@ name):
   named (Azure names phonemes only for en-US). Kids get no marks, only
   `nudge`.
 - UI: `WordCheck.tsx` on Practice speak-it and the Phrase bank's phrase
-  card (adults). Compare mode stays Mandarin-only; live turns aren't wired.
+  card (adults). Compare mode stays Mandarin-only.
+- Live turns (ld-ne0.17; no migration; docs/VOICE.md §Words in
+  conversation): a Go-tab turn in a `wordCheckLocale` language, with
+  Azure's keys and the dial on, is checked against its own transcript
+  (`liveWordTarget`, `scoreLiveWords` on `LIVE_SCORER`'s Azure slot and
+  timeout, no worker), matched to its turn by letters (`wordsKey`). A line
+  in the learner's own language is never checked (`ownLanguageLine`: more
+  everyday words of the native language than of the target's; Azure would
+  score English as Spanish), and a word that is the native language's alone
+  never flagged (`ownLanguageWord`). The lists are the generated
+  `scripts/common-words.mjs` (wordfreq's top 3,000 for eight Latin-script
+  languages, CC BY-SA 4.0 data, `npm run words:common`). The
+  live bar (`liveWordFlags`, `LIVE_WORD_RULES`): only `Mispronunciation`
+  under 20, nothing when Azure omitted or inserted any word. One word at
+  most goes into the prompt (`wordPronunciationBlock`,
+  `WORD_PRONUNCIATION_RULES`: strict never names a sound); adults get
+  word marks under their line (`kind: "words"`, `WordCheck` `live`).
+  **Nothing is stored** (no `pronunciation_checks` row, no clip); kids get
+  the gentle rule only. The dial shows as "Pronunciation coaching" only
+  when Azure is configured.
 - The proof is `npm`-less: `node scripts/pronunciation-proof-words.mjs
   [--say] [--azure]` with replies cached under
   `data/pronunciation-proof/words/` (gitignored) and a 400-call ledger.

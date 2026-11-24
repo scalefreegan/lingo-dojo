@@ -11,6 +11,7 @@ import { reloadMyReadings } from "../script/ruby.tsx";
 import { SessionRecap } from "./SessionRecap";
 import { Transcript, type LineTones } from "./Transcript";
 import { scoresTonesHere } from "../pronunciationApi";
+import { wordCheckLocale } from "../../shared/word-check.ts";
 import {
   DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
 } from "../transcript";
@@ -564,7 +565,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // turn flow through its ref; the tone marks of the learner's lines, by
   // entry index, with the take each was scored on (held in memory only);
   // and the last recording sent for transcription, for its line's marks.
-  const showDial = mode === "adult" && scoresTonesHere(locale);
+  // In a language the word check measures (ld-ne0.17) the dial shows only
+  // with Azure's keys set: there is no local word scorer, so without them
+  // it would be a control that does nothing.
+  const dialKind: "tones" | "words" | null = mode !== "adult" ? null : scoresTonesHere(locale) ? "tones" : wordCheckLocale(locale) && reply?.configured.azure ? "words" : null;
+  const showDial = dialKind !== null;
   const [coaching, setCoachingState] = useState<Coaching>("light");
   const coachingRef = useRef<Coaching>("light");
   const setCoaching = (c: Coaching) => {
@@ -1219,8 +1224,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       ]);
       if (r.plan?.length) setPlan(r.plan);
       // The learner line's tone marks (an adult Mandarin turn whose
-      // recording was scored), under that line, with the take it was
-      // scored on when this message is that recording's words.
+      // recording was scored) or word marks (another language the word
+      // check measures), under that line, with the take it was scored on
+      // when this message is that recording's words.
       const marks = r.pronunciation;
       if (marks && message) {
         const take = takeRef.current?.text === message ? takeRef.current.wav : null;
@@ -1953,7 +1959,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       {/* Pinyin / zhuyin over the transcript's Chinese (nothing for other languages). */}
       {(started || (canStart && showDial)) && (
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 self-stretch">
-          {showDial && <CoachingDial value={coaching} onChange={setCoaching} />}
+          {showDial && <CoachingDial value={coaching} onChange={setCoaching} words={dialKind === "words"} />}
           {started && <RubyToggle locale={locale} />}
         </div>
       )}
@@ -2803,17 +2809,27 @@ const COACHING_CHOICES: { value: Coaching; label: string; note: string }[] = [
   { value: "strict", label: "Strict", note: "As light, and the dojo master asks you to say a missed word again." },
 ];
 
-/** The session's tone-coaching dial (adults, Mandarin): the same pill group
- *  as the readings toggle beside it. Takes effect from the next recording. */
-function CoachingDial({ value, onChange }: { value: Coaching; onChange: (c: Coaching) => void }) {
-  const note = COACHING_CHOICES.find((c) => c.value === value)?.note ?? "";
+/** The dial's notes where words are checked, not tones (ld-ne0.17). */
+const WORD_COACHING_CHOICES: typeof COACHING_CHOICES = [
+  { value: "off", label: "Off", note: "No pronunciation checks: nothing is sent for checking or shown." },
+  { value: "light", label: "Light", note: "Word marks under your lines; the dojo master steps in briefly on a word that clearly didn't sound right, at most once a turn." },
+  { value: "strict", label: "Strict", note: "As light, and the dojo master asks you to say that word again." },
+];
+
+/** The session's coaching dial (adults; tones in Mandarin, words in a
+ *  language the word check measures): the same pill group as the readings
+ *  toggle beside it. Takes effect from the next recording. */
+function CoachingDial({ value, onChange, words = false }: { value: Coaching; onChange: (c: Coaching) => void; words?: boolean }) {
+  const choices = words ? WORD_COACHING_CHOICES : COACHING_CHOICES;
+  const note = choices.find((c) => c.value === value)?.note ?? "";
+  const label = words ? "Pronunciation coaching" : "Tone coaching";
   return (
-    <div role="group" aria-label="Tone coaching" className="flex items-center gap-1" data-testid="voice-coaching">
+    <div role="group" aria-label={label} className="flex items-center gap-1" data-testid="voice-coaching">
       <span className="text-sm text-fg-3 sm:text-xs" aria-hidden="true" title={note}>
-        Tone coaching
+        {label}
       </span>
       <span className="sr-only">{note}</span>
-      {COACHING_CHOICES.map((c) => (
+      {choices.map((c) => (
         <button
           key={c.value}
           type="button"

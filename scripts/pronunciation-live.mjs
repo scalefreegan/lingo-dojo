@@ -17,10 +17,16 @@
 //    wasn't told about;
 //  - the coaching dial (`coachingOf`), a word from the browser like `pace`;
 //  - the compact per-syllable record kept for stage 3 (`liveRecord`).
+//  - the word check's half, for languages beyond Mandarin (ld-ne0.17; the
+//    last section): what may be scored (`liveWordTarget`), its own live bar
+//    (`liveWordFlags`) and marks (`liveWordsReply`). Nothing of it is kept.
 //
 // Pure ESM with no server imports, like scripts/pronunciation-app.mjs.
 
 import { SCORE_MAX_CHARS } from "./pronunciation-app.mjs";
+import { readWordText, wordCheckLocale } from "./pronunciation-words.mjs";
+import { COMMON_WORD_LISTS } from "./common-words.mjs";
+import { unspacedLocale } from "../web/shared/word-check.ts";
 
 /* --------------------------------- the dial -------------------------------- */
 
@@ -191,4 +197,208 @@ export function liveRecord(result, flags) {
       endMs: Number.isFinite(s.endMs) ? s.endMs : null,
     };
   });
+}
+
+/* ------------------------- words, beyond Mandarin -------------------------- */
+
+// Live word checks (ld-ne0.17; docs/VOICE.md §Words in conversation): a
+// Go-tab turn in a language the word check measures (wordCheckLocale) is
+// assessed by Azure against its own transcript, as a Mandarin turn's tones
+// are. The marks and rules are ld-ne0.16's (pronunciation-words.mjs); what
+// is here is what differs in conversation.
+
+const GAPS = /[\p{P}\s]/gu;
+
+/** A text's letters, case-folded, punctuation and spaces dropped: what a
+ *  turn's message must match for the score of its transcription to be used
+ *  (the word check's `hanOf`). An edit of a letter is another text; a comma
+ *  added in the box is not. */
+export const wordsKey = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(GAPS, "");
+
+/**
+ * Each Latin-script language's everyday words (scripts/common-words.mjs:
+ * the 3,000 most frequent of each, generated from one source at one cut,
+ * so a word two languages share is in both lists). Only for
+ * `ownLanguageLine` and `ownLanguageWord`: two languages of one script
+ * can't be told apart by their letters, and the transcriber is asked for
+ * the target language outright (ElevenLabs then reports that language for
+ * an English line too, with probability 1: asked live, 2026-11-24), so
+ * nothing else names the language of a line. Sets are built on first use.
+ */
+const commonSets = new Map();
+function commonWords(locale) {
+  const lang = String(locale ?? "").split("-")[0].toLowerCase();
+  if (!Object.hasOwn(COMMON_WORD_LISTS, lang)) return null;
+  if (!commonSets.has(lang)) commonSets.set(lang, new Set(COMMON_WORD_LISTS[lang].split(" ")));
+  return commonSets.get(lang);
+}
+const WORD_SPLIT = /(?:\s|(?![-'’‐‑])\p{P})+/u;
+const INNER = /['‐‑-]/;
+/** A word is one of a language's when the list has it, or has every piece
+ *  of it (j'ai is j' and ai in the list's own cut; a hyphenated word). */
+function isCommon(set, word) {
+  if (set.has(word)) return true;
+  if (!INNER.test(word)) return false;
+  const parts = word.split(INNER).filter(Boolean);
+  return parts.length > 1 && parts.every((part, k) => set.has(part) || (k < parts.length - 1 && set.has(`${part}'`)));
+}
+const folded = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(/’/g, "'");
+
+/**
+ * Whether a line reads as the learner's own language, not the one they are
+ * practising: more of its words are everyday words of `nativeLocale` than
+ * of `targetLocale` (a word both languages have counts for both, so it
+ * settles nothing; a tie is checked). Only where both are languages of
+ * common-words.mjs and differ; false otherwise, and for a line with none
+ * of either (a name). "Sorry, I don't understand" in a Spanish session is
+ * the learner's own language; "Quiero un coffee, por favor" is not.
+ *
+ * Why it is needed: Azure scores a line against the reference it is given,
+ * whatever the language. Asked live (2026-11-24, an English voice, es-MX),
+ * it gave "Can you say that again please" three words right and "you" a 6,
+ * which the live bar would have flagged as a Spanish word.
+ */
+export function ownLanguageLine(text, targetLocale, nativeLocale) {
+  const target = commonWords(targetLocale);
+  const own = commonWords(nativeLocale);
+  if (!target || !own || target === own) return false;
+  let t = 0;
+  let n = 0;
+  for (const word of folded(text).split(WORD_SPLIT)) {
+    if (!word) continue;
+    if (isCommon(target, word)) t++;
+    if (isCommon(own, word)) n++;
+  }
+  return n > t;
+}
+
+/**
+ * Whether one word is the learner's own language's and not the target's
+ * ("coffee" in "Quiero un coffee, por favor"): such a word is never
+ * flagged, whatever Azure made of it, since it was never a word of the
+ * language being scored. Same lists and limits as ownLanguageLine.
+ */
+export function ownLanguageWord(word, targetLocale, nativeLocale) {
+  const target = commonWords(targetLocale);
+  const own = commonWords(nativeLocale);
+  if (!target || !own || target === own) return false;
+  const w = folded(word);
+  return isCommon(own, w) && !isCommon(target, w);
+}
+
+/**
+ * What a turn's transcript is checked against: `{ text, locale }` (the
+ * Azure locale), or `{ skip }`: "locale" (not a language the word check
+ * measures), "text" (not a phrase it takes: readWordText's rules, so no
+ * digits or symbols, no letters of another script, and at most twelve
+ * words, thirty characters in Japanese; a longer turn is not cut into
+ * pieces, as a Mandarin one isn't) or "native" (a line in the learner's own
+ * language: ownLanguageLine, with `nativeLocale` the transcription's second
+ * locale).
+ */
+export function liveWordTarget(raw, locale, nativeLocale = "") {
+  const azure = wordCheckLocale(locale);
+  if (!azure) return { skip: "locale" };
+  const t = readWordText(raw, azure);
+  if (t.error !== undefined) return { skip: "text" };
+  if (ownLanguageLine(t.text, azure, nativeLocale)) return { skip: "native" };
+  return { text: t.text, locale: azure };
+}
+
+/**
+ * The live bar for words, on top of WORD_RULES' own `off`. In conversation
+ * the reference is what speech-to-text heard, so the question changes: not
+ * "did they say this phrase" but "did the words they said sound right".
+ * Each rule only ever withholds a flag:
+ *
+ *  - only Azure's `Mispronunciation` flags (`why: "sound"`), never a word it
+ *    didn't hear (`Omission`): the transcriber heard that word and Azure
+ *    didn't, which is two recognisers disagreeing, not a learner's slip;
+ *  - and when Azure omitted or inserted any word, nothing in the turn
+ *    flags: its alignment and the transcript disagree about which words
+ *    were said, and a wrong word pulls Azure's scores onto its neighbours
+ *    (both of the proof's false alarms sat beside a swapped word);
+ *  - `flagBelow`: the word's score must be under this, stricter than the
+ *    explicit check's 30. From the proof's trade-off table (docs/
+ *    pronunciation-proof.md, "Omission unsure, guard on"): at 20, 1 of 535
+ *    right words was off (none of the 391 in correctly read phrases), and
+ *    11 of 247 words of an English voice reading the language;
+ *  - `maxOffShare`: as for tones, a turn where more than this share of the
+ *    words is off (floor of one) is more likely a misheard transcript.
+ *
+ * Not measured on running speech: the proof is short read phrases in
+ * synthesized voices, and its cached replies were not re-scored with the
+ * two turn-level rules (they can only lower the counts above).
+ */
+export const LIVE_WORD_RULES = Object.freeze({ flagBelow: 20, maxOffShare: 1 / 3 });
+
+/**
+ * The words of a turn's marks (wordMarks) that pass the live bar, as
+ * indexes into `marks.words`, lowest score first (ties keep the line's
+ * order). `azure` is the parsed reply the marks were made from. [] when
+ * none, or when the turn as a whole looks unreliable.
+ */
+export function liveWordFlags(marks, azure, rules = LIVE_WORD_RULES) {
+  const words = Array.isArray(marks?.words) ? marks.words : [];
+  if (!words.length || marks.heard === "none") return [];
+  const all = Array.isArray(azure?.words) ? azure.words : [];
+  if (all.some((w) => w?.error === "Omission" || w?.error === "Insertion")) return [];
+  // A word Azure sent that couldn't be placed on the line: the counts
+  // differ, and "word 2 of their line" would point at the wrong word.
+  if (words.length !== all.length) return [];
+  const offs = words.filter((w) => w?.verdict === "off").length;
+  if (offs > Math.max(1, Math.floor(words.length * rules.maxOffShare))) return [];
+  const flagged = [];
+  words.forEach((w, i) => {
+    if (w?.verdict !== "off" || w.why !== "sound") return;
+    if (!(Number.isFinite(w.score) && w.score < rules.flagBelow)) return;
+    flagged.push(i);
+  });
+  return flagged.sort((a, b) => words[a].score - words[b].score || a - b);
+}
+
+/**
+ * Whether a turn's word marks are worth showing at all. Not when Azure
+ * heard none of the transcript's words, and not when more than
+ * `maxOffShare` of them (floor of one) came out off by the word check's own
+ * rules: the same sign that stops every flag (a misheard transcript, cuts
+ * in the wrong places). Marks under such a line would be about words nobody
+ * said. (A line in the learner's own language is not caught here: Azure
+ * scores it much like any other. ownLanguageLine is what keeps it out.)
+ */
+export function liveWordsShown(marks, rules = LIVE_WORD_RULES) {
+  const words = Array.isArray(marks?.words) ? marks.words : [];
+  if (!words.length || marks.heard === "none") return false;
+  const offs = words.filter((w) => w?.verdict === "off").length;
+  return offs <= Math.max(1, Math.floor(words.length * rules.maxOffShare));
+}
+
+/** What the dojo master is told about one flagged word (scripts/voice.mjs
+ *  wordPronunciationBlock): the word as the line writes it and its place
+ *  among the line's words (1-based, so a word said twice is told apart).
+ *  No place where words aren't spaced (Japanese): the split is Azure's, and
+ *  "word 3" of an unspaced line names nothing a reader could count to. */
+export function liveWordNote(marks, i, locale = "") {
+  const word = marks.words[i].text;
+  return unspacedLocale(String(locale)) ? { word } : { word, place: i + 1 };
+}
+
+/**
+ * The Go tab's marks for the learner's line, from the word check's reply
+ * (wordsReply, adults): an `off` that isn't in `flags` is shown as "not
+ * sure" (reason "live_bar"), a word Azure didn't hear among them, so the
+ * screen never shows a miss the live bar didn't vouch for. Every flag stays
+ * off on screen; the dojo master is told the first only (one step-in a
+ * turn), as for tones. No
+ * `overall`: one number for a sentence said in conversation would read as a
+ * grade. A reply that heard none of the words stays as it is (no verdicts).
+ */
+export function liveWordsReply(reply, flags) {
+  const keep = new Set(flags);
+  const words = reply.words.map((w, i) => {
+    if (w.verdict !== "off" || keep.has(i)) return w;
+    const { why: _w, sounds: _s, ...rest } = w;
+    return { ...rest, verdict: "unsure", reason: "live_bar" };
+  });
+  return { ...reply, words, overall: null };
 }

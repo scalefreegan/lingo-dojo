@@ -264,6 +264,9 @@ declare module "*/scripts/voice.mjs" {
   export const PRONUNCIATION_RULES: Readonly<{ light: string; strict: string; kids: string }>;
   /** The turn's pronunciation block, or "" (nothing flagged, or the dial off). */
   export function pronunciationBlock(flags: import("../../scripts/pronunciation-live.mjs").FlagNote[], opts?: { mode?: Mode; coaching?: import("../shared/wire.ts").Coaching }): string;
+  export const WORD_PRONUNCIATION_RULES: Readonly<{ light: string; strict: string; kids: string }>;
+  /** The word check's block (a language beyond Mandarin), or "". */
+  export function wordPronunciationBlock(flags: import("../../scripts/pronunciation-live.mjs").WordNote[], opts?: { mode?: Mode; coaching?: import("../shared/wire.ts").Coaching }): string;
   export const SAY_SLOW_WPM: number;
   export function speechPace(provider: string, pace: import("../shared/wire.ts").SpeechPace, o?: { model?: string; voice?: string }): { speed: number; playbackRate: number };
   export function elevenVoicesRequest(o: { key: string }): Req;

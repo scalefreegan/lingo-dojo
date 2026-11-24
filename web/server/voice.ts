@@ -300,12 +300,12 @@ export async function handleVoiceTranscribe(req: IncomingMessage, res: ServerRes
   // slow one holds nothing.
   const text = await paidSlot(ctx.user.id, () => transcribeAudio(res, { provider, audio, mime, locales, keyterms }), "transcriptions");
   // A listening turn of a saved conversation (the page names one only
-  // then): its tone check starts now, in the background, and the turn picks
+  // then): its tone check (Mandarin) or word check (ld-ne0.17) starts now, in the background, and the turn picks
   // it up (docs/VOICE.md §Pronunciation in conversation). Never in the way
   // of the words going back.
   const conversation = params.get("conversation");
   if (conversation && CONVERSATION_ID_RE.test(conversation) && text) {
-    startLive(ctx, { conversationId: conversation.toLowerCase(), text, wav: audio, locale: locales[0] ?? "", coaching });
+    startLive(ctx, { conversationId: conversation.toLowerCase(), text, wav: audio, locale: locales[0] ?? "", nativeLocale: locales[1] ?? "", coaching });
   }
   sendJson(res, 200, { text, provider } satisfies TranscribeReply);
 }
@@ -588,8 +588,8 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
     const hinted = settleHints(parseGlosses(run.text, { readings: readsHints(targetLocale) }), lines, targetLocale);
     logHints(hinted.stats);
     const reply: VoiceTurnReply = { lines, glosses: hinted.glosses, choices: parseChoices(run.text), plan, stage: parseStage(run.text, plan.map((p) => p.id)), castNotes: parseCast(run.text, mode, { drill }), model: settings.model, durationMs: run.durationMs, costUsd: run.costUsd, warnings, review: { items: recall.review, locale: bankLocaleOf(ctx.language) } };
-    // The learner line's tone marks (adults only: livePronunciation.ts
-    // gives kids none).
+    // The learner line's tone or word marks (adults only:
+    // livePronunciation.ts gives kids none).
     if (scored?.marks) reply.pronunciation = scored.marks;
     if (conversation) {
       // Stored before the reply goes out, still under the lock. A failed
@@ -610,7 +610,8 @@ export async function handleVoiceTurn(req: IncomingMessage, res: ServerResponse,
       });
       if (pron?.clip) {
         if (reply.saved && out.clipKept) {
-          if (reply.pronunciation) reply.pronunciation.clipId = pron.id;
+          // Only a tone check has a row and a clip (word marks keep nothing).
+          if (reply.pronunciation && !("kind" in reply.pronunciation)) reply.pronunciation.clipId = pron.id;
         } else dropClip(conversation.id, pron.clip.file);
       }
     }

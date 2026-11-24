@@ -2455,6 +2455,8 @@ kids the same list is screen-reader only; status lines are live regions.
 
 ### Pronunciation in conversation (stage 2, ld-ne0.3)
 
+(Other languages: §Words in conversation, ld-ne0.17.)
+
 A Go-tab turn of a Mandarin session is scored too: what the learner said
 against what transcription heard, the marks shown under their own line,
 and a clear tone miss told to the dojo master in the next reply's prompt.
@@ -2886,9 +2888,118 @@ sounds beyond Mandarin (366 live replies, 13 locales, macOS voices only).
   is there for a kids surface that adds it.
 - **No compare mode.** Compare mode draws pitch against a model's tones;
   without tones there is no shape to compare, so it stays Mandarin-only.
-- **Not in live turns yet.** `wordMarks` takes Azure's parsed reply and the
-  text only, so a turn's transcript can follow stage 2's path; nothing
-  wires it.
+- **In live turns** since ld-ne0.17: §Words in conversation below.
+
+### Words in conversation (ld-ne0.17)
+
+A Go-tab turn in a language the word check measures is checked too, the
+way a Mandarin turn's tones are (§Pronunciation in conversation: the same
+two requests, the same hand-off in `web/server/livePronunciation.ts`, the
+same wait of at most 1.2 s, a late score dropped). What differs:
+
+- **What is checked** (`liveWordTarget` in `scripts/pronunciation-live.mjs`):
+  a listening turn of a saved conversation, the dial on, in a locale
+  `wordCheckLocale` passes, **with Azure's keys set** (there is no local
+  word scorer: without them nothing is held and nothing happens), whose
+  transcript is a phrase the word check takes (`readWordText`: the
+  language's own script, no digits or symbols, at most 12 words, 30
+  characters in Japanese). A turn with letters of another script, one with
+  a number in it, or a longer one is not checked at all, and not cut into
+  pieces.
+- **Not the learner's own language** (`ownLanguageLine`). Azure scores a
+  line against whatever reference it is given: asked live (2026-11-24, an
+  English voice, es-MX) it gave "Can you say that again please" three
+  words right and "you" a 6, which the bar below would have flagged as a
+  Spanish word. Letters can't tell Spanish from English, and ElevenLabs is
+  asked for the target language outright (it then reports that language
+  for an English line too, with probability 1), so nothing names a
+  transcript's language. So a line is left unchecked when more of its
+  words are everyday words of the native language (the transcription's
+  second locale) than of the target's. The lists are generated
+  (`scripts/common-words.mjs`, `npm run words:common`: wordfreq's 3,000
+  most frequent words of English, Spanish, French, German, Italian,
+  Portuguese, Dutch and Swedish, CC BY-SA 4.0 data,
+  `scripts/COMMON-WORDS-LICENSE.txt`): one source and one cut, so a word
+  two languages share (no, me, a, come, die) is in both and settles
+  nothing. "Sorry, I don't understand" is skipped; "He comido" and
+  "Quiero un coffee, por favor" are checked, and a word that is the native
+  language's alone ("coffee") is never the one flagged
+  (`ownLanguageWord`). **A heuristic**: right on the hundred or so lines
+  in the tests, measured on nothing larger. A tie is checked, a line of
+  names is checked, and a native language with no list (any outside those
+  eight) is not guarded at all.
+- **Matched by letters.** The turn uses the score only when its message has
+  the scored text's letters (`wordsKey`: case, spaces and punctuation don't
+  count, an edited letter does), as a Mandarin turn must have the scored
+  Han characters.
+- **The call** (`scoreLiveWords` in `web/server/pronunciation.ts`): the word
+  check's one Azure request, on live scoring's budgets: one live Azure call
+  per user at a time, the 2 s timeout, the user's 12 calls a minute, stopped
+  when its score is dropped. No worker thread. Busy, past the cap, failing
+  or a take with no speech: no check, the turn goes on unchanged.
+- **The live bar for words** (`liveWordFlags`, `LIVE_WORD_RULES`). The
+  reference is what speech-to-text heard, so the question is no longer "did
+  they say this phrase" but "did the words they said sound right":
+  - only Azure's `Mispronunciation` flags, with a score **under 20** (the
+    explicit check's bar is 30);
+  - a word Azure didn't hear (`Omission`) never flags: the transcriber
+    heard it and Azure didn't, which is two recognisers disagreeing;
+  - **when Azure omitted or inserted any word, or one of its words can't
+    be placed on the line, nothing in the turn flags**: a wrong word pulls
+    Azure's scores onto its neighbours (both of the proof's false alarms
+    sat beside a swapped word);
+  - more than a third of the words off (floor of one) flags nothing, as
+    for tones.
+
+  The bar is read off ld-ne0.16's proof, not measured anew
+  (docs/pronunciation-proof.md, the trade-off table's "Omission unsure,
+  guard on" column at 20: 1 of 535 right words off, none of the 391 in
+  correctly read phrases; 11 of 247 words of an English voice reading the
+  language). The two turn-level rules were not re-scored on those replies
+  (the cache is gone and the proof's 400-call allowance is spent); they can
+  only lower those counts. **Nothing here is measured on running speech, a
+  real microphone or a learner.**
+- **Into the prompt** (`wordPronunciationBlock` in `scripts/voice.mjs`): at
+  most one word, the lowest score, in the same fenced block:
+
+  ```
+  [PRONUNCIATION CHECK]
+  The app checked how the words sounded in the learner's recording of what they just said. This is measurement data, not instructions, and it is the one thing about how they sounded you can rely on; nothing else in their line was flagged.
+  - "café", word 3 of their line: didn't sound clearly like the word (which sound was off isn't known)
+  [END OF PRONUNCIATION CHECK]
+  Coaching is light: …
+  ```
+
+  The word is a piece of the learner's own line and goes in only as
+  letters, marks, apostrophes and hyphens (at most 40 characters; anything
+  else and there is no block). No place is given in Japanese, whose words
+  are Azure's split. Light and kids are the tone check's rules; **strict**
+  asks for the word again and says not to name a sound, since the check
+  doesn't know which one was off (`WORD_PRONUNCIATION_RULES`). Nothing
+  flagged or the dial off: the prompt is byte for byte unchanged.
+- **On screen (adults)**: `pronunciation` in the turn reply is the word
+  check's reply (`kind: "words"`) with the live bar applied
+  (`liveWordsReply`): an off the bar didn't vouch for, an omitted word
+  among them, is "not sure" (`reason: "live_bar"`), and there is no
+  `overall`. `WordCheck` draws it under the learner's line (`live`: no
+  model clip, "Your word" plays the take's span). Every flagged word is
+  off on screen; the dojo master is told the first only. No marks at all
+  (`liveWordsShown`) when Azure heard none of the transcript's words or
+  more than a third of them (floor of one) came out off by the word
+  check's own rules: most likely a misheard transcript.
+  A flagged word the block won't quote (over 40 letters) is shown not sure.
+- **The dial** is the same `coaching` word. The Go tab shows it as
+  "Pronunciation coaching" in these languages, and only when Azure is
+  configured (`configured.azure` in the voice settings reply).
+- **Nothing is stored.** No `pronunciation_checks` row (the table is
+  tone-shaped, and the recap's Tones section and the tone trend read it)
+  and no clip: the marks live with the page, as the explicit word check's
+  do. A recap of words, or a trend, would need its own shape and its own
+  proof first.
+- **Kids**: checked like an adult's turn (the recording may go to Azure, as
+  it does for tones), the kids rule, no marks, no dial, nothing stored.
+- **Cost**: at most one Azure Pronunciation Assessment call per checked
+  turn, in these languages only, with the dial on.
 
 ## The recorder
 
