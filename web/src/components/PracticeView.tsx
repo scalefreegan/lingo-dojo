@@ -139,8 +139,11 @@ export default function PracticeView() {
     if (items) return;
     const ctrl = new AbortController();
     // After any answer still on its way (End during a speak-it check sends
-    // the card's answer as the session closes): the counts include it.
-    Promise.allSettled([...answersInFlight])
+    // the card's answer as the session closes), so the counts include it;
+    // a hung one holds them up at most ANSWER_WAIT_MS.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    Promise.race([Promise.allSettled([...answersInFlight]), new Promise((r) => (timer = setTimeout(r, ANSWER_WAIT_MS)))])
+      .finally(() => clearTimeout(timer))
       .then(() => practiceStats(drillMode(prefs.mode), prefs.direction, ctrl.signal))
       .then(
       (r) => {
@@ -407,16 +410,17 @@ function Chip({ on, onClick, title, children }: { on: boolean; onClick: () => vo
 
 type SubmitBody = Pick<PracticeAnswerRequest, "answer" | "choice" | "reveal" | "rating" | "drill" | "spoken">;
 
+/** Answers sent and not yet answered, page-wide: the start screen's counts
+ *  wait for them, at most ANSWER_WAIT_MS. */
+const answersInFlight = new Set<Promise<unknown>>();
+const ANSWER_WAIT_MS = 4000;
+
 /**
  * One card's answer: its submit id (a resend of it, a double click or a
  * retry after a lost reply, is the same submit, and the server answers it
  * with the review it already recorded), the time it was shown, the grade
  * and an override. The session keys each card, so this is per card.
  */
-/** Answers sent and not yet answered, page-wide: the start screen's counts
- *  wait for them. */
-const answersInFlight = new Set<Promise<unknown>>();
-
 function useAnswer(item: PracticeItem) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PracticeAnswerReply | null>(null);
@@ -503,6 +507,15 @@ function Session({
 }: Omit<CardProps, "answer" | "last"> & { position: number; total: number; onQuit: () => void }) {
   const answer = useAnswer(item);
   const props: CardProps = { item, answer, last: position === total, ...rest };
+  // False once this card is gone (End, then maybe a new session): a Skip
+  // whose resend fails after that must not move the new session on.
+  const here = useRef(true);
+  useEffect(() => {
+    here.current = true;
+    return () => {
+      here.current = false;
+    };
+  }, []);
   return (
     <div className="flex flex-col gap-3" data-testid="practice-session">
       <div className="flex items-center gap-3">
@@ -544,7 +557,7 @@ function Session({
                 <Button
                   disabled={answer.busy}
                   onClick={async () => {
-                    if (!(await answer.resend())) rest.onNext(null);
+                    if (!(await answer.resend()) && here.current) rest.onNext(null);
                   }}
                 >
                   Skip this card

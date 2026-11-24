@@ -517,16 +517,44 @@ test("speak-it: a stale queued reading after the learner corrected the word mid-
   unchanged(await heardThenAnswer(lin, item, clip([4, 4]), JIAO));
 });
 
-test("speak-it: a later syllable of a word said in the neutral tone fails nothing (东西, 医生, 出来)", async () => {
+test("speak-it: only a leading character with one reading tone can fail: 东西, 医生, 出来, 听听, 尝尝, 只买, 他只买 make no miss (本事: the live bar never flagged its 事 on the synth; the pure test covers it)", async () => {
   const lin = await someone();
-  for (const [text, meaning, shapes] of [["东西", "thing", [1, 4]], ["医生", "doctor", [1, 4]], ["出来", "to come out", [1, 4]]]) {
+  // [text, meaning, shapes]: each said so the engine flags a syllable the
+  // rule leaves alone (a later one, or 只 heard as a tone none of its readings has).
+  const cases = [
+    ["东西", "thing", [1, 4]], ["医生", "doctor", [1, 4]], ["出来", "to come out", [1, 4]],
+    ["听听", "to have a listen", [1, 4]], ["尝尝", "to have a taste", [2, 4]],
+    ["只买", "only buy", [4, 3]], ["他只买", "he only buys", [1, 4, 3]],
+  ];
+  for (const [text, meaning, shapes] of cases) {
     const item = await speakItem(lin, text, meaning);
     const submitId = crypto.randomUUID();
     const s = await score(lin, item, submitId, clip(shapes));
     assert.equal(s.status, 200, s.text);
-    assert.equal(s.body.syllables[1].verdict, "off", `${text}: the engine flags the last syllable`);
-    assert.ok(heldFlags(lin)?.some((f) => f.place === 2), `${text}: held as made`);
+    assert.ok(heldFlags(lin)?.length > 0, `${text}: the engine flagged something: ${JSON.stringify(heardOf(s.body))}`);
     unchanged((await answer(lin, item, submitId, { tones: true })).body);
+  }
+});
+
+test("speak-it: the learner's own choice outranks the shared list for the same word, both ways", async () => {
+  // Own kòng, shared kōng: the score's kōng isn't settled (own wins), so 空
+  // said kòng is no miss.
+  await q("insert into shared_readings (key, word, reading, scope, status, source) values ('空调', '空调', 'kōng tiáo', 'all', 'active', 'admin')");
+  try {
+    const lin = await someone();
+    await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kòng tiáo', 'corrected', 'user')", [lin.learnerId, lin.languageId]);
+    unchanged(await heardThenAnswer(lin, await airCon(lin), clip([4, 2]), KONG4));
+  } finally {
+    await q("delete from shared_readings where key = '空调'");
+  }
+  // Own kōng, shared kòng: own settles kōng, so 空 heard falling is a miss.
+  await q("insert into shared_readings (key, word, reading, scope, status, source) values ('空调', '空调', 'kòng tiáo', 'all', 'active', 'admin')");
+  try {
+    const ann = await someone();
+    await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kōng tiáo', 'confirmed', 'user')", [ann.learnerId, ann.languageId]);
+    missedOn(await heardThenAnswer(ann, await airCon(ann), clip([4, 2]), KONG4), ["空"]);
+  } finally {
+    await q("delete from shared_readings where key = '空调'");
   }
 });
 

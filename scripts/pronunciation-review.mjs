@@ -338,69 +338,56 @@ export function settledPlaces(text, entries, scored) {
   return out;
 }
 
-let segmenter;
 /**
- * The places (1-based, among `text`'s Han characters) that are a later
- * syllable of a word of two or more characters (Intl.Segmenter's words:
- * 东西, 医生, 出来, 八个; with no segmenter, any Han character right after
- * another). Such a syllable is often said in the neutral tone (dōng xi,
- * yī sheng, chū lai), which the engine hears as whatever the tone before
- * leaves it (a fall after a first tone), and neither the reader's tables
- * nor CC-CEDICT list a neutral variant for most of them (医生, 出来): no
- * table can say which are safe, so none is failed.
+ * The places (1-based, among `text`'s Han characters) that may fail a
+ * speak-it answer by position: the phrase's first Han character, and a Han
+ * character directly after punctuation (spaces between allowed). Any other
+ * syllable may be said in the neutral tone or changed by its neighbours
+ * (听听 tīng ting, 东西 dōng xi, 医生 yī sheng, 只买 zhí mǎi), and no word
+ * table says which, so none of them can make a miss. Deliberately narrow.
  */
-export function laterSyllables(text) {
-  const cps = [...String(text ?? "")];
-  const han = cps.map((c) => /\p{Script=Han}/u.test(c));
-  if (segmenter === undefined) segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter("zh", { granularity: "word" }) : null;
-  const starts = new Set();
-  if (segmenter) {
-    const at = new Map();
-    let n = 0;
-    cps.forEach((c, k) => {
-      at.set(n, k);
-      n += c.length;
-    });
-    for (const w of segmenter.segment(cps.join(""))) if (at.has(w.index)) starts.add(at.get(w.index));
-  }
+export function leadingPlaces(text) {
   const out = new Set();
   let place = 0;
-  cps.forEach((c, k) => {
-    if (!han[k]) return;
-    place++;
-    if (k > 0 && han[k - 1] && (segmenter ? !starts.has(k) : true)) out.add(place);
-  });
+  let prev = null;
+  for (const c of String(text ?? "")) {
+    if (/\s/u.test(c)) continue;
+    if (/\p{Script=Han}/u.test(c)) {
+      place++;
+      if (place === 1 || /\p{P}/u.test(prev)) out.add(place);
+    }
+    prev = c;
+  }
   return out;
 }
 
 /**
- * The flags that may fail a Practice answer; when in doubt, no miss.
- *  - A later syllable of a word (laterSyllables) never fails: it may be a
- *    neutral tone the reader doesn't know of.
- *  - A flag whose heard tone is the tone of *another* known reading of its
- *    character (空 scored kōng, heard kòng), or whose character has a
- *    neutral reading, is dropped, since the learner may well have said a
- *    right reading the reader didn't pick (it doesn't mark 空 as
- *    uncertain), unless that place's reading is settled (`settled`, from
- *    settledPlaces over the learner's own choices by hand and the shared
- *    list's active entries only: never a reading the page sent, a recap's
- *    guess or a GLOSS hint).
+ * The flags that may fail a Practice answer; when in doubt, no miss. The
+ * rule is deliberately narrow:
+ *  - Position: only a leading place (leadingPlaces) can fail.
+ *  - Readings: a character with more than one reading tone (neutral
+ *    included: 空 kōng/kòng, 只 zhī/zhǐ, 么 me/mó) fails nothing unless
+ *    that place's reading is settled (`settled`, settledPlaces over the
+ *    learner's own choices by hand, else the shared list's active entries;
+ *    never a reading the page sent, a recap's guess or a GLOSS hint).
+ * So a miss needs a first syllable whose character has one reading tone (妈
+ * mā said falling), or a settled one.
  * `readingsOf(char)`: every reading of the character (zh.ts charReadings).
  */
 export function settleFlags(flags, { readingsOf, text, settled = new Set() }) {
-  const later = laterSyllables(text);
+  const leading = leadingPlaces(text);
   return (flags ?? []).filter((f) => {
-    if (later.has(f.place)) return false;
+    if (!leading.has(f.place)) return false;
     if (settled.has(f.place)) return true;
-    const others = (readingsOf(f.char) ?? []).filter((r) => !samePinyin(r, f.pinyin)).map((r) => parsePinyin(r).tone);
-    return !others.includes(f.heardTone) && !others.includes(0);
+    const tones = new Set([f.pinyin, ...(readingsOf(f.char) ?? [])].map((r) => parsePinyin(r).tone));
+    return tones.size === 1;
   });
 }
 
-/** Whether any flag is one settleFlags would drop without a settled
- *  reading (so the settling entries need reading at all). */
+/** Whether a settled reading could change settleFlags' answer (so the
+ *  settling entries need reading at all). */
 export function doubtfulFlags(flags, { readingsOf, text }) {
-  return settleFlags(flags, { readingsOf, text }).length !== (flags ?? []).length;
+  return settleFlags(flags, { readingsOf, text }).length !== settleFlags(flags, { readingsOf, text, settled: new Set((flags ?? []).map((f) => f.place)) }).length;
 }
 
 /** A stored tone miss (reviews.card_before.tone_miss) read back for the

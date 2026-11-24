@@ -4337,9 +4337,12 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   the reply's `toneMiss`; the override restores `rating`. No column, no
   migration: the verdict stays `wrong` (the CHECK's own word). Settling a
   doubtful flag, at answer time, reads the learner's hand-made
-  `reading_corrections` and the active `shared_readings` (`settleHeld` in
-  toneReview.ts, through `listCorrections` and `activeList`), only when a
-  flag is in doubt; `phrases.reading` (recap or GLOSS) settles nothing.
+  `reading_corrections` and the active `shared_readings` for words with no
+  hand choice (`settleHeld` in toneReview.ts, through `listCorrections` and
+  `activeList`), only when a flag is in doubt; `phrases.reading` (recap or
+  GLOSS) settles nothing. The rule is deliberately narrow (docs/VOICE.md
+  §Tones after the session): only a leading Han character with one
+  reading tone, or a settled reading, can fail an answer.
   Nothing is written.
 - Tests: `scripts/tests/db-migration-0022.test.mjs` (the table, its
   checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`

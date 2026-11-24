@@ -127,9 +127,13 @@ export function peekPracticeTones(learnerId: string, languageId: string): FlagNo
 async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
   const [mine, shared] = await Promise.all([listCorrections(rawDb(), ctx.language), activeList(rawDb())]);
   const tw = /-TW$/i.test(locale);
+  const own = mine.filter((c) => c.source === "user" && (c.kind === "corrected" || c.kind === "confirmed"));
+  // The learner's own > the shared list: a word they chose a reading for
+  // by hand takes no shared entry, whatever it says.
+  const ownKeys = new Set(own.map((c) => c.key));
   return [
-    ...mine.filter((c) => c.source === "user" && (c.kind === "corrected" || c.kind === "confirmed")).map(({ word, key, reading }) => ({ word, key, reading })),
-    ...shared.entries.filter((e) => e.scope === "all" || tw).map(({ word, key, reading }) => ({ word, key, reading })),
+    ...own.map(({ word, key, reading }) => ({ word, key, reading })),
+    ...shared.entries.filter((e) => (e.scope === "all" || tw) && !ownKeys.has(e.key)).map(({ word, key, reading }) => ({ word, key, reading })),
   ];
 }
 
@@ -146,7 +150,9 @@ export async function settleHeld(ctx: LearnerCtx, text: string, flags: FlagNote[
   if (!flags.length) return flags;
   const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
   const readingsOf = (c: string) => charReadings(c, locale);
-  if (!doubtfulFlags(flags, { readingsOf, text })) return flags;
+  // The readings are read only when one could change the outcome; the
+  // rule itself always runs.
+  if (!doubtfulFlags(flags, { readingsOf, text })) return settleFlags(flags, { readingsOf, text });
   const scored = new Map(flags.map((f) => [f.place, f.pinyin] as [number, string]));
   return settleFlags(flags, { readingsOf, text, settled: settledPlaces(text, await settlingReadings(ctx, locale), scored) });
 }

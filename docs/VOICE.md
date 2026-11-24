@@ -2723,27 +2723,34 @@ a share (the engine doesn't judge them).
   `held: true`. The answer then sends `tones: true` (speak drill only, a
   boolean, else 400). The flags are held as the engine made them; **which
   may fail the answer is decided at answer time** (`settleHeld` in
-  toneReview.ts, `settleFlags`), when in doubt no miss:
-  - A later syllable of a word of two or more characters (Intl.Segmenter's
-    words, `laterSyllables`) never fails: it is often said in the neutral
-    tone (东西 dōng xi, 医生 yī sheng, 出来 chū lai), which the engine
-    hears as whatever the tone before leaves it, and neither the reader's
-    tables nor CC-CEDICT list a neutral variant for most such words.
-  - A flag whose heard tone is the tone of another known reading of that
-    character (`charReadings`: 空 scored kōng and heard kòng, 中 zhōng
-    heard zhòng, 教室 scored jiāo and heard jiào), or whose character has a
-    neutral reading, is dropped, since the reading scored may not be the
-    one meant (the reader doesn't mark 空). It stands only where the
-    place's reading is settled, read on the server at answer time: the
-    learner's own choice by hand (`reading_corrections`, source `user`,
-    corrected or confirmed; one made on the character card mid-session
-    counts at once) or an active shared-list entry, giving that character
-    the very syllable it was scored as (`settledPlaces`).
+  toneReview.ts, `settleFlags`). The rule is **deliberately narrow**
+  (when in doubt, no miss): a flag can fail the answer only when both
+  hold.
+  - **Position**: it is on the phrase's first Han character, or on a Han
+    character directly after punctuation (`leadingPlaces`). Every other
+    syllable may be said in the neutral tone or changed by its neighbours
+    (听听 tīng ting, 尝尝, 本事 běn shi, 东西 dōng xi, 医生 yī sheng, 出来,
+    只买 zhí mǎi), and no word table says which, so none of them can make a
+    miss. (No word segmenter: it splits 听|听 and 本|事.)
+  - **Readings**: every reading of its character (`charReadings`) has
+    the same tone (妈 mā, 他 tā), or its reading is settled. A character
+    whose readings differ in tone, the neutral tone counting as a tone of
+    its own (空 kōng/kòng, 只 zhī/zhǐ, 么 me/mó, 中, 教)
+    fails nothing unless settled, whatever tone was heard. Settled means,
+    read on the server at answer time: the learner's own choice by hand
+    (`reading_corrections`, source `user`, corrected or confirmed; one
+    made on the character card mid-session counts at once), else an active
+    shared-list entry for a word the learner has no hand choice for (the
+    learner's own outranks the shared list), giving that character the
+    very syllable it was scored as (`settledPlaces`).
   - **Nothing the page sends settles a reading**: the score's `reading`
     (Practice sends `phrases.reading`, which a recap's unconfirmed
     suggestion or a GLOSS hint may have written, and which a queued item
     keeps after a correction) shapes what the check shows, never a miss.
-    A recap's guess settles nothing either. An answer graded right (exact, close or accepted) **whose
+    A recap's guess settles nothing either.
+
+  So a miss needs, say, 妈 or 他 leading the phrase and clearly said in
+  another tone. An answer graded right (exact, close or accepted) **whose
   Han characters are the phrase's** (an alternate graded exact or a
   synonym the grader accepted is other words: never a tone miss) and whose
   held flags (same phrase, submit and Han characters) are not empty is
