@@ -2721,16 +2721,29 @@ a share (the engine doesn't judge them).
   language, a newer score replaces it, 10 minutes, kept after use so a
   resend whose first try never recorded still finds it) and answers
   `held: true`. The answer then sends `tones: true` (speak drill only, a
-  boolean, else 400). **Only what the reading vouches for is held**
-  (`settleFlags`): a flag whose heard tone is the tone of another known
-  reading of that character (`charReadings`: 空 scored kōng and heard
-  kòng, 中 zhōng heard zhòng) is dropped, since the reader may have picked
-  the wrong one (it doesn't mark 空), unless the place's reading is
-  settled: a stored phrase reading sent with the score (`reading`), the
-  learner's own choice by hand (`reading_corrections`, source `user`) or an
-  active shared-list entry giving that character the very syllable it was
-  scored as (`settledPlaces`). A recap's guess settles nothing. When in
-  doubt, no miss. An answer graded right (exact, close or accepted) **whose
+  boolean, else 400). The flags are held as the engine made them; **which
+  may fail the answer is decided at answer time** (`settleHeld` in
+  toneReview.ts, `settleFlags`), when in doubt no miss:
+  - A later syllable of a word of two or more characters (Intl.Segmenter's
+    words, `laterSyllables`) never fails: it is often said in the neutral
+    tone (东西 dōng xi, 医生 yī sheng, 出来 chū lai), which the engine
+    hears as whatever the tone before leaves it, and neither the reader's
+    tables nor CC-CEDICT list a neutral variant for most such words.
+  - A flag whose heard tone is the tone of another known reading of that
+    character (`charReadings`: 空 scored kōng and heard kòng, 中 zhōng
+    heard zhòng, 教室 scored jiāo and heard jiào), or whose character has a
+    neutral reading, is dropped, since the reading scored may not be the
+    one meant (the reader doesn't mark 空). It stands only where the
+    place's reading is settled, read on the server at answer time: the
+    learner's own choice by hand (`reading_corrections`, source `user`,
+    corrected or confirmed; one made on the character card mid-session
+    counts at once) or an active shared-list entry, giving that character
+    the very syllable it was scored as (`settledPlaces`).
+  - **Nothing the page sends settles a reading**: the score's `reading`
+    (Practice sends `phrases.reading`, which a recap's unconfirmed
+    suggestion or a GLOSS hint may have written, and which a queued item
+    keeps after a correction) shapes what the check shows, never a miss.
+    A recap's guess settles nothing either. An answer graded right (exact, close or accepted) **whose
   Han characters are the phrase's** (an alternate graded exact or a
   synonym the grader accepted is other words: never a tone miss) and whose
   held flags (same phrase, submit and Han characters) are not empty is
@@ -2747,8 +2760,17 @@ a share (the engine doesn't judge them).
   unavailable check, a hold for another card or take, a wrong answer: the
   grade is as before. **Check waits at most 2.5 s** (`TONE_WAIT_MS`, the
   request aborted): later, the answer goes without `tones`, graded as it
-  would be. Leaving the card while it waits (End, another tab) sends the
-  answer at once, as before stage 3, and aborts the check. The score's
+  would be (the page says "The tone check took too long, so this answer
+  was graded on its words alone."). Leaving the card while it waits (End,
+  another tab) sends the answer at once, as before stage 3, and aborts the
+  check; the start screen's counts wait for any answer still on its way.
+  A failed answer's **Skip this card** first sends it once more (same
+  submit id): if it lands, or was recorded with its reply lost, its result
+  shows, tone miss and **I said it right** included, instead of skipping.
+  Not covered: End or a reload while a `tones` answer is in flight leaves
+  a recorded tone miss with no button (the session summary lists only
+  answers whose reply arrived, and the Phrase bank has no override); the
+  card is back soon as an Again. The score's
   Azure call now happens for wrong answers too (their marks still aren't
   shown). **One check per take:** a second Check of the same recording
   (after a failed answer) reuses the first check's result, held or not,

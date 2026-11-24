@@ -138,7 +138,11 @@ export default function PracticeView() {
   useEffect(() => {
     if (items) return;
     const ctrl = new AbortController();
-    practiceStats(drillMode(prefs.mode), prefs.direction, ctrl.signal).then(
+    // After any answer still on its way (End during a speak-it check sends
+    // the card's answer as the session closes): the counts include it.
+    Promise.allSettled([...answersInFlight])
+      .then(() => practiceStats(drillMode(prefs.mode), prefs.direction, ctrl.signal))
+      .then(
       (r) => {
         setInfo(r);
         setError(null);
@@ -409,6 +413,10 @@ type SubmitBody = Pick<PracticeAnswerRequest, "answer" | "choice" | "reveal" | "
  * with the review it already recorded), the time it was shown, the grade
  * and an override. The session keys each card, so this is per card.
  */
+/** Answers sent and not yet answered, page-wide: the start screen's counts
+ *  wait for them. */
+const answersInFlight = new Set<Promise<unknown>>();
+
 function useAnswer(item: PracticeItem) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PracticeAnswerReply | null>(null);
@@ -418,25 +426,41 @@ function useAnswer(item: PracticeItem) {
     shownAt.current = Date.now();
   }, []);
   const [submitId] = useState(() => crypto.randomUUID());
+  // The last answer sent: Skip resends it first (same submit id), since a
+  // reply lost on the way back may hide an answer the server recorded,
+  // a tone miss among them, with its "I said it right".
+  const lastBody = useRef<SubmitBody | null>(null);
 
-  async function submit(body: SubmitBody) {
-    if (busy) return;
+  async function submit(body: SubmitBody): Promise<boolean> {
+    if (busy) return false;
+    lastBody.current = body;
     setBusy(true);
     setError(null);
     try {
-      setResult(
-        await answerCard({
-          phraseId: item.phraseId, skill: item.skill, drill: item.drill, version: item.version, revision: item.revision, submitId,
-          // A cloze answer names the sentence it was shown.
-          ...(item.drill === "cloze" && item.cloze && (body.drill ?? item.drill) === "cloze" ? { clozeId: item.cloze.id } : {}),
-          durationMs: Date.now() - shownAt.current, ...body,
-        }),
-      );
+      const sent = answerCard({
+        phraseId: item.phraseId, skill: item.skill, drill: item.drill, version: item.version, revision: item.revision, submitId,
+        // A cloze answer names the sentence it was shown.
+        ...(item.drill === "cloze" && item.cloze && (body.drill ?? item.drill) === "cloze" ? { clozeId: item.cloze.id } : {}),
+        durationMs: Date.now() - shownAt.current, ...body,
+      });
+      answersInFlight.add(sent);
+      try {
+        setResult(await sent);
+      } finally {
+        answersInFlight.delete(sent);
+      }
+      return true;
     } catch (e) {
       setError(errText(e));
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Send the last answer again; false when there was none or it failed. */
+  async function resend(): Promise<boolean> {
+    return lastBody.current ? submit(lastBody.current) : false;
   }
 
   async function regrade(rating: PracticeRating) {
@@ -452,7 +476,7 @@ function useAnswer(item: PracticeItem) {
     }
   }
 
-  return { busy, result, error, setError, submit, regrade, submitId };
+  return { busy, result, error, setError, submit, resend, regrade, submitId };
 }
 
 type Answer = ReturnType<typeof useAnswer>;
@@ -513,8 +537,19 @@ function Session({
             <p>{answer.error}</p>
             <div>
               {/* Only before an answer is recorded: after one (a failed
-                  override), Next keeps it in the summary. */}
-              {!answer.result && <Button onClick={() => rest.onNext(null)}>Skip this card</Button>}
+                  override), Next keeps it in the summary. A failed answer is
+                  sent once more first: if it lands (or was recorded and its
+                  reply lost), its result shows instead of skipping. */}
+              {!answer.result && (
+                <Button
+                  disabled={answer.busy}
+                  onClick={async () => {
+                    if (!(await answer.resend())) rest.onNext(null);
+                  }}
+                >
+                  Skip this card
+                </Button>
+              )}
             </div>
           </div>
         )}
@@ -1044,7 +1079,7 @@ function SpokenControls({ spoken, busy, lang, onCheck, extra }: { spoken: Spoken
 
 /** A take's tone check (speak-it, stage 3): the reply, or why there is
  *  none (failed, or not in time). */
-type TakeCheck = { take: Blob; reply: PronunciationScoreReply | null; message: string | null };
+type TakeCheck = { take: Blob; reply: PronunciationScoreReply | null; message: string | null; late?: boolean };
 
 /**
  * Speak-it: the meaning shown, the learner says the words. The recording
@@ -1112,7 +1147,7 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
           const reply = await scorePronunciation(wav, item.text, ctrl.signal, { reading: item.reading ?? null, hold: { phraseId: item.phraseId, submitId: answer.submitId } });
           got = { take: wav, reply, message: null };
         } catch (e) {
-          got = { take: wav, reply: null, message: ctrl.signal.aborted ? "they weren't checked in time" : errText(e) };
+          got = ctrl.signal.aborted ? { take: wav, reply: null, message: null, late: true } : { take: wav, reply: null, message: errText(e) };
         } finally {
           clearTimeout(timer);
         }
@@ -1188,12 +1223,13 @@ function SpeakCard({ item, languageName, locale, answer, last, onNext }: CardPro
  * the phrase's own audio (the listening drill's, cached on the server),
  * fetched on the first tap.
  */
-function SpokenTones({ pre, result, locale, model }: { pre: { take: Blob; reply: PronunciationScoreReply | null; message: string | null } | null; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
+function SpokenTones({ pre, result, locale, model }: { pre: TakeCheck | null; result: PracticeAnswerReply; locale: string | null; model: ModelAudio }) {
   const text = result.expected.text;
   // A tone miss is graded "wrong" for the card, yet its words were right:
   // its marks are what it is about.
   const wanted = scoresTonesHere(locale) && scorableText(text) && (result.review.verdict !== "wrong" || !!result.toneMiss);
   if (!wanted || !pre) return null;
+  if (pre.late) return <p className={`${fine} text-fg-3`}>The tone check took too long, so this answer was graded on its words alone.</p>;
   const state: ScoreState = pre.message !== null ? { step: "failed", message: pre.message } : { step: "done", reply: pre.reply, take: pre.take };
   return <ToneScoreView state={state} kids={false} onPlayModel={model.play} modelBusy={model.busy} modelError={model.error} compare={{ kind: "phrase", phraseId: model.phraseId }} />;
 }

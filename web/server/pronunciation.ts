@@ -19,14 +19,14 @@ import type { PronunciationModelReply, PronunciationScoreReply, PronunciationWor
 import { charReadings, readCodePoints, validateHint, withHints } from "../src/script/zh.ts";
 import { clipOf } from "../../scripts/db/pronunciation.ts";
 import { flagNote, hanOf, liveFlags } from "../../scripts/pronunciation-live.mjs";
-import { doubtfulFlags, readToneHold, settledPlaces, settleFlags } from "../../scripts/pronunciation-review.mjs";
+import { readToneHold } from "../../scripts/pronunciation-review.mjs";
 import { readClip } from "../../scripts/pronunciation-clips.mjs";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
 import { phraseClip } from "./practice.ts";
 import { HttpError, methodNotAllowed, sendJson, subPath } from "./sse.ts";
-import { holdPracticeTones, sessionTonesRoute, settlingReadings, toneTrendRoute } from "./toneReview.ts";
+import { holdPracticeTones, sessionTonesRoute, toneTrendRoute } from "./toneReview.ts";
 import { isSoundText, soundClip } from "./voice.ts";
 
 // Pronunciation scoring where the text is known (stage 1, ld-ne0.2;
@@ -407,16 +407,11 @@ async function score(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx)
     console.log(`[lingo-dojo] pronunciation: ${engine}${fallback ? ` (${fallback})` : ""}, ${s.syllables.length} syllables`);
     const reply: PronunciationScoreReply = scoreReply(result, s.syllables, { engine, fallback: azure ? null : fallback, kids: mode === "kids", text: t.text, locale, frames });
     if (h.hold) {
-      // The live bar's flags, less any the reading can't vouch for: a flag
-      // whose heard tone is another reading's of that character fails
-      // nothing unless the reading is settled (pronunciation-review.mjs
-      // settleFlags). A stored phrase reading the score used settles all.
-      let flags = liveFlags(result).map((i) => flagNote(result, i));
-      const readingsOf = (c: string) => charReadings(c, locale);
-      if (flags.length && !checked?.ok && doubtfulFlags(flags, readingsOf)) {
-        const scored = new Map(flags.map((f) => [f.place, f.pinyin] as [number, string]));
-        flags = settleFlags(flags, { readingsOf, settled: settledPlaces(t.text, await settlingReadings(ctx, locale), scored) });
-      }
+      // The live bar's flags as the engine made them; which of them may
+      // fail the answer is settled when the answer comes (toneReview.ts
+      // settleHeld), from what the server holds, never from this request's
+      // `reading`.
+      const flags = liveFlags(result).map((i) => flagNote(result, i));
       holdPracticeTones(ctx, { ...h.hold, han: hanOf(t.text), flags });
       reply.held = true;
     }

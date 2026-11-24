@@ -195,9 +195,12 @@ docs/VOICE.md §Tones after the session; pure rules
   replays too) and restored by **I said it right** (the override).
   Only when what was said is the phrase's own Han characters (never an
   alternate or an accepted synonym), and only flags the reading vouches
-  for (`settleFlags`: a heard tone of another reading of that character,
-  空 kōng/kòng, is dropped unless a stored phrase reading, the learner's
-  own choice or the shared list settles it). Check waits at most 2.5 s;
+  for, decided at answer time (`settleHeld`/`settleFlags`): never a later
+  syllable of a word (it may be neutral: 东西, 医生); a heard tone of
+  another reading of that character (空 kōng/kòng), or a character with a
+  neutral reading, only where the learner's own hand choice or the shared
+  list settles it (never the page's `reading`, a recap guess or a GLOSS
+  hint). Check waits at most 2.5 s;
   leaving sends the answer without `tones`; one check per take.
 - Kids: nothing shown (the routes answer empty), nothing stored, no hold.
 Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words

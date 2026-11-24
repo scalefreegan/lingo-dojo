@@ -1,5 +1,7 @@
 import type { ServerResponse } from "node:http";
-import { compareTones, readTrendDays, sessionTones, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
+import { compareTones, doubtfulFlags, readTrendDays, sessionTones, settledPlaces, settleFlags, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
+import { localeFor } from "../../scripts/voice.mjs";
+import { charReadings } from "../src/script/zh.ts";
 import { readUtcOffset } from "../../scripts/practice.mjs";
 import { sessionChecks, toneConversation, trendChecks } from "../../scripts/db/pronunciation.ts";
 import { listCorrections } from "../../scripts/db/readings.ts";
@@ -64,11 +66,12 @@ export async function toneTrendRoute(res: ServerResponse, ctx: LearnerCtx, param
 /* ------------------------------ Practice speak-it ------------------------------ */
 // The score route (pronunciation.ts) runs before the answer is sent: the
 // page scores the recording with `phrase` and `submit`, and the server
-// keeps the live bar's flags of that score here, for the answer of that
+// keeps the live bar's flags of that score here (as the engine made them:
+// settleHeld decides at answer time which may fail it), for the answer of that
 // submit (practice.ts) to take. The page never sends a verdict: the grade
 // changes only on a score the server made itself. Held in this process's
 // memory only: one per learner and language (a newer score replaces it),
-// for HOLD_MS, and kept after the answer takes it, so a resend of that
+// for PRACTICE_HOLD.ms, and kept after the answer takes it, so a resend of that
 // answer (a lost reply) whose first try was never recorded still finds it.
 
 /** How long a score waits for its answer: Check follows the score at
@@ -121,11 +124,29 @@ export function peekPracticeTones(learnerId: string, languageId: string): FlagNo
  * entries (Taiwan-only ones in a zh-TW language only). A recap's guess isn't
  * the learner's choice and settles nothing here.
  */
-export async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
+async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
   const [mine, shared] = await Promise.all([listCorrections(rawDb(), ctx.language), activeList(rawDb())]);
   const tw = /-TW$/i.test(locale);
   return [
     ...mine.filter((c) => c.source === "user" && (c.kind === "corrected" || c.kind === "confirmed")).map(({ word, key, reading }) => ({ word, key, reading })),
     ...shared.entries.filter((e) => e.scope === "all" || tw).map(({ word, key, reading }) => ({ word, key, reading })),
   ];
+}
+
+/**
+ * The held flags that may fail this answer (pronunciation-review.mjs
+ * settleFlags), decided now, at answer time, from what the server holds: a
+ * reading counts as settled only by the learner's own choice by hand or the
+ * shared list's active entries, read now (a choice made on the character
+ * card mid-session counts at once). The score's `reading` (the page's, from
+ * phrases.reading, which a recap's guess or a GLOSS hint may have written)
+ * only shaped what the check showed; it can't make a miss.
+ */
+export async function settleHeld(ctx: LearnerCtx, text: string, flags: FlagNote[]): Promise<FlagNote[]> {
+  if (!flags.length) return flags;
+  const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+  const readingsOf = (c: string) => charReadings(c, locale);
+  if (!doubtfulFlags(flags, { readingsOf, text })) return flags;
+  const scored = new Map(flags.map((f) => [f.place, f.pinyin] as [number, string]));
+  return settleFlags(flags, { readingsOf, text, settled: settledPlaces(text, await settlingReadings(ctx, locale), scored) });
 }

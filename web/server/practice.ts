@@ -18,7 +18,7 @@ import type { LearnerCtx } from "./auth.ts";
 import { clozeStatus, fillCloze, withCloze } from "./cloze.ts";
 import { rawDb } from "./db.ts";
 import { paidSlot } from "./paid.ts";
-import { heldPracticeTones } from "./toneReview.ts";
+import { heldPracticeTones, settleHeld } from "./toneReview.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
 import { readVoiceSettings } from "./store.ts";
 import { outsideClip, readAudio, sttReady, transcribeAudio, voiceNote, voiceReady } from "./voice.ts";
@@ -239,10 +239,12 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     // the grade they had kept for "I said it right" (an override). Only a
     // score the server made for this submit, phrase and these characters,
     // and only when what was said is those characters (practiceToneMiss:
-    // an alternate or an accepted synonym is other words); none held (the
+    // an alternate or an accepted synonym is other words), and only flags
+    // the reading vouches for (settleHeld, decided now); none held (the
     // check failed, was busy, or isn't Mandarin): graded as before.
     if (a.tones) {
-      const flags = heldPracticeTones(ctx, { phraseId: phrase.id, submitId: a.submitId, han: hanOf(phrase.text ?? "") });
+      const held = heldPracticeTones(ctx, { phraseId: phrase.id, submitId: a.submitId, han: hanOf(phrase.text ?? "") });
+      const flags = held && (await settleHeld(ctx, phrase.text ?? "", held));
       ({ outcome, toneMiss } = practiceToneMiss(outcome, flags, { answer: a.answer, text: phrase.text }));
     }
     // Only typed flashcard words are kept as another way to say it: a

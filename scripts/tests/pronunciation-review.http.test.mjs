@@ -78,6 +78,8 @@ const { apiPlugins } = await import("../../web/server/api.ts");
 const { clearLive } = await import("../../web/server/livePronunciation.ts");
 const { PRACTICE_HOLD, clearPracticeTones, peekPracticeTones } = await import("../../web/server/toneReview.ts");
 const { checksOf } = await import("../db/pronunciation.ts");
+const { saveRecapReading } = await import("../db/readings.ts");
+const { rereadPhrases } = await import("../../web/server/readings.ts");
 
 const testDb = await freshDb();
 const q = testDb.query;
@@ -415,67 +417,116 @@ test("speak-it: an alternate graded exact or a synonym the grader accepted is ot
 });
 
 const heardOf = (body) => body.syllables.map((x) => [x.pinyin, x.verdict, x.verdict === "off" ? x.heardTone : null]);
-/** 空调 said kòng tiáo: the reader reads kōng, the engine hears the fourth tone (kòng's). */
-async function airCon(who, extra = "") {
-  const item = await speakItem(who, "空调", "air conditioner");
+/** Score `wav` for `item` (its own `reading`, as Practice sends it, or
+ *  `reading`), check what the engine heard and that one flag is held as
+ *  made (the settling happens at answer time), then answer with tones. */
+async function heardThenAnswer(who, item, wav, heard, { reading = item.reading } = {}) {
   const submitId = crypto.randomUUID();
-  const s = await score(who, item, submitId, clip([4, 2]), { extra });
-  assert.deepEqual(heardOf(s.body), [["kōng", "off", 4], ["tiáo", "ok", null]], "the engine heard the other reading");
-  return { item, submitId };
+  const s = await score(who, item, submitId, wav, { extra: reading ? `&reading=${encodeURIComponent(reading)}` : "" });
+  assert.equal(s.status, 200, s.text);
+  assert.deepEqual(heardOf(s.body), heard, "what the engine heard");
+  assert.equal(heldFlags(who)?.length, 1, "one flag held");
+  return (await answer(who, item, submitId, { tones: true })).body;
 }
+/** 空调 said kòng tiáo: the reader reads kōng, the engine hears the fourth tone (kòng's). */
+const KONG4 = [["kōng", "off", 4], ["tiáo", "ok", null]];
+const airCon = (who) => speakItem(who, "空调", "air conditioner");
+const missedOn = (b, chars) => assert.deepEqual([b.review.rating, b.toneMiss?.syllables.map((x) => x.char)], [1, chars]);
 
 test("speak-it: a heard tone another reading of the character has fails nothing unless the reading is settled", async () => {
-  // 空 alone is read kōng; said kòng, a right reading for "free time".
   const lin = await someone();
-  const kong = await speakItem(lin, "空", "free time");
-  const s1 = crypto.randomUUID();
-  const sc = await score(lin, kong, s1, clip([4]));
-  assert.equal(sc.status, 200, sc.text);
-  assert.deepEqual(heardOf(sc.body), [["kōng", "off", 4]], "the engine heard the other reading");
-  assert.deepEqual(heldFlags(lin), [], "dropped from the hold");
-  unchanged((await answer(lin, kong, s1, { tones: true })).body);
+  // 空 alone is read kōng; said kòng, a right reading for "free time".
+  unchanged(await heardThenAnswer(lin, await speakItem(lin, "空", "free time"), clip([4]), [["kōng", "off", 4]]));
   // 中 alone is read zhōng; said zhòng ("to hit the mark").
-  const zhong = await speakItem(lin, "中", "to hit the mark");
-  const s3 = crypto.randomUUID();
-  const sl = await score(lin, zhong, s3, clip([4]));
-  assert.deepEqual(heardOf(sl.body), [["zhōng", "off", 4]]);
-  assert.deepEqual(heldFlags(lin), []);
-  unchanged((await answer(lin, zhong, s3, { tones: true })).body);
-  // 空调 with no settled reading: dropped too.
-  const { item, submitId } = await airCon(lin);
-  assert.deepEqual(heldFlags(lin), []);
-  unchanged((await answer(lin, item, submitId, { tones: true })).body);
+  unchanged(await heardThenAnswer(lin, await speakItem(lin, "中", "to hit the mark"), clip([4]), [["zhōng", "off", 4]]));
+  unchanged(await heardThenAnswer(lin, await airCon(lin), clip([4, 2]), KONG4));
 });
 
-test("speak-it: a stored phrase reading, the learner's own choice or the shared list settles it, so the flag stands; a recap's guess doesn't", async () => {
-  const missed = async (who, extra) => {
-    const { item, submitId } = await airCon(who, extra);
-    assert.equal(heldFlags(who)?.length, 1, "the flag is held");
-    const r = await answer(who, item, submitId, { tones: true });
-    assert.deepEqual([r.body.review.rating, r.body.toneMiss?.syllables.map((x) => x.char)], [1, ["空"]]);
-  };
-  // A stored reading sent with the score (Practice sends phrases.reading).
-  await missed(await someone(), `&reading=${encodeURIComponent("kōng tiáo")}`);
+test("speak-it: only the learner's own choice by hand or the shared list settles a reading, read at answer time", async () => {
   // The learner's own choice by hand.
   const lin = await someone();
   await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kōng tiáo', 'confirmed', 'user')", [lin.learnerId, lin.languageId]);
-  await missed(lin);
-  // A recap's guess: dropped still.
+  missedOn(await heardThenAnswer(lin, await airCon(lin), clip([4, 2]), KONG4), ["空"]);
+  // Made between the score and the answer: it counts (read at answer time).
+  const ann = await someone();
+  const it = await airCon(ann);
+  const sub = crypto.randomUUID();
+  await score(ann, it, sub, clip([4, 2]));
+  await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kōng tiáo', 'confirmed', 'user')", [ann.learnerId, ann.languageId]);
+  missedOn((await answer(ann, it, sub, { tones: true })).body, ["空"]);
+  // A recap's guess settles nothing.
   const mei = await someone();
   await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kōng tiáo', 'confirmed', 'recap')", [mei.learnerId, mei.languageId]);
-  await airCon(mei);
-  assert.deepEqual(heldFlags(mei), []);
+  unchanged(await heardThenAnswer(mei, await airCon(mei), clip([4, 2]), KONG4));
   // A choice reading it otherwise (kòng) settles nothing for a score of kōng.
   const kai = await someone();
   await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '空调', '空调', 'kòng tiáo', 'corrected', 'user')", [kai.learnerId, kai.languageId]);
-  await airCon(kai);
-  assert.deepEqual(heldFlags(kai), []);
+  unchanged(await heardThenAnswer(kai, await airCon(kai), clip([4, 2]), KONG4));
   // The shared list's active entry, for everyone.
   await q("insert into shared_readings (key, word, reading, scope, status, source) values ('空调', '空调', 'kōng tiáo', 'all', 'active', 'admin')");
   try {
-    await missed(await someone());
+    const sam = await someone();
+    missedOn(await heardThenAnswer(sam, await airCon(sam), clip([4, 2]), KONG4), ["空"]);
   } finally {
     await q("delete from shared_readings where key = '空调'");
+  }
+});
+
+/** 教室 said jiào shì (a classroom: right, and the reader's reading)
+ *  where the score was made against a reading of jiāo. */
+const JIAO = [["jiāo", "off", 4], ["shì", "ok", null]];
+const classroom = (who) => speakItem(who, "教室", "classroom");
+
+test("speak-it: a reading the page sends, a recap's guess or a GLOSS hint in phrases.reading can't make a miss", async () => {
+  // The page's `reading`, for a phrase with none stored: either way round.
+  const lin = await someone();
+  unchanged(await heardThenAnswer(lin, await airCon(lin), clip([4, 2]), KONG4, { reading: "kōng tiáo" }));
+  const ann = await someone();
+  unchanged(await heardThenAnswer(ann, await classroom(ann), clip([4, 4]), JIAO, { reading: "jiāo shì" }));
+  // A recap's suggestion (unconfirmed) written into phrases.reading by the
+  // real path, reaching the queue item Practice scores with.
+  const mei = await someone();
+  const p = await classroom(mei);
+  assert.equal(await saveRecapReading(testDb.db, profileOf(mei), { key: "教室", word: "教室", reading: "jiāo shì", kind: "suggested" }), true);
+  assert.equal(await rereadPhrases(profileOf(mei), "zh-CN", "教室"), 1);
+  const item = await itemOf(mei, p.phraseId);
+  assert.equal(item.reading, "jiāo shì");
+  unchanged(await heardThenAnswer(mei, item, clip([4, 4]), JIAO));
+  // A GLOSS hint: recordGlosses writes the dojo master's reading to the
+  // same column.
+  const kai = await someone();
+  const g = await classroom(kai);
+  await q("update phrases set reading = 'jiāo shì' where id = $1", [g.phraseId]);
+  const gi = await itemOf(kai, g.phraseId);
+  assert.equal(gi.reading, "jiāo shì");
+  unchanged(await heardThenAnswer(kai, gi, clip([4, 4]), JIAO));
+});
+
+test("speak-it: a stale queued reading after the learner corrected the word mid-session makes no miss", async () => {
+  const lin = await someone();
+  const p = await classroom(lin);
+  await saveRecapReading(testDb.db, profileOf(lin), { key: "教室", word: "教室", reading: "jiāo shì", kind: "suggested" });
+  await rereadPhrases(profileOf(lin), "zh-CN", "教室");
+  // The session's queue is loaded with the recap's reading...
+  const item = await itemOf(lin, p.phraseId);
+  assert.equal(item.reading, "jiāo shì");
+  // ...then the learner corrects the word on the character card.
+  const fix = await lin.call("POST", "/api/readings", { word: "教室", reading: "jiào shì", kind: "corrected" });
+  assert.equal(fix.status, 200, fix.text);
+  // The queued item, said as corrected: no miss.
+  unchanged(await heardThenAnswer(lin, item, clip([4, 4]), JIAO));
+});
+
+test("speak-it: a later syllable of a word said in the neutral tone fails nothing (东西, 医生, 出来)", async () => {
+  const lin = await someone();
+  for (const [text, meaning, shapes] of [["东西", "thing", [1, 4]], ["医生", "doctor", [1, 4]], ["出来", "to come out", [1, 4]]]) {
+    const item = await speakItem(lin, text, meaning);
+    const submitId = crypto.randomUUID();
+    const s = await score(lin, item, submitId, clip(shapes));
+    assert.equal(s.status, 200, s.text);
+    assert.equal(s.body.syllables[1].verdict, "off", `${text}: the engine flags the last syllable`);
+    assert.ok(heldFlags(lin)?.some((f) => f.place === 2), `${text}: held as made`);
+    unchanged((await answer(lin, item, submitId, { tones: true })).body);
   }
 });
 
