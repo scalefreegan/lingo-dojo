@@ -4338,10 +4338,11 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   migration: the verdict stays `wrong` (the CHECK's own word). Settling a
   doubtful flag, at answer time, reads the learner's hand-made
   `reading_corrections` and the active `shared_readings` for words with no
-  hand choice (`settleHeld` in toneReview.ts, through `listCorrections` and
+  hand choice (scope `tw` only in a zh-TW language, `all` otherwise) (`settleHeld` in toneReview.ts, through `listCorrections` and
   `activeList`), only when a flag is in doubt; `phrases.reading` (recap or
   GLOSS) settles nothing. The rule is deliberately narrow (docs/VOICE.md
-  §Tones after the session): only a leading Han character, at its own
+  §Tones after the session): only a leading Han character (first, or after
+  sentence punctuation; never 一 or 不), at its own
   citation tone and not before a third tone, with one reading tone or a
   settled reading (zh-TW: settled only), can fail an answer.
   Nothing is written.

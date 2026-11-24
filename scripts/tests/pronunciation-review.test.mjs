@@ -174,7 +174,9 @@ test("leadingPlaces: the first Han character and one directly after punctuation,
   assert.deepEqual([...leadingPlaces("妈")], [1]);
   assert.deepEqual([...leadingPlaces("听听")], [1]);
   assert.deepEqual([...leadingPlaces("他只买，本事。东西")], [1, 4, 6]);
-  assert.deepEqual([...leadingPlaces("「空」 长")], [1, 2]);
+  // Only sentence punctuation starts a place: not brackets, quotes, …, / or 、.
+  assert.deepEqual([...leadingPlaces("「空」 长")], [1]);
+  assert.deepEqual([...leadingPlaces("妈! 他? 你; 好: 我. 八, 九")], [1, 2, 3, 4, 5, 6, 7]);
   assert.deepEqual([...leadingPlaces("ok 妈")], [1]);
   assert.deepEqual([...leadingPlaces("")], []);
 });
@@ -227,6 +229,23 @@ test("settleFlags: in a zh-TW language only a settled reading fails (播放, 夕
   assert.deepEqual(settleFlags([xi], { readingsOf: ro, text: "夕陽", tw: true }), []);
   assert.deepEqual(settleFlags([bo], { readingsOf: ro, text: "播放", tw: true, settled: new Set([1]) }), [bo]);
   assert.deepEqual(settleFlags([bo], { readingsOf: ro, text: "播放" }), [bo], "zh-CN: one reading tone fails");
+});
+
+test("settleFlags: brackets, 、 and … don't start a place, and 一 / 不 never fail (快（一）点儿, 一、两个, （听）听, 出（来）, 一…就…)", () => {
+  const ro = (c) => ({ 一: ["yī"], 不: ["bù"], 听: ["tīng"], 来: ["lái"], 就: ["jiù"], 妈: ["mā"], 两: ["liǎng"], 快: ["kuài"] })[c] ?? [];
+  const f = (char, place, pinyin, expectedTone) => ({ char, place, pinyin, expectedTone, heardTone: 3 });
+  for (const [text, flag] of [
+    ["快（一）点儿", f("一", 2, "yī", 1)],
+    ["一、两个", f("两", 2, "liǎng", 3)],
+    ["（听）听", f("听", 2, "tīng", 1)],
+    ["出（来）", f("来", 2, "lái", 2)],
+    ["一…就…", f("就", 2, "jiù", 4)],
+  ]) assert.deepEqual(settleFlags([flag], { readingsOf: ro, text, settled: new Set([flag.place]) }), [], text);
+  // 一 and 不 first, settled or not.
+  for (const flag of [f("一", 1, "yī", 1), f("不", 1, "bù", 4)]) assert.deepEqual(settleFlags([flag], { readingsOf: ro, text: flag.char + "好", settled: new Set([1]) }), [], flag.char);
+  // 妈 after ， still can.
+  const ma = f("妈", 2, "mā", 1);
+  assert.deepEqual(settleFlags([ma], { readingsOf: ro, text: "好，妈" }), [ma]);
 });
 
 test("settledPlaces: an entry in the text giving that place the syllable it was scored as", () => {

@@ -2727,7 +2727,10 @@ a share (the engine doesn't judge them).
   (when in doubt, no miss): a flag can fail the answer only when all
   hold.
   - **Position**: it is on the phrase's first Han character, or on a Han
-    character directly after punctuation (`leadingPlaces`). Every other
+    character directly after sentence punctuation (`leadingPlaces`: ，。！？；：
+    and , . ! ? ; : only; brackets, quotes, …, / and 、 don't break the
+    sandhi context: 快（一）点儿, 一、两个). It is never 一 or 不, anywhere,
+    settled or not: their tone always rests on the neighbour. Every other
     syllable may be said in the neutral tone or changed by its neighbours
     (听听 tīng ting, 尝尝, 本事 běn shi, 东西 dōng xi, 医生 yī sheng, 出来,
     只买 zhí mǎi), and no word table says which, so none of them can make a
@@ -2750,7 +2753,8 @@ a share (the engine doesn't judge them).
     (`reading_corrections`, source `user`, corrected or confirmed; one
     made on the character card mid-session counts at once), else an active
     shared-list entry for a word the learner has no hand choice for (the
-    learner's own outranks the shared list), giving that character the
+    learner's own outranks the shared list; a zh-TW language takes only
+    entries of scope `tw`, a zh-CN one only `all`), giving that character the
     very syllable it was scored as (`settledPlaces`).
   - **Nothing the page sends settles a reading**: the score's `reading`
     (Practice sends `phrases.reading`, which a recap's unconfirmed

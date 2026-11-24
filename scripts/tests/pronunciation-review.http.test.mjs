@@ -578,6 +578,31 @@ test("speak-it: in a zh-TW language only the learner's settled reading can make 
   missedOn((await answer(kim, it2, s2, { tones: true })).body, ["他"]);
 });
 
+test("speak-it: in zh-TW a shared entry settles only when it is a Taiwan one", async () => {
+  const TW = { ...MANDARIN, name: "Lan", targetVariant: "Taiwan Mandarin" };
+  const said = async (who) => {
+    const it = await speakItem(who, "他們", "they");
+    const sid = crypto.randomUUID();
+    await score(who, it, sid, clip([4, 1]));
+    assert.ok(heldFlags(who)?.some((f) => f.place === 1), "a flag on 他");
+    return (await answer(who, it, sid, { tones: true })).body;
+  };
+  // An "all" entry (written from a zh-CN profile, say): no miss in zh-TW.
+  await q("insert into shared_readings (key, word, reading, scope, status, source) values ('他们', '他們', 'tā men', 'all', 'active', 'admin')");
+  try {
+    unchanged(await said(await someone([{ ...TW, name: "Ada" }])));
+  } finally {
+    await q("delete from shared_readings where key = '他们'");
+  }
+  // A "tw" entry settles.
+  await q("insert into shared_readings (key, word, reading, scope, status, source) values ('他们', '他們', 'tā men', 'tw', 'active', 'admin')");
+  try {
+    missedOn(await said(await someone([{ ...TW, name: "Bea" }])), ["他"]);
+  } finally {
+    await q("delete from shared_readings where key = '他们'");
+  }
+});
+
 test("speak-it: tones and the hold's parameters are checked", async () => {
   const lin = await someone();
   const d = await speakItem(lin, "吗", "question particle");

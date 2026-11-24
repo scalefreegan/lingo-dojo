@@ -121,7 +121,7 @@ export function peekPracticeTones(learnerId: string, languageId: string): FlagNo
  * What settles a Mandarin word's reading for this learner
  * (pronunciation-review.mjs settleFlags), and nothing else does: their own
  * corrections and confirmations made by hand, and the shared list's active
- * entries (Taiwan-only ones in a zh-TW language only). A recap's guess isn't
+ * entries (in a zh-TW language its Taiwan ones only, else only "all"). A recap's guess isn't
  * the learner's choice and settles nothing here.
  */
 async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
@@ -133,7 +133,9 @@ async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word
   const ownKeys = new Set(own.map((c) => c.key));
   return [
     ...own.map(({ word, key, reading }) => ({ word, key, reading })),
-    ...shared.entries.filter((e) => (e.scope === "all" || tw) && !ownKeys.has(e.key)).map(({ word, key, reading }) => ({ word, key, reading })),
+    // zh-TW takes only Taiwan entries: an "all" one may carry the mainland
+    // tone (播放 bō fàng) the Taiwan rule exists to keep out.
+    ...shared.entries.filter((e) => (tw ? e.scope === "tw" : e.scope === "all") && !ownKeys.has(e.key)).map(({ word, key, reading }) => ({ word, key, reading })),
   ];
 }
 

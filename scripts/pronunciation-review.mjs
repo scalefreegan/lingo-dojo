@@ -338,10 +338,16 @@ export function settledPlaces(text, entries, scored) {
   return out;
 }
 
+/** Sentence punctuation, the only marks that start a new leading place:
+ *  brackets, quotes, …, / and 、 don't break the engine's sandhi context
+ *  (快（一）点儿, 一、两个). */
+const SENTENCE_PUNCT = new Set([..."，。！？；：,.!?;:"]);
+
 /**
  * The places (1-based, among `text`'s Han characters) that may fail a
  * speak-it answer by position: the phrase's first Han character, and a Han
- * character directly after punctuation (spaces between allowed). Any other
+ * character directly after sentence punctuation (，。！？；： or , . ! ? ; :,
+ * spaces between allowed). Any other
  * syllable may be said in the neutral tone or changed by its neighbours
  * (听听 tīng ting, 东西 dōng xi, 医生 yī sheng, 只买 zhí mǎi), and no word
  * table says which, so none of them can make a miss. Deliberately narrow.
@@ -354,7 +360,7 @@ export function leadingPlaces(text) {
     if (/\s/u.test(c)) continue;
     if (/\p{Script=Han}/u.test(c)) {
       place++;
-      if (place === 1 || /\p{P}/u.test(prev)) out.add(place);
+      if (place === 1 || SENTENCE_PUNCT.has(prev)) out.add(place);
     }
     prev = c;
   }
@@ -386,6 +392,8 @@ export function settleFlags(flags, { readingsOf, text, settled = new Set(), read
   const leading = leadingPlaces(text);
   return (flags ?? []).filter((f) => {
     if (!leading.has(f.place)) return false;
+    // 一 and 不: their tone always rests on the neighbour.
+    if (f.char === "一" || f.char === "不") return false;
     const own = parsePinyin(f.pinyin).tone;
     if (f.expectedTone !== own) return false;
     const next = readings[f.place + 1];
