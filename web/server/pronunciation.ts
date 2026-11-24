@@ -519,6 +519,21 @@ function holdLive(take: () => boolean, give: () => void, signal: AbortSignal): (
   return release;
 }
 
+/** Live scoring's one Azure call per user at a time (LIVE_SCORER): taken
+ *  when the call starts, a 429 inside assessWithAzure (a "busy" fallback)
+ *  when held, freed when it ends or its score is dropped. */
+function liveAzureSlot(user: string, signal: AbortSignal) {
+  return async <T,>(fn: () => Promise<T>): Promise<T> => {
+    const release = holdLive(() => !liveAzure.has(user) && !!liveAzure.add(user), () => void liveAzure.delete(user), signal);
+    if (!release) throw new HttpError(429, "busy");
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  };
+}
+
 /**
  * Score a Go-tab turn's recording against what transcription heard (stage
  * 2, ld-ne0.3; docs/VOICE.md §Pronunciation in conversation): the score
@@ -554,16 +569,7 @@ export async function scoreLive(
     let azure: AzureAssessment | null = null;
     let fallback: PronunciationScoreReply["fallback"] = choice.why;
     if (choice.engine === "azure") {
-      const user = ctx.user.id;
-      const slot = async <T,>(fn: () => Promise<T>): Promise<T> => {
-        const release = holdLive(() => !liveAzure.has(user) && !!liveAzure.add(user), () => void liveAzure.delete(user), signal);
-        if (!release) throw new HttpError(429, "busy");
-        try {
-          return await fn();
-        } finally {
-          release();
-        }
-      };
+      const slot = liveAzureSlot(ctx.user.id, signal);
       // No `res`: nothing waits on this request's connection (the
       // transcription has answered); the call ends on its own short timeout
       // or when the score is dropped.
@@ -583,6 +589,51 @@ export async function scoreLive(
     return { skip: "failed" };
   } finally {
     releaseWorker();
+  }
+}
+
+/** A live turn's word check (ld-ne0.17), or why there is none. */
+export type LiveWordScore = { marks: WordMarks; azure: AzureAssessment } | { skip: "unavailable" | "busy" | "audio" | "failed" };
+type WordMarks = ReturnType<typeof wordMarks>;
+
+/** Whether a live word check can run at all: Azure's keys are set (there
+ *  is no local word scorer). Asked before a turn's recording is held. */
+export function liveWordsReady(): boolean {
+  return scoringEngine({ keys: voiceKeys() }).engine === "azure";
+}
+
+/**
+ * Check a Go-tab turn's words against what transcription heard, in a
+ * language beyond Mandarin (ld-ne0.17; docs/VOICE.md §Words in
+ * conversation): the word check's one Azure call (ld-ne0.16), on live
+ * scoring's budgets as scoreLive is: one live Azure call per user at a
+ * time, LIVE_SCORER's short timeout, the user's AZURE_PER_MINUTE, stopped
+ * by `signal` when its score is dropped. No worker: reading Azure's reply
+ * into marks is a few microseconds. `text` and `locale` are liveWordTarget's
+ * (a phrase the word check takes, an Azure locale). Nothing here may fail
+ * the turn: without Azure (no keys, busy, past the minute's cap, a failure,
+ * a take with no speech) there is no check, never a guess.
+ */
+export async function scoreLiveWords(ctx: LearnerCtx, { wav, text, locale, signal }: { wav: Uint8Array; text: string; locale: string; signal: AbortSignal }): Promise<LiveWordScore> {
+  if (signal.aborted) return { skip: "failed" };
+  if (readScoreAudio(wav).error !== undefined) return { skip: "audio" };
+  const keys = voiceKeys();
+  if (scoringEngine({ keys }).engine !== "azure") return { skip: "unavailable" };
+  try {
+    const out = await assessWithAzure(null, ctx, { wav, text, locale, keys, words: true }, undefined, { slot: liveAzureSlot(ctx.user.id, signal), timeoutMs: LIVE_SCORER.azureTimeoutMs, signal });
+    if (!("azure" in out)) {
+      console.log(`[lingo-dojo] pronunciation (live): words not checked (${out.fallback})`);
+      return { skip: out.fallback === "busy" || out.fallback === "limit" ? "busy" : "failed" };
+    }
+    const marks = wordMarks(out.azure, text, { locale });
+    // The count only, as the score route logs: never the text.
+    console.log(`[lingo-dojo] pronunciation (live): azure (words), ${marks.words.length} words`);
+    return { marks, azure: out.azure };
+  } catch (e) {
+    const kind = e instanceof ScoreFailure ? e.kind : "error";
+    if (kind === "cancelled") console.log("[lingo-dojo] pronunciation (live): the word check stopped; its score was dropped");
+    else console.error(`[lingo-dojo] pronunciation (live): the word check failed (${kind}); the turn goes on without it`);
+    return { skip: "failed" };
   }
 }
 

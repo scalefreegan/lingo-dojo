@@ -5,14 +5,17 @@ import { CharTerm } from "./Ruby";
 import { SpeakerCritter } from "./Mascots";
 import { haystack, layout, mightMatch } from "../gloss";
 import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
-import type { LivePronunciation, VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
+import type { LivePronunciation, PronunciationWordsReply, VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
 import { ToneCheck } from "./ToneCheck";
+import { WordCheck } from "./WordCheck";
 
 /** A learner line's tone marks (docs/VOICE.md §Pronunciation in
  *  conversation): the turn's reply, and the take it scored (the recording,
  *  held in the page's memory only). */
 export interface LineTones {
-  reply: LivePronunciation;
+  /** Tone marks (Mandarin), or word marks (`kind: "words"`) in a language
+   *  the word check measures (ld-ne0.17). */
+  reply: LivePronunciation | PronunciationWordsReply;
   take: Blob | null;
 }
 
@@ -72,8 +75,8 @@ export const Transcript = memo(function Transcript({
   /** ☆ Star in the definition card (the active language's phrase bank):
    *  only where the transcript is in that language. */
   canStar?: boolean;
-  /** Tone marks under the learner's own lines, by entry index (a live
-   *  adult Mandarin session with the coaching dial on). */
+  /** Tone or word marks under the learner's own lines, by entry index (a
+   *  live adult session with the coaching dial on). */
   tones?: ReadonlyMap<number, LineTones>;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
@@ -287,7 +290,7 @@ const TranscriptRow = memo(function TranscriptRow({
         {bubble}
         {tones && (
           <div className="w-full rounded-xl border border-line bg-raised px-2.5 py-2" data-testid="voice-learner-tones">
-            <ToneCheck reply={tones.reply} take={tones.take} kids={false} />
+            {"kind" in tones.reply ? <WordCheck reply={tones.reply} take={tones.take} kids={false} live /> : <ToneCheck reply={tones.reply} take={tones.take} kids={false} />}
           </div>
         )}
       </li>

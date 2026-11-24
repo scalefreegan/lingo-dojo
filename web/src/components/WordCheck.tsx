@@ -43,10 +43,11 @@ function wordSummary(reply: PronunciationWordsReply, kids: boolean): string {
   return [`${ok} right`, off ? `${off} off` : "", unsure ? `${unsure} not sure` : ""].filter(Boolean).join(" · ");
 }
 
-function wordLine(w: PronunciationWord): string {
+function wordLine(w: PronunciationWord, live = false): string {
   if (w.verdict === "ok") return "Sounded right.";
+  if (w.reason === "live_bar") return "Possibly a slip, but not certain enough to flag in conversation.";
   if (w.verdict === "off" && w.why === "missing") return "This word wasn't heard as itself: it may have been skipped, or said as another word. Listen to the model and try it again.";
-  if (w.verdict === "off") return "This didn't sound like the word: other sounds were heard here. Listen to the model and try it again.";
+  if (w.verdict === "off") return live ? "This didn't sound clearly like the word: other sounds were heard here." : "This didn't sound like the word: other sounds were heard here. Listen to the model and try it again.";
   return "Not sure: the check couldn't tell clearly here.";
 }
 
@@ -73,9 +74,12 @@ export interface WordCheckProps {
   onPlayModel?: () => void;
   modelBusy?: boolean;
   modelError?: string | null;
+  /** Under the learner's own line in a Go-tab turn (ld-ne0.17): the phrase
+   *  is what transcription heard, and there is no model clip of it. */
+  live?: boolean;
 }
 
-export function WordCheck({ reply, take, kids, onPlayModel, modelBusy = false, modelError = null }: WordCheckProps) {
+export function WordCheck({ reply, take, kids, onPlayModel, modelBusy = false, modelError = null, live = false }: WordCheckProps) {
   const [open, setOpen] = useState<number | null>(null);
   const player = useSpanPlayer(take);
   const summary = wordSummary(reply, kids);
@@ -150,14 +154,14 @@ export function WordCheck({ reply, take, kids, onPlayModel, modelBusy = false, m
           <span aria-hidden="true">{summary}</span>
         </p>
       )}
-      <p className={`${fine} text-fg-3`}>Checked by Azure, word by word. Tap a word to hear yours against the model.</p>
+      <p className={`${fine} text-fg-3`}>{live ? "Checked by Azure against what was heard, word by word. Tap a word to hear yours." : "Checked by Azure, word by word. Tap a word to hear yours against the model."}</p>
       {shown && (
         <div className="flex flex-col gap-2 rounded-xl border border-line bg-raised p-3" data-testid="word-detail">
           <p className="text-sm text-fg">
             <span lang={reply.locale} className="mr-2 text-lg font-medium">
               {shown.text}
             </span>
-            {wordLine(shown)}
+            {wordLine(shown, live)}
           </p>
           {shown.sounds?.length ? <p className={`${fine} text-fg-2`}>Weakest sound{shown.sounds.length > 1 ? "s" : ""}: {shown.sounds.map((x) => x.name).join(", ")}</p> : null}
           {typeof shown.score === "number" && <p className={`${fine} text-fg-3`}>Azure's score for the word: {shown.score} of 100.</p>}

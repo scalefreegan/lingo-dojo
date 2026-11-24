@@ -888,10 +888,12 @@ export interface VoiceTurnReply {
   /** The review block this turn's prompt carried (chosen as of the
    *  conversation's start), so the Go tab shows what the session revisits. */
   review?: RecallReview;
-  /** The tone marks of the learner's message (an adult Mandarin session
-   *  with the dial on, when its transcription was scored in time); absent
-   *  otherwise, and always for kids. */
-  pronunciation?: LivePronunciation;
+  /** The marks of the learner's message (an adult session with the dial
+   *  on, when its transcription was scored in time): tone marks in a
+   *  Mandarin session, word marks (`kind: "words"`, the live bar applied,
+   *  no `overall`; ld-ne0.17) in a language the word check measures.
+   *  Absent otherwise, and always for kids. */
+  pronunciation?: LivePronunciation | PronunciationWordsReply;
 }
 
 /** POST /api/voice/turn with `Accept: text/event-stream` (docs/VOICE.md
@@ -1322,8 +1324,9 @@ export interface PronunciationWord {
    *  hear the word as itself at all (`missing`: skipped, or said as another). */
   why?: "sound" | "missing";
   /** Why it is `unsure`: its score is between the bars or Azure misaligned
-   *  it (`unclear`), or Azure reported something else (`other`). */
-  reason?: "unclear" | "other";
+   *  it (`unclear`), Azure reported something else (`other`), or, in a
+   *  Go-tab turn only, a miss below the live bar (`live_bar`). */
+  reason?: "unclear" | "other" | "live_bar";
   /** Azure's 0–100 accuracy for the word (adults only). */
   score?: number | null;
   /** Where the word is in the recording (adults only). */

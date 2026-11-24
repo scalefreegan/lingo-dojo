@@ -17,10 +17,15 @@
 //    wasn't told about;
 //  - the coaching dial (`coachingOf`), a word from the browser like `pace`;
 //  - the compact per-syllable record kept for stage 3 (`liveRecord`).
+//  - the word check's half, for languages beyond Mandarin (ld-ne0.17; the
+//    last section): what may be scored (`liveWordTarget`), its own live bar
+//    (`liveWordFlags`) and marks (`liveWordsReply`). Nothing of it is kept.
 //
 // Pure ESM with no server imports, like scripts/pronunciation-app.mjs.
 
 import { SCORE_MAX_CHARS } from "./pronunciation-app.mjs";
+import { readWordText, wordCheckLocale } from "./pronunciation-words.mjs";
+import { unspacedLocale } from "../web/shared/word-check.ts";
 
 /* --------------------------------- the dial -------------------------------- */
 
@@ -191,4 +196,116 @@ export function liveRecord(result, flags) {
       endMs: Number.isFinite(s.endMs) ? s.endMs : null,
     };
   });
+}
+
+/* ------------------------- words, beyond Mandarin -------------------------- */
+
+// Live word checks (ld-ne0.17; docs/VOICE.md §Words in conversation): a
+// Go-tab turn in a language the word check measures (wordCheckLocale) is
+// assessed by Azure against its own transcript, as a Mandarin turn's tones
+// are. The marks and rules are ld-ne0.16's (pronunciation-words.mjs); what
+// is here is what differs in conversation.
+
+const GAPS = /[\p{P}\s]/gu;
+
+/** A text's letters, case-folded, punctuation and spaces dropped: what a
+ *  turn's message must match for the score of its transcription to be used
+ *  (the word check's `hanOf`). An edit of a letter is another text; a comma
+ *  added in the box is not. */
+export const wordsKey = (text) => String(text ?? "").normalize("NFC").toLowerCase().replace(GAPS, "");
+
+/**
+ * What a turn's transcript is checked against: `{ text, locale }` (the
+ * Azure locale), or `{ skip }`: "locale" (not a language the word check
+ * measures) or "text" (not a phrase it takes: readWordText's rules, so no
+ * digits or symbols, no letters of another script (a code-switched turn),
+ * and at most twelve words, thirty characters in Japanese; a longer turn is
+ * not cut into pieces, as a Mandarin one isn't).
+ */
+export function liveWordTarget(raw, locale) {
+  const azure = wordCheckLocale(locale);
+  if (!azure) return { skip: "locale" };
+  const t = readWordText(raw, azure);
+  if (t.error !== undefined) return { skip: "text" };
+  return { text: t.text, locale: azure };
+}
+
+/**
+ * The live bar for words, on top of WORD_RULES' own `off`. In conversation
+ * the reference is what speech-to-text heard, so the question changes: not
+ * "did they say this phrase" but "did the words they said sound right".
+ * Each rule only ever withholds a flag:
+ *
+ *  - only Azure's `Mispronunciation` flags (`why: "sound"`), never a word it
+ *    didn't hear (`Omission`): the transcriber heard that word and Azure
+ *    didn't, which is two recognisers disagreeing, not a learner's slip;
+ *  - and when Azure omitted or inserted any word, nothing in the turn
+ *    flags: its alignment and the transcript disagree about which words
+ *    were said, and a wrong word pulls Azure's scores onto its neighbours
+ *    (both of the proof's false alarms sat beside a swapped word);
+ *  - `flagBelow`: the word's score must be under this, stricter than the
+ *    explicit check's 30. From the proof's trade-off table (docs/
+ *    pronunciation-proof.md, "Omission unsure, guard on"): at 20, 1 of 535
+ *    right words was off (none of the 391 in correctly read phrases), and
+ *    11 of 247 words of an English voice reading the language;
+ *  - `maxOffShare`: as for tones, a turn where more than this share of the
+ *    words is off (floor of one) is more likely a misheard transcript.
+ *
+ * Not measured on running speech: the proof is short read phrases in
+ * synthesized voices, and its cached replies were not re-scored with the
+ * two turn-level rules (they can only lower the counts above).
+ */
+export const LIVE_WORD_RULES = Object.freeze({ flagBelow: 20, maxOffShare: 1 / 3 });
+
+/**
+ * The words of a turn's marks (wordMarks) that pass the live bar, as
+ * indexes into `marks.words`, lowest score first (ties keep the line's
+ * order). `azure` is the parsed reply the marks were made from. [] when
+ * none, or when the turn as a whole looks unreliable.
+ */
+export function liveWordFlags(marks, azure, rules = LIVE_WORD_RULES) {
+  const words = Array.isArray(marks?.words) ? marks.words : [];
+  if (!words.length || marks.heard === "none") return [];
+  const all = Array.isArray(azure?.words) ? azure.words : [];
+  if (all.some((w) => w?.error === "Omission" || w?.error === "Insertion")) return [];
+  // A word Azure sent that couldn't be placed on the line: the counts
+  // differ, and "word 2 of their line" would point at the wrong word.
+  if (words.length !== all.length) return [];
+  const offs = words.filter((w) => w?.verdict === "off").length;
+  if (offs > Math.max(1, Math.floor(words.length * rules.maxOffShare))) return [];
+  const flagged = [];
+  words.forEach((w, i) => {
+    if (w?.verdict !== "off" || w.why !== "sound") return;
+    if (!(Number.isFinite(w.score) && w.score < rules.flagBelow)) return;
+    flagged.push(i);
+  });
+  return flagged.sort((a, b) => words[a].score - words[b].score || a - b);
+}
+
+/** What the dojo master is told about one flagged word (scripts/voice.mjs
+ *  wordPronunciationBlock): the word as the line writes it and its place
+ *  among the line's words (1-based, so a word said twice is told apart).
+ *  No place where words aren't spaced (Japanese): the split is Azure's, and
+ *  "word 3" of an unspaced line names nothing a reader could count to. */
+export function liveWordNote(marks, i, locale = "") {
+  const word = marks.words[i].text;
+  return unspacedLocale(String(locale)) ? { word } : { word, place: i + 1 };
+}
+
+/**
+ * The Go tab's marks for the learner's line, from the word check's reply
+ * (wordsReply, adults): an `off` that isn't in `flags` is shown as "not
+ * sure" (reason "live_bar"), so the screen never shows a miss the dojo
+ * master wasn't told about, a word Azure didn't hear among them. No
+ * `overall`: one number for a sentence said in conversation would read as a
+ * grade. A reply that heard none of the words stays as it is (no verdicts).
+ */
+export function liveWordsReply(reply, flags) {
+  const keep = new Set(flags);
+  const words = reply.words.map((w, i) => {
+    if (w.verdict !== "off" || keep.has(i)) return w;
+    const { why: _w, sounds: _s, ...rest } = w;
+    return { ...rest, verdict: "unsure", reason: "live_bar" };
+  });
+  return { ...reply, words, overall: null };
 }

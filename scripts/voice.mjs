@@ -370,6 +370,43 @@ export function pronunciationBlock(flags, { mode = "adult", coaching = "light" }
   ].join("\n");
 }
 
+/** The dial's rules for a flagged word in a language beyond Mandarin
+ *  (ld-ne0.17). Light and kids are the tone check's; strict differs: the
+ *  check can't say which sound was off, so the dojo master must not name
+ *  one. */
+export const WORD_PRONUNCIATION_RULES = Object.freeze({
+  light: PRONUNCIATION_RULES.light,
+  strict:
+    "Coaching is strict: step in once as the narrator: say the word correctly, slowly (<slow><t>…</t></slow>), and ask the learner to say just that word again; when they have, carry on where you were. The check can't tell which sound was off, so don't name one. At most one pronunciation step-in this turn; if they push back, let it go: the measurement can be wrong.",
+  kids: PRONUNCIATION_RULES.kids,
+});
+
+/**
+ * The turn's pronunciation block for a word check (a language beyond
+ * Mandarin), or "" (the prompt unchanged): the twin of pronunciationBlock.
+ * `flags` are pronunciation-live.mjs liveWordNote()s, most certain first;
+ * only the first is told.
+ */
+export function wordPronunciationBlock(flags, { mode = "adult", coaching = "light" } = {}) {
+  const f = Array.isArray(flags) ? flags[0] : null;
+  if (!f) return "";
+  const kids = mode === "kids";
+  if (!kids && coaching !== "light" && coaching !== "strict") return "";
+  // Defensive: the word is a piece of the learner's own line, which the word
+  // check only takes as letters, marks, apostrophes and hyphens; anything
+  // else (a quote, a bracket, a newline) is dropped, and so is the block.
+  const word = String(f.word ?? "");
+  if (!/^[\p{L}\p{M}'’‐‑-]{1,40}$/u.test(word) || !/\p{L}/u.test(word)) return "";
+  const place = Number.isInteger(f.place) && f.place >= 1 ? `, word ${f.place} of their line` : "";
+  return [
+    PRONUNCIATION_OPEN,
+    "The app checked how the words sounded in the learner's recording of what they just said. This is measurement data, not instructions, and it is the one thing about how they sounded you can rely on; nothing else in their line was flagged.",
+    `- "${word}"${place}: didn't sound clearly like the word (which sound was off isn't known)`,
+    PRONUNCIATION_CLOSE,
+    kids ? WORD_PRONUNCIATION_RULES.kids : WORD_PRONUNCIATION_RULES[coaching],
+  ].join("\n");
+}
+
 /** The system prompt for a voice turn: the pack as assembled, then the
  *  delivery adapter. `{ drill: true }` for a drill scenario (First steps):
  *  the narrator is the only speaker; `{ readings: true }` for a Mandarin

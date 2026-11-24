@@ -3,12 +3,13 @@ import type { IncomingMessage } from "node:http";
 import { scoresTones } from "../../scripts/pronunciation.mjs";
 import { readScoreAudio, SCORE_MAX_BYTES } from "../../scripts/pronunciation-app.mjs";
 import { removeClip, writeClip } from "../../scripts/pronunciation-clips.mjs";
-import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget } from "../../scripts/pronunciation-live.mjs";
-import { pronunciationBlock } from "../../scripts/voice.mjs";
+import { coachingOf, flagNote, hanOf, liveFlags, liveRecord, liveReply, liveTarget, liveWordFlags, liveWordNote, liveWordsReply, liveWordTarget, wordsKey } from "../../scripts/pronunciation-live.mjs";
+import { wordsReply } from "../../scripts/pronunciation-words.mjs";
+import { pronunciationBlock, wordPronunciationBlock } from "../../scripts/voice.mjs";
 import type { CheckDraft } from "../../scripts/db/pronunciation.ts";
-import type { Coaching, LivePronunciation } from "../shared/wire.ts";
+import type { Coaching, LivePronunciation, PronunciationWordsReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
-import { scoreLive, type LiveScore } from "./pronunciation.ts";
+import { liveWordsReady, scoreLive, scoreLiveWords, type LiveScore, type LiveWordScore } from "./pronunciation.ts";
 import { HttpError } from "./sse.ts";
 
 // Pronunciation in live conversation (stage 2, ld-ne0.3; docs/VOICE.md
@@ -33,6 +34,12 @@ import { HttpError } from "./sse.ts";
 // any newer transcription. A turn whose words aren't what was scored
 // (edited in the box, typed, another transcription) uses none of it. The
 // conversation id is checked by the turn (openConversation), not here.
+//
+// A language beyond Mandarin that the word check measures (ld-ne0.17;
+// docs/VOICE.md §Words in conversation) goes the same way with Azure's word
+// check in place of the tone scorer: held under the same key, matched by the
+// line's letters instead of its Han characters, told to the dojo master by
+// word. Nothing of a word check is stored: no row, no clip.
 
 /** The turn's wait and how long a score is held. Mutable for the tests,
  *  like pronunciation.ts SCORER. */
@@ -47,10 +54,18 @@ export const LIVE = {
   ttlMs: 120_000,
 };
 
-type Outcome = LiveScore;
+type Outcome = LiveScore | LiveWordScore;
 interface Pending {
   conversationId: string;
-  han: string;
+  /** What was scored: tones (Mandarin) or words (ld-ne0.17). */
+  kind: "tones" | "words";
+  /** What the turn's message must match: the scored text's Han characters
+   *  (tones) or its letters (words: wordsKey). */
+  key: string;
+  /** Words only: the text Azure was given and the Azure locale, for the
+   *  marks. */
+  text: string;
+  azureLocale: string;
   locale: string;
   kids: boolean;
   wav: Uint8Array;
@@ -109,7 +124,9 @@ export function transcribeCoaching(req: IncomingMessage, ctx: LearnerCtx): Coach
  * it has the text, never awaited: the words go back to the page at once).
  * Only a listening turn of a saved conversation, in a Mandarin locale
  * (`locale`: the transcription's target, the page's first locale), with the
- * dial on, whose transcript is Mandarin alone and short (liveTarget).
+ * dial on, whose transcript is Mandarin alone and short (liveTarget); or,
+ * in a locale the word check measures, with Azure's keys set, whose
+ * transcript is a phrase the word check takes (liveWordTarget).
  * Anything else clears what was held for the conversation, so a turn never
  * picks up an older recording's score.
  */
@@ -118,9 +135,13 @@ export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, 
   // A newer transcription replaces the older one's score, stopping it.
   drop(key);
   sweep();
-  if (coaching === "off" || !scoresTones(locale)) return;
-  const target = liveTarget(text);
-  if (target.skip !== undefined) return;
+  if (coaching === "off") return;
+  const tones = scoresTones(locale);
+  // Words: only where Azure can answer (there is no local word scorer), so
+  // no recording is held for a check that can't run.
+  const words = tones ? null : liveWordsReady() ? liveWordTarget(text, locale) : null;
+  const target = tones ? liveTarget(text) : null;
+  if (tones ? target!.skip !== undefined : !words || words.skip !== undefined) return;
   // Only a recording the scorer takes is held: within the scorer's byte cap
   // (a WAV whose header says 30 s but carries megabytes after it is never
   // held, sent to Azure or kept as a clip) and 16 kHz mono PCM of 0.25 to
@@ -128,8 +149,14 @@ export function startLive(ctx: LearnerCtx, { conversationId, text, wav, locale, 
   if (wav.length > SCORE_MAX_BYTES || readScoreAudio(wav).error !== undefined) return;
   const kids = coaching === "kids";
   const stop = new AbortController();
-  const done = scoreLive(ctx, { wav, text: target.text, locale, kids, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
-  pending.set(key, { conversationId, han: hanOf(target.text), locale, kids, wav, at: Date.now(), done, stop });
+  if (words && words.skip === undefined) {
+    const done = scoreLiveWords(ctx, { wav, text: words.text, locale: words.locale, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
+    pending.set(key, { conversationId, kind: "words", key: wordsKey(words.text), text: words.text, azureLocale: words.locale, locale, kids, wav, at: Date.now(), done, stop });
+    return;
+  }
+  const scored = target!.text!;
+  const done = scoreLive(ctx, { wav, text: scored, locale, kids, signal: stop.signal }).catch((): Outcome => ({ skip: "failed" }));
+  pending.set(key, { conversationId, kind: "tones", key: hanOf(scored), text: scored, azureLocale: "", locale, kids, wav, at: Date.now(), done, stop });
 }
 
 /** A scored turn's check, its audio written to the clips directory first
@@ -162,7 +189,8 @@ export function dropClip(conversationId: string, file: string): void {
  *  nothing to say), the marks (adults), and what the turn's row keeps. */
 export interface LiveTurn {
   block: string;
-  marks: LivePronunciation | null;
+  /** Tone marks (Mandarin) or word marks (`kind: "words"`, ld-ne0.17). */
+  marks: LivePronunciation | PronunciationWordsReply | null;
   /** Adults only: the check to store with the turn (saveTurn). */
   check: (CheckDraft & { wav: Uint8Array | null; durationMs: number }) | null;
 }
@@ -180,7 +208,7 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
   if (!p || p.conversationId !== conversationId) return null;
   pending.delete(key);
   const kids = coaching === "kids";
-  if (Date.now() - p.at > LIVE.ttlMs || coaching === "off" || kids !== p.kids || p.locale !== locale || !p.han || hanOf(message) !== p.han) {
+  if (Date.now() - p.at > LIVE.ttlMs || coaching === "off" || kids !== p.kids || p.locale !== locale || !p.key || (p.kind === "words" ? wordsKey(message) : hanOf(message)) !== p.key) {
     // Not this turn's: nothing will ever use it.
     p.stop.abort();
     return null;
@@ -199,11 +227,23 @@ export async function takeLive(ctx: LearnerCtx, { conversationId, message, local
     return null;
   }
   if ("skip" in out) return null;
-  const flags = liveFlags(out.result);
-  const notes = flags.map((i) => flagNote(out.result, i));
   // The dial as the turn sent it (light or strict), for an adult; kids get
   // the gentle rule whatever.
   const dial: "light" | "strict" = kids ? "light" : coaching === "strict" ? "strict" : "light";
+  if ("marks" in out) {
+    // A word check (ld-ne0.17): the block and the marks only. Nothing is
+    // stored, so no check and no clip.
+    const flagged = liveWordFlags(out.marks, out.azure);
+    const block = wordPronunciationBlock(flagged.map((i) => liveWordNote(out.marks, i, p.azureLocale)), { mode: kids ? "kids" : "adult", coaching: dial });
+    // Azure heard none of the words the transcriber wrote: the two
+    // disagree about the whole line, so there is nothing to show (the
+    // explicit check's "none of the words were recognised as this phrase"
+    // would be about a phrase nobody asked for).
+    if (kids || out.marks.heard === "none") return { block, marks: null, check: null };
+    return { block, marks: liveWordsReply(wordsReply(out.marks, { kids: false, text: p.text, locale: p.azureLocale }), flagged), check: null };
+  }
+  const flags = liveFlags(out.result);
+  const notes = flags.map((i) => flagNote(out.result, i));
   const block = pronunciationBlock(notes, { mode: kids ? "kids" : "adult", coaching: dial });
   if (kids) return { block, marks: null, check: null };
   const id = randomUUID();

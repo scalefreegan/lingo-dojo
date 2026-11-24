@@ -4277,6 +4277,11 @@ Stage 2 of pronunciation feedback (docs/VOICE.md §Pronunciation in
 conversation): an adult Mandarin Go-tab turn's tone check is kept with the
 turn, and a flagged turn's recording is kept on this Mac.
 
+Only tone checks are kept. A live word check in another language
+(ld-ne0.17, docs/VOICE.md §Words in conversation) stores nothing: no row
+here, no clip. The table's `syllables` are tone-shaped and feed the recap's
+Tones section and the tone trend; word marks would need their own shape.
+
 **`pronunciation_checks`**, one row per scored learner turn:
 
 | column | |

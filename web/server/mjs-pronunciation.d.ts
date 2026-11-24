@@ -181,6 +181,18 @@ declare module "*/scripts/pronunciation-live.mjs" {
   export function flagNote(result: ScoreResult, i: number): FlagNote;
   export function liveReply(reply: Reply, flags: number[]): Reply;
   export function liveRecord(result: ScoreResult, flags: number[]): Record<string, unknown>[];
+  type WordsReply = import("../shared/wire.ts").PronunciationWordsReply;
+  type WordMarks = { words: import("../../scripts/pronunciation-words.mjs").WordMark[]; overall: number | null; heard?: "none" };
+  export interface WordNote {
+    word: string;
+    place?: number;
+  }
+  export function wordsKey(text: unknown): string;
+  export function liveWordTarget(raw: unknown, locale: string): { text: string; locale: string; skip?: undefined } | { skip: "locale" | "text"; text?: undefined; locale?: undefined };
+  export const LIVE_WORD_RULES: Readonly<{ flagBelow: number; maxOffShare: number }>;
+  export function liveWordFlags(marks: WordMarks, azure: import("../../scripts/pronunciation.mjs").AzureAssessment, rules?: typeof LIVE_WORD_RULES): number[];
+  export function liveWordNote(marks: WordMarks, i: number, locale?: string): WordNote;
+  export function liveWordsReply(reply: WordsReply, flags: number[]): WordsReply;
 }
 
 declare module "*/scripts/pronunciation-review.mjs" {
