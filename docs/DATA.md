@@ -2434,7 +2434,9 @@ is proposed; none of it was asked in the interview.
 ## Hosting on Tailscale
 
 The app is served from this Mac to the tailnet: `tailscale serve` proxies
-`https://<mac>.<tailnet>.ts.net` to `http://localhost:38400`. That gives other
+`https://<mac>.<tailnet>.ts.net:38400` to `http://localhost:38400` (its own
+port since 2026-11-24, so the sibling apps can share the name on theirs; it
+was the bare name on 443 before, which works the same). That gives other
 devices the HTTPS the microphone needs, and only tailnet devices can reach it.
 Setup steps for the owner are in the README ("Serving on your tailnet").
 
@@ -2442,7 +2444,7 @@ Built (bead 10):
 
 - The server keeps listening on localhost only (`server.host` is untouched).
   Tailscale is the one way in, and Postgres stays on localhost.
-- The serve target is `tailscale serve --bg --https=443 http://localhost:38400`,
+- The serve target is `tailscale serve --bg --https=38400 http://localhost:38400`,
   with the name and scheme. Vite's default host `localhost` resolves to `::1`
   first on this machine, so the server listens on `[::1]:38400` only and
   `127.0.0.1:38400` does not answer. A bare port (`tailscale serve 38400`)
@@ -2473,8 +2475,9 @@ Built (bead 10):
   `Host` is the public name as the client sent it, `X-Forwarded-Host` the same,
   `X-Forwarded-Proto: https` for TLS requests, `X-Forwarded-For` set to the
   peer's tailnet address (set, not appended to a client-sent value), and `Origin` passes
-  through. So the same-origin check (`Origin` host equals `Host`) passes for
-  the tailnet name, the cookie gets `Secure` from `X-Forwarded-Proto`, and the
+  through. So the same-origin check (`Origin` host equals `Host`, port
+  included on both sides) passes for the tailnet name on any serve port
+  (`LINGO_PUBLIC_HOST` stays a bare hostname: Vite's host check ignores the port), the cookie gets `Secure` from `X-Forwarded-Proto`, and the
   login throttle keys on the forwarded address. Tests pin all three.
 - The `Secure` cookie rule (Auth) and the per-conversation turn lock
   (Conversations).
@@ -2485,7 +2488,9 @@ Deployment notes:
   also sent to any other app served on the same hostname, on any port or
   path (the sibling apps on 38100–38300, if they are served under the same
   `<mac>.<tailnet>.ts.net`). Those apps could read it from their requests.
-  Serve Lingo Dojo under its own hostname, or keep the others off this one.
+  Accepted on this install (2026-11-24): the others served there are the
+  owner's own apps, each on its own port. Serve nothing there that shouldn't
+  see the cookie.
 - Known limits, left as they are: a `Host` with a trailing dot (`localhost.`)
   is not treated as local (first-run refuses it, which fails closed), and the
   login throttle trusts `X-Forwarded-For` from any loopback peer, so another
