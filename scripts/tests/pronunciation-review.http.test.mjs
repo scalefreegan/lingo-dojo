@@ -558,6 +558,26 @@ test("speak-it: the learner's own choice outranks the shared list for the same w
   }
 });
 
+test("speak-it: in a zh-TW language only the learner's settled reading can make a miss", async () => {
+  const TW = { ...MANDARIN, name: "Lan", targetVariant: "Taiwan Mandarin" };
+  const lan = await someone([TW]);
+  // 他們 with 他 said falling: a clear miss in zh-CN, none here unsettled.
+  const item = await speakItem(lan, "他們", "they");
+  const s1 = crypto.randomUUID();
+  const sc = await score(lan, item, s1, clip([4, 1]));
+  assert.equal(sc.status, 200, sc.text);
+  assert.equal(sc.body.locale, "zh-TW");
+  assert.ok(heldFlags(lan)?.some((f) => f.place === 1), `a flag on 他: ${JSON.stringify(heardOf(sc.body))}`);
+  unchanged((await answer(lan, item, s1, { tones: true })).body);
+  // Settled by hand (another learner): the miss stands.
+  const kim = await someone([{ ...TW, name: "Kim" }]);
+  await q("insert into reading_corrections (learner_id, language_profile_id, key, word, reading, kind, source) values ($1, $2, '他们', '他們', 'tā men', 'confirmed', 'user')", [kim.learnerId, kim.languageId]);
+  const it2 = await speakItem(kim, "他們", "they");
+  const s2 = crypto.randomUUID();
+  await score(kim, it2, s2, clip([4, 1]));
+  missedOn((await answer(kim, it2, s2, { tones: true })).body, ["他"]);
+});
+
 test("speak-it: tones and the hold's parameters are checked", async () => {
   const lin = await someone();
   const d = await speakItem(lin, "吗", "question particle");

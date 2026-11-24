@@ -206,8 +206,9 @@ declare module "*/scripts/pronunciation-review.mjs" {
   export function practiceToneMiss(outcome: Outcome, flags: FlagNote[] | null, said?: { answer?: string | null; text?: string | null }): { outcome: Outcome; toneMiss: ToneMiss | null };
   export function settledPlaces(text: string, entries: { word: string; key?: string; reading: string }[], scored: Map<number, string>): Set<number>;
   export function leadingPlaces(text: string): Set<number>;
-  export function settleFlags(flags: FlagNote[], opts: { readingsOf: (char: string) => string[]; text: string; settled?: Set<number> }): FlagNote[];
-  export function doubtfulFlags(flags: FlagNote[], opts: { readingsOf: (char: string) => string[]; text: string }): boolean;
+  export interface SettleOpts { readingsOf: (char: string) => string[]; text: string; settled?: Set<number>; readings?: (string | null)[]; tw?: boolean }
+  export function settleFlags(flags: FlagNote[], opts: SettleOpts): FlagNote[];
+  export function doubtfulFlags(flags: FlagNote[], opts: SettleOpts): boolean;
   export function storedToneMiss(v: unknown): ToneMiss | null;
 }
 

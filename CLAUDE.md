@@ -197,10 +197,12 @@ docs/VOICE.md §Tones after the session; pure rules
   alternate or an accepted synonym), and only flags the reading vouches
   for, decided at answer time (`settleHeld`/`settleFlags`), a
   deliberately narrow rule: only on the phrase's first Han character or
-  one directly after punctuation, and only where that character has one
-  reading tone or its reading is settled by the learner's own hand choice,
-  else the shared list (own outranks shared; never the page's `reading`, a
-  recap guess or a GLOSS hint). Check waits at most 2.5 s;
+  one directly after punctuation, never where sandhi or context set the
+  expected tone or a third tone precedes a third, and only where that
+  character has one reading tone or its reading is settled by the
+  learner's own hand choice, else the shared list (own outranks shared;
+  never the page's `reading`, a recap guess or a GLOSS hint); in zh-TW
+  only a settled reading. Check waits at most 2.5 s;
   leaving sends the answer without `tones`; one check per take.
 - Kids: nothing shown (the routes answer empty), nothing stored, no hold.
 Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words

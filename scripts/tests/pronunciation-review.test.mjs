@@ -168,7 +168,7 @@ test("practiceToneMiss: only when what was said is the phrase's own characters",
 
 const READINGS = { 空: ["kōng", "kòng", "kǒng"], 长: ["cháng", "zhǎng"], 妈: ["mā"], 么: ["me", "mó"], 只: ["zhī", "zhǐ"], 他: ["tā"], 买: ["mǎi"], 听: ["tīng"], 尝: ["cháng"], 本: ["běn"], 事: ["shì"], 东: ["dōng"], 西: ["xī"] };
 const readingsOf = (c) => READINGS[c] ?? [];
-const flagAt = (char, place, pinyin, heardTone = 4) => ({ char, place, pinyin, expectedTone: 0, heardTone });
+const flagAt = (char, place, pinyin, heardTone = 4) => ({ char, place, pinyin, expectedTone: { ā: 1, ī: 1, ō: 1, ē: 1, ū: 1, á: 2, í: 2, ó: 2, é: 2, ú: 2, ǎ: 3, ǐ: 3, ǒ: 3, ě: 3, ǔ: 3, à: 4, ì: 4, ò: 4, è: 4, ù: 4 }[[...pinyin].find((c) => "āīōēūáíóéúǎǐǒěǔàìòèù".includes(c))] ?? 0, heardTone });
 
 test("leadingPlaces: the first Han character and one directly after punctuation, nothing else", () => {
   assert.deepEqual([...leadingPlaces("妈")], [1]);
@@ -201,6 +201,32 @@ test("settleFlags B: a character with more than one reading tone, neutral includ
   // Settled: it stands.
   assert.deepEqual(settleFlags([zhi], { readingsOf, text: "只买", settled: new Set([1]) }), [zhi]);
   assert.deepEqual(settleFlags([kong], { readingsOf, text: "空", settled: new Set([1]) }), [kong]);
+});
+
+test("settleFlags: never a tone set by sandhi or context, nor a third tone before a third (一路, 请倒茶, 我种花, 嫂嫂)", () => {
+  const ro = (c) => ({ 一: ["yī"], 请: ["qǐng"], 我: ["wǒ"], 嫂: ["sǎo"], 妈: ["mā"], 他: ["tā"] })[c] ?? [];
+  const f = (char, pinyin, expectedTone) => ({ char, place: 1, pinyin, expectedTone, heardTone: 1 });
+  for (const [text, flag] of [["一路公交车", f("一", "yī", 2)], ["请倒茶", f("请", "qǐng", 2)], ["我种花", f("我", "wǒ", 2)], ["嫂嫂", f("嫂", "sǎo", 2)]]) {
+    assert.deepEqual(settleFlags([flag], { readingsOf: ro, text, settled: new Set([1]) }), [], text);
+  }
+  // Expected its own third tone, the next syllable read third (a hint or
+  // the reader may be wrong about either): dropped, settled or not.
+  const wo = f("我", "wǒ", 3);
+  assert.deepEqual(settleFlags([wo], { readingsOf: ro, text: "我好", readings: [null, "wǒ", "hǎo"], settled: new Set([1]) }), []);
+  // Before another tone it stands.
+  assert.deepEqual(settleFlags([wo], { readingsOf: ro, text: "我来", readings: [null, "wǒ", "lái"] }), [wo]);
+  // The positive cases still fail.
+  for (const [text, flag] of [["妈", f("妈", "mā", 1)], ["他", f("他", "tā", 1)]]) assert.deepEqual(settleFlags([flag], { readingsOf: ro, text }), [flag]);
+});
+
+test("settleFlags: in a zh-TW language only a settled reading fails (播放, 夕陽)", () => {
+  const ro = (c) => ({ 播: ["bō"], 夕: ["xī"] })[c] ?? [];
+  const bo = { char: "播", place: 1, pinyin: "bō", expectedTone: 1, heardTone: 4 };
+  const xi = { char: "夕", place: 1, pinyin: "xī", expectedTone: 1, heardTone: 4 };
+  assert.deepEqual(settleFlags([bo], { readingsOf: ro, text: "播放", tw: true }), []);
+  assert.deepEqual(settleFlags([xi], { readingsOf: ro, text: "夕陽", tw: true }), []);
+  assert.deepEqual(settleFlags([bo], { readingsOf: ro, text: "播放", tw: true, settled: new Set([1]) }), [bo]);
+  assert.deepEqual(settleFlags([bo], { readingsOf: ro, text: "播放" }), [bo], "zh-CN: one reading tone fails");
 });
 
 test("settledPlaces: an entry in the text giving that place the syllable it was scored as", () => {

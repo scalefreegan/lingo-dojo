@@ -2724,7 +2724,7 @@ a share (the engine doesn't judge them).
   boolean, else 400). The flags are held as the engine made them; **which
   may fail the answer is decided at answer time** (`settleHeld` in
   toneReview.ts, `settleFlags`). The rule is **deliberately narrow**
-  (when in doubt, no miss): a flag can fail the answer only when both
+  (when in doubt, no miss): a flag can fail the answer only when all
   hold.
   - **Position**: it is on the phrase's first Han character, or on a Han
     character directly after punctuation (`leadingPlaces`). Every other
@@ -2732,6 +2732,15 @@ a share (the engine doesn't judge them).
     (听听 tīng ting, 尝尝, 本事 běn shi, 东西 dōng xi, 医生 yī sheng, 出来,
     只买 zhí mǎi), and no word table says which, so none of them can make a
     miss. (No word segmenter: it splits 听|听 and 本|事.)
+  - **Context**: its expected tone is its own citation tone (not one that
+    sandhi or context set: 一路 yí, 请倒茶 and 我种花 qíng / wó, 嫂嫂), and
+    it isn't a third tone before a syllable the reader reads third (the
+    half-third and 3-3 cases rest on the neighbour's reading, which may be
+    wrong). This holds even for a settled reading.
+  - **Taiwan**: in a zh-TW language only a settled reading can fail. The
+    reader's tables give many characters the mainland tone only (播 bò,
+    夕 xì, 突 tú, 叔 shú in Taiwan), and the repo has no machine-readable
+    Taiwan source.
   - **Readings**: every reading of its character (`charReadings`) has
     the same tone (妈 mā, 他 tā), or its reading is settled. A character
     whose readings differ in tone, the neutral tone counting as a tone of

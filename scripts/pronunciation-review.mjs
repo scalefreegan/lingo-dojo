@@ -365,6 +365,14 @@ export function leadingPlaces(text) {
  * The flags that may fail a Practice answer; when in doubt, no miss. The
  * rule is deliberately narrow:
  *  - Position: only a leading place (leadingPlaces) can fail.
+ *  - Context: never a syllable whose expected tone isn't its own citation
+ *    tone (sandhi or context set it: 一路 yí, 请倒茶 qíng), nor a third tone
+ *    whose next syllable is read third (the half-third and 3-3 cases rest
+ *    on the neighbour's reading, which may be wrong), settled or not.
+ *    `readings`: the reader's syllable at each Han place (index = place).
+ *  - Taiwan (`tw`): only a settled reading; the reader's tables give many
+ *    characters the mainland tone only (播 bō, Taiwan bò) and no
+ *    machine-readable Taiwan source exists.
  *  - Readings: a character with more than one reading tone (neutral
  *    included: 空 kōng/kòng, 只 zhī/zhǐ, 么 me/mó) fails nothing unless
  *    that place's reading is settled (`settled`, settledPlaces over the
@@ -374,11 +382,16 @@ export function leadingPlaces(text) {
  * mā said falling), or a settled one.
  * `readingsOf(char)`: every reading of the character (zh.ts charReadings).
  */
-export function settleFlags(flags, { readingsOf, text, settled = new Set() }) {
+export function settleFlags(flags, { readingsOf, text, settled = new Set(), readings = [], tw = false }) {
   const leading = leadingPlaces(text);
   return (flags ?? []).filter((f) => {
     if (!leading.has(f.place)) return false;
+    const own = parsePinyin(f.pinyin).tone;
+    if (f.expectedTone !== own) return false;
+    const next = readings[f.place + 1];
+    if (own === 3 && next && parsePinyin(next).tone === 3) return false;
     if (settled.has(f.place)) return true;
+    if (tw) return false;
     const tones = new Set([f.pinyin, ...(readingsOf(f.char) ?? [])].map((r) => parsePinyin(r).tone));
     return tones.size === 1;
   });
@@ -386,8 +399,8 @@ export function settleFlags(flags, { readingsOf, text, settled = new Set() }) {
 
 /** Whether a settled reading could change settleFlags' answer (so the
  *  settling entries need reading at all). */
-export function doubtfulFlags(flags, { readingsOf, text }) {
-  return settleFlags(flags, { readingsOf, text }).length !== settleFlags(flags, { readingsOf, text, settled: new Set((flags ?? []).map((f) => f.place)) }).length;
+export function doubtfulFlags(flags, opts) {
+  return settleFlags(flags, opts).length !== settleFlags(flags, { ...opts, settled: new Set((flags ?? []).map((f) => f.place)) }).length;
 }
 
 /** A stored tone miss (reviews.card_before.tone_miss) read back for the

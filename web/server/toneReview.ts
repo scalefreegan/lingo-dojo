@@ -1,7 +1,7 @@
 import type { ServerResponse } from "node:http";
 import { compareTones, doubtfulFlags, readTrendDays, sessionTones, settledPlaces, settleFlags, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
-import { charReadings } from "../src/script/zh.ts";
+import { charReadings, readCodePoints } from "../src/script/zh.ts";
 import { readUtcOffset } from "../../scripts/practice.mjs";
 import { sessionChecks, toneConversation, trendChecks } from "../../scripts/db/pronunciation.ts";
 import { listCorrections } from "../../scripts/db/readings.ts";
@@ -118,8 +118,8 @@ export function peekPracticeTones(learnerId: string, languageId: string): FlagNo
 }
 
 /**
- * What settles a Mandarin word's reading for this learner, beyond a stored
- * phrase reading (pronunciation-review.mjs settleFlags): their own
+ * What settles a Mandarin word's reading for this learner
+ * (pronunciation-review.mjs settleFlags), and nothing else does: their own
  * corrections and confirmations made by hand, and the shared list's active
  * entries (Taiwan-only ones in a zh-TW language only). A recap's guess isn't
  * the learner's choice and settles nothing here.
@@ -150,9 +150,14 @@ export async function settleHeld(ctx: LearnerCtx, text: string, flags: FlagNote[
   if (!flags.length) return flags;
   const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
   const readingsOf = (c: string) => charReadings(c, locale);
+  // The reader's syllable at each Han place (1-based), for the 3-3 rule.
+  const cps = [...text];
+  const read = readCodePoints(text, locale, { cache: false });
+  const readings: (string | null)[] = [null, ...cps.flatMap((c, k) => (/\p{Script=Han}/u.test(c) ? [read[k] ?? null] : []))];
+  const opts = { readingsOf, text, readings, tw: /-TW$/i.test(locale) };
   // The readings are read only when one could change the outcome; the
   // rule itself always runs.
-  if (!doubtfulFlags(flags, { readingsOf, text })) return settleFlags(flags, { readingsOf, text });
+  if (!doubtfulFlags(flags, opts)) return settleFlags(flags, opts);
   const scored = new Map(flags.map((f) => [f.place, f.pinyin] as [number, string]));
-  return settleFlags(flags, { readingsOf, text, settled: settledPlaces(text, await settlingReadings(ctx, locale), scored) });
+  return settleFlags(flags, { ...opts, settled: settledPlaces(text, await settlingReadings(ctx, locale), scored) });
 }

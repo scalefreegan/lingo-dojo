@@ -4341,8 +4341,9 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   hand choice (`settleHeld` in toneReview.ts, through `listCorrections` and
   `activeList`), only when a flag is in doubt; `phrases.reading` (recap or
   GLOSS) settles nothing. The rule is deliberately narrow (docs/VOICE.md
-  §Tones after the session): only a leading Han character with one
-  reading tone, or a settled reading, can fail an answer.
+  §Tones after the session): only a leading Han character, at its own
+  citation tone and not before a third tone, with one reading tone or a
+  settled reading (zh-TW: settled only), can fail an answer.
   Nothing is written.
 - Tests: `scripts/tests/db-migration-0022.test.mjs` (the table, its
   checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`
