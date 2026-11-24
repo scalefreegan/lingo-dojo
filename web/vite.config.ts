@@ -33,7 +33,7 @@ export default defineConfig({
   // content/ and exports/ sit outside web/, so content edits (by the agent or
   // an editor) never trigger a reload; the UI re-reads them through the API.
   // HMR needs no options behind `tailscale serve`: the Vite client opens its
-  // websocket on the page's own host and port, wss on an https page (443
+  // websocket on the page's own host and port, wss on an https page (the serve port
   // here), and Tailscale Serve proxies websocket upgrades to 38400.
   // server.ws.clientPort is only for a proxy port the browser can't see.
   // `host` stays default: "localhost", which Node resolves to ::1 first, so on
