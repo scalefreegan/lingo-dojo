@@ -1115,7 +1115,7 @@ docs/VOICE.md §Saved conversations is the user's side.
    learners never block each other and one conversation still can't race itself.
    As built: an in-memory lock keyed by learner and conversation id (by login
    session for a turn with no conversation), so another learner naming the
-   id touches nothing; a second turn is a plain 409, and a turn while End
+   id touches nothing; a second turn is a 409 `turn_running`, and a turn while End
    holds it is 409 `conversation_ended`. One server process, so in memory is
    enough; it would not hold across processes.
 5. A **History** view (Library tab) lists past conversations with
