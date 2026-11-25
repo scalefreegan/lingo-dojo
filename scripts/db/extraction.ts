@@ -323,15 +323,11 @@ async function writeBank(
   const flagKey = (f: { line: string; place: number }) => `${f.place}\u0000${f.line}`;
   const rightFlags = new Set([...dismissed.values()].flatMap((t) => (t.flags ?? []).map(flagKey)));
   const misses = new Map<string, ReturnType<typeof sessionToneMisses>[number]>();
-  let counted = 0;
   for (const m of sessionToneMisses(toneLines, [...own, ...plan.keep.filter((k) => !ownBy.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true }))])) {
     if (failed.has(m.norm)) continue;
     const row = ownBy.get(m.norm) ?? existing.find((p) => p.norm === m.norm);
     const gone = !!row && dismissed.has(row.id);
     if (!gone && m.flags.every((f) => rightFlags.has(flagKey(f)))) continue;
-    // The cap is on what would be failed: not a suspended phrase, nor a
-    // dismissed miss (kept only to be shown as one).
-    if (!gone && !row?.suspended && ++counted > MAX_SESSION_TONE_MISSES) continue;
     misses.set(m.norm, m);
   }
 
@@ -399,6 +395,9 @@ async function writeBank(
   const reviewed = new Set<string>();
   const events = new Map<string, RecapEvent>();
   const tones: StoredToneMiss[] = [];
+  // The cap counts the misses written, so one skipped (suspended, dismissed,
+  // reviewed since) takes no place.
+  let counted = 0;
   const grades = [
     ...plan.events.map((e) => ({ ...e, event: true, miss: e.skill === "produce" ? misses.get(e.norm) : undefined })),
     // A flagged phrase the model's events don't grade (said, and not
@@ -415,7 +414,7 @@ async function writeBank(
     const was = e.event ? e.rating : null;
     const miss = row && e.miss ? { phraseId: row.id, phrase: e.miss.text, line: e.miss.line, syllables: e.miss.syllables, flags: e.miss.flags, was, reviewed: false, dismissed: !!gone } : null;
     if (miss) tones.push(miss);
-    if (!e.event && gone) continue;
+    if (!e.event && (gone || counted >= MAX_SESSION_TONE_MISSES)) continue;
     // A suspended phrase is out of practice by the learner's choice.
     if (!row || row.suspended) continue;
     await mine.insertOrIgnore(cards, { phraseId: row.id, skill: e.skill });
@@ -426,7 +425,7 @@ async function writeBank(
     // grades what the learner knows now, and FSRS can't go back in time.
     if (card.last_review && new Date(card.last_review) > at) continue;
     const before: CardState = fromRow(card);
-    const tone = miss && !gone ? miss : null;
+    const tone = miss && !gone && counted < MAX_SESSION_TONE_MISSES ? miss : null;
     const rating = tone ? 1 : e.rating;
     const { card: next } = review(before, rating, at, { utcOffsetMinutes });
     await mine.update(cards, toRow(next), eq(cards.id, card.id));
@@ -442,7 +441,10 @@ async function writeBank(
     });
     reviewed.add(card.id);
     out.reviewed = true;
-    if (tone) tone.reviewed = true;
+    if (tone) {
+      tone.reviewed = true;
+      counted++;
+    }
   }
   // A dismissal this run had no use for (the flag didn't come up, or the
   // model failed the phrase itself) is kept for the next one.

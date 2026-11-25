@@ -379,6 +379,17 @@ test("the cap counts only what would be failed", async () => {
   const failed = (r) => (r.tones ?? []).filter((t) => t.reviewed).length;
   assert.equal(failed(await write(lines)), 10);
   assert.deepEqual((await write(lines, { events: all.slice(0, 10).map((c) => ({ phrase: c, kind: "corrected" })) })).tones.map((t) => t.phrase), [all[10]]);
+  // Ten practised since the session, before its recap: the other is failed.
+  const wen = await someone();
+  const w = await writer(wen);
+  for (const c of all) {
+    const p = await phrase(wen, c, c);
+    await q("update phrases set created_at = now() - interval '1 day' where id = $1", [p]);
+    if (c === all[10]) continue;
+    await mature(p, wen);
+    await q("update cards set last_review = now() + interval '1 minute' where phrase_id = $1", [p]);
+  }
+  assert.deepEqual((await w.write(lines)).tones.filter((t) => t.reviewed).map((t) => t.phrase), [all[10]]);
 });
 
 test("kids: a child's session with checks (there should be none) still fails and shows nothing", async () => {
