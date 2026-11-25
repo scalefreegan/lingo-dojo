@@ -139,9 +139,14 @@ export default function PracticeView() {
   }, [going]);
 
   // The counts, whenever the start screen shows (and after a session), for
-  // the mode picked: a phrase with several cards due counts once.
+  // the mode picked: a phrase with several cards due counts once. A round
+  // picked up after a reload needs them too: they carry the language its
+  // cards are read in (asked again at the next card, if that failed).
+  const inRound = items !== null;
+  const wanted = !inRound || !info;
+  const askedAt = inRound ? index : 0;
   useEffect(() => {
-    if (items) return;
+    if (!wanted) return;
     const ctrl = new AbortController();
     // After any answer still on its way (End during a speak-it check sends
     // the card's answer as the session closes), so the counts include it;
@@ -160,7 +165,7 @@ export default function PracticeView() {
       },
     );
     return () => ctrl.abort();
-  }, [items, reload, prefs.mode, prefs.direction]);
+  }, [wanted, askedAt, inRound, reload, prefs.mode, prefs.direction]);
 
   // Sentences being written for a started session: ask for the counts
   // again shortly, so they (and Start) catch up when they are in. The
@@ -207,6 +212,13 @@ export default function PracticeView() {
   // aids (pinyin/zhuyin for Mandarin) and their remembered setting.
   const locale = info?.language.locale ?? null;
 
+  if (going && !info && !error) {
+    return (
+      <p className="text-sm text-fg-3" role="status" data-testid="practice-restoring">
+        Picking up your round…
+      </p>
+    );
+  }
   if (items && index < items.length) {
     const item = items[index];
     return (
