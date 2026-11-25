@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LIVE_MAX_AGE_MS, liveKeeper, parseLive, withStored } from "../../web/src/liveSession.ts";
+import { LIVE_MAX_AGE_MS, endLeftSession, liveKeeper, parseLive, withStored } from "../../web/src/liveSession.ts";
 import { IDLE_END_MS } from "../conversations.mjs";
 
 const NOW = 1_800_000_000_000;
@@ -117,6 +117,31 @@ test("a lock that comes after the tab has let go is let go too", async (t) => {
   assert.equal(await asked, false);
   await soon();
   assert.equal(await liveKeeper("G").take(), true);
+});
+
+test("a language left with its Go tab off the page: its session is ended and dropped, another tab's is not", async (t) => {
+  const store = browser(t);
+  const ended = [];
+  const end = async (c) => void ended.push(c.id);
+  await endLeftSession("G", end);
+  assert.deepEqual(ended, [], "nothing kept");
+  const a = liveKeeper("G");
+  a.write(now());
+  await soon();
+  await endLeftSession("G", end);
+  assert.deepEqual([ended, store.size], [[], 1], "the other tab has it");
+  a.close();
+  await soon();
+  await endLeftSession("G", end);
+  assert.deepEqual([ended, store.size], [["c1"], 0]);
+  // One that had ended is only dropped, and the language is free again.
+  const b = liveKeeper("G");
+  assert.equal(await b.take(), true);
+  b.write(now({ ended: true }));
+  b.close();
+  await soon();
+  await endLeftSession("G", end);
+  assert.deepEqual([ended, store.size], [["c1"], 0]);
 });
 
 test("no locks in the browser: kept all the same; storage that refuses is no error", async (t) => {

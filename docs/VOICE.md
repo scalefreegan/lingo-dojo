@@ -1457,7 +1457,9 @@ A reload, planned or not, goes on with the session (ld-ch4).
   card's conversation after End. Written as each thing lands; a reply still
   streaming isn't part of it, as nothing of it is stored yet. Restart, New
   session, Close, a learner or language switch and logging out drop it.
-  Logging out drops every language's.
+  Logging out drops every language's. Opening the learner list doesn't:
+  the session goes on if the same learner comes back, and ends when another
+  is picked there (`endLeftSession`).
 - **Picked up** at the next load: the Go tab opens on the session, says
   "Picked up where you left off" and waits. It never starts to listen or
   play on its own. A session last spoken in two hours ago or more

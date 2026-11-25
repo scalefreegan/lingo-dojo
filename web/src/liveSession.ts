@@ -140,6 +140,17 @@ export function withStored(entries: VoiceHistoryItem[], start: number, stored: V
 
 const keyFor = (languageId: string) => languageKey(KEY, languageId);
 
+/** A language being left (a switch, logging out) while its Go tab isn't on
+ *  the page to end its own session: the learner list is open over it. `end`
+ *  ends a conversation; not another tab's session. */
+export async function endLeftSession(languageId: string, end: (c: LiveConversation) => Promise<void>): Promise<void> {
+  const keeper = liveKeeper(languageId);
+  if (!keeper.some() || !(await keeper.take())) return keeper.close();
+  const was = keeper.read()?.session;
+  keeper.drop();
+  if (was?.conversation && !was.ended) await end(was.conversation);
+}
+
 /** Logging out: no session of any language stays in this browser. */
 export function dropLiveSessions(): void {
   try {
