@@ -189,7 +189,7 @@ test("the turn lock is per login session: two devices on one account don't block
     assert.deepEqual([c.status, d.status].sort(), [200, 409], "two tabs share a session, and its lock");
     const locked = c.status === 409 ? c : d;
     assert.match(locked.body.error, /still answering/);
-    assert.equal(locked.body.code, undefined, "an ordinary 409, not stale_learner");
+    assert.equal(locked.body.code, "turn_running");
   } finally {
     fake.restore();
   }

@@ -1270,7 +1270,10 @@ still the envelope's whole text.
   `error` event) instead of falling back to the first reply.
 - **Stop** (or a reload, or leaving the page) closes the request; the
   server kills the run's process group, as it always did, and the lock is
-  free at once. Lines heard from a stopped or failed turn leave the
+  free once it has seen the close and the run has died. A message sent
+  meanwhile can get there first and is a 409 `turn_running`: the page that
+  dropped the turn sends it again for up to 3 s (`web/src/turnResend.ts`,
+  ld-x8l); another tab's turn is refused as ever. Lines heard from a stopped or failed turn leave the
   transcript: nothing of it was stored.
 - **The Go tab** (`VoicePanel` `runTurn`, `playLines` with a `LineFeed`):
   the first line shows and starts speaking at once; later lines join the

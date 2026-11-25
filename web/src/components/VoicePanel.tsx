@@ -26,6 +26,7 @@ import { conversationFate, redrawAdopted, turnsSettled } from "../conversationLi
 import { keepPage } from "../keepPage";
 import { liveKeeper, withStored, type LiveConversation, type LiveKeeper } from "../liveSession";
 import { keepPref, readPref } from "../prefs";
+import { resendTurn } from "../turnResend";
 import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { deferredVoiceTaken } from "../../shared/voice-cast.ts";
@@ -482,6 +483,9 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
   const sessionEpoch = useRef(0);
   const unsavedFrom = useRef<number | null>(restored?.unsavedFrom ?? null);
   const inFlight = useRef(new Map<string, Promise<unknown>>());
+  /** When this page last dropped a turn on its way, by its conversation
+   *  ("" unsaved): the server may hold that turn a moment longer (turnResend). */
+  const droppedTurns = useRef(new Map<string, number>());
   // How many times the conversation has been closed (closeConversation), and
   // the ids an End was already sent for.
   const closes = useRef(0);
@@ -1444,6 +1448,10 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
         const played = c ? turnPack : unsavedTurnPack(turnPack, drawnRef.current);
         const body: VoiceTurnRequest = { mode, pack: played, history: before, message, narratorGender: castRef.current?.narratorGender, elapsedMs, ...(mode === "adult" ? { coaching: coachingRef.current } : {}) };
         const req = voiceTurn(c ? { ...body, conversationId: c.id, conversationStart: c.start } : body, ctrl.signal, onLine);
+        const drop = () => droppedTurns.current.set(c?.id ?? "", Date.now());
+        ctrl.signal.addEventListener("abort", drop, { once: true });
+        const answered = () => ctrl.signal.removeEventListener("abort", drop);
+        req.then(answered, answered);
         if (c) {
           inFlight.current.set(c.id, req);
           const done = () => {
@@ -1453,10 +1461,12 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
         }
         return req;
       };
+      // Refused for the turn this one cut off: sent again when it has gone.
+      const sendTurn = (c: SavedConversation | null) => resendTurn(() => send(c), droppedTurns.current.get(c?.id ?? "") ?? null, ctrl.signal);
       let r: VoiceTurnReply;
       let sent = conv;
       try {
-        r = await send(conv);
+        r = await sendTurn(conv);
       } catch (e) {
         // The conversation is over (another device's End, two idle hours)
         // or gone (deleted in History). Nothing ran: start a new one from
@@ -1474,7 +1484,7 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
           unsavedFrom.current = before.length;
           setSaving({ on: false, why: "its conversation ended while you were away; the next turn saves it in a new one" });
         }
-        r = await send(sent);
+        r = await sendTurn(sent);
       }
       if (ctrl.signal.aborted || gen !== genRef.current) return;
       if (r.review) onReview?.(r.review);

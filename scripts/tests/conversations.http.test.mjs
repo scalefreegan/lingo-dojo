@@ -302,7 +302,7 @@ test("the lock is per conversation: two conversations proceed in parallel; one c
   assert.deepEqual([x.status, y.status].sort(), [200, 409]);
   const locked = x.status === 409 ? x : y;
   assert.match(locked.body.error, /still answering/);
-  assert.equal(locked.body.code, undefined, "an ordinary 409");
+  assert.equal(locked.body.code, "turn_running");
   assert.equal(runs() - before, 1, "the refused turn never reached claude");
   const rows = await stored(a.id);
   assert.deepEqual(rows.map((t) => t.idx), [0, 1, 2], "gap-free, one turn's worth");

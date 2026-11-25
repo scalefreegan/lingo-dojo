@@ -77,6 +77,7 @@ export type Conversation = typeof conversations.$inferSelect;
 
 const NO_CONVERSATION: ErrorCode = "no_conversation";
 const CONVERSATION_ENDED: ErrorCode = "conversation_ended";
+const TURN_RUNNING: ErrorCode = "turn_running";
 const ALREADY_SPOKEN: ErrorCode = "already_spoken";
 const NO_OTHER_SCENE: ErrorCode = "no_other_scene";
 
@@ -149,14 +150,15 @@ function hold(key: string, h: Omit<Hold, "done">): () => void {
 }
 
 /** Take the turn lock for a conversation (or, with none, the login
- *  session), or a 409: conversation_ended while End holds it, an ordinary
- *  409 while another turn does. Returns the release, to call on every way
+ *  session), or a 409: conversation_ended while End holds it, turn_running
+ *  while another turn does (the page sends it again if that turn is one it
+ *  just dropped: web/src/turnResend.ts). Returns the release, to call on every way
  *  out of the turn, refusals included. Synchronous on purpose. */
 export function takeTurnLock(learnerId: string, conversationId: string | null, sessionId: string): () => void {
   const key = turnLockKey(learnerId, conversationId, sessionId);
   const held = holds.get(key);
   if (held?.kind === "end") throw new HttpError(409, "that conversation has ended", CONVERSATION_ENDED);
-  if (held) throw new HttpError(409, "the dojo master is still answering the last turn");
+  if (held) throw new HttpError(409, "the dojo master is still answering the last turn", TURN_RUNNING);
   return hold(key, { kind: "turn", learnerId: conversationId ? learnerId : null, conversationId });
 }
 
