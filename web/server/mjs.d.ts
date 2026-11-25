@@ -189,6 +189,9 @@ declare module "*/scripts/voice.mjs" {
   export const MAX_GLOSSES: number;
   export const MAX_CHOICES: number;
   export function parseChoices(text: string): string[];
+  export function cleanChoice(raw: string): string;
+  export function spokenChoice(c: string): string | null;
+  export const PICK: string;
   export function parseStage(text: string, ids: string[]): string | null;
   export function oneLine(s: string): string;
   export const REPLAY_MAX_CHARS: number;

@@ -123,6 +123,7 @@ declare module "*/scripts/extraction.mjs" {
     role: "learner" | "master";
     text?: string | null;
     lines?: { text?: string; segments?: unknown[]; speaker?: string }[] | null;
+    choices?: string[] | null;
     fromClient?: boolean;
   }
   export const MAX_TRANSCRIPT_CHARS: number;

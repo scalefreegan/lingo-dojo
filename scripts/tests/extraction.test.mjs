@@ -273,3 +273,18 @@ test("parseExtraction: a phrase kept twice and a correction given twice are kept
   assert.equal(r.value.corrections.length, 1);
   assert.equal(r.dropped, 2);
 });
+
+test("a tapped phrase reads as tapped, with what was on screen; a session without any has the prompt it had", () => {
+  const turns = [
+    { role: "master", lines: [{ text: "You want a bag." }], choices: ["<t>¿Me da una bolsa?</t>", "<t>Nada más</t>"] },
+    { role: "learner", text: "[pick] ¿Me da una bolsa?" },
+    { role: "master", lines: [{ text: "Keep going?" }], choices: ["Keep going", "Slow down"] },
+    { role: "learner", text: "[direct] Keep going" },
+  ];
+  const t = sessionTranscript(turns);
+  assert.equal(t, "Dojo master: You want a bag. (on screen, to choose from: ¿Me da una bolsa? | Nada más)\nLearner: (tapped a choice) ¿Me da una bolsa?\nDojo master: Keep going?\nLearner: [direct] Keep going");
+  const ask = (transcript) => extractionPrompt({ transcript, nativeLanguage: "English", targetVariant: "Mexican Spanish" }).system;
+  assert.match(ask(t), /A tapped phrase that fits is understood, never produced or produced_with_help/);
+  const plain = sessionTranscript(turns.slice(2));
+  assert.ok(!ask(plain).includes("tapped") && !ask(plain).includes("on screen"));
+});

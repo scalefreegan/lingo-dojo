@@ -10,6 +10,7 @@
 import { extractJsonObject } from "./json-reply.mjs";
 import { SESSION_EVENT_KINDS, ratingForSessionEvent } from "./fsrs.mjs";
 import { normKey, defang } from "./match.mjs";
+import { PICK, spokenChoice } from "./choices.mjs";
 import { LIMITS as BANK_LIMITS, charCount, exampleFor, modelText, unspaced, wordCount } from "./phrases.mjs";
 
 /** Caps, enforced by parseExtraction. Generous for a 20-minute session; they
@@ -64,6 +65,7 @@ function renderDue(duePhrases) {
  *  (parseRecapReadings; every answer is then checked like a reading hint).
  *  None: the prompt is exactly what it was without them. */
 export function extractionPrompt({ transcript, nativeLanguage, targetVariant, duePhrases = [], offered = false, kids = false, lastTime = "", readings = [] }) {
+  const said = renderTranscript(transcript);
   const toRead = (readings ?? []).filter((r) => r && typeof r.word === "string" && r.word).slice(0, MAX_RECAP_READINGS);
   const system = [
     `You review one finished practice session between a learner (native language: ${nativeLanguage}) and a spoken-language coach called the dojo master. The learner is studying ${targetVariant}. Read the transcript and reply with ONLY one JSON object, no prose, no code fence:`,
@@ -87,6 +89,9 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
     '- corrected: the learner tried to say it (or its meaning) and got it wrong, and the coach corrected them. Put what they said in "said".',
     "- understood: the coach used the phrase and the learner answered or acted on it appropriately, showing they understood it.",
     "- confused: the learner asked what the phrase meant, or answered in a way that shows they did not understand it.",
+    ...(said.includes(ON_SCREEN) || said.includes(TAPPED)
+      ? [`The transcript marks what the learner had on screen to choose from, "${ON_SCREEN} …)", and an answer they tapped rather than said, "${TAPPED} …". A tapped phrase that fits is understood, never produced or produced_with_help; one said out loud while it was on screen is produced_with_help at most. A tapped one that doesn't fit is confused, never corrected, and no correction is listed for it.`]
+      : []),
     "Skip a phrase that was only mentioned or glossed with no response from the learner. Never invent an event the transcript does not show.",
     "",
     '"corrections": up to 5 of the learner\'s most useful mistakes: "said" is their words, "better" is what a native speaker would say. Leave the list empty if there were none.',
@@ -121,7 +126,7 @@ export function extractionPrompt({ transcript, nativeLanguage, targetVariant, du
       : []),
     "TRANSCRIPT:",
     "<transcript>",
-    defang(renderTranscript(transcript)),
+    defang(said),
     "</transcript>",
   ].join("\n");
   return { system, user };
@@ -292,6 +297,20 @@ const turnWords = (t) =>
     .replace(/\s+/g, " ")
     .trim();
 
+/** How the transcript says what was on screen to choose from, and that an
+ *  answer was tapped: a phrase picked from a list was not recalled, and the
+ *  recap must not schedule it as if it were. */
+const ON_SCREEN = "(on screen, to choose from:";
+const TAPPED = "(tapped a choice)";
+const shown = (t) => (t.role === "master" ? (Array.isArray(t.choices) ? t.choices : []).map((c) => spokenChoice(c)).filter(Boolean) : []);
+const transcriptWords = (t) => {
+  const w = turnWords(t);
+  if (!w) return "";
+  if (t.role === "learner") return w.startsWith(`${PICK} `) ? `${TAPPED} ${w.slice(PICK.length + 1)}` : w;
+  const on = shown(t);
+  return on.length ? `${w} ${ON_SCREEN} ${on.join(" | ")})` : w;
+};
+
 /** Whether the learner said anything: a session with no answer has nothing
  *  to recap, and no model call is made for it. */
 export const learnerSpoke = (turns) => (turns ?? []).some((t) => t.role === "learner" && turnWords(t));
@@ -301,7 +320,7 @@ export const learnerSpoke = (turns) => (turns ?? []).some((t) => t.role === "lea
  *  the earliest turns go, and a first line says how many. */
 export function sessionTranscript(turns, max = MAX_TRANSCRIPT_CHARS) {
   const lines = (turns ?? [])
-    .map((t) => [t.role, turnWords(t)])
+    .map((t) => [t.role, transcriptWords(t)])
     .filter(([, w]) => w)
     .map(([role, w]) => `${role === "learner" ? "Learner" : "Dojo master"}: ${w}`);
   let from = lines.length;

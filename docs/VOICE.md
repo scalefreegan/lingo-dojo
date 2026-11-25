@@ -127,17 +127,49 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   moves on to the next step. Both cut off speech like Talk does, and show as
   "Asked for help" / "Skipped" in the transcript. The adapter in
   `scripts/voice.mjs` defines both messages (`HELP`, `SKIP`).
+- **The talk dock** (ld-415.1): everything the learner does in a session
+  (choices, status and errors, quick requests, the box, Talk) is one block
+  under the transcript (`.talk-dock`, `voice-dock`). Below 64rem it is fixed
+  to the bottom of the screen, whatever the page's scroll, and the transcript
+  takes the height between the bars and it; on a wide screen it sticks to the
+  bottom of the session card. `VoicePanel` keeps its height in `--dock` on
+  `<html>` (0 on a wide screen, on another tab, and removed at End): `<main>`
+  pads by it and the transcript's height is worked out from it. On a phone
+  the page moves to the transcript once at Start and once when the session's
+  parts arrive, and never again by itself. Below 40rem it is mic first: Help,
+  Stop and a big Talk button; ⋯ opens the rest (Dojo master, Explain, Skip,
+  Copy, Restart, End) and ⌨ the box, which also opens by itself when there
+  is something in it.
 - **The composer**: a text box that grows with its text, then the Talk
   button (a sound wave, ■ while recording) and ▶ Send. A spoken answer is
   sent when you tap ■, unless "let me check what it heard" is on, when it
-  lands in the box for ▶. Above it are quick requests: Dojo master, Help,
-  Explain, Skip (and Stop while the dojo master talks).
+  lands in the box for ▶. Above it are quick requests: Help, Stop, Dojo
+  master, Explain, Skip.
 - **🔎 Explain** sends `[explain]`: the narrator explains what was just said
   (meaning, key word or structure, any local note) and hands back.
 - **Check-in choices.** When the dojo master asks how the session should go,
   it ends the turn with a `CHOICES:` line (shown, never spoken;
   `parseChoices`). The latest turn's choices show as buttons, plus "🎙 I'll
-  tell you". A tapped choice goes as `[direct] <choice>`.
+  tell you". A tapped choice goes as `[direct] <choice>`. At most
+  `MAX_CHOICES` (5).
+- **Answer choices** (ld-415.2). A choice wholly inside `<t>…</t>` is a phrase
+  or word to answer a practice question with: it keeps the mark wherever it
+  is stored or replayed (`cleanChoice`, `spokenChoice` in
+  `scripts/choices.mjs`), shows without it, and a tap sends `[pick] <words>`,
+  which the dojo master takes as said. The recap's transcript says what was
+  on screen and that an answer was tapped, so a tapped phrase is `understood`
+  (or `confused`), never `produced`, and one said with the choices up is
+  `produced_with_help` at most; a session without any has the recap prompt it
+  always had.
+- **Practice parts and the veil** (ld-415.2). A warm-up unit with `practice:`
+  (docs/CONTENT.md §Practice parts) is two parts of the session, the second
+  of kind `practice`, and `planDirective` adds its rules only then: the ways
+  to practise as a CHOICES line, answers as `<t>` choices, and that the part
+  is named only in a turn that ends in a practice question. While the
+  session is in one, the Go tab blurs every entry before the latest question
+  (`veiled` in `Transcript.tsx`: also `inert`, so no selection, find-in-page
+  or screen reader) until the part ends. **Show** lifts it for that part;
+  **Hide while recalling** turns it off in this browser (`localStorage`).
 - **The session timeline** beside the transcript lists the session's parts
   (`sessionPlan` in `scripts/voice.mjs`): the introduction, each warm-up, the
   scene and its scenario beats, then the debrief (kids: a game tagged

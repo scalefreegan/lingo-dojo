@@ -14,6 +14,7 @@ import { MAX_MINUTES } from "../draft";
 const KIND_ICON: Record<string, string> = {
   intro: "👋",
   warmup: "🔥",
+  practice: "💭",
   scene: "🎭",
   beat: "•",
   games: "🎲",

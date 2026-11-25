@@ -582,7 +582,7 @@ export default function App({
       {ready && ready.problems.length > 0 && <ProblemsStrip problems={ready.problems} />}
 
       {ready && draft && pack ? (
-        <main className="flex-1 p-4">
+        <main className="flex-1 p-4 pb-[calc(1rem+var(--dock))]">
           <div className={`mx-auto flex w-full flex-col ${tab === "scene" ? "max-w-[1200px]" : tab === "go" ? "max-w-[1440px]" : tab === "pictures" ? "max-w-5xl" : "max-w-3xl"}`}>
             {tab === "scene" && (
               <SceneTab key={mode} languageId={language.id} content={ready} draft={draft} hidden={hiddenScenes} hiddenRows={hiddenRows} onHide={setSceneHidden}
