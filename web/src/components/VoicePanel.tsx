@@ -841,11 +841,12 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
       document.removeEventListener("visibilitychange", onHide);
     };
   }, [keeper]);
-  // And no reload that can wait comes in the middle of it.
+  // And no reload that can wait comes in the middle of it (an ended one is
+  // only there to read, and comes back the same).
   useEffect(() => {
-    keepPage("go", hasEntries);
+    keepPage("go", hasEntries && !ended);
     return () => keepPage("go", false);
-  }, [hasEntries]);
+  }, [hasEntries, ended]);
 
   /** Bring `shown` up to date with the conversation the server has: a reply
    *  it stored that this page never got (the page went, or the phone slept,
@@ -881,6 +882,10 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
   // Back from a reload: whatever the server finished meanwhile.
   useEffect(() => {
     if (restored && !restored.ended) catchUp(restored.entries).catch(() => {});
+    // Its End may have been waiting on a turn the page took with it: the
+    // recap card waits for it. Ending twice is harmless.
+    const page = getPageLearner();
+    if (restored?.ended && restored.recapId && page) void endConversation(restored.recapId, page);
     // Once, for the session this mount started from.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restored]);
