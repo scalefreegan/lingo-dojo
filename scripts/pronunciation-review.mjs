@@ -425,3 +425,142 @@ export function storedToneMiss(v) {
       .map((s) => ({ char: String(s.char ?? ""), place: Number(s.place) || 0, pinyin: String(s.pinyin ?? ""), expectedTone: Number(s.expectedTone) || 0, heardTone: Number.isInteger(s.heardTone) ? s.heardTone : null })),
   };
 }
+
+/* --------------------------- a session's tone misses --------------------------- */
+
+/** How many tone misses a recap records at most (a long list says the
+ *  recording was bad, not the learner). */
+export const MAX_SESSION_TONE_MISSES = 10;
+
+/**
+ * A stored check as the session rule reads it (ld-ne0.18): the flagged
+ * syllables as notes (pronunciation-live.mjs flagNote's shape, before
+ * settleFlags) and the places judged right. Null when the line isn't the
+ * text that was scored (its Han characters must be the syllables', one for
+ * one), so a place always names the same character in both.
+ */
+export function storedFlags(row) {
+  const syl = syllablesOf(row);
+  const line = typeof row?.line === "string" ? row.line : "";
+  if (!syl.length || syl.some((s) => !s) || [...hanOf(line)].join("") !== syl.map((s) => s.char).join("")) return null;
+  const flags = [];
+  const ok = [];
+  syl.forEach((s, i) => {
+    if (s.verdict === "ok") ok.push(i + 1);
+    if (s.verdict === "off") flags.push({ char: s.char, place: i + 1, pinyin: s.pinyin, expectedTone: s.tone, heardTone: s.heardTone });
+  });
+  return { line, flags, ok };
+}
+
+/** The places (counted in Han characters) where a word of `line` ends, by
+ *  Intl.Segmenter; a sentence mark or the end of the line is one too. */
+function wordEnds(line) {
+  const out = new Set();
+  let place = 0;
+  for (const { segment } of new Intl.Segmenter("zh", { granularity: "word" }).segment(line)) {
+    place += hanOf(segment).length;
+    out.add(place);
+  }
+  return out;
+}
+
+/** A phrase's Han characters and leading places, or null for one that
+ *  isn't Mandarin alone (a pattern with Latin letters, a digit). */
+function phraseShape(text) {
+  const t = String(text ?? "");
+  const han = hanOf(t);
+  return han && /^[\p{Script=Han}\p{P}\s]+$/u.test(t) ? { han, leading: leadingPlaces(t) } : null;
+}
+
+/** Whether the phrase `shape` was said in `line` from the Han place `start`,
+ *  as words of its own: the same characters; no sentence mark inside it that
+ *  the phrase doesn't have; ending where a word ends; and one character only
+ *  when it is the whole clause (他 isn't 他们's, nor a sentence's subject). */
+function saidAt(shape, { han, leading, ends }, start) {
+  const n = [...shape.han].length;
+  const end = start + n - 1;
+  if (han.slice(start - 1, end).join("") !== shape.han) return false;
+  for (let p = start + 1; p <= end; p++) if (leading.has(p) && !shape.leading.has(p - start + 1)) return false;
+  if (n === 1) return end === han.length || leading.has(end + 1);
+  return end === han.length || leading.has(end + 1) || ends.has(end);
+}
+
+/** Whether a line says the missed syllable (`place` of the phrase `shape`)
+ *  right again, for "what was said last decides": the whole phrase anywhere
+ *  in it (我妈妈很忙 for 妈妈很忙; one character only as a whole clause), or a
+ *  clause that is the phrase's own words from that syllable on (strict
+ *  coaching asks for "just that word": 妈妈). Wider than what makes a miss:
+ *  when in doubt, none. */
+function saidRight(shape, place, { han, leading }, ok) {
+  const want = [...shape.han];
+  for (const at of ok) {
+    if (han[at - 1] !== want[place - 1]) continue;
+    const start = at - place + 1;
+    if (want.length > 1 && start >= 1 && han.slice(start - 1, start - 1 + want.length).join("") === shape.han) return true;
+    if (!leading.has(at)) continue;
+    let end = at;
+    while (end < han.length && !leading.has(end + 1)) end++;
+    const clause = han.slice(at - 1, end).join("");
+    if (clause && want.slice(place - 1).join("").startsWith(clause)) return true;
+  }
+  return false;
+}
+
+/**
+ * The bank phrases a session's flagged syllables fail (ld-ne0.18;
+ * docs/VOICE.md §Tones after the session). `lines`: the session's checks in
+ * order, `{ line, flags, ok }` (storedFlags, with `flags` already through
+ * settleFlags: the same narrow rule as Practice, over the line as said);
+ * `phrases`: the bank's, `{ norm, text, late }`; `late`: not in the bank
+ * when the session ended (this recap kept it), taken only where no other
+ * fits, so a sentence the model happens to keep never takes a miss from the
+ * phrase the learner is practising.
+ *
+ * A flag belongs to the longest phrase that starts at a leading place of
+ * the line and holds the flag at a leading place of its own; at most one.
+ * What the learner did last decides: the syllable judged right later, in
+ * the phrase or in the part of it said again (saidRight), clears it (they
+ * were coached and fixed it); "not sure" changes nothing.
+ * → `[{ norm, text, line, syllables, flags }]` in the order said (the caller
+ * caps them: MAX_SESSION_TONE_MISSES); a syllable's `place` is its place in
+ * the phrase; `flags`: every flag behind the miss, `{ line, place }` with
+ * the place in the line.
+ */
+export function sessionToneMisses(lines, phrases) {
+  const shapes = [];
+  for (const p of phrases ?? []) {
+    const shape = p?.norm ? phraseShape(p.text) : null;
+    if (shape) shapes.push({ ...shape, norm: p.norm, text: p.text, late: !!p.late });
+  }
+  // The learner's own before the recap's, then the longest first, so the
+  // first that fits is the one.
+  shapes.sort((a, b) => Number(a.late) - Number(b.late) || b.han.length - a.han.length || (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
+  const misses = new Map();
+  for (const l of lines ?? []) {
+    const ctx = { han: [...hanOf(l.line)], leading: leadingPlaces(l.line), ends: wordEnds(l.line) };
+    const ok = new Set(l.ok ?? []);
+    for (let start = 1; start <= ctx.han.length; start++) {
+      if (ok.has(start)) {
+        for (const miss of [...misses.values()]) {
+          for (const place of [...miss.syllables.keys()]) if (saidRight(miss.shape, place, ctx, [start])) miss.syllables.delete(place);
+          if (!miss.syllables.size) misses.delete(miss.shape.norm);
+        }
+      }
+      // The flag at this place: the first phrase, from any leading place up
+      // to it, that holds it. Chosen per flag, so a phrase that only starts
+      // the line takes nothing from the one the flag is in.
+      const f = ctx.leading.has(start) ? (l.flags ?? []).find((x) => x.place === start) : undefined;
+      const from = f ? [...ctx.leading].filter((p) => p <= start) : [];
+      const at = (x) => from.find((p) => x.leading.has(start - p + 1) && saidAt(x, ctx, p));
+      const shape = from.length ? shapes.find((x) => at(x) !== undefined) : undefined;
+      if (!shape) continue;
+      const place = start - at(shape) + 1;
+      const miss = misses.get(shape.norm) ?? { shape, line: l.line, syllables: new Map(), flags: [] };
+      miss.line = l.line;
+      miss.flags.push({ line: l.line, place: start });
+      miss.syllables.set(place, { char: f.char, place, pinyin: f.pinyin, expectedTone: f.expectedTone, heardTone: Number.isInteger(f.heardTone) ? f.heardTone : null });
+      misses.set(shape.norm, miss);
+    }
+  }
+  return [...misses.values()].map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS), flags: m.flags }));
+}

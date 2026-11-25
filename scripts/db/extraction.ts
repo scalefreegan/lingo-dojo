@@ -55,7 +55,8 @@ import { keepExample, planExtraction, type Extraction, type StoredTurn } from ".
 import { fromRow, review, toRow, type CardState } from "../../scripts/fsrs.mjs";
 import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, phraseMetrics } from "../../scripts/phrases.mjs";
-import type { MasteryBand, RecapEvent, RecapVsLast } from "../../web/shared/wire.ts";
+import { MAX_SESSION_TONE_MISSES, sessionToneMisses, type ToneLine } from "../../scripts/pronunciation-review.mjs";
+import type { MasteryBand, RecapEvent, RecapToneMiss, RecapVsLast } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, lockById, lockInNormOrder, recount, retrying, settleUnseen, stronger } from "./phrases.ts";
 import { cards, conversations, phraseDismissals, phraseExamples, phraseSightings, phrases, reviews } from "./schema.ts";
@@ -83,6 +84,24 @@ export interface StoredRecap {
    *  couldn't settle, and what the recap made of each
    *  (web/server/readings.ts judgeRecapReadings); absent when none was asked. */
   readings?: StoredRecapReading[];
+  /** Mandarin, adults (ld-ne0.18): the phrases the session's tone flags
+   *  failed, or would have; absent when none. */
+  tones?: StoredToneMiss[];
+}
+
+/** A phrase a tone flag failed. `was`: the rating the model's own event
+ *  gave the same card (null: it named none), restored by "I said it right",
+ *  which sets `dismissed` (kept over a re-run). `reviewed`: the miss is the
+ *  session's review of the card. `flags`: where it was heard (the line, the
+ *  place in it), so a dismissal holds for those flags whatever phrase a
+ *  re-run would find them in. */
+export interface StoredToneMiss extends RecapToneMiss {
+  was: number | null;
+  flags: { line: string; place: number }[];
+  reviewed: boolean;
+  /** A dismissal only kept for a later run: this one has no such miss, so
+   *  it isn't shown. */
+  idle?: boolean;
 }
 
 /** One word the recap was asked to read (web/server/readings.ts JudgedReading). */
@@ -196,7 +215,7 @@ export async function recapPhrases(db: Db, profile: LanguageProfileRef, ids: str
 export async function applyExtraction(
   db: Db,
   profile: LanguageProfileRef,
-  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[]; vsLast?: RecapVsLast | null; readings?: StoredRecapReading[] },
+  opts: { conversationId: string; claim: string; value: Extraction; dropped: number; bankLocale: string | null; turns: StoredTurn[]; vsLast?: RecapVsLast | null; readings?: StoredRecapReading[]; toneLines?: ToneLine[] },
 ): Promise<StoredRecap | null> {
   return retrying(() =>
     db.transaction(async (tx) => {
@@ -259,7 +278,7 @@ async function writeBank(
   tx: Db,
   profile: LanguageProfileRef,
   conv: Conversation,
-  opts: { claim: string; value: Extraction; dropped: number; bankLocale: string; turns: StoredTurn[] },
+  opts: { claim: string; value: Extraction; dropped: number; bankLocale: string; turns: StoredTurn[]; toneLines?: ToneLine[] },
   recap: StoredRecap,
 ): Promise<StoredRecap> {
   const mine = forLanguageProfile(tx, profile);
@@ -289,12 +308,35 @@ async function writeBank(
   };
   const plan = planExtraction(allowed, { known, locale });
 
+  // The session's tone flags (ld-ne0.18): which phrase each is in, among the
+  // bank's at the session's end and the ones this recap keeps (never one
+  // only added since: an earlier run's keep isn't held there by its miss).
+  // A phrase already failed by the model's own event needs nothing more.
+  const toneLines = opts.toneLines ?? [];
+  const failed = new Set(plan.events.filter((e) => e.skill === "produce" && e.rating === 1).map((e) => e.norm));
+  const own = toneLines.length ? (await mine.list(phrases, COMPLETE)).filter((p) => new Date(p.createdAt) <= at) : [];
+  const ownBy = new Map(own.map((p) => [p.norm, p]));
+  const hadTones = storedTones(conv.extraction);
+  const dismissed = new Map(hadTones.flatMap((t) => (t.dismissed ? [[t.phraseId, t] as const] : [])));
+  // What the learner said they said right: those flags fail no other phrase
+  // either (one this run keeps, or a shorter one once theirs is deleted).
+  const flagKey = (f: { line: string; place: number }) => `${f.place}\u0000${f.line}`;
+  const rightFlags = new Set([...dismissed.values()].flatMap((t) => (t.flags ?? []).map(flagKey)));
+  const misses = new Map<string, ReturnType<typeof sessionToneMisses>[number]>();
+  for (const m of sessionToneMisses(toneLines, [...own, ...plan.keep.filter((k) => !ownBy.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true }))])) {
+    if (failed.has(m.norm)) continue;
+    const row = ownBy.get(m.norm) ?? existing.find((p) => p.norm === m.norm);
+    const gone = !!row && dismissed.has(row.id);
+    if (!gone && m.flags.every((f) => rightFlags.has(flagKey(f)))) continue;
+    misses.set(m.norm, m);
+  }
+
   // Every complete phrase this write touches, in one norm-ordered pass:
   // kept ones upserted ("extraction" when new; a meaning only filled when
   // blank, the stronger provenance kept), the ones events name locked by
   // norm, the last run's locked by id.
   const keepBy = new Map(plan.keep.map((k) => [k.norm, k]));
-  const norms = [...new Set([...plan.keep.map((k) => k.norm), ...plan.events.map((e) => e.norm)])];
+  const norms = [...new Set([...plan.keep.map((k) => k.norm), ...plan.events.map((e) => e.norm), ...misses.keys()])];
   const prev = new Map([...oldReviews, ...oldSightings].map((o) => [o.phraseId, o.norm ?? ""]));
   const taken = await lockInNormOrder([
     ...norms.map((norm) => {
@@ -352,10 +394,27 @@ async function writeBank(
   const utcOffsetMinutes = -at.getTimezoneOffset();
   const reviewed = new Set<string>();
   const events = new Map<string, RecapEvent>();
-  for (const e of plan.events) {
+  const tones: StoredToneMiss[] = [];
+  // The cap counts the misses written, so one skipped (suspended, dismissed,
+  // reviewed since) takes no place.
+  let counted = 0;
+  const grades = [
+    ...plan.events.map((e) => ({ ...e, event: true, miss: e.skill === "produce" ? misses.get(e.norm) : undefined })),
+    // A flagged phrase the model's events don't grade (said, and not
+    // named): the miss is its only review.
+    ...[...misses.values()]
+      .filter((m) => !plan.events.some((e) => e.norm === m.norm && e.skill === "produce"))
+      .map((m) => ({ norm: m.norm, phrase: m.text, kind: "corrected" as const, skill: "produce" as const, rating: 1 as const, said: null, note: null, event: false, miss: m })),
+  ].sort((a, b) => (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
+  for (const e of grades) {
     const row = fresh.get(byNorm.get(e.norm)?.id ?? "");
     const out: RecapEvent = { phrase: e.phrase, kind: e.kind, said: e.said, note: e.note, phraseId: row?.id ?? null, reviewed: false };
-    events.set(`${e.norm}\u0000${e.skill}`, out);
+    if (e.event) events.set(`${e.norm}\u0000${e.skill}`, out);
+    const gone = row && e.miss ? dismissed.get(row.id) : undefined;
+    const was = e.event ? e.rating : null;
+    const miss = row && e.miss ? { phraseId: row.id, phrase: e.miss.text, line: e.miss.line, syllables: e.miss.syllables, flags: e.miss.flags, was, reviewed: false, dismissed: !!gone } : null;
+    if (miss) tones.push(miss);
+    if (!e.event && (gone || counted >= MAX_SESSION_TONE_MISSES)) continue;
     // A suspended phrase is out of practice by the learner's choice.
     if (!row || row.suspended) continue;
     await mine.insertOrIgnore(cards, { phraseId: row.id, skill: e.skill });
@@ -366,13 +425,15 @@ async function writeBank(
     // grades what the learner knows now, and FSRS can't go back in time.
     if (card.last_review && new Date(card.last_review) > at) continue;
     const before: CardState = fromRow(card);
-    const { card: next } = review(before, e.rating, at, { utcOffsetMinutes });
+    const tone = miss && !gone && counted < MAX_SESSION_TONE_MISSES ? miss : null;
+    const rating = tone ? 1 : e.rating;
+    const { card: next } = review(before, rating, at, { utcOffsetMinutes });
     await mine.update(cards, toRow(next), eq(cards.id, card.id));
     await mine.insert(reviews, {
       cardId: card.id,
       mode: "session",
-      rating: e.rating,
-      answer: e.said,
+      rating,
+      answer: e.said ?? tone?.line ?? null,
       graderNote: e.note,
       reviewedAt: new Date(next.last_review ?? at),
       conversationId: conv.id,
@@ -380,7 +441,23 @@ async function writeBank(
     });
     reviewed.add(card.id);
     out.reviewed = true;
+    if (tone) {
+      tone.reviewed = true;
+      counted++;
+    }
   }
+  // A dismissal this run had no use for (the flag didn't come up, or the
+  // model failed the phrase itself) is kept for the next one.
+  // The last run's miss on a card reviewed since is still the card's
+  // history (its review stays above): it stays listed as counted.
+  const kept = new Set(oldReviews.filter((o) => o.skill === "produce" && superseded.has(o.review.cardId)).map((o) => o.phraseId));
+  for (const t of hadTones) {
+    if (!t.reviewed || !kept.has(t.phraseId)) continue;
+    const i = tones.findIndex((x) => x.phraseId === t.phraseId);
+    if (i >= 0) tones[i] = t;
+    else tones.push(t);
+  }
+  for (const t of dismissed.values()) if (!tones.some((x) => x.phraseId === t.phraseId)) tones.push({ ...t, idle: true });
   // A listen or produce card only the last run had made, back to never
   // reviewed and not reviewed now, goes (practice makes it again).
   for (const [cardId, r] of restored) {
@@ -389,7 +466,7 @@ async function writeBank(
 
   // Seen in this session: a phrase the recap names that none of its
   // replies glossed gets one sighting, at the session's end.
-  const touched = [...new Set([...plan.keep, ...plan.events].map((x) => byNorm.get(x.norm)?.id).filter((id): id is string => !!id && fresh.has(id)))];
+  const touched = [...new Set([...plan.keep, ...plan.events, ...misses.values()].map((x) => byNorm.get(x.norm)?.id).filter((id): id is string => !!id && fresh.has(id)))];
   if (touched.length) {
     const glossed = new Set(
       (await mine.list(phraseSightings, and(eq(phraseSightings.conversationId, conv.id), inArray(phraseSightings.phraseId, touched)) as SQL)).map((s) => s.phraseId),
@@ -432,5 +509,64 @@ async function writeBank(
     events: [...events.values()],
     dropped: opts.dropped + plan.dropped,
     inBank: true,
+    ...(tones.length ? { tones } : {}),
   };
+}
+
+/** The tone misses a stored recap kept (none for an older recap). */
+function storedTones(extraction: unknown): StoredToneMiss[] {
+  const tones = (extraction as Partial<StoredRecap> | null)?.tones;
+  return Array.isArray(tones) ? tones : [];
+}
+
+/**
+ * "I said it right" (ld-ne0.18): take back a tone miss of a conversation's
+ * recap. The card goes back to `card_before` and is graded as the model's
+ * own event had it (none: the review goes, with a card it made), so no
+ * lapse is left behind; the miss is marked dismissed, which a re-run of the
+ * recap keeps. → "done" (already dismissed counts), "none" (no counted miss
+ * for that phrase), "busy" (the recap is being made) or "later" (the card
+ * was reviewed since: that history isn't rewritten).
+ * Locks in the bank's order: the conversation, the phrase, the card.
+ */
+export async function dismissToneMiss(db: Db, profile: LanguageProfileRef, conversationId: string, phraseId: string): Promise<"done" | "none" | "busy" | "later"> {
+  return retrying(() =>
+    db.transaction(async (tx) => {
+      const mine = forLanguageProfile(tx, profile);
+      const [conv] = await tx.select().from(conversations).where(mine.where(conversations, eq(conversations.id, conversationId))).for("update");
+      if (!conv) return "none" as const;
+      if (conv.extractionStatus !== "done") return "busy" as const;
+      const tones = storedTones(conv.extraction);
+      const miss = tones.find((t) => t.phraseId === phraseId);
+      if (!miss) return "none" as const;
+      if (miss.dismissed) return "done" as const;
+      if (!miss.reviewed) return "none" as const;
+      const row = await lockById(tx, profile, phraseId);
+      if (!row) return "none" as const;
+      const [card] = await tx.select().from(cards).where(mine.where(cards, and(eq(cards.phraseId, phraseId), eq(cards.skill, "produce")) as SQL)).for("update");
+      const old = card && (await mine.get(reviews, and(eq(reviews.cardId, card.id), eq(reviews.conversationId, conv.id), eq(reviews.mode, "session")) as SQL));
+      if (!card || !old) return "none" as const;
+      if (await mine.get(reviews, and(eq(reviews.cardId, card.id), gt(reviews.id, old.id)) as SQL)) return "later" as const;
+      const before = fromRow(old.cardBefore as Parameters<typeof fromRow>[0]);
+      if (miss.was == null) {
+        await mine.remove(reviews, eq(reviews.id, old.id));
+        if (before.reps === 0) await mine.remove(cards, eq(cards.id, card.id));
+        else await mine.update(cards, toRow(before), eq(cards.id, card.id));
+      } else {
+        const at = new Date(old.reviewedAt);
+        const { card: next } = review(before, miss.was as Parameters<typeof review>[1], at, { utcOffsetMinutes: -at.getTimezoneOffset() });
+        await mine.update(cards, toRow(next), eq(cards.id, card.id));
+        const event = (conv.extraction as Partial<StoredRecap> | null)?.events?.find((e) => e.phraseId === phraseId && e.kind !== "understood" && e.kind !== "confused");
+        await mine.update(reviews, { rating: miss.was, answer: event?.said ?? null }, eq(reviews.id, old.id));
+      }
+      await mine.update(
+        phrases,
+        { lastPracticedAt: sql`(select max(r.reviewed_at) from reviews r join cards c on c.id = r.card_id where c.phrase_id = "phrases"."id")` },
+        eq(phrases.id, phraseId),
+      );
+      const next = { ...(conv.extraction as object), tones: tones.map((t) => (t.phraseId === phraseId ? { ...t, reviewed: false, dismissed: true } : t)) };
+      await mine.update(conversations, { extraction: next as unknown as Record<string, unknown> }, eq(conversations.id, conv.id));
+      return "done" as const;
+    }),
+  );
 }

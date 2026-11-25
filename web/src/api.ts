@@ -705,6 +705,12 @@ export function getRecap(id: string, signal?: AbortSignal): Promise<RecapReply> 
   return req<RecapReply>(`/api/conversations/${encodeURIComponent(id)}/recap`, { signal });
 }
 
+/** POST /api/conversations/:id/recap-tones: "I said it right" on a phrase
+ *  the recap failed for a tone. */
+export function dismissToneMiss(id: string, phraseId: string): Promise<RecapReply> {
+  return req<RecapReply>(`/api/conversations/${encodeURIComponent(id)}/recap-tones`, json({ phraseId }));
+}
+
 /** POST /api/conversations/:id/recap: make it again (Retry recap). */
 export function retryRecap(id: string): Promise<RecapReply> {
   return req<RecapReply>(`/api/conversations/${encodeURIComponent(id)}/recap`, { method: "POST" });
