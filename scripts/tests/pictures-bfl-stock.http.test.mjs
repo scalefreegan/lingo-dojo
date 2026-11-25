@@ -407,7 +407,12 @@ test("with no image key, stock matches still make pictures; the key message show
 
 /* ------------------------------ Redraw all (the theme) ------------------------------ */
 
-test("Redraw all in the current style: a stock picture where one fits, else a new drawing; old pictures stay until replaced", async () => {
+test("Redraw all in the current style: a stock picture where one fits, else a new drawing; old pictures stay until replaced", async (t) => {
+  // The stand-in's made-up name for the stock dog would be a fourth word of
+  // the game, whenever the background naming got there first (the real name
+  // is der Hund, already the child's).
+  fake.poolWords(JSON.stringify({ items: [] }));
+  t.after(() => fake.poolWords("!auto"));
   // Three pictures drawn before themes (theme null), as OpenAI drew them.
   fs.writeFileSync(process.env.LINGO_ENV_FILE, OPENAI_ONLY);
   const pip = await someone();
@@ -425,13 +430,19 @@ test("Redraw all in the current style: a stock picture where one fits, else a ne
   assert.equal(s.outOfTheme, 3);
   // The restyle waits on the background run: hold the run back to see the
   // pictures still in place meanwhile.
-  fake.picture("!auto", 300);
-  const r = await pip.call("POST", "/api/pictures/restyle");
-  assert.equal(r.status, 202, r.text);
-  assert.equal(r.body.restyled, 3);
-  const during = await rowsOf(pip);
-  assert.ok(during.every((x) => x.status === "ready" && x.restyle === "check"), "every old picture stays ready while it waits");
-  assert.equal((await pip.call("POST", "/api/game/start")).body.rounds.length, 3, "the child still has a full game");
+  fake.picture("!auto");
+  const release = fake.holdPicture();
+  try {
+    const r = await pip.call("POST", "/api/pictures/restyle");
+    assert.equal(r.status, 202, r.text);
+    assert.equal(r.body.restyled, 3);
+    const during = await rowsOf(pip);
+    assert.ok(during.every((x) => x.status === "ready" && x.restyle === "check"), "every old picture stays ready while it waits");
+    await settlePoolWords();
+    assert.equal((await pip.call("POST", "/api/game/start")).body.rounds.length, 3, "the child still has a full game");
+  } finally {
+    release();
+  }
   await settlePictureFills();
 
   const after = Object.fromEntries((await rowsOf(pip)).map((x) => [x.text, x]));

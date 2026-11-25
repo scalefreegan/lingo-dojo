@@ -5,6 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { workMs } from "./work.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -636,10 +637,11 @@ test("sessionPlan: intro, warm-ups, the scene and its beats, then the debrief", 
 });
 
 test("a long run of spaces doesn't make the reply patterns backtrack", () => {
-  const t0 = performance.now();
-  parseVoiceReply(`${" ".repeat(5000)}x\n<pause 1${" ".repeat(5000)}x\n**${" ".repeat(5000)}x`);
-  parseGlosses(`NARRATOR${" ".repeat(5000)}x`);
-  assert.ok(performance.now() - t0 < 200, `took ${Math.round(performance.now() - t0)} ms`);
+  const took = workMs(() => {
+    parseVoiceReply(`${" ".repeat(5000)}x\n<pause 1${" ".repeat(5000)}x\n**${" ".repeat(5000)}x`);
+    parseGlosses(`NARRATOR${" ".repeat(5000)}x`);
+  }, 200);
+  assert.ok(took < 200, `took ${Math.round(took)} ms`);
 });
 
 test("planDirective: a game inside the scene reports the beat it is in", () => {
@@ -727,9 +729,7 @@ test("systemVoices: known macOS voices carry their gender", () => {
 import { ageOf, castFallbacks, parseCast, speechVoices } from "../voice.mjs";
 
 const fast = (fn, ms = 250) => {
-  const t0 = performance.now();
-  fn();
-  const took = performance.now() - t0;
+  const took = workMs(fn, ms);
   assert.ok(took < ms, `took ${Math.round(took)} ms`);
 };
 

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { workMs } from "./work.mjs";
 import fs from "node:fs";
 import {
   LOCAL_MAX_SECONDS, LOCAL_MAX_SYLLABLES, AZURE_MAX_SECONDS, AZURE_MAX_WAV_BYTES, AZURE_RULES, HOP_MS, TONE_RULES, alignTimings, azureLocale, azurePronunciationHeader, azurePronunciationRequest, azurePronunciationResult,
@@ -1571,9 +1572,8 @@ test("the longest recording the scorer takes is scored in well under a second's 
   const said = speak(Array.from({ length: 60 }, (_, i) => 1 + (i % 4)), { ms: 300, gapMs: 150 });
   const track = trackPitch(said.samples, RATE);
   assert.ok(said.samples.length / RATE > 26 && said.samples.length / RATE < 30);
-  const t0 = performance.now();
-  const cuts = segmentSyllables(track, 60);
-  const took = performance.now() - t0;
+  let cuts;
+  const took = workMs(() => (cuts = segmentSyllables(track, 60)), 400);
   assert.equal(cuts.length, 60);
   cuts.forEach((c, k) => {
     const mid = (c.startMs + c.endMs) / 2;
@@ -1989,9 +1989,9 @@ test("by energy: more doubted sounds than maxDoubts and the recording is not rea
   };
   // Twelve doubted sounds would be 4096 readings; a cap of three makes it
   // none. (About 30 ms here; a second is generous.)
-  const t0 = performance.now();
-  const r = scoreTones({ samples: withBlips(12), sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range });
-  const took = performance.now() - t0;
+  const samples = withBlips(12);
+  let r;
+  const took = workMs(() => (r = scoreTones({ samples, sampleRate: RATE, syllables: phrase(4, 1, 2), speaker: said.range })), 1000);
   assert.deepEqual(r.syllables.map((x) => [x.verdict, x.reason]), [["unsure", "trimmed"], ["unsure", "trimmed"], ["unsure", "trimmed"]]);
   assert.ok(took < 1000, `${took.toFixed(0)} ms`);
   // One past the cap is already refused: every syllable, whatever the

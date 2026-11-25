@@ -36,7 +36,7 @@ const audioDir = path.join(dataDir, "audio");
  * answers `stt.reply` (or fails with `stt.status`) and keeps the form. */
 const synths = [];
 const voiceLists = [];
-const tts = { delayMs: 0 };
+const tts = { delayMs: 0, hold: null };
 const noNative = { on: false };
 const refuse = { on: false };
 const stt = { reply: "", status: 200, forms: [] };
@@ -49,6 +49,7 @@ globalThis.fetch = async (input, init) => {
     const { text, model_id } = JSON.parse(init.body);
     synths.push({ voice, text, model_id });
     if (refuse.on && voice === "cloned-es") return new Response(JSON.stringify({ detail: { message: "library voices need a paid plan" } }), { status: 402 });
+    if (tts.hold) await tts.hold;
     if (tts.delayMs) await new Promise((r) => setTimeout(r, tts.delayMs));
     return new Response(`MP3:${voice}:${text}`, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
   }
@@ -101,6 +102,7 @@ beforeEach(() => {
   stt.reply = "";
   stt.status = 200;
   tts.delayMs = 0;
+  tts.hold = null;
 });
 
 let n = 0;
@@ -241,14 +243,23 @@ test("phrase audio is cached per account: the same words in the same voice for a
 test("paid calls per user are bounded: a third miss at once is a 429, never a third synthesis", async () => {
   const sam = await someone();
   const p = await add(sam, [["uno", "one"], ["dos", "two"], ["tres", "three"]]);
-  tts.delayMs = 150;
+  // Both slots stay taken until the third has been refused, however slow
+  // the machine: the first reply to come is the refusal.
+  let release;
+  tts.hold = new Promise((r) => (release = r));
   const before = synths.length;
-  const replies = await Promise.all(Object.values(p).map((x) => sam.call("GET", `/api/practice/audio/${x.id}`)));
+  const calls = Object.values(p).map((x) => sam.call("GET", `/api/practice/audio/${x.id}`));
+  // (Or none is refused: let them go, and fail below.)
+  let timer;
+  await Promise.race([...calls, new Promise((r) => (timer = setTimeout(r, 20_000)))]);
+  clearTimeout(timer);
+  release();
+  const replies = await Promise.all(calls);
   const statuses = replies.map((r) => r.status).sort();
   assert.deepEqual(statuses, [200, 200, 429]);
   assert.equal(synths.length, before + 2);
   // The slots free up after.
-  tts.delayMs = 0;
+  tts.hold = null;
   const late = Object.values(p).find((x, i) => replies[i].status === 429);
   assert.equal((await sam.call("GET", `/api/practice/audio/${late.id}`)).status, 200);
 });
