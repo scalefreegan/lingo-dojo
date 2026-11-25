@@ -8,6 +8,7 @@
 // segment boundary, which is what keeps "/api/exports" away from the
 // "/api/export" layer.
 
+import "./no-network.mjs";
 import http from "node:http";
 
 export function connectStack() {

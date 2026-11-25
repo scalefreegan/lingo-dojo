@@ -610,7 +610,7 @@ npm run db:setup               # create the database if missing, apply migration
 npm run db:migrate             # apply pending migrations only
 npm run db:generate            # after editing scripts/db/schema.ts: write the next migration
 npm run dev                    # http://localhost:38400 (needs a current database)
-npm test                       # node --test scripts/tests/*.test.mjs
+npm test                       # node --test scripts/tests/*.test.mjs, under the no-network guard
 npm --prefix web run lint      # oxlint
 (cd web && npx tsc -b)
 npm run export -- content/packs/<id>.yaml
@@ -620,7 +620,12 @@ npm run db:backup                # pg_dump -Fc of DATABASE_URL → backups/ (git
 npm run db:import [-- --user <name>]   # pack files → that account's (default: first admin's) learners' oldest language; safe to re-run
 ```
 Tests point the loader at fixtures via `LINGO_CONTENT_DIR` and `LINGO_EXPORTS_DIR`;
-never write to the real `content/` or `exports/` from a test. Database tests use
+never write to the real `content/` or `exports/` from a test. Every test runs
+under `scripts/tests/no-network.mjs` (preloaded by `npm test`, imported by the
+shared helpers): no provider key from the shell or `.env.local`, and a fetch off
+this machine is refused and fails the file; stub `globalThis.fetch` and set a
+made-up key to test a provider. A scratch dev server has no such guard: unset
+the shell's provider keys for it. Database tests use
 `freshDb()` from `scripts/tests/testdb.mjs` (in-process PGlite with the real
 migrations); a test never connects to the dev database or any Postgres server,
 except the `*.pg.test.mjs` files when `LINGO_TEST_PG_URL` is set (each makes and

@@ -27,6 +27,7 @@
 // forced) leaves the owner's every query path seeing its rows, and that
 // 0005 applies for a non-superuser owner with CREATEROLE.
 
+import "./no-network.mjs";
 import { PGlite } from "@electric-sql/pglite";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { drizzle } from "drizzle-orm/pglite";
