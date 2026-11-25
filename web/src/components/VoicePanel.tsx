@@ -262,6 +262,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   });
   // The part the veil was lifted in: the next practice starts veiled again.
   const [liftedIn, setLiftedIn] = useState<string | null>(null);
+  // Over once the session leaves that part (Restart included, which has no
+  // part yet): part ids are the same in the next session. Adjusted while
+  // rendering, React's pattern for state that follows other state.
+  if (liftedIn != null && liftedIn !== stage) setLiftedIn(null);
   const [timelineOpen, setTimelineOpen] = useState(() => {
     try {
       return localStorage.getItem(TIMELINE_KEY) !== "closed";
