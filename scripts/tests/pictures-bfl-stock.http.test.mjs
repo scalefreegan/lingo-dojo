@@ -674,6 +674,18 @@ test("words left out before a stock picture was drawn are checked again only whe
   await settlePictureFills();
   assert.equal(fake.pictureRuns(), runs + 1);
 
+  // A stock picture drawn while a check is waiting or running wasn't on
+  // offer: the words it didn't match are still worth asking about it.
+  await judgedEarlier(pip);
+  fs.utimesSync(stockFile("dog"), new Date(), new Date());
+  fake.picture("!auto", 300);
+  assert.equal((await pip.call("POST", "/api/pictures/recheck")).body.rechecking, 2);
+  await new Promise((r) => setTimeout(r, 100));
+  writeStockPicture(PICTURE_THEME.id, "ball", jpeg("stock ball"), "image/jpeg", { dir: imagesDir });
+  await settlePictureFills();
+  fake.picture("!auto");
+  assert.equal((await status(pip)).recheckable, 2, "the ball came after what the check was offered");
+
   // A newer stock picture makes the two still out worth one more ask.
   await judgedEarlier(pip);
   writeStockPicture(PICTURE_THEME.id, "cat", jpeg("stock cat"), "image/jpeg", { dir: imagesDir });

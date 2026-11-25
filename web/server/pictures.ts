@@ -546,15 +546,20 @@ function newestStock(offer: StockConcept[]): number | null {
  */
 async function recheck(t: FillTarget, words: Word[], names: string[], offer: StockConcept[]): Promise<boolean> {
   const sent = words.map((w) => ({ ...w, key: pictureKey(w) }));
+  const offeredAt = newestStock(offer) ?? Date.now();
   const verdicts = await askCheck(t, sent, names, offer);
   if (verdicts === false) return false;
   if (verdicts === CAPPED) return true;
   const asked = rechecks.get(t.profile.id);
+  // The stock the check was offered, as a time: read before the call, and
+  // rounded up to the row's millisecond so the newest offered picture is
+  // never "newer" than the row it was offered to.
+  const asOf = new Date(Math.ceil(offeredAt));
   let matched = 0;
   for (const [i, v] of verdicts.entries()) {
     asked?.delete(sent[i].id);
     const stock = v?.stock ? stockPointer(v.stock) : null;
-    if (await noneRechecked(rawDb(), t.profile, sent[i].id, sent[i].key, stock ? { stock, description: v!.description, lookAlike: matchedGroup(v!, offer) } : undefined)) matched++;
+    if (await noneRechecked(rawDb(), t.profile, sent[i].id, sent[i].key, asOf, stock ? { stock, description: v!.description, lookAlike: matchedGroup(v!, offer) } : undefined)) matched++;
   }
   console.log(`[lingo-dojo] pictures: ${sent.length} word(s) with no picture checked again, ${matched} matched to a stock picture`);
   return true;

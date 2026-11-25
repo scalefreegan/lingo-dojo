@@ -3654,8 +3654,10 @@ would stay out for ever. This asks again, about stock pictures only.
 - **Only a stock match changes a row**: it becomes `ready` on the stock
   picture (`noneRechecked` in `scripts/db/pictures.ts`), with no image
   call. A word the check now calls picturable with no stock picture stays
-  `none` (Draw it anyway is the way to a drawing). Either way `updated_at`
-  moves on, which is what stops a second ask.
+  `none` (Draw it anyway is the way to a drawing), and its `updated_at`
+  becomes the file time of the newest stock picture it was offered (read
+  before the call, not the reply's time): that stops a second ask, and a
+  stock picture drawn while the call waited or ran still counts as newer.
 - Nothing asks by itself: not a status read, a page load or a run started
   for other work.
 
