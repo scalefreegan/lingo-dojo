@@ -9,8 +9,6 @@
  * modes and its own lazily loaded reader beside zh.ts; nothing else here
  * assumes Chinese. */
 
-import { languageKey } from "../draft.ts";
-
 /** What sits over the characters: nothing, pinyin with tone marks, or
  *  zhuyin (bopomofo, what Taiwanese learners read). */
 export type RubyMode = "off" | "pinyin" | "zhuyin";
@@ -57,11 +55,6 @@ export function isTaiwan(locale: string | null | undefined): boolean {
   const parts = locale.replace(/_/g, "-").split("-").map((p) => p.toUpperCase());
   return parts.includes("TW") || (parts.includes("HANT") && !parts.includes("HK") && !parts.includes("MO"));
 }
-
-const RUBY_KEY = "lingo-dojo.ruby.v1";
-/** Where a language profile's choice is kept in this browser (a per-viewer
- *  convenience, like the remembered tab: losing it just means the default). */
-export const rubyStorageKey = (languageId: string) => languageKey(RUBY_KEY, languageId);
 
 /** The mode to show for `locale` given what was stored: the stored choice
  *  when it is one this script offers, else its default; "off" where the

@@ -120,7 +120,7 @@ test("a save carries only the pack's own minutes, never the remembered default",
 });
 
 test("browser storage is per language profile; a learner's keys from before profiles move to the first language opened, once", async () => {
-  const { adoptLearnerKeys, languageKey, loadRememberedDraft, rememberDraft } = await import("../../web/src/draft.ts");
+  const { adoptLearnerKeys, languageKey, readDraft } = await import("../../web/src/draft.ts");
   const store = new Map();
   const saved = globalThis.localStorage;
   globalThis.localStorage = {
@@ -128,6 +128,8 @@ test("browser storage is per language profile; a learner's keys from before prof
     setItem: (k, v) => store.set(k, String(v)),
     removeItem: (k) => store.delete(k),
   };
+  const draftOf = (id) => readDraft(globalThis.localStorage.getItem(languageKey("lingo-dojo.draft.v1", id)));
+  const keep = (id, d) => store.set(languageKey("lingo-dojo.draft.v1", id), JSON.stringify(d));
   try {
     const draft = { units: ["intro-target"], overrides: { level: "B1" }, title: "Old draft" };
     store.set("lingo-dojo.draft.v1.learner.L1", JSON.stringify(draft));
@@ -137,7 +139,7 @@ test("browser storage is per language profile; a learner's keys from before prof
     store.set("lingo-dojo.scene-filter.v1.learner.L1", "older");
 
     adoptLearnerKeys("L1", "G1");
-    assert.equal(loadRememberedDraft("G1").title, "Old draft", "the draft is the first language's now");
+    assert.equal(draftOf("G1").title, "Old draft", "the draft is the first language's now");
     assert.equal(store.get("lingo-dojo.tab.v1.language.G1"), "go");
     assert.equal(store.get("lingo-dojo.scene-filter.v1.language.G1"), "already German's", "a language's own key wins");
     assert.ok(![...store.keys()].some((k) => k.endsWith(".learner.L1")), "moved, not copied");
@@ -145,17 +147,17 @@ test("browser storage is per language profile; a learner's keys from before prof
 
     // A second language of the same learner starts fresh; each keeps its own.
     adoptLearnerKeys("L1", "G2");
-    assert.equal(loadRememberedDraft("G2"), null);
-    rememberDraft("G2", { ...draft, title: "Chinese draft" });
-    assert.equal(loadRememberedDraft("G2").title, "Chinese draft");
-    assert.equal(loadRememberedDraft("G1").title, "Old draft");
+    assert.equal(draftOf("G2"), null);
+    keep("G2", { ...draft, title: "Chinese draft" });
+    assert.equal(draftOf("G2").title, "Chinese draft");
+    assert.equal(draftOf("G1").title, "Old draft");
   } finally {
     globalThis.localStorage = saved;
   }
 });
 
 test("a remembered draft: an old one (no random fields) loads as a library scene; a random one keeps its pool", async () => {
-  const { loadRememberedDraft, rememberDraft, languageKey } = await import("../../web/src/draft.ts");
+  const { readDraft, languageKey } = await import("../../web/src/draft.ts");
   const store = new Map();
   const saved = globalThis.localStorage;
   globalThis.localStorage = {
@@ -163,21 +165,23 @@ test("a remembered draft: an old one (no random fields) loads as a library scene
     setItem: (k, v) => store.set(k, String(v)),
     removeItem: (k) => store.delete(k),
   };
+  const draftOf = (id) => readDraft(globalThis.localStorage.getItem(languageKey("lingo-dojo.draft.v1", id)));
+  const keep = (id, d) => store.set(languageKey("lingo-dojo.draft.v1", id), JSON.stringify(d));
   try {
     const key = languageKey("lingo-dojo.draft.v1", "G1");
     store.set(key, JSON.stringify({ units: ["intro-target"], overrides: { level: "B1" }, title: "Old", scenario: "plaza" }));
-    const old = loadRememberedDraft("G1");
+    const old = draftOf("G1");
     assert.deepEqual([old.scenarioMode, old.randomCollections, old.scenario], ["library", [], "plaza"]);
     assert.equal(draftToPack(old).random_scene, null);
 
-    rememberDraft("G1", { ...old, scenarioMode: "random", randomCollections: ["Daily life", ""] });
-    const random = loadRememberedDraft("G1");
+    keep("G1", { ...old, scenarioMode: "random", randomCollections: ["Daily life", ""] });
+    const random = draftOf("G1");
     assert.deepEqual([random.scenarioMode, random.randomCollections], ["random", ["Daily life", ""]]);
     assert.deepEqual(draftToPack(random).random_scene, { collections: ["Daily life", ""] });
 
     // Junk in either field is dropped, not trusted.
     store.set(key, JSON.stringify({ units: [], overrides: {}, scenarioMode: "dice", randomCollections: ["Daily life", 7, null] }));
-    const junk = loadRememberedDraft("G1");
+    const junk = draftOf("G1");
     assert.deepEqual([junk.scenarioMode, junk.randomCollections], ["library", ["Daily life"]]);
   } finally {
     globalThis.localStorage = saved;

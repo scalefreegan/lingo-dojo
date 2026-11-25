@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import {
-  KANGXI_RADICALS, hanChars, isHan, isTaiwan, parseRadical, particleDe, pinyinToZhuyin, readingIn, resolveMode, rubyStorageKey, scriptFor,
+  KANGXI_RADICALS, hanChars, isHan, isTaiwan, parseRadical, particleDe, pinyinToZhuyin, readingIn, resolveMode, scriptFor,
   readMarked, splitHan, taiwanize,
 } from "../../web/src/script/script.ts";
 import { charReadings, readCodePoints, readOffsets, simplified } from "../../web/src/script/zh.ts";
@@ -65,11 +65,6 @@ test("resolveMode: the stored choice where offered, else the default, off where 
   assert.equal(resolveMode("furigana", "zh-CN"), "pinyin");
   assert.equal(resolveMode("pinyin", "es-MX"), "off");
   assert.equal(resolveMode("zhuyin", null), "off");
-});
-
-test("rubyStorageKey is per language profile", () => {
-  assert.equal(rubyStorageKey("abc"), "lingo-dojo.ruby.v1.language.abc");
-  assert.notEqual(rubyStorageKey("a"), rubyStorageKey("b"));
 });
 
 test("splitHan: single characters and runs of everything else, with UTF-16 offsets", () => {

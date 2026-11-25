@@ -33,11 +33,32 @@ type LibraryProps = PackActions & {
  * Go tab, where saving happens). History, the learner's saved voice
  * sessions (HistoryView). And the phrase bank (PhraseBankView): the
  * active language's phrases with how well each is known. */
+type LibraryView = "packs" | "history" | "bank";
+const VIEW_KEY = "lingo-dojo.library-view.v1";
+
+function savedView(): LibraryView {
+  try {
+    const v = sessionStorage.getItem(VIEW_KEY);
+    return v === "history" || v === "bank" ? v : "packs";
+  } catch {
+    return "packs";
+  }
+}
+
 export default function LibraryTab(props: LibraryProps) {
   // A search for the bank asked from elsewhere (bankLink.ts: a session
   // recap's "In the bank") opens it there; `bankAsk` remounts the bank
   // view with the words.
-  const [view, setView] = useState<"packs" | "history" | "bank">(() => (peekBankRequest() != null ? "bank" : "packs"));
+  // Remembered while the page's tab is open, so a reload comes back to it.
+  const [view, setViewState] = useState<LibraryView>(() => (peekBankRequest() != null ? "bank" : savedView()));
+  const setView = (v: LibraryView) => {
+    setViewState(v);
+    try {
+      sessionStorage.setItem(VIEW_KEY, v);
+    } catch {
+      /* blocked storage: the Library opens on the packs */
+    }
+  };
   const [bankAsk, setBankAsk] = useState<{ q: string; n: number }>(() => ({ q: peekBankRequest() ?? "", n: 0 }));
   useEffect(() => {
     const take = () => {

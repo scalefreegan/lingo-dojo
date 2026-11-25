@@ -7,6 +7,7 @@ import {
 import { handleChat, handleSettings } from "./chat.ts";
 import { handleConversations } from "./conversations.ts";
 import { handleHiddenScenes } from "./hidden.ts";
+import { handlePrefs } from "./prefs.ts";
 import { handleReadings, handleReadingsAdmin, handleSharedReadings } from "./readings.ts";
 import { handlePhrases } from "./phrases.ts";
 import { handleGame, handlePictures } from "./pictures.ts";
@@ -204,6 +205,9 @@ function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
   // Library scenes and collections the active language has hidden
   // (hidden.ts): a per-language preference, the library itself untouched.
   middlewares.use("/api/hidden-scenes", wrap(handleHiddenScenes, { learner: true }));
+  // The learner's kept choices (prefs.ts): what the app would otherwise ask
+  // again on a reload or another device.
+  middlewares.use("/api/prefs", wrap(handlePrefs, { learner: true }));
   middlewares.use("/api/assemble", wrap(handleAssemble, { learner: true }));
   middlewares.use("/api/export", wrap(handleExport, { learner: true }));
   // The embedded agent (SSE, auto-commit of content/ after each turn) and
@@ -224,7 +228,7 @@ function mountRoutes(middlewares: ViteDevServer["middlewares"]): void {
   middlewares.use("/api/voice", wrap(handleVoice));
   // Saved conversations (conversations.ts): the learner's own, so the
   // page must name that learner, like the turn that writes them. End
-  // comes from a page-unload keepalive fetch too, which carries the
+  // is a keepalive fetch (it may be the page's last), which carries the
   // same header and cookie, so it passes the same checks.
   middlewares.use("/api/conversations", wrap(handleConversations, { learner: true }));
   // The phrase bank (phrases.ts): the active language's own, like its

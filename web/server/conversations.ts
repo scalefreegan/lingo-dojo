@@ -55,9 +55,10 @@ import { readVoiceSettings } from "./store.ts";
 // doesn't exist. The turns themselves are written by the voice turn
 // route (voice.ts) through saveTurn below, after the dojo master answered.
 //
-// Ending: End, leaving the Go tab, closing the panel, Restart and page
-// unload all call /end (and the page sends End before it switches learner
-// or language, while its headers still name the conversation's). A
+// Ending: End, leaving the Go tab, closing the panel and Restart all call
+// /end (and the page sends End before it switches learner or language, while
+// its headers still name the conversation's). The page going doesn't: a
+// reload goes on with the session (docs/VOICE.md §Reload). A
 // conversation nobody ended is ended lazily, two hours after its last turn,
 // by the next conversation request or voice turn of any of its account's
 // learners, in any language (endIdle; there is no timer). Whichever way, the one write
@@ -90,14 +91,13 @@ export function observeConversationEnds(fn: ((c: Conversation) => void) | null):
 
 /**
  * Called exactly once for each conversation that ends, right after the write
- * that set its ended_at (End, Restart, leaving Go, closing the panel, page
- * unload, or the two-hour idle end) — that write only matches a row whose
+ * that set its ended_at (End, Restart, leaving Go, closing the panel, a
+ * switch, or the two-hour idle end) — that write only matches a row whose
  * ended_at is still null, so a second End or a racing idle end finds nothing
  * and never gets here. A conversation deleted while open is never ended, so
  * never gets here either. The post-session extraction (DATA.md §Post-session
  * extraction, extraction.ts) starts here, in the background: it must not
- * throw into the request that ended the conversation or hold it up (the
- * End request is often a page-unload beacon). Its own claim makes it run
+ * throw into the request that ended the conversation or hold it up. Its own claim makes it run
  * once even if this were ever called twice.
  */
 export function onConversationEnded(conversation: Conversation): void {

@@ -169,7 +169,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   session is in one, the Go tab blurs every entry before the latest question
   (`veiled` in `Transcript.tsx`: also `inert`, so no selection, find-in-page
   or screen reader) until the part ends. **Show** lifts it for that part;
-  **Hide while recalling** turns it off in this browser (`localStorage`).
+  **Hide while recalling** turns it off, remembered for the language
+  (docs/DATA.md §Kept choices).
 - **The session timeline** beside the transcript lists the session's parts
   (`sessionPlan` in `scripts/voice.mjs`): the introduction, each warm-up, the
   scene and its scenario beats, then the debrief (kids: a game tagged
@@ -201,8 +202,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   turn, and every `/api/voice/turn` sends `elapsedMs`, the time since then.
   The browser keeps this clock even though the session is saved: its origin
   moves with every mid-session pick (below), which only the browser sees, so
-  a server clock would need the pick's time from the browser anyway, and a
-  reload loses the session it would outlive (Saved conversations).
+  a server clock would need the pick's time from the browser anyway. It is
+  kept with the session through a reload (§Reload), running on meanwhile.
   With a budget the server adds one **clock line** after the learner's words
   (`clockLine`, given the mode): minutes used, minutes left, the current part (the last
   `STAGE`), and "behind the plan" when the split has moved on. From 80% used
@@ -276,8 +277,8 @@ browser mic ─▶ 16 kHz WAV ─▶ POST /api/voice/transcribe ─▶ ElevenLab
   segments, and only those, carry their reading over each character in a
   `<ruby>`: pinyin with tone marks, or zhuyin (bopomofo) for learners who
   read it. A switch above the transcript (Readings: Off / Pinyin / Zhuyin)
-  is remembered per language profile in the browser (`lingo-dojo.ruby.v1`)
-  and defaults to Pinyin; the same switch is on a History transcript,
+  is remembered per language profile (docs/DATA.md §Kept choices) and
+  defaults to Pinyin; the same switch is on a History transcript,
   the phrase bank and Practice (over the target words only where a card
   already shows them: a recognize prompt, the answer once it is out), and
   nothing shows for a language without a reading aid.
@@ -1415,8 +1416,9 @@ pack, as played, into the Go tab.
   (a 413 past that; Restart starts a new one).
 - **End.** End (beside Restart) finishes the session: the transcript stays
   to read and copy, and New session starts the next. Restart, Close,
-  leaving the Go tab and leaving the page (a reload, closing the tab; a
-  `keepalive` request that outlives the page) end the conversation too.
+  leaving the Go tab and a learner or language switch (or logging out) end
+  the conversation too. The page going does not (§Reload): a session nobody
+  comes back to ends with its two idle hours, below.
   Leaving Go keeps the session on screen: carrying on when you come back
   saves into a new conversation from that turn on (until then the header
   no longer says "saving to History": nothing is). A turn that was still
@@ -1424,7 +1426,7 @@ pack, as played, into the Go tab.
   conversation) is stored in a conversation that is never kept open: it
   ends once that turn has its answer (`web/src/conversationLife.ts`). A turn still on its way
   when the conversation ends is stored in it first: the browser sends End
-  once that turn has its answer (except when the page is going away), and
+  once that turn has its answer (except at Close and a switch), and
   on the server End waits for a turn it already holds and refuses, before
   anything runs, a turn that arrives while it is ending. A
   conversation nobody ended is ended two hours after its last turn, by the
@@ -1432,9 +1434,6 @@ pack, as played, into the Go tab.
   for it is running), and its end is that last turn. A turn on an ended conversation (another device, two idle
   hours) or a deleted one is refused before anything runs, and the Go tab
   starts a new conversation with that turn and sends it again.
-- **Reload.** A reload ends the conversation (it is in History) and the Go
-  tab starts fresh: the history lives in the browser, and reading it back
-  from the database is a later step.
 - **History** lists past sessions, newest first, 20 at a time, with the
   date, length (start to end, or to the last turn while open), turns and
   the recap's summary. Opening one shows the transcript read-only, glosses
@@ -1446,6 +1445,44 @@ pack, as played, into the Go tab.
   the bank), what went well and what to work on. How you did on each phrase
   becomes a review in the bank's schedule. If it fails twice the card
   offers Retry recap. docs/DATA.md §Post-session extraction has the rest.
+
+### Reload
+
+A reload, planned or not, goes on with the session (ld-ch4).
+
+- **Kept in the browser** (`web/src/liveSession.ts`, `localStorage`, one per
+  language profile): the transcript as it is on screen, the plan, the clock,
+  the cast and who holds which voice, the conversation's id, the tone and
+  word marks (not the recordings), what is typed in the box, and the recap
+  card's conversation after End. Written as each thing lands; a reply still
+  streaming isn't part of it, as nothing of it is stored yet. Restart, New
+  session, Close, a learner or language switch and logging out drop it.
+  Logging out drops every language's.
+- **Picked up** at the next load: the Go tab opens on the session, says
+  "Picked up where you left off" and waits. It never starts to listen or
+  play on its own. A session last spoken in two hours ago or more
+  (`LIVE_MAX_AGE_MS`, the server's own idle end) is ended instead.
+- **Then the server's copy.** The stored turns are read back, and a reply
+  stored after the page went is added (`withStored`): only where everything
+  the screen has agrees with what is stored, else the screen stays as it is.
+  A conversation that ended meanwhile is let go, and the next turn starts
+  another.
+- **Ask again** shows under a learner's line with no reply (the page or the
+  network went while it was on its way, it failed, or Stop). It reads the
+  stored turns first, so a reply that did land is played, not asked for twice.
+- **One tab.** A Web Lock per language keeps two tabs from writing one
+  session; another tab says the session is open elsewhere. A browser without
+  Web Locks keeps it without that guard.
+- **Reloads the app made itself** (`web/src/keepPage.ts`). Vite's client
+  reloads the page when its websocket drops, which a phone does at each lock
+  or app switch. While a session, a practice round or a picture game is
+  going, the reload is held until it is over. With nothing going, a page on
+  any host but localhost reloads after a dropped socket only when the server
+  was restarted (`boot` in `GET /api/auth/me`, new at each start).
+- **Not kept:** a picture game in progress (held from the app's own reloads
+  only), and a recording not yet sent. iOS may ask for the microphone again
+  on a new page load; that is the browser's.
+- Tests: `scripts/tests/live-session.test.mjs`.
 
 ## Settings
 
@@ -2608,7 +2645,8 @@ All three end with: if they push back, let it go, the measurement can be
 wrong.
 
 **The coaching dial** (`coaching`, a word like `pace`): `off`, `light`
-(default when absent) or `strict`, per session, on the Go tab's "Tone
+(default when absent) or `strict`, remembered per language
+(docs/DATA.md §Kept choices), on the Go tab's "Tone
 coaching" pill group beside Readings (adults, Mandarin; it applies from
 the next recording). It goes on the transcription (`coaching=`, where
 scoring starts) and on the turn (`coaching`), each checked before
@@ -3060,8 +3098,7 @@ same wait of at most 1.2 s, a late score dropped). What differs:
   configured (`configured.azure` in the voice settings reply).
 - **Nothing is stored.** No `pronunciation_checks` row (the table is
   tone-shaped, and the recap's Tones section and the tone trend read it)
-  and no clip: the marks live with the page, as the explicit word check's
-  do. A recap of words, or a trend, would need its own shape and its own
+  and no clip: the marks live with the session in the browser (§Reload). A recap of words, or a trend, would need its own shape and its own
   proof first.
 - **Kids**: checked like an adult's turn (the recording may go to Azure, as
   it does for tones), the kids rule, no marks, no dial, nothing stored.
@@ -3311,5 +3348,6 @@ has its own background slot.
   Tones are scored only where the text is known (Practice speak-it, the
   character card; §Pronunciation in the app), not in live turns yet.
 - Not streaming: each reply arrives whole, then plays line by line.
-- Only text is saved (no audio), and a saved session can be read in
-  History but not picked up again: after a reload the Go tab starts fresh.
+- Only text is saved (no audio). A reload goes on with the session in the
+  browser it was in (§Reload); a session in History can be read and
+  practised again, not picked up where it was.

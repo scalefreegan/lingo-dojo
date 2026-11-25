@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError } from "../api";
+import { keepPage } from "../keepPage";
 import { answerRound, gameStatus, pictureBlob, startGame, wordAudio } from "../gameApi";
 import type { GameRound, PictureStatus } from "../types";
 import { Mochi } from "./Mascots";
@@ -65,6 +66,11 @@ export default function KidsGameView() {
     made.current = { urls: [], audio: [] };
   };
   useEffect(() => release, []);
+  const playing = phase.kind === "loading" || phase.kind === "round";
+  useEffect(() => {
+    keepPage("game", playing);
+    return () => keepPage("game", false);
+  }, [playing]);
 
   // The status, and again every few seconds while pictures are drawn (a
   // read of counts: it never starts a drawing).

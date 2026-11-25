@@ -431,8 +431,6 @@ function learnerKey(base: string, learnerId: string): string {
   return `${base}.learner.${learnerId}`;
 }
 
-const DRAFT_KEY = "lingo-dojo.draft.v1";
-
 /** Every per-profile key's base. Before logins they were one per mode
  *  (adult the bare base, kids with `.kids`), shared by whoever used the
  *  browser; then one per learner; now one per language profile. */
@@ -469,12 +467,12 @@ export function dropModeKeys(): void {
   }
 }
 
-/** This language profile's last draft, so a refresh doesn't throw away
- *  today's selections. Browser storage only: a per-machine convenience,
- *  never the record (saved packs are). Any read failure means "start fresh". */
-export function loadRememberedDraft(languageId: string): Draft | null {
+/** A language profile's last draft as it was kept (src/prefs.ts, "draft"),
+ *  so a refresh doesn't throw away today's selections. A convenience, never
+ *  the record (saved packs are). Anything else than a draft means "start
+ *  fresh". */
+export function readDraft(raw: string | null): Draft | null {
   try {
-    const raw = localStorage.getItem(languageKey(DRAFT_KEY, languageId));
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<Draft>;
     if (!Array.isArray(d.units) || typeof d.overrides !== "object" || d.overrides === null) return null;
@@ -483,15 +481,6 @@ export function loadRememberedDraft(languageId: string): Draft | null {
     return { ...newDraftShape(), ...d, scenarioMode, randomCollections, overrides: { ...emptyOverrides(), ...d.overrides }, minutes: validMinutes(d.minutes) == null ? null : d.minutes } as Draft;
   } catch {
     return null;
-  }
-}
-
-export function rememberDraft(languageId: string, draft: Draft | null): void {
-  try {
-    if (draft) localStorage.setItem(languageKey(DRAFT_KEY, languageId), JSON.stringify(draft));
-    else localStorage.removeItem(languageKey(DRAFT_KEY, languageId));
-  } catch {
-    /* private window or blocked storage: nothing to remember into */
   }
 }
 

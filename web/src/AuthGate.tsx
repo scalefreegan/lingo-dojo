@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, getMe, logout, pickLanguage, pickLearner, setPageLearner, settleBeforeSwitch } from "./api";
+import { ApiError, STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, getMe, logout, pickLanguage, pickLearner, setBootId, setPageLearner, settleBeforeSwitch } from "./api";
+import { dropLiveSessions } from "./liveSession";
+import { hydratePrefs } from "./prefs";
 import { adoptLearnerKeys, dropModeKeys } from "./draft";
 import type { MeReply } from "./types";
 import App from "./App";
@@ -41,6 +43,9 @@ export default function AuthGate() {
   const setMe = useCallback((m: MeReply) => {
     const page = m.user && m.learner && m.language ? { learnerId: m.learner.id, languageId: m.language.id } : null;
     if (m.learner?.languages[0]) adoptLearnerKeys(m.learner.id, m.learner.languages[0].id);
+    // Before the app draws: what it starts from is read from these.
+    if (page && m.prefs) hydratePrefs(page, m.prefs);
+    setBootId(m.boot);
     setPageLearner(page);
     setMeState(m);
   }, []);
@@ -78,6 +83,7 @@ export default function AuthGate() {
   async function signOut() {
     // The open session's End needs the login it belongs to.
     await settleBeforeSwitch();
+    dropLiveSessions();
     try {
       await logout();
     } catch {

@@ -24,6 +24,7 @@ import type {
   Coaching, LibraryAddReply, LibraryAddRequest, LibraryReply, LibrarySort, TranscribeReply, TtsProvider, VoiceSettingsReply, VoiceSettingsRequest, VoiceSoundRequest, VoiceSpeakRequest, VoiceTurnErrorEvent, VoiceTurnLineEvent, VoiceTurnReply, VoiceTurnRequest, VoicesReply,
 } from "./types";
 import { PLAYBACK_RATE_HEADER } from "../shared/wire.ts";
+import type { PrefRequest } from "../shared/prefs.ts";
 import type { MyReadingsReply, WaitingWordsReply, ReadingSaveReply, ReadingSaveRequest, SharedReadingsAdminReply, SharedReadingsReply } from "../shared/readings.ts";
 
 /** A non-2xx reply; `message` is the server's `{error}` sentence, and
@@ -224,6 +225,39 @@ function inMode(path: string, mode: Mode): string {
 /** GET /api/auth/me — who is logged in (or that no account exists yet). */
 export function getMe(): Promise<MeReply> {
   return req<MeReply>("/api/auth/me");
+}
+
+/** Which start of the server this page came from, as its first reply that
+ *  said (MeReply.boot); null until then. */
+let pageBoot: string | null = null;
+
+export function setBootId(id: string | undefined): void {
+  pageBoot ??= id ?? null;
+}
+
+export function bootId(): string | null {
+  return pageBoot;
+}
+
+/** Which start of the server answers now; null when it can't be reached or
+ *  doesn't say. Quiet: a lost session is for a real call to find. */
+export async function getBootId(): Promise<string | null> {
+  try {
+    const res = await fetch("/api/auth/me");
+    return res.ok ? (((await res.json()) as MeReply).boot ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** PUT /api/prefs — keep one of the learner's choices (src/prefs.ts). Like
+ *  endConversation it names the page the choice was made on and outlives the
+ *  page; a failure is quiet, and the choice is sent again at the next load. */
+export function putPref(page: PageLearner, body: PrefRequest): Promise<void> {
+  return fetch("/api/prefs", { ...json(body, "PUT"), keepalive: true, headers: { "Content-Type": "application/json", ...pageHeaders(page) } }).then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 /** POST /api/auth/login — sets the session cookie. A wrong password is not
@@ -718,8 +752,8 @@ export function retryRecap(id: string): Promise<RecapReply> {
 
 /**
  * POST /api/conversations/:id/end, fire and forget. A keepalive fetch, so it
- * still goes out when the page is unloading (Close, a reload, the tab shut):
- * unlike sendBeacon it can carry the headers wrap() checks. `page` is the
+ * still goes out if the page goes right after (End, Close): unlike
+ * sendBeacon it can carry the headers wrap() checks. `page` is the
  * learner and language the conversation was started for, sent as is: after
  * a learner or language switch the page's are already the next ones, and
  * the server then answers stale_learner, which is ignored here rather than

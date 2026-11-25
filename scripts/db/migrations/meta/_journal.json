@@ -162,6 +162,13 @@
       "when": 1795443412091,
       "tag": "0022_pronunciation_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1795615758484,
+      "tag": "0023_language_prefs",
+      "breakpoints": true
     }
   ]
 }
