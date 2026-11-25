@@ -313,6 +313,11 @@ and taps its picture.
   to their own learner only.
 - A game is built only from ready pictures and is preloaded before round
   1.
+- A game is not the last game again (ld-wx6, `gameRounds`): reviews are at
+  most half the rounds while there are new words; a word answered right in
+  the last 12 hours rests (`GAME_REST_MS`), whatever FSRS's ten-minute step
+  says, while a word just missed comes back first; the chosen rounds are
+  shuffled per game. FSRS's schedule is untouched.
 - `LINGO_IMAGE_PROVIDER=stub` draws placeholders for tests and UI checks.
 
 Settled readings and kids readings (ld-0mn, migration 0017, docs/VOICE.md

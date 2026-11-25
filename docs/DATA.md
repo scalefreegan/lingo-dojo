@@ -3814,8 +3814,23 @@ true`, for kids and adult learners (before ld-318 adults got a 403):
   `waiting`, `limited`, `problem`, `audio`). It starts nothing.
 - `POST /api/game/start` returns up to 8 rounds (`gameRounds`):
   - The rounds are built only from `ready` pictures whose key is current.
-  - The order is due words first, then new words (starred and recent
-    first), then the rest.
+  - What a game holds (ld-wx6; it used to play every due card first, and
+    FSRS makes a word due again ten minutes after its first right answer,
+    so each game was the last one over again):
+    - reviews, at most half the rounds while there are new words: a word
+      just missed first, then due cards, the most overdue first;
+    - new words: the learner's own (starred and recent first), then the
+      shared pool's;
+    - then whatever fills the game: reviews past the half, words
+      **resting** (answered right in the last 12 hours, `GAME_REST_MS`,
+      due or not), and the rest, soonest due first. A small bank still
+      gives a full game.
+    - A miss is told from FSRS's own marks (due within 5 minutes of the
+      answer, or relearning). FSRS's schedule itself is untouched: the
+      listen card is shared with the other drills.
+  - The chosen rounds are put in an order new for every game (`shuffle`,
+    a random value the server makes at start); which words are chosen
+    never depends on it.
   - With fewer than 3 pictured words there is no game. The child sees a
     friendly "pictures are being drawn" state, with nothing to fail at, and
     a note for grown-ups.
@@ -4099,9 +4114,10 @@ then the pool's words for their language up to the level.
   is left out. So is a second concept with the same word, and a concept
   whose pool id is already one of their phrases (a pool word they
   adopted and edited since keeps that id: `ownPoolIds`, `ownIds`).
-- Order (`gameRounds`): due words, then their own new words, then pool
-  words (the easier level first, shuffled by a seed of the language and
-  the day), then the rest. At most `GAME_ROUNDS` = 8.
+- Order (`gameRounds`, §Kids word game): reviews (at most half), then
+  their own new words, then pool words (the easier level first, in an
+  order drawn from a seed of the language and the day), then the fill.
+  At most `GAME_ROUNDS` = 8, shuffled per game.
 - A kids learner of Mandarin gets a pool word only when its reading is
   settled (`settledForKids`), as for their own words.
 - The status adds `pool`, `poolLevel` and `poolByLevel`. The game is

@@ -754,3 +754,77 @@ test("re-check targets: `none` words judged before the newest stock picture, cur
   assert.deepEqual(recheckTargets(phrases, rows, 5000).map((x) => x.id).sort(), ["1", "2"]);
   assert.deepEqual(recheckTargets(phrases, rows, null), []);
 });
+
+/* ------------------------- a game isn't the last game again (ld-wx6) ------------------------- */
+
+const { newCard, review } = await import("../fsrs.mjs");
+/** A listen card as FSRS leaves it after these answers (3 right, 1 wrong) at these times. */
+function played(...answers) {
+  let card = newCard(answers[0][1]);
+  for (const [rating, at] of answers) card = review(card, rating, at).card;
+  return [{ skill: "listen", ...card }];
+}
+const ago = (minutes) => new Date(+NOW - minutes * 60_000);
+const words = (n, from = 0) => Array.from({ length: n }, (_, i) => phrase(`Wort${from + i}`, `thing ${from + i}`));
+
+test("the words of the game just played rest: the next game is other words, though FSRS calls them due", () => {
+  const ps = words(20);
+  // Game 1, half an hour ago: eight words, each answered right once.
+  for (const p of ps.slice(0, 8)) p.cards = played([3, ago(30)]);
+  assert.ok(ps.slice(0, 8).every((p) => +new Date(p.cards[0].due) < +NOW), "all eight are due again (the ten-minute step)");
+  const rows = new Map(ps.map((p) => ready(p)));
+  const g = gameRounds(ps, rows, { now: NOW });
+  assert.equal(g.rounds.length, GAME_ROUNDS);
+  const first = new Set(ps.slice(0, 8).map((p) => p.id));
+  assert.deepEqual(g.rounds.filter((r) => first.has(r.phraseId)), [], "none of the last game's words");
+});
+
+test("a word missed in the last game comes back, a word of yesterday's is a review, and reviews are at most half the game", () => {
+  const ps = words(30);
+  const missedNew = ps[0];
+  missedNew.cards = played([1, ago(20)]);
+  const missedKnown = ps[1];
+  missedKnown.cards = played([3, ago(60 * 24 * 9)], [3, ago(60 * 24 * 8)], [1, ago(20)]);
+  assert.equal(missedKnown.cards[0].state, 3, "relearning");
+  const right = ps[2];
+  right.cards = played([3, ago(20)]);
+  // Six from yesterday, due.
+  for (const p of ps.slice(3, 9)) p.cards = played([3, ago(60 * 20)]);
+  const rows = new Map(ps.map((p) => ready(p)));
+  const g = gameRounds(ps, rows, { now: NOW });
+  const ids = g.rounds.map((r) => r.phraseId);
+  assert.ok(ids.includes(missedNew.id) && ids.includes(missedKnown.id), "both misses are back");
+  assert.ok(!ids.includes(right.id), "the one answered right rests");
+  const played9 = new Set(ps.slice(0, 9).map((p) => p.id));
+  assert.equal(ids.filter((id) => played9.has(id)).length, GAME_ROUNDS / 2, "half reviews");
+  assert.equal(ids.filter((id) => !played9.has(id)).length, GAME_ROUNDS / 2, "half new words");
+});
+
+test("with nothing new left, reviews fill the game; with a small bank, resting words do", () => {
+  const ps = words(10);
+  for (const p of ps) p.cards = played([3, ago(60 * 20)]);
+  const all = gameRounds(ps, new Map(ps.map((p) => ready(p))), { now: NOW });
+  assert.equal(all.rounds.length, GAME_ROUNDS, "no new words: every round is a review");
+  // A child with four pictures who has just played them all still has a game.
+  const few = words(4, 100);
+  for (const p of few) p.cards = played([3, ago(5)]);
+  const g = gameRounds(few, new Map(few.map((p) => ready(p))), { now: NOW });
+  assert.equal(g.ready, true);
+  assert.equal(g.rounds.length, 4);
+});
+
+test("each game has an order of its own; which words it plays doesn't depend on it", () => {
+  const ps = words(20);
+  for (const p of ps.slice(0, 6)) p.cards = played([3, ago(60 * 20)]);
+  const rows = new Map(ps.map((p) => ready(p)));
+  const plain = gameRounds(ps, rows, { now: NOW });
+  const orders = new Set();
+  for (const shuffle of ["a", "b", "c", "d", "e", "f"]) {
+    const g = gameRounds(ps, rows, { now: NOW, shuffle });
+    assert.deepEqual(new Set(g.rounds.map((r) => r.phraseId)), new Set(plain.rounds.map((r) => r.phraseId)));
+    assert.deepEqual(g.rounds.map((r) => r.choices), g.rounds.map((r) => plain.rounds.find((x) => x.phraseId === r.phraseId).choices), "a round's pictures are its own");
+    orders.add(g.rounds.map((r) => r.phraseId).join());
+  }
+  assert.ok(orders.size >= 5, "different orders");
+  assert.deepEqual(gameRounds(ps, rows, { now: NOW, shuffle: "a" }), gameRounds(ps, rows, { now: NOW, shuffle: "a" }));
+});

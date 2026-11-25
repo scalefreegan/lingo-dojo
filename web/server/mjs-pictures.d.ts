@@ -98,7 +98,7 @@ declare module "*/scripts/pictures.mjs" {
   export function gameRounds(
     phrases: CandidatePhrase[],
     rows: Map<string, PictureLike>,
-    opts: { now: Date; rounds?: number; seed?: string },
+    opts: { now: Date; rounds?: number; seed?: string; shuffle?: string },
   ): { ready: boolean; pictured: number; rounds: { phraseId: string; version: string; revision: string; choices: string[] | null }[] };
   export function roundSeed(phraseId: string, version: string, revision: string, file: string): string;
   export function roundChoices(phrase: CandidatePhrase, bank: { phrase: CandidatePhrase; picture: PictureLike }[], version: string): string[] | null;

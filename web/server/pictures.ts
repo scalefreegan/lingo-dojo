@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -777,8 +778,9 @@ async function start(req: IncomingMessage, ctx: LearnerCtx): Promise<GameStartRe
   // whatever is sent (a level the game never offers them is ignored).
   const cap = ctx.learner.mode === "kids" ? defaultCap(ctx) : (asked.level ?? defaultCap(ctx));
   const { phrases, rows } = await gameWords(ctx, cap);
-  // The pool's new words in an order of the language and the day.
-  const game = gameRounds(phrases, rows, { now: new Date(), seed: `${profile.id}:${new Date().toISOString().slice(0, 10)}` });
+  // The pool's new words in an order of the language and the day; the
+  // game's own order new every time (ld-wx6).
+  const game = gameRounds(phrases, rows, { now: new Date(), seed: `${profile.id}:${new Date().toISOString().slice(0, 10)}`, shuffle: randomUUID() });
   fillPictures(targetOf(ctx));
   // A top-up of the pool's words for concepts the table lacks (the
   // install-wide naming run: capped, and nothing when nothing is missing).

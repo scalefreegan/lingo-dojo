@@ -728,15 +728,46 @@ export function pictureBank(phrases, rows) {
 const listenCard = (p) => (p.cards ?? []).find((c) => c.skill === "listen") ?? null;
 const meaningKey = (m) => clean(m ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 
+/** A word answered in the last GAME_REST_MS rests: it isn't a review
+ *  again today while there is anything else to play (ld-wx6). */
+export const GAME_REST_MS = 12 * 60 * 60 * 1000;
+/** ...unless it was missed: a card rescheduled this soon after its last
+ *  answer (FSRS brings a miss back in a minute, a right first answer in
+ *  ten) is one the learner got wrong, and a miss should come back. */
+export const GAME_MISS_MS = 5 * 60 * 1000;
+/** ts-fsrs's State.Relearning: a known word missed (it comes back in ten
+ *  minutes, like a first right answer, so the gap alone can't tell). */
+const RELEARNING = 3;
+
 /**
  * One game's rounds, from the ready pictures only (a word without one is
- * never asked: the game never waits on a drawing): listen cards due first
- * (most overdue), then words never played (starred, then most recently
- * met), then the rest, soonest due first, so a child can always play once
- * there are MIN_PICTURED pictures. At most GAME_ROUNDS. The daily
- * practice limits don't apply: a game is a handful of words the child
- * already has pictures for. `ready: false` when there are too few
+ * never asked: the game never waits on a drawing). At most GAME_ROUNDS.
+ * The daily practice limits don't apply: a game is a handful of words the
+ * learner already has pictures for. `ready: false` when there are too few
  * pictures for a game (no rounds then).
+ *
+ * What a game is made of (ld-wx6: it used to play every due card first,
+ * and FSRS makes a word due again ten minutes after its first right
+ * answer, so each game was the last game over again):
+ *  - reviews: words just missed, then listen cards due, most overdue
+ *    first, but **at most half the rounds** while there are new words to
+ *    play;
+ *  - new words: the learner's own never played (starred, then most
+ *    recently met), then the shared pool's (easier levels first, then an
+ *    order drawn from `seed`: the language and the day);
+ *  - then whatever fills the game: the reviews past the half, the words
+ *    resting (answered right in the last GAME_REST_MS, due or not: FSRS's
+ *    ten-minute step is not a reason to see a picture again the same
+ *    day), and the rest, soonest due first. So a small bank still gives a
+ *    full game, and a child can always play once there are MIN_PICTURED
+ *    pictures.
+ *  A word missed in the last GAME_REST_MS doesn't rest: it is a review
+ *  (told by FSRS's own marks: due within GAME_MISS_MS of the answer, or
+ *  relearning).
+ *
+ * `shuffle` (the server's: new for every game) puts the chosen rounds in
+ * an order of its own, so reviews and new words are mixed and no two
+ * games run in the same order. Which words are chosen never depends on it.
  *
  * A word whose round could offer only its own picture (every other one
  * shares its meaning, its file or its look-alike group: a bank of only a
@@ -744,13 +775,15 @@ const meaningKey = (m) => clean(m ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/g
  * evidence, and the answer route grades no such round (isRound). With no
  * round left the game isn't `ready`.
  */
-export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = "" } = {}) {
+export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = "", shuffle = "" } = {}) {
   const bank = pictureBank(phrases, rows);
   if (bank.length < MIN_PICTURED) return { ready: false, pictured: bank.length, rounds: [] };
   const t = ms(now);
+  const again = [];
   const due = [];
   const fresh = [];
   const pool = [];
+  const resting = [];
   const later = [];
   for (const x of bank) {
     const card = listenCard(x.phrase);
@@ -759,26 +792,37 @@ export function gameRounds(phrases, rows, { now, rounds = GAME_ROUNDS, seed = ""
     // is never played yet: it comes after the learner's own new words.
     if (x.phrase.pool) pool.push({ ...x, card: null });
     else if (!card || reps === 0) fresh.push({ ...x, card });
-    else if (ms(card.due) <= t) due.push({ ...x, card });
-    else later.push({ ...x, card });
+    else {
+      const last = card.last_review ? ms(card.last_review) : NaN;
+      const justPlayed = t - last < GAME_REST_MS;
+      const missed = ms(card.due) - last <= GAME_MISS_MS || Number(card.state) === RELEARNING;
+      if (justPlayed && !missed) resting.push({ ...x, card });
+      else if (justPlayed && ms(card.due) <= t) again.push({ ...x, card });
+      else if (ms(card.due) <= t) due.push({ ...x, card });
+      else later.push({ ...x, card });
+    }
   }
-  due.sort((a, b) => ms(a.card.due) - ms(b.card.due));
+  const byDue = (a, b) => ms(a.card.due) - ms(b.card.due);
+  again.sort(byDue);
+  due.sort(byDue);
+  // Just missed, then the most overdue.
+  due.unshift(...again);
   fresh.sort((a, b) => Number(!!b.phrase.starred) - Number(!!a.phrase.starred) || workOrder(a.phrase, b.phrase));
-  // The pool's words: the easier levels first, then in an order drawn
-  // from `seed` (the server's: the language and the day), so each day
-  // brings other pictures, and a game played again the same day the same
-  // ones not yet answered.
-  const mix = (id) => createHash("sha256").update(`${seed}\n${id}`).digest("hex");
+  const mix = (salt, id) => createHash("sha256").update(`${salt}\n${id}`).digest("hex");
   const lv = (x) => ["A1", "A2", "B1", "B2"].indexOf(x.phrase.pool.level);
-  pool.sort((a, b) => lv(a) - lv(b) || (mix(a.phrase.id) < mix(b.phrase.id) ? -1 : 1));
-  later.sort((a, b) => ms(a.card.due) - ms(b.card.due));
+  pool.sort((a, b) => lv(a) - lv(b) || (mix(seed, a.phrase.id) < mix(seed, b.phrase.id) ? -1 : 1));
+  resting.sort(byDue);
+  later.sort(byDue);
+  const news = [...fresh, ...pool];
+  const reviews = news.length ? Math.ceil(rounds / 2) : rounds;
   const out = [];
-  for (const x of [...due, ...fresh, ...pool, ...later]) {
+  for (const x of [...due.slice(0, reviews), ...news, ...due.slice(reviews), ...resting, ...later]) {
     if (out.length === rounds) break;
     const choices = roundChoices(x.phrase, bank, cardVersion(x.card));
     if (!isRound(choices)) continue;
     out.push({ phraseId: x.phrase.id, version: cardVersion(x.card), revision: phraseRevision(x.phrase), choices });
   }
+  if (shuffle) out.sort((a, b) => (mix(shuffle, a.phraseId) < mix(shuffle, b.phraseId) ? -1 : 1));
   return { ready: out.length > 0, pictured: bank.length, rounds: out };
 }
 

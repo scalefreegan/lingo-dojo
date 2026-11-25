@@ -211,8 +211,9 @@ test("levels: a beginner never gets a B1 word; the picker widens the pool; own w
   assert.deepEqual([s.pictured, s.pool], [2, 3], "the dog is theirs now (matched to the stock picture), the tax return drawn");
   const rounds = (await lee.call("POST", "/api/game/start", {})).body.rounds;
   assert.equal(rounds.length, 5);
-  assert.equal(conceptOf(lee, rounds[0].phraseId), undefined, "their own words come first");
-  assert.equal(conceptOf(lee, rounds[1].phraseId), undefined);
+  // Both of their own words are in (they are chosen before the pool's),
+  // wherever the game's shuffle put them (ld-wx6).
+  assert.equal(rounds.filter((x) => conceptOf(lee, x.phraseId) === undefined).length, 2, "their own words are always in");
   await settled();
 });
 

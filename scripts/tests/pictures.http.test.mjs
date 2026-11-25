@@ -345,6 +345,31 @@ test("the game: rounds from ready pictures only; a tap is a quiet review of the 
   ]);
 });
 
+test("the next game isn't the last one again: the words just answered right rest (ld-wx6)", async () => {
+  const pip = await someone();
+  await add(pip, Array.from({ length: 20 }, (_, i) => [`Wort${i}`, `thing ${i}`]));
+  await drawAll(pip);
+  const rows = await q("select id, phrase_id from phrase_pictures where language_profile_id = $1 and status = 'ready'", [pip.languageId]);
+  assert.equal(rows.length, 20);
+  const pictureOf = new Map(rows.map((x) => [x.phrase_id, x.id]));
+  const first = (await pip.call("POST", "/api/game/start")).body.rounds;
+  assert.equal(first.length, 8);
+  // Started again without playing: the same words. (That the order is
+  // new each time is the pure tests', with fixed shuffles: two random
+  // draws here would agree once in 8! runs.)
+  const again = (await pip.call("POST", "/api/game/start")).body.rounds;
+  assert.deepEqual(new Set(again.map((r) => r.phraseId)), new Set(first.map((r) => r.phraseId)));
+  for (const round of first) assert.equal((await tap(pip, round, pictureOf.get(round.phraseId))).body.right, true);
+  // Half an hour on: every one of the eight is due again (FSRS's
+  // ten-minute step after a first right answer).
+  await q("update cards set last_review = last_review - interval '30 minutes', due = due - interval '30 minutes' where language_profile_id = $1 and reps > 0", [pip.languageId]);
+  assert.equal((await q("select count(*)::int as n from cards where language_profile_id = $1 and reps > 0 and due < now()", [pip.languageId]))[0].n, 8);
+  const second = (await pip.call("POST", "/api/game/start")).body.rounds;
+  assert.equal(second.length, 8);
+  const played = new Set(first.map((r) => r.phraseId));
+  assert.deepEqual(second.filter((r) => played.has(r.phraseId)), [], "eight other words");
+});
+
 test("a tap: a resend replays, another tap at that version or a stale round is a 409, a picture not on offer is a 409", async () => {
   const { pip, p } = await pictured();
   const { rounds } = (await pip.call("POST", "/api/game/start")).body;
