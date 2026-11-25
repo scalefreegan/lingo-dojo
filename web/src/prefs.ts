@@ -15,26 +15,37 @@ const SEND_AFTER_MS = 800;
 const storageKey = (languageId: string, key: PrefKey) => languageKey(PREFS[key].base, languageId);
 const timeKey = (languageId: string, key: PrefKey) => `${storageKey(languageId, key)}.at`;
 
-// What storage would hold, for a browser that keeps none.
+// What storage refused (blocked or full), newer than whatever it still holds.
 const memory = new Map<string, string>();
 
 function get(k: string): string | null {
+  const refused = memory.get(k);
+  if (refused !== undefined) return refused;
   try {
-    const v = localStorage.getItem(k);
-    if (v !== null) return v;
+    return localStorage.getItem(k);
   } catch {
-    /* blocked storage */
+    return null;
   }
-  return memory.get(k) ?? null;
 }
 
-function set(k: string, v: string): void {
-  memory.set(k, v);
+/** True when storage took it. */
+function set(k: string, v: string): boolean {
   try {
     localStorage.setItem(k, v);
+    memory.delete(k);
+    return true;
   } catch {
-    /* private window, blocked or full storage: the server keeps it */
+    // Private window, blocked or full storage: the server keeps it.
+    memory.set(k, v);
+    return false;
   }
+}
+
+/** A choice and when it was made. A refused choice's time stays off storage
+ *  too, or the next load would take the old choice there for the new one. */
+function setBoth(languageId: string, key: PrefKey, value: string, at: number): void {
+  if (set(storageKey(languageId, key), value)) set(timeKey(languageId, key), String(at));
+  else memory.set(timeKey(languageId, key), String(at));
 }
 
 /** Choices that were one per browser before they were per language: a
@@ -83,8 +94,7 @@ const fits = (key: PrefKey, value: string) => new TextEncoder().encode(value).le
 export function keepPref(languageId: string, key: PrefKey, value: string): void {
   if (get(storageKey(languageId, key)) === value) return;
   const at = Date.now();
-  set(storageKey(languageId, key), value);
-  set(timeKey(languageId, key), String(at));
+  setBoth(languageId, key, value, at);
   const page = getPageLearner();
   if (page?.languageId === languageId && fits(key, value)) queue(page, key, value, at);
 }
@@ -98,8 +108,7 @@ export function hydratePrefs(page: PageLearner, server: PrefMap): void {
     const theirs = server[key] ?? null;
     const todo = reconcilePref(PREFS[key].rule, value === null ? null : { value, at }, theirs);
     if (todo === "take" && theirs) {
-      set(storageKey(page.languageId, key), theirs.value);
-      set(timeKey(page.languageId, key), String(theirs.at));
+      setBoth(page.languageId, key, theirs.value, theirs.at);
     } else if (todo === "send" && value !== null && fits(key, value)) {
       // Kept before choices had a time: as old as can be, so any other
       // device's real choice outranks it.

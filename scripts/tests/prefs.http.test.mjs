@@ -178,6 +178,22 @@ test("the page: choices survive blocked storage, go to the server once settled, 
   hydratePrefs(page, { ruby: { value: "zhuyin", at: 5 }, coaching: { value: "light", at: 1 }, draft: { value: "{}", at: 5 } });
   await new Promise((r) => setTimeout(r, 900));
   assert.deepEqual(sent.filter((s) => s.key === "ruby").map((s) => s.value), ["off"]);
+  // Storage that is full: the newer choice stands here, what it still holds
+  // keeps its own time, and the next write it takes is the one read.
+  const kept = globalThis.localStorage;
+  const at = (k) => store.get(`lingo-dojo.ruby.v1.language.G${k}`);
+  const [oldValue, oldAt] = [at(""), at(".at")];
+  let full = true;
+  // Only the choices are too big: a time still fits.
+  put("localStorage", { ...kept, setItem: (k, v) => { if (full && !k.endsWith(".at")) throw new Error("quota"); store.set(k, v); } });
+  keepPref("G", "ruby", "zhuyin");
+  assert.equal(readPref("G", "ruby"), "zhuyin");
+  assert.deepEqual([at(""), at(".at")], [oldValue, oldAt], "the old choice isn't dated as the new one");
+  hydratePrefs(page, { ruby: { value: "pinyin", at: Date.now() + 60_000 } });
+  assert.equal(readPref("G", "ruby"), "pinyin", "the server's newer one");
+  full = false;
+  keepPref("G", "ruby", "off");
+  assert.deepEqual([readPref("G", "ruby"), at("")], ["off", "off"]);
   // Storage that refuses everything: the page still has its choices.
   put("localStorage", { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); }, removeItem() {} });
   keepPref("G", "ruby", "pinyin");
