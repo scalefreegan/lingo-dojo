@@ -621,3 +621,94 @@ test("adults-only stock concepts never reach a kids learner: not offered to the 
   const [beerRow] = await q("select id from phrase_pictures where language_profile_id = $1 and stock_id = 'beer'", [pip.languageId]);
   assert.ok(!rounds.some((x) => x.choices.some((c) => c.id === beerRow.id)), "never on a round's buttons");
 });
+
+/* ------------------- check again for a shared picture (ld-30r) ------------------- */
+
+const NO = (n) => JSON.stringify({ items: Array.from({ length: n }, (_, i) => ({ n: i + 1, picturable: false, description: null })) });
+/** As if this learner's verdicts were given an hour ago: before any stock
+ *  picture written from here on. */
+const judgedEarlier = (who) => q("update phrase_pictures set updated_at = now() - interval '1 hour' where language_profile_id = $1", [who.languageId]);
+
+test("words left out before a stock picture was drawn are checked again only when asked, and only a match changes anything", async () => {
+  const pip = await someone();
+  await add(pip, [["der Hund", "dog"], ["hallo", "hello"], ["der Baum", "tree"]]);
+  // Judged with no stock picture drawn: the check says no to all three.
+  fake.picture(NO(3));
+  await drawAll(pip);
+  assert.deepEqual((await rowsOf(pip)).map((r) => r.status), ["none", "none", "none"]);
+  assert.equal((await status(pip)).recheckable, 0, "nothing to check against");
+  assert.equal((await pip.call("POST", "/api/pictures/recheck")).status, 400);
+
+  // The stock dog is drawn afterwards.
+  await judgedEarlier(pip);
+  stock(["dog"]);
+  fake.picture("!auto");
+  const runs = fake.pictureRuns();
+  let s = await status(pip);
+  assert.equal(s.recheckable, 3);
+  // Nothing asks by itself: not the status, not a run for other work.
+  await drawAll(pip);
+  assert.equal(fake.pictureRuns(), runs);
+
+  const judges = (await ledger(pip, "judge")).length;
+  const r = await pip.call("POST", "/api/pictures/recheck");
+  assert.equal(r.status, 202, r.text);
+  assert.equal(r.body.rechecking, 3);
+  assert.equal(r.body.status.recheckable, 0, "not offered again while they are being asked");
+  await settlePictureFills();
+  assert.equal(fake.pictureRuns(), runs + 1, "one check for the three");
+  assert.equal((await ledger(pip, "judge")).length, judges + 1, "on the judge ledger");
+  const after = Object.fromEntries((await rowsOf(pip)).map((x) => [x.text, x]));
+  assert.deepEqual([after["der Hund"].status, after["der Hund"].stock_id, after["der Hund"].file, after["der Hund"].theme], ["ready", "dog", stockKey(PICTURE_THEME.id, "dog"), PICTURE_THEME.id]);
+  // "tree" the check now calls picturable, with no stock picture: it stays
+  // out, as "hello" does. Nothing is drawn.
+  assert.deepEqual([after["der Baum"].status, after["hallo"].status], ["none", "none"]);
+  assert.equal(bfl.submits.length, 0);
+  assert.equal((await ledger(pip, "image")).length, 0);
+  s = await status(pip);
+  assert.deepEqual([s.pictured, s.recheckable], [1, 0]);
+
+  // Asked again with no newer stock picture: nothing queued, no call.
+  const again = await pip.call("POST", "/api/pictures/recheck");
+  assert.equal(again.body.rechecking, 0);
+  await settlePictureFills();
+  assert.equal(fake.pictureRuns(), runs + 1);
+
+  // A newer stock picture makes the two still out worth one more ask.
+  await judgedEarlier(pip);
+  writeStockPicture(PICTURE_THEME.id, "cat", jpeg("stock cat"), "image/jpeg", { dir: imagesDir });
+  assert.equal((await status(pip)).recheckable, 2);
+});
+
+test("a re-check respects the day's cap on checks, and leaves a word edited or drawn meanwhile alone", async () => {
+  const pip = await someone();
+  const made = await add(pip, [["der Hund", "dog"], ["die Katze", "cat"]]);
+  fake.picture(NO(2));
+  await drawAll(pip);
+  await judgedEarlier(pip);
+  stock(["dog", "cat"]);
+  fake.picture("!auto");
+
+  // The cap is reached: asked for, queued, but no call is made.
+  const { PICTURE_DAILY_JUDGES } = await import("../pictures.mjs");
+  const used = (await ledger(pip, "judge")).length;
+  for (let i = used; i < PICTURE_DAILY_JUDGES; i++) {
+    await q("insert into picture_calls (learner_id, language_profile_id, kind, words, outcome) select learner_id, id, 'judge', 1, 'ok' from language_profiles where id = $1", [pip.languageId]);
+  }
+  const runs = fake.pictureRuns();
+  assert.equal((await pip.call("POST", "/api/pictures/recheck")).body.rechecking, 2);
+  await settlePictureFills();
+  assert.equal(fake.pictureRuns(), runs, "no check past the cap");
+  assert.deepEqual((await rowsOf(pip)).map((r) => r.status), ["none", "none"]);
+
+  // Tomorrow (the ledger emptied), with the cat's words edited meanwhile:
+  // the edited word is judged as new, and only the dog is asked about again.
+  await q("delete from picture_calls where language_profile_id = $1", [pip.languageId]);
+  const edit = await pip.call("PATCH", `/api/phrases/${made["die Katze"].id}`, { meaning: "kitten" });
+  assert.equal(edit.status, 200, edit.text);
+  await drawAll(pip);
+  const after = Object.fromEntries((await rowsOf(pip)).map((x) => [x.text, x]));
+  assert.deepEqual([after["der Hund"].status, after["der Hund"].stock_id], ["ready", "dog"]);
+  assert.deepEqual([after["die Katze"].status, after["die Katze"].stock_id], ["ready", "cat"]);
+  assert.equal(bfl.submits.length, 0);
+});

@@ -269,6 +269,31 @@ export async function markNone(db: Db, profile: LanguageProfileRef, phraseId: st
   );
 }
 
+/** These words' `none` verdict, as a condition. */
+const judgedNone = (phraseId: string, phraseKey: string) =>
+  and(eq(phrasePictures.phraseId, phraseId), eq(phrasePictures.phraseKey, phraseKey), eq(phrasePictures.status, "none")) as SQL;
+
+/**
+ * A word left out as having no clear picture was asked about again with the
+ * stock pictures on offer (ld-30r): with `stock`, a match, it is ready on
+ * that picture (no image call); without, it stays `none`. Either way the
+ * row's time moves on, which is what keeps it from being asked again until
+ * a newer stock picture is drawn (pictures.mjs recheckTargets). Only a row
+ * still `none` for these words: an edit or a grown-up's Draw anyway since
+ * the question wins. Returns whether it became ready.
+ */
+export async function noneRechecked(
+  db: Db,
+  profile: LanguageProfileRef,
+  phraseId: string,
+  phraseKey: string,
+  match?: { stock: StockPointer; description: string | null; lookAlike: string | null },
+): Promise<boolean> {
+  const set = match ? { status: "ready" as const, ...match.stock, description: match.description, lookAlike: match.lookAlike, kidsSafe: null, restyle: null } : {};
+  const rows = await forLanguageProfile(db, profile).update(phrasePictures, { ...set, updatedAt: sql`now()` }, judgedNone(phraseId, phraseKey));
+  return !!match && rows.length > 0;
+}
+
 /* ---------------------------------- ledger --------------------------------- */
 
 /**

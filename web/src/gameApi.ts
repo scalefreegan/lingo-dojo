@@ -7,7 +7,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStartRequest, GameStatusReply, PoolLevel, PhrasePictureReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStartRequest, GameStatusReply, PoolLevel, PhrasePictureReply, RecheckReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
   WordPicturesReply,
 } from "./types";
 import { utcOffset } from "./practiceApi";
@@ -41,6 +41,8 @@ export const fillPictures = () => req<GameStatusReply>("/api/pictures/fill", jso
 
 /** POST /api/pictures/restyle: Redraw all in the current style. */
 export const restylePictures = () => req<RestyleReply>("/api/pictures/restyle", json({}));
+/** POST /api/pictures/recheck: Check again for a shared picture. */
+export const recheckPictures = () => req<RecheckReply>("/api/pictures/recheck", json({}));
 
 /** GET /api/pictures/phrase/:id: a word's picture. */
 export const phrasePicture = (phraseId: string, signal?: AbortSignal) => req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}`, { signal });

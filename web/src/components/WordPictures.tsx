@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
-import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus, restylePictures } from "../gameApi";
+import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus, recheckPictures, restylePictures } from "../gameApi";
 import type { PhrasePicture, PictureStatus } from "../types";
 import { Button, inputClass } from "./ui";
 
@@ -81,6 +81,20 @@ export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; re
     }
   }
 
+  async function recheck() {
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus((await recheckPictures()).status);
+      setTick((n) => n + 1);
+      onDrawn?.();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!status) return error ? <p className={`${fine} text-err`}>{error}</p> : null;
   const parts = [`${status.pictured} word${status.pictured === 1 ? "" : "s"} with pictures for the word game`];
   if (status.drawing) parts.push("drawing now…");
@@ -95,6 +109,18 @@ export function PicturesBar({ onDrawn, refresh = 0 }: { onDrawn?: () => void; re
           {status.waiting > 0 && !status.drawing && !status.problem && !status.limited && (
             <Button variant="ghost" className={small} onClick={() => void draw()} disabled={busy} data-testid="pictures-fill">
               Draw pictures
+            </Button>
+          )}
+          {status.recheckable > 0 && !status.drawing && (
+            <Button
+              variant="ghost"
+              className={small}
+              onClick={() => void recheck()}
+              disabled={busy}
+              data-testid="pictures-recheck"
+              title={`${status.recheckable} word${status.recheckable === 1 ? " was" : "s were"} left out as having no clear picture before the newest shared pictures were drawn. This asks once more whether a shared picture fits; nothing is drawn.`}
+            >
+              Check {status.recheckable} word{status.recheckable === 1 ? "" : "s"} again for a shared picture
             </Button>
           )}
           {status.outOfTheme > 0 && !status.restyling && (

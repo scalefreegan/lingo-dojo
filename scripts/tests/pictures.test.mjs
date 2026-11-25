@@ -737,3 +737,20 @@ test("every concept of content/pictures.yaml: its own description's words give e
   const off = concepts.filter((c) => lookAlikeOf(c.description) !== (c.group ?? null)).map((c) => `${c.id}: ${c.group ?? "none"} vs ${lookAlikeOf(c.description)}`);
   assert.deepEqual(off, []);
 });
+
+test("re-check targets: `none` words judged before the newest stock picture, current and practisable only", async () => {
+  const { recheckTargets, pictureKey } = await import("../pictures.mjs");
+  const p = (id, extra = {}) => ({ id, text: `w${id}`, meaning: `m${id}`, createdAt: new Date(2026, 0, Number(id)), ...extra });
+  const phrases = [p("1"), p("2"), p("3"), p("4"), p("5", { suspended: true })];
+  const row = (ph, status, at) => [ph.id, { status, phraseKey: pictureKey(ph), updatedAt: new Date(at) }];
+  const rows = new Map([
+    row(phrases[0], "none", 1000),
+    row(phrases[1], "none", 3000), // asked after the newest stock picture
+    row(phrases[2], "ready", 1000),
+    [phrases[3].id, { status: "none", phraseKey: "stale", updatedAt: new Date(1000) }], // edited since
+    row(phrases[4], "none", 1000),
+  ]);
+  assert.deepEqual(recheckTargets(phrases, rows, 2000).map((x) => x.id), ["1"]);
+  assert.deepEqual(recheckTargets(phrases, rows, 5000).map((x) => x.id).sort(), ["1", "2"]);
+  assert.deepEqual(recheckTargets(phrases, rows, null), []);
+});
