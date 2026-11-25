@@ -345,7 +345,7 @@ test("the game: rounds from ready pictures only; a tap is a quiet review of the 
   ]);
 });
 
-test("the next game isn't the last one again: the words just answered right rest, and the order is new each time (ld-wx6)", async () => {
+test("the next game isn't the last one again: the words just answered right rest (ld-wx6)", async () => {
   const pip = await someone();
   await add(pip, Array.from({ length: 20 }, (_, i) => [`Wort${i}`, `thing ${i}`]));
   await drawAll(pip);
@@ -354,10 +354,11 @@ test("the next game isn't the last one again: the words just answered right rest
   const pictureOf = new Map(rows.map((x) => [x.phrase_id, x.id]));
   const first = (await pip.call("POST", "/api/game/start")).body.rounds;
   assert.equal(first.length, 8);
-  // Started again without playing: the same words, in another order.
+  // Started again without playing: the same words. (That the order is
+  // new each time is the pure tests', with fixed shuffles: two random
+  // draws here would agree once in 8! runs.)
   const again = (await pip.call("POST", "/api/game/start")).body.rounds;
   assert.deepEqual(new Set(again.map((r) => r.phraseId)), new Set(first.map((r) => r.phraseId)));
-  assert.notDeepEqual(again.map((r) => r.phraseId), first.map((r) => r.phraseId));
   for (const round of first) assert.equal((await tap(pip, round, pictureOf.get(round.phraseId))).body.right, true);
   // Half an hour on: every one of the eight is due again (FSRS's
   // ten-minute step after a first right answer).
