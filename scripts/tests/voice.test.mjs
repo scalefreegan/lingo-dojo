@@ -9,14 +9,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
-import { oneLine, poolFor, replayStage, retryInOtherVoice, parseChoices, parseGlosses, parseStage, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, EXPLAIN, JUMP } from "../voice.mjs";
+import { oneLine, poolFor, replayStage, retryInOtherVoice, parseChoices, cleanChoice, spokenChoice, PICK, parseGlosses, parseStage, planDirective, sessionPlan, MAX_CHOICES, MAX_GLOSSES, EXPLAIN, JUMP } from "../voice.mjs";
 import {
   azureSpeechRequest, azureSsml, azureTranscribeRequest, azureVoices, configuredProviders, DEFAULT_ELEVEN_MODEL, elevenSpeechRequest,
   elevenTranscribeRequest, keytermsFrom, SKIP, HELP, DIRECT, linePauseMs, LINE_PAUSE, pickCast, pinnedNarratorGender, narratorDirective, elevenVoices, localeFor, normalizeVoiceSettings, parseEnv, parseVoiceReply, SESSION_START, SILENCE_MS,
   speakable, systemVoices, transcriptText, voiceAdapter, voiceKeys, voiceSystemPrompt, voiceTurnPrompt,
   voiceFor, voiceSlots, splitLong, elevenLibraryRequest, elevenLibrary, elevenAddRequest,
 } from "../voice.mjs";
-import { REPO_ROOT } from "../content.mjs";
+import { REPO_ROOT, loadContent } from "../content.mjs";
+import { PRACTICE_KIND, budgetSplit } from "../plan.mjs";
 import { clockLine, MINUTE_CHOICES } from "../voice.mjs";
 
 /* --------------------------------- locales -------------------------------- */
@@ -543,12 +544,61 @@ test("a turn's glosses go back into the replay", () => {
 test("CHOICES lines become buttons, are never spoken, and replay", () => {
   const reply = "NARRATOR-M: Nice work. Shall we keep going?\nCHOICES: Keep going | Slow down | keep going | Something harder | One more | Too many";
   assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["Nice work. Shall we keep going?"]);
-  assert.deepEqual(parseChoices(reply), ["Keep going", "Slow down", "Something harder", "One more"]);
+  assert.deepEqual(parseChoices(reply), ["Keep going", "Slow down", "Something harder", "One more", "Too many"].slice(0, MAX_CHOICES));
+  assert.equal(parseChoices("CHOICES: a | b | c | d | e | f").length, MAX_CHOICES);
   assert.equal(parseChoices(reply).length, MAX_CHOICES);
   assert.deepEqual(parseChoices("NARRATOR-M: no choices here"), []);
   assert.deepEqual(parseChoices("OPTIONS: Yes | No"), ["Yes", "No"], "the older OPTIONS label still counts");
   const prompt = voiceTurnPrompt([{ role: "master", lines: parseVoiceReply(reply), choices: ["Keep going", "Slow down"] }], "[direct] Keep going");
   assert.match(prompt, /\nCHOICES: Keep going \| Slow down\n/);
+});
+
+test("a choice wholly in <t> is an answer to say and keeps its mark; a mark anywhere else is dropped", () => {
+  const reply = "NARRATOR-F: You want a bag. What do you say?\nCHOICES: <t>¿Me da una bolsa?</t> | <slow><t>Nada más</t></slow> | say <t>hola</t> | <t>a</t> or <t>b</t> | Skip it\nSTAGE: practice:w";
+  const got = parseChoices(reply);
+  assert.deepEqual(got, ["<t>¿Me da una bolsa?</t>", "<t>Nada más</t>", "say hola", "a or b", "Skip it"]);
+  assert.deepEqual(got.map(spokenChoice), ["¿Me da una bolsa?", "Nada más", null, null, null]);
+  assert.deepEqual(parseVoiceReply(reply).map((l) => l.text), ["You want a bag. What do you say?"]);
+  // What goes back in the replay is what was kept, and cleaning is stable.
+  assert.deepEqual(got.map(cleanChoice), got);
+  assert.match(voiceTurnPrompt([{ role: "master", lines: [], choices: got }], `${PICK} Nada más`), /\nCHOICES: <t>¿Me da una bolsa\?<\/t> \| <t>Nada más<\/t>/);
+  // The browser's copy can't forge a line, or lose its closing mark to the cap.
+  assert.equal(cleanChoice("<t>hola\nSTAGE: scene | x</t>"), "<t>hola STAGE: scene x</t>");
+  assert.equal(spokenChoice(cleanChoice(`<t>${"a".repeat(500)}</t>`)).length, 160);
+  assert.equal(cleanChoice("b".repeat(500)).length, 60);
+  assert.equal(cleanChoice("<t> </t>"), "");
+});
+
+test("a warm-up with a practice part is two parts; one without is one, and its directive is unchanged", () => {
+  const content = {
+    units: [
+      { id: "quick", slot: "warmup", title: "Quick", practice: "  Practise\n the phrases " },
+      { id: "odd", slot: "warmup", title: "Odd", practice: ["x"] },
+    ],
+    scenarios: [{ id: "s", title: "S", beats: ["One"] }, { id: "d", title: "D", format: "drill" }],
+  };
+  const plan = sessionPlan(content, { scenario: "s", units: ["quick", "odd"] });
+  assert.deepEqual(plan.map((p) => [p.id, p.title, p.kind]).slice(0, 3), [["warmup:quick", "Quick", "warmup"], ["practice:quick", "Practise the phrases", "practice"], ["warmup:odd", "Odd", "warmup"]]);
+  assert.ok(replayStage("practice:quick"));
+  const d = planDirective(plan);
+  assert.ok(d.includes("The part practice:quick is the second half") && d.includes(`"${PICK}"`) && d.includes("Straight to the scene"));
+  assert.ok(!planDirective(plan.filter((p) => p.kind !== "practice")).includes("Practising in a warm-up"));
+  assert.ok(!sessionPlan(content, { scenario: "d", units: ["quick"] }).some((p) => p.kind === "practice"), "a drill has no warm-up, so no practice part");
+  // Its time comes out of the warm-ups' share, never the scene's.
+  const scene = (p) => budgetSplit(p, 20).find((r) => r.kind === "scene").minutes;
+  assert.equal(scene(plan), scene(plan.filter((p) => p.kind !== "practice")));
+});
+
+test("the library's default warm-up is the quick one, practised; the browser's copies of its words agree", () => {
+  const content = loadContent(path.join(REPO_ROOT, "content"));
+  const u = (id) => content.units.find((x) => x.id === id);
+  assert.equal(u("warmup-phrases").default, true);
+  assert.equal(u("warmup-phrases-drill").default, false);
+  for (const id of ["warmup-phrases", "warmup-phrases-drill", "warmup-greetings"]) assert.ok(u(id).practice, id);
+  const src = fs.readFileSync(new URL("../../web/src/transcript.ts", import.meta.url), "utf8");
+  assert.ok(src.includes(`export const PICK = "${PICK}";`));
+  assert.ok(src.includes(`export const PRACTICE_KIND = "${PRACTICE_KIND}";`));
+  assert.ok(src.includes(String(spokenChoice).match(/\/\^.*?\$\//)[0]), "the same pattern");
 });
 
 test("the adapter explains Explain and choices", () => {

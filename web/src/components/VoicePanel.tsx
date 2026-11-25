@@ -13,7 +13,7 @@ import { Transcript, type LineTones } from "./Transcript";
 import { scoresTonesHere } from "../pronunciationApi";
 import { wordCheckLocale } from "../../shared/word-check.ts";
 import {
-  DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, SKIP, SPEAKER_LABEL, jumpTarget, sessionGlosses, transcriptText, useLineTranslations,
+  DIRECT, EXPLAIN, GENDER_LABEL, HELP, JUMP, PICK, PRACTICE_KIND, SKIP, SPEAKER_LABEL, jumpTarget, spokenChoice, sessionGlosses, transcriptText, useLineTranslations,
 } from "../transcript";
 import { IsAdmin } from "../viewer";
 import type {
@@ -77,6 +77,7 @@ function lineFeed(lines: VoiceLine[] = [], done = false): LineFeed {
 /** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
 const EXTEND_MINUTES = 5;
 /** Whether the timeline beside the transcript is open (per browser). */
+const HIDE_KEY = "lingo.practice-veil";
 const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
 const MASTER_ACK = "Yes? I'm listening.";
@@ -248,6 +249,19 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     }
     return null;
   }, [entries]);
+  // A warm-up's practice part is answered from memory: the lines before the
+  // question are veiled, unless the learner has turned that off (remembered
+  // in this browser) or lifted the veil for this part.
+  const practising = !!stage && plan.find((p) => p.id === stage)?.kind === PRACTICE_KIND;
+  const [hideOn, setHideOn] = useState(() => {
+    try {
+      return localStorage.getItem(HIDE_KEY) !== "off";
+    } catch {
+      return true;
+    }
+  });
+  // The part the veil was lifted in: the next practice starts veiled again.
+  const [liftedIn, setLiftedIn] = useState<string | null>(null);
   const [timelineOpen, setTimelineOpen] = useState(() => {
     try {
       return localStorage.getItem(TIMELINE_KEY) !== "closed";
@@ -255,6 +269,17 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       return true;
     }
   });
+  const toggleHide = () => {
+    const on = !hideOn;
+    try {
+      localStorage.setItem(HIDE_KEY, on ? "on" : "off");
+    } catch {
+      /* a remembered choice is a convenience */
+    }
+    setHideOn(on);
+    // Turning it on is asking for it now, even where it was lifted.
+    if (on) setLiftedIn(null);
+  };
   const toggleTimeline = () =>
     setTimelineOpen((o) => {
       try {
@@ -427,6 +452,43 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const settingsRef = useRef<VoiceSettings | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const toolbarRef = useRef<HTMLDivElement | null>(null);
+  // The dock's height, for the page to leave room under itself on a phone,
+  // where the dock is fixed over it (index.css .talk-dock, --dock). 0 while
+  // the Go tab is hidden and on a wide screen, where it takes its own room.
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const dockLive = entries.length > 0 && !ended;
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!dockLive || !el || typeof ResizeObserver === "undefined") return;
+    const root = document.documentElement;
+    const measure = () => root.style.setProperty("--dock", `${getComputedStyle(el).position === "fixed" ? el.offsetHeight : 0}px`);
+    measure();
+    // A frame later: the height set here resizes the transcript, which has an
+    // observer of its own, and within one frame that is a loop.
+    let frame = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(frame);
+      root.style.removeProperty("--dock");
+    };
+  }, [dockLive]);
+  // The session takes a phone's screen when it starts: the conversation
+  // between the bars and the controls. Again when the session's parts arrive
+  // (with the first reply) and push it down; after that the page is the
+  // learner's to scroll.
+  const hasPlan = plan.length > 0;
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!dockLive || !el || getComputedStyle(el).position !== "fixed") return;
+    el.parentElement?.querySelector('[data-testid="voice-transcript"]')?.scrollIntoView({ block: "start" });
+  }, [dockLive, hasPlan]);
   // The tag and the box's text as of the latest render, for code that runs
   // after an await (the hands-free re-listen, a transcript landing) and must
   // not see the values from the render that started it.
@@ -1632,7 +1694,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   }
 
   /** A tapped check-in answer ("Keep going") goes to the dojo master as a
-   *  direct request, not as a practice answer to correct. */
+   *  direct request, not as a practice answer to correct; a phrase offered
+   *  in a practice question is the answer to it. */
   function choose(label: string, byKeyboard: boolean) {
     if (!canAct) return;
     if (phase !== "idle") stopAll();
@@ -1641,7 +1704,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     // moves no focus, since focusing the text box would pop up a phone's
     // keyboard just as the dojo master starts talking.
     if (byKeyboard) toolbarRef.current?.querySelector<HTMLElement>('[data-testid="voice-help"]')?.focus();
-    void runTurn(`${DIRECT} ${label}`);
+    // A phrase or word in the target language answers the practice question;
+    // anything else is a request about the session.
+    const said = spokenChoice(label);
+    void runTurn(said != null ? `${PICK} ${said}` : `${DIRECT} ${label}`);
   }
 
   /** A part of the session tapped on the timeline: the dojo master goes
@@ -1845,6 +1911,15 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // said, they are stale.
   const lastEntry = entries[entries.length - 1];
   const lastChoices = lastEntry?.role === "master" ? (lastEntry.choices ?? []) : [];
+  const answerChoices = lastChoices.some((c) => spokenChoice(c) != null);
+  // From the latest question on stays in view: it is what's being answered.
+  const lastMaster = entries.findLastIndex((e) => e.role === "master");
+  const veiled = practising && hideOn && !ended && liftedIn !== stage ? Math.max(0, lastMaster) : 0;
+  const hasPractice = plan.some((p) => p.kind === PRACTICE_KIND);
+  const live = started && !ended;
+  // On a phone the box to type in opens from its button, and by itself when
+  // there is something in it to check or send.
+  const boxOpen = typing || !!composer.trim() || direct;
 
   // The timeline is its own column beside the session card (above it on
   // narrow screens), scrolling on its own, so it never squeezes or
@@ -1960,6 +2035,18 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       {(started || (canStart && showDial)) && (
         <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2 self-stretch">
           {showDial && <CoachingDial value={coaching} onChange={setCoaching} words={dialKind === "words"} />}
+          {live && hasPractice && (
+            <button
+              type="button"
+              className="rounded-full border border-line bg-panel px-3 py-1 text-sm text-fg-2 hover:bg-raised hover:text-fg"
+              aria-pressed={hideOn}
+              title="Blur the earlier lines while you practise the warm-up's phrases, so you answer from memory"
+              onClick={toggleHide}
+              data-testid="voice-hide-toggle"
+            >
+              🙈 Hide while recalling: {hideOn ? "on" : "off"}
+            </button>
+          )}
           {started && <RubyToggle locale={locale} />}
         </div>
       )}
@@ -1979,19 +2066,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
           onClosePick={closePick}
           onReplay={onReplay}
           canStar={canStar}
+          veiled={veiled}
+          onLift={() => setLiftedIn(stage)}
+          className={live ? "h-[calc(100dvh-var(--below-bars)-var(--dock)-1rem)] min-h-40 flex-none scroll-mt-(--below-bars) lg:h-auto lg:min-h-48 lg:flex-1 lg:max-h-[max(28rem,calc(100dvh-26rem))]" : undefined}
         />
-      )}
-      {lastChoices.length > 0 && canAct && !ended && (
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
-          {lastChoices.map((c, k) => (
-            <QuickButton key={`${k}:${c}`} variant="choice" onClick={(e) => choose(c, e.detail === 0)}>
-              {c}
-            </QuickButton>
-          ))}
-          <QuickButton variant="choice" onClick={() => void askMaster()} disabled={!sttReady}>
-            🎙 I'll tell you
-          </QuickButton>
-        </div>
       )}
       {glosses.length > 0 && (
         <p className="text-xs text-fg-3">
@@ -1999,6 +2077,28 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         </p>
       )}
 
+      {(live || phase !== "idle" || notice || error || (saving && !saving.on)) && (
+      // The learner's side of the conversation, always in reach: fixed to the
+      // screen's bottom on a phone or tablet, stuck to the card's on a wide
+      // screen, with the conversation scrolling above it. Before Start and
+      // after End it is only whatever there is to say, in place.
+      <div ref={dockRef} className={`flex flex-col gap-2 ${live ? "talk-dock" : ""}`} data-testid={live ? "voice-dock" : undefined}>
+      {lastChoices.length > 0 && canAct && !ended && (
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Quick answers" data-testid="voice-choices">
+          {lastChoices.map((c, k) => (
+            <QuickButton key={`${k}:${c}`} variant="choice" onClick={(e) => choose(c, e.detail === 0)}>
+              {spokenChoice(c) != null ? <span lang={locale ?? undefined}>{spokenChoice(c)}</span> : c}
+            </QuickButton>
+          ))}
+          {/* A practice question is answered with Talk; telling the dojo
+              master something is for a check-in. */}
+          {!answerChoices && (
+            <QuickButton variant="choice" onClick={() => void askMaster()} disabled={!sttReady}>
+              🎙 I'll tell you
+            </QuickButton>
+          )}
+        </div>
+      )}
       {(phase !== "idle" || notice) && (
         <p className="flex flex-wrap items-center gap-2 text-sm text-fg-2" role="status" data-testid="voice-status">
           {phase === "recording" && (
@@ -2046,68 +2146,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         </p>
       )}
 
-      {started && ended && (
-        // After End: the transcript stays to read; the session is over.
-        <div className="flex flex-wrap items-center gap-2" data-testid="voice-ended">
-          <span className="text-sm text-fg-2">
-            Session ended.{saving?.on ? " It's in your History, on the Library tab." : ""}
-          </span>
-          <span className="flex-1" />
-          <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))}>
-            {copyStatus === "copied" ? "Copied" : "Copy transcript"}
-          </Button>
-          <Button variant="primary" className="px-3 py-1" onClick={restart} data-testid="voice-new-session">
-            New session
-          </Button>
-        </div>
-      )}
-      {started && ended && recapId && <SessionRecap id={recapId} justEnded locale={locale} />}
-
-      {started && !ended && (
+      {live && (
         <div className="flex flex-col gap-2">
-          {/* Quick requests: one tap each, no recording needed (except the
-              dojo master, which opens the mic after its "yes?"). */}
-          <div ref={toolbarRef} className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Quick requests">
-            <QuickButton onClick={() => void askMaster()} disabled={!sttReady || !canAct} title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`} testid="voice-direct">
-              <Mochi size={18} /> Dojo master
-            </QuickButton>
-            <QuickButton onClick={() => control(HELP)} disabled={!canAct} title="What am I being asked? Get a hint — ask again for a bigger one" testid="voice-help">
-              💡 Help
-            </QuickButton>
-            <QuickButton onClick={() => control(EXPLAIN)} disabled={!canAct} title="Explain what was just said: the meaning, the key words, any local note" testid="voice-explain">
-              🔎 Explain
-            </QuickButton>
-            <QuickButton onClick={() => control(SKIP)} disabled={!canAct} title="Skip this exercise and move on" testid="voice-skip">
-              ⏭ Skip
-            </QuickButton>
-            {/* Always there (aria-disabled when there's nothing to stop): a
-                button that vanished once used would drop keyboard focus. */}
-            <QuickButton onClick={stopAll} disabled={phase !== "speaking" && phase !== "thinking"} title="Stop the dojo master" testid="voice-stop">
-              ■ Stop
-            </QuickButton>
-            <span className="flex-1" />
-            {/* "Copy" on a phone, so Restart shares its row with Stop rather
-                taking a third one. */}
-            <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))} aria-label={copyStatus === "copied" ? "Copied" : "Copy transcript"}>
-              {copyStatus === "copied" ? "Copied" : (
-                // One child, so the button's gap never lands inside the label.
-                <span>
-                  Copy<span className="hidden sm:inline"> transcript</span>
-                </span>
-              )}
-            </Button>
-            {pack.random_scene && saving?.on && !redrawing && !busy && !entries.some((e) => e.role === "learner") && (
-              <Button variant="ghost" className="px-2 py-1" onClick={() => void drawAnother()} title="Swap this scene for another one from the pool, before you speak" data-testid="voice-draw-another">
-                Draw another
-              </Button>
-            )}
-            <Button variant="ghost" className="px-2 py-1" onClick={restart} title="Start over: this session ends and is kept in History">
-              Restart
-            </Button>
-            <Button variant="ghost" className="px-2 py-1" onClick={endSession} title="Finish this session; it stays in History" data-testid="voice-end">
-              End
-            </Button>
-          </div>
           {heldRequest && (
             <div className="flex flex-wrap items-center gap-1.5 self-start rounded-2xl bg-accent-soft py-1 pr-1 pl-3 text-sm text-fg" data-testid="voice-held-request">
               <span className="min-w-0 [overflow-wrap:anywhere]">💬 To the dojo master: “{heldRequest}”</span>
@@ -2160,58 +2200,163 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
               </button>
             </span>
           )}
+          {/* Quick requests: one tap each, no recording needed (except the
+              dojo master, which opens the mic after its "yes?"). On a phone
+              only Help and Stop are always out; ⋯ opens the rest. */}
+          <div ref={toolbarRef} className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Quick requests">
+            <QuickButton onClick={() => control(HELP)} disabled={!canAct} title="What am I being asked? Get a hint — ask again for a bigger one" testid="voice-help">
+              💡 Help
+            </QuickButton>
+            {/* Always there (aria-disabled when there's nothing to stop): a
+                button that vanished once used would drop keyboard focus. */}
+            <QuickButton onClick={stopAll} disabled={phase !== "speaking" && phase !== "thinking"} title="Stop the dojo master" testid="voice-stop">
+              ■ Stop
+            </QuickButton>
+            <button
+              type="button"
+              className="ml-auto inline-flex min-h-9 min-w-11 items-center justify-center rounded-full border border-line bg-panel px-3 text-fg-2 hover:bg-raised hover:text-fg sm:hidden"
+              aria-expanded={moreOpen}
+              aria-controls="voice-more"
+              aria-label={moreOpen ? "Fewer controls" : "More controls"}
+              onClick={() => setMoreOpen((o) => !o)}
+              data-testid="voice-more-toggle"
+            >
+              ⋯
+            </button>
+            {/* Closed by what's picked in it (not Copy, whose "Copied" shows
+                there). Focus goes back to ⋯, which stays. */}
+            <div
+              id="voice-more"
+              onClick={(e) => {
+                const b = (e.target as HTMLElement).closest("button");
+                if (!moreOpen || !b || b.dataset.testid === "voice-copy") return;
+                setMoreOpen(false);
+                if (e.detail === 0 && b.contains(document.activeElement)) toolbarRef.current?.querySelector<HTMLElement>('[data-testid="voice-more-toggle"]')?.focus();
+              }}
+              className={`${moreOpen ? "flex" : "hidden"} w-full flex-wrap items-center gap-1.5 sm:flex sm:w-auto sm:flex-1`}
+            >
+              <QuickButton onClick={() => void askMaster()} disabled={!sttReady || !canAct} title={`Talk straight to the dojo master in ${langs.native || "your language"}: change the scene, redo something, ask a question`} testid="voice-direct">
+                <Mochi size={18} /> Dojo master
+              </QuickButton>
+              <QuickButton onClick={() => control(EXPLAIN)} disabled={!canAct} title="Explain what was just said: the meaning, the key words, any local note" testid="voice-explain">
+                🔎 Explain
+              </QuickButton>
+              <QuickButton onClick={() => control(SKIP)} disabled={!canAct} title="Skip this exercise and move on" testid="voice-skip">
+                ⏭ Skip
+              </QuickButton>
+              <span className="hidden flex-1 sm:block" />
+              {/* "Copy" on a phone, so Restart shares its row with Stop rather
+                  taking a third one. */}
+              <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))} data-testid="voice-copy" aria-label={copyStatus === "copied" ? "Copied" : "Copy transcript"}>
+                {copyStatus === "copied" ? "Copied" : (
+                  // One child, so the button's gap never lands inside the label.
+                  <span>
+                    Copy<span className="hidden sm:inline"> transcript</span>
+                  </span>
+                )}
+              </Button>
+              {pack.random_scene && saving?.on && !redrawing && !busy && !entries.some((e) => e.role === "learner") && (
+                <Button variant="ghost" className="px-2 py-1" onClick={() => void drawAnother()} title="Swap this scene for another one from the pool, before you speak" data-testid="voice-draw-another">
+                  Draw another
+                </Button>
+              )}
+              <Button variant="ghost" className="px-2 py-1" onClick={restart} title="Start over: this session ends and is kept in History">
+                Restart
+              </Button>
+              <Button variant="ghost" className="px-2 py-1" onClick={endSession} title="Finish this session; it stays in History" data-testid="voice-end">
+                End
+              </Button>
+            </div>
+          </div>
           <form
-            className="flex items-end gap-2"
+            className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 sm:flex sm:items-end"
             onSubmit={(e) => {
               e.preventDefault();
               sendComposer();
             }}
           >
-            <textarea
-              ref={composerRef}
-              aria-label="Your answer"
-              className={`${inputClass} max-h-48 min-h-11 flex-1 resize-none overflow-y-auto`}
-              rows={1}
-              placeholder={
-                direct
-                  ? `To the dojo master, in ${langs.native || "your language"}: change the scene, redo that, slower please…`
-                  : settings?.review
-                    ? "Your words land here to check before sending — or type"
-                    : "Type an answer, or tap the wave to speak"
-              }
-              value={composer}
-              onChange={(e) => {
-                setComposer(e.target.value);
-                // An emptied box is no longer a message to the dojo master.
-                if (!e.target.value.trim()) setDirect(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  sendComposer();
+            <div className={`${boxOpen ? "flex" : "hidden"} col-span-3 items-end gap-2 sm:contents`}>
+              <textarea
+                ref={composerRef}
+                aria-label="Your answer"
+                className={`${inputClass} max-h-48 min-h-11 flex-1 resize-none overflow-y-auto`}
+                rows={1}
+                placeholder={
+                  direct
+                    ? `To the dojo master, in ${langs.native || "your language"}: change the scene, redo that, slower please…`
+                    : settings?.review
+                      ? "Your words land here to check before sending — or type"
+                      : "Type an answer, or tap the wave to speak"
                 }
+                value={composer}
+                onChange={(e) => {
+                  setComposer(e.target.value);
+                  // An emptied box is no longer a message to the dojo master.
+                  if (!e.target.value.trim()) setDirect(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendComposer();
+                  }
+                }}
+              />
+              <RoundButton type="submit" variant="secondary" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} label="Send what's in the box" testid="voice-send" className="sm:order-4">
+                <SendIcon />
+              </RoundButton>
+            </div>
+            <RoundButton
+              variant="ghost"
+              className="sm:hidden"
+              onClick={() => {
+                // With something in it the box stays: there is something to
+                // send (or clear) first.
+                const open = !typing || !!composer.trim() || direct;
+                setTyping(open);
+                if (open) window.setTimeout(() => composerRef.current?.focus(), 0);
               }}
-            />
+              label={boxOpen && !composer.trim() && !direct ? "Hide the box to type in" : "Type instead"}
+              expanded={boxOpen}
+              testid="voice-type"
+            >
+              <span className="text-3xl leading-none" aria-hidden="true">⌨</span>
+            </RoundButton>
             {phase === "recording" ? (
               <>
-                <RoundButton variant="ghost" onClick={stopAll} label="Cancel the recording" testid="voice-cancel">
+                <RoundButton variant="ghost" onClick={stopAll} label="Cancel the recording" testid="voice-cancel" className="order-3 justify-self-end sm:order-1">
                   ×
                 </RoundButton>
-                <RoundButton ref={doneRef} onClick={() => void finishListening("tap")} label={settings?.review ? "Done — put my words in the box" : "Done — send what I said"} testid="voice-done">
+                <RoundButton ref={doneRef} big onClick={() => void finishListening("tap")} label={settings?.review ? "Done — put my words in the box" : "Done — send what I said"} testid="voice-done" className="order-2">
                   <StopIcon />
                 </RoundButton>
               </>
             ) : (
-              <RoundButton ref={talkRef} onClick={() => void startListening()} disabled={!sttReady || busy} label={sttReady ? "Talk — Space also works" : "Set up a speech-to-text provider first"} testid="voice-talk">
+              <RoundButton ref={talkRef} big onClick={() => void startListening()} disabled={!sttReady || busy} label={sttReady ? "Talk — Space also works" : "Set up a speech-to-text provider first"} testid="voice-talk" className="order-2">
                 <VoiceWave />
               </RoundButton>
             )}
-            <RoundButton type="submit" variant="secondary" disabled={!composer.trim() || (phase !== "idle" && phase !== "speaking")} label="Send what's in the box" testid="voice-send">
-              <SendIcon />
-            </RoundButton>
           </form>
         </div>
       )}
+      </div>
+      )}
+
+      {started && ended && (
+        // After End: the transcript stays to read; the session is over.
+        <div className="flex flex-wrap items-center gap-2" data-testid="voice-ended">
+          <span className="text-sm text-fg-2">
+            Session ended.{saving?.on ? " It's in your History, on the Library tab." : ""}
+          </span>
+          <span className="flex-1" />
+          <Button variant="ghost" className="px-2 py-1" onClick={() => copy(transcriptText(entries))}>
+            {copyStatus === "copied" ? "Copied" : "Copy transcript"}
+          </Button>
+          <Button variant="primary" className="px-3 py-1" onClick={restart} data-testid="voice-new-session">
+            New session
+          </Button>
+        </div>
+      )}
+      {started && ended && recapId && <SessionRecap id={recapId} justEnded locale={locale} />}
     </Card>
     </div>
   );
@@ -2871,7 +3016,7 @@ function QuickButton({ onClick, disabled, title, testid, variant = "quick", chil
 
 /** Talk, Done and Send beside the composer: round icon buttons, like a
  *  chat app's. The label is the accessible name and the tooltip. */
-function RoundButton({ ref, onClick, disabled, label, testid, type = "button", variant = "primary", children }: { ref?: Ref<HTMLButtonElement>; onClick?: () => void; disabled?: boolean; label: string; testid?: string; type?: "button" | "submit"; variant?: "primary" | "secondary" | "ghost"; children: ReactNode }) {
+function RoundButton({ ref, onClick, disabled, label, testid, type = "button", variant = "primary", big, expanded, className = "", children }: { big?: boolean; expanded?: boolean; className?: string; ref?: Ref<HTMLButtonElement>; onClick?: () => void; disabled?: boolean; label: string; testid?: string; type?: "button" | "submit"; variant?: "primary" | "secondary" | "ghost"; children: ReactNode }) {
   const look = {
     primary: "border-accent-edge bg-accent text-accent-ink shadow-[0_3px_0_var(--accent-edge)]",
     secondary: "border-line bg-panel text-fg shadow-[0_3px_0_var(--line)]",
@@ -2889,7 +3034,8 @@ function RoundButton({ ref, onClick, disabled, label, testid, type = "button", v
     <button
       ref={ref}
       type={type}
-      className={`mb-[3px] inline-flex size-11 shrink-0 items-center justify-center rounded-full border transition-[background-color,transform,box-shadow] duration-75 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${look} ${live}`}
+      className={`mb-[3px] inline-flex ${big ? "size-16 sm:size-11" : "size-11"} shrink-0 items-center justify-center rounded-full border transition-[background-color,transform,box-shadow] duration-75 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${look} ${live} ${className}`}
+      aria-expanded={expanded}
       // aria-disabled, not disabled: a disabled button drops keyboard focus
       // to the page (after Send, say), and the next Space would open the mic
       // over the dojo master. A submit that is "disabled" doesn't submit.

@@ -428,7 +428,7 @@ function renderDrill(s, fill) {
 }
 
 /** How a part is labelled in the Time budget's split ("" = its title alone). */
-const PART_LABELS = { warmup: "Warm-up", games: "Game", debrief: "Debrief", ending: "Ending" };
+const PART_LABELS = { warmup: "Warm-up", practice: "Warm-up", games: "Game", debrief: "Debrief", ending: "Ending" };
 
 /** "½ minute", "1 minute", "2½ minutes". */
 function minutesWord(m) {

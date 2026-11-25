@@ -28,6 +28,9 @@
      page's end (save, export, the prompt toggle, the page's bottom padding),
      so at the very end it isn't pushed up under the bars. */
   --below-session: 13rem;
+  /* Height of the talk controls while they are fixed over the page
+     (VoicePanel sets it on <html> during a session on a phone). */
+  --dock: 0px;
   color-scheme: light;
   --ground: #eef1f8;
   --panel: #ffffff;
@@ -186,6 +189,35 @@ h3 {
   box-shadow:
     inset 0 5px 0 var(--heri),
     inset 0 -5px 0 var(--heri);
+}
+
+/* The talk controls during a session: fixed over the page's bottom up to
+   tablet width (page-end room: App's <main> pads by --dock), and stuck to the
+   bottom of the session card on a wide screen. Above the page's own sticky
+   bars' content, below the agent drawer (z-40). */
+.talk-dock {
+  position: fixed;
+  z-index: 25;
+  inset: auto 0 0 0;
+  max-height: 65dvh;
+  overflow-y: auto;
+  padding: 0.625rem 1rem max(0.625rem, env(safe-area-inset-bottom));
+  background: var(--panel);
+  border-top: 1px solid var(--line-strong);
+  box-shadow: 0 -6px 20px rgb(0 0 0 / 0.08);
+}
+@media (min-width: 64rem) {
+  .talk-dock {
+    position: sticky;
+    inset: auto;
+    bottom: 0.5rem;
+    max-height: none;
+    overflow: visible;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 1rem;
+    box-shadow: none;
+  }
 }
 
 /* Sensei Mochi's moods. Gentle, and only while something is happening. */

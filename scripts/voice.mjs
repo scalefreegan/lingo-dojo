@@ -18,7 +18,9 @@ import { REPO_ROOT } from "./content.mjs";
 // The session's parts live in plan.mjs (no imports) so the assembler can
 // read them for the Time budget without pulling in this module.
 export { sessionPlan, MINUTE_CHOICES } from "./plan.mjs";
-import { MINUTE_CHOICES, budgetSplit, plannedRow, readMinutes } from "./plan.mjs";
+export { PICK, cleanChoice, spokenChoice } from "./choices.mjs";
+import { PICK, cleanChoice } from "./choices.mjs";
+import { MINUTE_CHOICES, PRACTICE_KIND, budgetSplit, plannedRow, readMinutes } from "./plan.mjs";
 
 /* ------------------------------- providers -------------------------------- */
 
@@ -428,7 +430,6 @@ export const EXPLAIN = "[explain]";
 /** Prefix of a timeline jump: "[jump] warmup:warmup-phrases" (VoicePanel's
  *  JUMP must match). */
 export const JUMP = "[jump]";
-
 /** The transcript replayed as the prompt (the chat agent's pattern): the
  *  learner's lines as heard, the dojo master's as the tagged lines spoken —
  *  with their <t> marks put back, so the model keeps seeing the format.
@@ -739,10 +740,8 @@ export function parseGlosses(text, { readings = false } = {}) {
 // Quick answers to a check-in question ("keep going?"), shown as buttons.
 // "OPTIONS:" is the older label for the same line.
 const CHOICES_RE = metaRe("(?:CHOICES|OPTIONS)");
-export const MAX_CHOICES = 4;
-const CHOICE_CHARS = 60;
-
-/** The CHOICES line of a reply as button labels: split on "|", trimmed,
+export const MAX_CHOICES = 5;
+/** The CHOICES line of a reply as button labels (cleanChoice): split on "|",
  *  duplicates dropped, at most MAX_CHOICES. */
 export function parseChoices(text) {
   const out = [];
@@ -750,7 +749,7 @@ export function parseChoices(text) {
     const rest = metaRest(CHOICES_RE, rawLine);
     if (rest == null) continue;
     for (const c of rest.split("|")) {
-      const label = c.replace(MARKS_RE, "").replace(/\*\*/g, "").trim().slice(0, CHOICE_CHARS);
+      const label = cleanChoice(c);
       if (label && !out.some((o) => o.toLowerCase() === label.toLowerCase())) out.push(label);
       if (out.length >= MAX_CHOICES) return out;
     }
@@ -920,7 +919,25 @@ export function planDirective(plan, { drill = false } = {}) {
   const parts = drill
     ? `In this drill, the part with id scene is the drill itself and each beat part is one of its rounds: name the round you are in (or scene, between rounds). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it; for a round, start drilling that round's words right away. Parts in between are skipped.`
     : `A game or drill that comes back inside the scene is not a part of its own then: name the scene beat it happens in (or scene, when the scene has no beats). Use a game's id only while that game is the part itself (before the scene, or after a jump to it). "${JUMP} <id>" from the learner means: go straight to that part now. Say in one short narrator sentence where you are jumping to, then start it. For a scene beat, open the scene already in the middle of that moment, as if what came before had happened: no fresh greeting, and the character's first line is about that beat (for a beat about prices, the character is already talking prices). Parts in between are skipped, warm-ups included: a jump overrides the rule about running every warm-up first.`;
-  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. ${parts} Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.`;
+  return `\n\n## This session's parts\n\nThe session runs through these parts in order (the learner sees them as a timeline):\n\n${rows}\n\nEnd every turn with one STAGE line naming the part you are in when the turn ends, by its id, e.g. STAGE: ${plan[0].id}. It is shown, not spoken. ${parts} Don't go back to them unless asked. When you finish a part that leaves nothing for the learner to answer (a debrief, a list read out for them to note down), go straight on to the next part in the same turn: never end a turn on a line that only says what comes next ("Next, I'll read you the vocabulary list"), because the learner would have to ask for it. Only the last part closes the session.${practiceDirective(plan)}`;
+}
+
+/** What a practice part adds to the parts section (nothing without one):
+ *  when its id is named, since the app hides the conversation then, and how
+ *  its answers are offered on screen. */
+function practiceDirective(plan) {
+  const ids = plan.filter((p) => p.kind === PRACTICE_KIND).map((p) => p.id);
+  if (!ids.length) return "";
+  return `
+
+### Practising in a warm-up
+
+${ids.length === 1 ? `The part ${ids[0]} is` : `The parts ${ids.join(" and ")} are each`} the second half of the warm-up before it: name it in every turn that ends in a practice question for the learner to answer, and not before. While you are introducing phrases or asking how they want to practise, the part is still the warm-up itself. The turn that closes the last practice goes on to the next part itself: if that is the scene, it has the character's first line. Never start a warm-up's practice in the turn that introduces its last phrases. During a practice part the app hides the earlier conversation so the learner answers from memory; they can bring it back, so never mention it.
+- When you ask how they want to practise, offer the ways as one CHOICES line of short answers in their native language, up to five: CHOICES: Multiple choice | Fill the gap | Situations | Quick repeat | Straight to the scene
+- When you give phrases or words to choose from, put them in a CHOICES line too, each wholly inside <t>…</t>, in a different order each time, and never read them out or give them in a spoken line: CHOICES: <t>¿Cuánto cuesta?</t> | <t>¿Me lo envuelve?</t> | <t>Nada más, gracias</t>
+  Exactly one of them should fit best. They are the learner's answers, so the line is not about how the session should go. Only use <t> in a CHOICES line this way. With no choices to give (situations, a quick repeat), write no CHOICES line.
+- "${PICK}" followed by words is the learner's tapped answer from those choices: treat it as their answer, as if they had said it. They may also say one, or anything else, out loud.
+- A line with a gap has … where the missing word goes. Leave that line, and the missing word, out of the GLOSS line.`;
 }
 
 /** From this share of the budget on, the clock says to start closing. */

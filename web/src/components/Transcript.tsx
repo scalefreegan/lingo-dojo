@@ -4,7 +4,7 @@ import { GlossStar } from "./GlossStar";
 import { CharTerm } from "./Ruby";
 import { SpeakerCritter } from "./Mascots";
 import { haystack, layout, mightMatch } from "../gloss";
-import { CONTROL_LABEL, directText, jumpTarget, lineLabel, planTitle, type LineTranslation } from "../transcript";
+import { CONTROL_LABEL, directText, jumpTarget, pickText, lineLabel, planTitle, type LineTranslation } from "../transcript";
 import type { LivePronunciation, PronunciationWordsReply, VoiceGloss, VoiceHistoryItem, VoiceLine, VoicePlanItem } from "../types";
 import { ToneCheck } from "./ToneCheck";
 import { WordCheck } from "./WordCheck";
@@ -52,6 +52,8 @@ export const Transcript = memo(function Transcript({
   follow = true,
   canStar = false,
   tones,
+  veiled = 0,
+  onLift,
 }: {
   entries: VoiceHistoryItem[];
   plan: VoicePlanItem[];
@@ -78,6 +80,12 @@ export const Transcript = memo(function Transcript({
   /** Tone or word marks under the learner's own lines, by entry index (a
    *  live adult session with the coaching dial on). */
   tones?: ReadonlyMap<number, LineTones>;
+  /** How many entries from the top are veiled while the learner practises
+   *  from memory (0: none): blurred, out of the keyboard's and a screen
+   *  reader's way, and never text the eye can make out. */
+  veiled?: number;
+  /** Show the veiled entries for now. */
+  onLift?: () => void;
 }) {
   const olRef = useRef<HTMLOListElement | null>(null);
   const following = useRef(follow);
@@ -96,6 +104,10 @@ export const Transcript = memo(function Transcript({
     following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
   };
   const count = entries.length;
+  const veiledRef = useRef(false);
+  useLayoutEffect(() => {
+    veiledRef.current = veiled > 0;
+  });
   useLayoutEffect(() => {
     const el = olRef.current;
     if (!el) return;
@@ -117,6 +129,11 @@ export const Transcript = memo(function Transcript({
       if (was === 0 && height > 0 && following.current) {
         el.scrollTop = el.scrollHeight;
         ownTop.current = el.scrollTop;
+      } else if (was > height && height > 0 && following.current) {
+        // The controls under it grew (choices, the typing box): what was at
+        // its bottom edge stays there rather than going under them.
+        el.scrollTop += was - height;
+        ownTop.current = el.scrollTop;
       }
     });
     ro.observe(el);
@@ -130,7 +147,9 @@ export const Transcript = memo(function Transcript({
     const box = el.getBoundingClientRect();
     const r = row.getBoundingClientRect();
     const pad = 8;
-    if (r.top < box.top + pad || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - pad);
+    // Clear of the veil's button, which is pinned over the list's top.
+    const top = veiledRef.current ? 52 : pad;
+    if (r.top < box.top + top || r.height > box.height) scrollTo(el, el.scrollTop + r.top - box.top - top);
     else if (r.bottom > box.bottom - pad) scrollTo(el, el.scrollTop + r.bottom - box.bottom + pad);
   }, [playing]);
   // A definition card under the last line opens below the list's fold:
@@ -196,6 +215,14 @@ export const Transcript = memo(function Transcript({
 
   return (
 <ol ref={olRef} onScroll={onScroll} className={`flex min-w-0 flex-1 flex-col gap-2 overflow-y-auto rounded-2xl border border-line bg-panel p-3 ${className ?? "max-h-[min(28rem,calc(100dvh-22rem))] min-h-48 lg:max-h-[max(28rem,calc(100dvh-26rem))]"}`} aria-label="Session transcript" data-testid="voice-transcript">
+  {veiled > 0 && (
+    // Pinned to the top of the list, so the way back is always in view.
+    <li className="sticky top-0 z-10 flex justify-center">
+      <button type="button" className="rounded-full border border-accent bg-accent-soft px-3 py-1 font-[family-name:var(--font-display)] text-sm text-fg shadow-sm hover:bg-accent hover:text-accent-ink" onClick={onLift} data-testid="voice-lift-veil">
+        🙈 Hidden while you recall. Show
+      </button>
+    </li>
+  )}
   {entries.map((m, i) => {
     const mine = (at: string | null | undefined) => !!at && at.startsWith(`${i}:`);
     const jumpTo = m.role === "learner" ? jumpTarget(m.text) : null;
@@ -217,6 +244,7 @@ export const Transcript = memo(function Transcript({
         onReplay={canReplay ? replayLine : undefined}
         canStar={canStar}
         tones={tones?.get(i)}
+        veiled={i < veiled}
       />
     );
   })}
@@ -226,6 +254,9 @@ export const Transcript = memo(function Transcript({
 
 const NO_GLOSSES: VoiceGloss[] = [];
 const NO_TRANSLATIONS: LineTranslation[] = [];
+/** A veiled entry keeps its place but can't be read (inert also takes it out
+ *  of find-in-page, selection and the accessibility tree). */
+const VEIL = "select-none opacity-60 blur-[7px]";
 
 /** One entry of the transcript: the learner's message, or a turn of the
  *  dojo master's lines. */
@@ -245,6 +276,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onReplay,
   canStar,
   tones,
+  veiled,
 }: {
   m: VoiceHistoryItem;
   i: number;
@@ -264,6 +296,7 @@ const TranscriptRow = memo(function TranscriptRow({
   onReplay?: (i: number, j: number, lines: VoiceLine[]) => void;
   canStar?: boolean;
   tones?: LineTones;
+  veiled: boolean;
 }) {
   if (m.role === "learner") {
     const bubble = (
@@ -278,7 +311,7 @@ const TranscriptRow = memo(function TranscriptRow({
             {directText(m.text)}
           </>
         ) : (
-          m.text
+          (pickText(m.text) ?? m.text)
         )}
       </div>
     );
@@ -286,7 +319,7 @@ const TranscriptRow = memo(function TranscriptRow({
     // none). The same marks as Practice's speak-it, so a tap opens the same
     // tone picture with the learner's own take.
     return (
-      <li className="flex max-w-[85%] flex-col items-end gap-1 self-end">
+      <li className={`flex max-w-[85%] flex-col items-end gap-1 self-end ${veiled ? VEIL : ""}`} inert={veiled} data-veiled={veiled || undefined}>
         {bubble}
         {tones && (
           <div className="w-full rounded-xl border border-line bg-raised px-2.5 py-2" data-testid="voice-learner-tones">
@@ -297,13 +330,16 @@ const TranscriptRow = memo(function TranscriptRow({
     );
   }
   return (
-      <li className="flex flex-col gap-1">
+      <li className={`flex flex-col gap-1 ${veiled ? VEIL : ""}`} inert={veiled} data-veiled={veiled || undefined}>
         {m.lines.map((l, j) => (
           <Fragment key={j}>
           <div data-line={`${i}:${j}`} className={`flex items-start gap-2.5 rounded-xl px-2 py-1.5 text-sm transition-colors ${playing === `${i}:${j}` ? "bg-kiai-soft" : ""}`}>
             <SpeakerCritter speaker={l.speaker} size={30} />
-            <span className="w-16 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:w-24">{lineLabel(l)}</span>
+            <span className="hidden w-24 shrink-0 pt-1.5 font-[family-name:var(--font-display)] text-xs break-words text-fg-3 sm:block">{lineLabel(l)}</span>
             <span className="min-w-0 max-w-[72ch] flex-1 text-fg break-words">
+              {/* On a phone who is speaking sits over the words: a column of
+                  its own left the words a third of the screen. */}
+              <span className="block font-[family-name:var(--font-display)] text-xs text-fg-3 sm:hidden">{lineLabel(l)}</span>
               {(l.segments?.length ? l.segments : [{ lang: "native" as const, text: l.text }]).map((g, k) => (
                 <span key={k} className={g.lang === "target" ? "font-medium text-accent" : ""} lang={g.lang === "target" ? (locale ?? undefined) : undefined} data-pace={g.slow ? "slow" : undefined} title={g.slow ? "Spoken slowly" : undefined}>
                   {k > 0 && !/^[.,;:!?)\]»…]/.test(g.text) ? " " : ""}

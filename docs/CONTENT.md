@@ -109,6 +109,24 @@ grammar unless the learner asks.
   on the session timeline; other games sit at the story's start, since they
   come back throughout. Dropping the tag moves the game into the story.
 
+### Practice parts (`practice:`)
+
+A warm-up that teaches something and then asks for it back names the second
+half: `practice: Practise the phrases` (text; anything else is ignored). It
+becomes a part of its own on the session timeline, right after the warm-up's
+(`practice:<unit id>`, `sessionPlan` in `scripts/plan.mjs`), taking its time
+from the warm-ups' share. In the app the earlier conversation is hidden
+during it, and choices the dojo master offers are buttons (docs/VOICE.md
+§Practice parts and the veil). Write the body so it also works read aloud in
+another voice app.
+
+The library's `warmup-phrases` (the default) is quick: five phrases in two
+batches, then two or three light rounds the way the learner picks that day
+(multiple choice, fill the gap, situations, a quick repeat, or none), where
+anything that would work in real life is right and no retry is asked for.
+`warmup-phrases-drill` is the older one: 8–10 phrases one at a time and exact
+recall.
+
 ### Conflicts and requirements (`conflicts:`, `requires:`)
 
 Two picked units can contradict each other in one prompt (an ending that cheers

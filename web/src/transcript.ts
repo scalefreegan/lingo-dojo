@@ -20,6 +20,14 @@ export const JUMP = "[jump]";
 export const CONTROL_LABEL: Record<string, string> = { [SKIP]: "Skipped", [HELP]: "Asked for help", [EXPLAIN]: "Asked for an explanation" };
 /** Prefix of a message straight to the dojo master (scripts/voice.mjs DIRECT). */
 export const DIRECT = "[direct]";
+/** Prefix of a tapped answer to a practice question (scripts/choices.mjs PICK). */
+export const PICK = "[pick]";
+export const pickText = (t: string) => (t.startsWith(`${PICK} `) ? t.slice(PICK.length + 1) : null);
+/** A choice that is an answer to the practice, its words; null for a
+ *  check-in answer (scripts/choices.mjs spokenChoice must match). */
+export const spokenChoice = (c: string) => /^<t>([^<>]+)<\/t>$/.exec(c)?.[1] ?? null;
+/** The kind of a warm-up's practice part (scripts/plan.mjs PRACTICE_KIND). */
+export const PRACTICE_KIND = "practice";
 export const directText = (t: string) => (t.startsWith(`${DIRECT} `) ? t.slice(DIRECT.length + 1) : null);
 
 export function lineLabel(l: VoiceLine): string {
@@ -31,7 +39,7 @@ export function lineLabel(l: VoiceLine): string {
 
 export function transcriptText(entries: VoiceHistoryItem[]): string {
   return entries
-    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : jumpTarget(m.text) != null ? `(jumped to ${jumpTarget(m.text)})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : m.text}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
+    .map((m) => (m.role === "learner" ? `Me: ${CONTROL_LABEL[m.text] ? `(${CONTROL_LABEL[m.text].toLowerCase()})` : jumpTarget(m.text) != null ? `(jumped to ${jumpTarget(m.text)})` : directText(m.text) != null ? `(to the dojo master) ${directText(m.text)}` : (pickText(m.text) ?? m.text)}` : m.lines.map((l) => `${lineLabel(l)}: ${l.text}`).join("\n") + (m.glosses?.length ? `\n${m.glosses.map((g) => `  ${g.term} = ${g.meaning}`).join("\n")}` : "")))
     .join("\n\n");
 }
 

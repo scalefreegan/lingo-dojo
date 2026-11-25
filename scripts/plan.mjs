@@ -12,9 +12,12 @@ const PLAN_SLOTS = {
   kids: { intro: "intro", before: [], during: ["games"], after: ["ending"], openerTag: "opener" },
 };
 const BEAT_CHARS = 70;
+/** The kind of a warm-up's practice part (web/src/transcript.ts
+ *  PRACTICE_KIND must match). */
+export const PRACTICE_KIND = "practice";
 
 /** The session's parts in order, for the timeline and the adapter: the
- *  introduction, each warm-up, the scene and its beats (the scenario's
+ *  introduction, each warm-up (and its practice part), the scene and its beats (the scenario's
  *  beats list), then the debrief. `content` is loadContent's result and
  *  `pack` the pack being practised; ids are stable within a session. */
 export function sessionPlan(content, pack, mode = "adult") {
@@ -27,6 +30,14 @@ export function sessionPlan(content, pack, mode = "adult") {
   const inSlot = (slot) => units.filter((u) => u.slot === slot);
   const opener = (u) => !!cfg.openerTag && Array.isArray(u.tags) && u.tags.includes(cfg.openerTag);
   const part = (slot, u) => ({ id: `${slot}:${u.id}`, title: u.title, kind: slot });
+  // A warm-up that teaches, then asks for it back (`practice:` in its front
+  // matter, docs/CONTENT.md §Practice parts) is two parts: the second is
+  // where the app hides the lines before it, so it has to know when the
+  // session is there.
+  const practice = (u) => {
+    const name = typeof u.practice === "string" ? u.practice.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+    return name ? [{ id: `${PRACTICE_KIND}:${u.id}`, title: name, kind: PRACTICE_KIND }] : [];
+  };
   const scenario = (content?.scenarios ?? []).find((sc) => sc.id === pack?.scenario);
   // A drill (First steps: `format: drill`) is the introduction, the drill
   // and its rounds, then the debrief: no warm-ups before it and no games in
@@ -37,7 +48,7 @@ export function sessionPlan(content, pack, mode = "adult") {
   const plan = [];
   if (inSlot(cfg.intro).length) plan.push({ id: "intro", title: "Introduction", kind: "intro" });
   if (!drill) {
-    for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u));
+    for (const slot of cfg.before) for (const u of inSlot(slot)) plan.push(part(slot, u), ...practice(u));
     for (const slot of cfg.during ?? []) for (const u of inSlot(slot).filter(opener)) plan.push(part(slot, u));
   }
   const title = scenario?.title || (pack?.quick_scenario ? "Quick scene" : "The scene");
