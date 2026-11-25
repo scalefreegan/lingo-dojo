@@ -1299,8 +1299,8 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
     rating of the model's own event, or alone when there is none (`answer`
     is then the line). The phrase joins the norm-ordered lock pass, and
     the same skips hold (suspended, reviewed later). Kept in the stored
-    recap's `tones` [{phraseId, phrase, line, syllables, was, reviewed,
-    dismissed, idle?}], never in `events`, so a revisit carries none.
+    recap's `tones` [{phraseId, phrase, line, syllables, flags, was,
+    reviewed, dismissed, idle?}], never in `events`, so a revisit carries none.
     `dismissToneMiss` ("I said it right") locks the conversation, the
     phrase and the card, restores `card_before`, grades it `was` (null:
     deletes the review, and a card it made) and sets `dismissed`, which
@@ -1332,6 +1332,9 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
   pending, done, failed or skipped; the kept phrases with their star and
   mastery now), `POST` → 202 `{recap}` (make it again; 409 while the
   conversation is open). Another language's or learner's is a 404.
+  `POST …/recap-tones {phraseId}` → `{recap}`: "I said it right" (404 no
+  such miss, 409 while the recap is made or once the card was reviewed
+  later).
   `ConversationSummary.recapStatus` gives History its "no recap" badge.
 - **UI.** `SessionRecap.tsx` under the transcript: on the Go tab after
   End (it waits quietly through `open`/`none` for 30 s while End and the

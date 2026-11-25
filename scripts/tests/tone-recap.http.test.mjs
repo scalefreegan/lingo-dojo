@@ -237,10 +237,16 @@ test("no miss: fixed later in the session, already failed by the model, suspende
   const none = await session(gone, [["妈", MISSED]]);
   assert.equal(await flagsIn(none.id), 1);
   assert.deepEqual(none.recap.toneMisses, []);
+  // Added after the session: not a phrase it could have been in.
   const sp = await phrase(gone);
-  assert.equal((await gone.call("PATCH", `/api/phrases/${sp}`, { suspended: true })).status, 200);
   assert.deepEqual((await retry(gone, none.id)).toneMisses, []);
   assert.deepEqual(await reviewsOf(sp), []);
+  const held = await someone();
+  const hp = await phrase(held);
+  assert.equal((await held.call("PATCH", `/api/phrases/${hp}`, { suspended: true })).status, 200);
+  const off = await session(held, [["妈", MISSED]]);
+  assert.equal(await flagsIn(off.id), 1);
+  assert.deepEqual([await reviewsOf(hp), off.recap.toneMisses], [[], []]);
 
   // Taiwan: only a settled reading fails, as in Practice.
   const wei = await someone(TAIWAN);
@@ -266,18 +272,125 @@ test("a phrase this recap keeps may be failed; kids: nothing stored, nothing sho
   assert.equal((await right(mei, kid.id, p)).status, 404);
 });
 
-test("a sentence this recap keeps never takes the miss from a phrase already in the bank, on the first run or a re-run", async () => {
+/** A finished session of `who`'s, and a recap write on it with these lines. */
+async function writer(who) {
   const { applyExtraction, claimExtraction } = await import("../db/extraction.ts");
+  const { id } = await session(who, [["妈", RIGHT]]);
+  const profile = { id: who.languageId, learnerId: who.learnerId };
+  const write = async (toneLines, { keep = [], events = [] } = {}) => {
+    const { claim } = await claimExtraction(testDb.db, profile, id, { from: ["done"], live: [] });
+    const value = { summary: "", keep: keep.map((text) => ({ text, meaning: text, example: "", why: "" })), events, corrections: [] };
+    return applyExtraction(testDb.db, profile, { conversationId: id, claim, value, dropped: 0, bankLocale: "zh-CN", turns: [], toneLines });
+  };
+  return { id, write };
+}
+const flagged = (line, places = [1], ok = []) => ({ line, flags: places.map((place) => ({ char: "妈", place, pinyin: "mā", expectedTone: 1, heardTone: 4 })), ok });
+const shown = async (who, id) => (await who.call("GET", `/api/conversations/${id}/recap`)).body.recap.toneMisses;
+
+test("a sentence this recap keeps never takes the miss from a phrase already in the bank, on the first run or a re-run", async () => {
   const lin = await someone();
   const p = await phrase(lin, "妈妈");
-  const { id } = await session(lin, [["妈", RIGHT]]);
-  const profile = { id: lin.languageId, learnerId: lin.learnerId };
-  const toneLines = [{ line: "妈妈很忙。", flags: [{ char: "妈", place: 1, pinyin: "mā", expectedTone: 1, heardTone: 4 }], ok: [3, 4] }];
+  const { write } = await writer(lin);
   for (const run of [1, 2]) {
-    const { claim } = await claimExtraction(testDb.db, profile, id, { from: ["done"], live: [] });
-    const value = { summary: "", keep: [{ text: "妈妈很忙", meaning: "mum is busy", example: "", why: "" }], events: [], corrections: [] };
-    const recap = await applyExtraction(testDb.db, profile, { conversationId: id, claim, value, dropped: 0, bankLocale: "zh-CN", turns: [], toneLines });
+    const recap = await write([flagged("妈妈很忙。")], { keep: ["妈妈很忙"] });
     assert.deepEqual(recap.tones.map((t) => [t.phrase, t.phraseId, t.reviewed]), [["妈妈", p, true]], `run ${run}`);
     assert.ok(recap.keep[0].phraseId, "the sentence is in the bank now");
   }
+});
+
+test("a dismissed flag fails no other phrase: not one a re-run keeps, nor a shorter one once the phrase is deleted", async () => {
+  const lin = await someone();
+  const { id, write } = await writer(lin);
+  const line = [flagged("妈妈很忙，我来做饭。")];
+  const first = await write(line, { keep: ["妈妈很忙"] });
+  assert.equal((await right(lin, id, first.tones[0].phraseId)).status, 200);
+  const second = await write(line, { keep: ["妈妈很忙，我来做饭"] });
+  assert.deepEqual(second.tones.filter((t) => t.reviewed), []);
+  assert.deepEqual(await reviewsOf(second.keep[0].phraseId), []);
+
+  const wen = await someone();
+  const short = await phrase(wen, "妈妈");
+  const long = await phrase(wen, "妈妈很忙");
+  const w = await writer(wen);
+  await w.write([flagged("妈妈很忙。")]);
+  assert.equal((await right(wen, w.id, long)).status, 200);
+  assert.equal((await wen.call("DELETE", `/api/phrases/${long}`)).status, 200);
+  await w.write([flagged("妈妈很忙。")]);
+  assert.deepEqual(await reviewsOf(short), []);
+});
+
+test("a phrase only the last run kept goes on a re-run that doesn't; one deleted since isn't listed", async () => {
+  const lin = await someone();
+  const { id, write } = await writer(lin);
+  const first = await write([flagged("妈妈很忙。")], { keep: ["妈妈很忙"] });
+  assert.equal(first.tones[0].reviewed, true);
+  const second = await write([flagged("妈妈很忙。")]);
+  assert.equal(second.tones, undefined);
+  assert.equal((await q("select count(*)::int as n from phrases where id = $1", [first.keep[0].phraseId]))[0].n, 0);
+
+  const p = await phrase(lin, "妈妈");
+  await q("update phrases set created_at = now() - interval '1 day' where id = $1", [p]);
+  await write([flagged("妈妈很忙。")]);
+  assert.equal((await shown(lin, id)).length, 1);
+  assert.equal((await lin.call("DELETE", `/api/phrases/${p}`)).status, 200);
+  assert.deepEqual(await shown(lin, id), []);
+});
+
+test("practised since: a re-run still lists the counted miss, and still answers 409; a miss is busy while a recap is being made", async () => {
+  const lin = await someone();
+  const p = await phrase(lin, "妈妈");
+  const { id, write } = await writer(lin);
+  await write([flagged("妈妈很忙。")]);
+  await q("update conversations set extraction_status = 'running', extraction_claim = $2 where id = $1", [id, crypto.randomUUID()]);
+  assert.equal((await right(lin, id, p)).status, 409);
+  await q("update conversations set extraction_status = 'done', extraction_claim = null where id = $1", [id]);
+  const card = await cardOf(p);
+  await q("insert into reviews (learner_id, language_profile_id, card_id, mode, rating, verdict, reviewed_at, card_before) values ($1, $2, $3, 'speak', 3, 'exact', now(), '{}')", [lin.learnerId, lin.languageId, card.id]);
+  await write([flagged("妈妈很忙。")]);
+  assert.deepEqual((await shown(lin, id)).map((t) => [t.phraseId, t.dismissed]), [[p, false]]);
+  assert.equal((await right(lin, id, p)).status, 409);
+});
+
+test("a listening event beside a miss keeps its own grade; the phrase counts as seen, and practised only while the miss stands", async () => {
+  const lin = await someone();
+  const p = await phrase(lin, "妈妈");
+  const { id, write } = await writer(lin);
+  await write([flagged("妈妈很忙。")], { events: [{ phrase: "妈妈", kind: "understood" }] });
+  assert.deepEqual((await reviewsOf(p)).map((r) => [r.skill, r.rating]).sort(), [["listen", 3], ["produce", 1]]);
+  await write([flagged("妈妈很忙。")]);
+  assert.equal((await q("select count(*)::int as n from phrase_sightings where phrase_id = $1 and conversation_id = $2 and source = 'extraction'", [p, id]))[0].n, 1);
+  const practised = async () => (await q("select last_practiced_at as t from phrases where id = $1", [p]))[0].t;
+  assert.ok(await practised());
+  assert.equal((await right(lin, id, p)).status, 200);
+  assert.equal(await practised(), null);
+  // With an event: its own words go back on the review.
+  await q("update conversations set extraction = extraction - 'tones' where id = $1", [id]);
+  await write([flagged("妈妈很忙。")], { events: [{ phrase: "妈妈", kind: "produced_with_help", said: "妈妈" }] });
+  assert.equal((await right(lin, id, p)).status, 200);
+  assert.deepEqual((await reviewsOf(p)).map((r) => [r.rating, r.answer]), [[2, "妈妈"]]);
+});
+
+test("the cap counts only what would be failed", async () => {
+  const lin = await someone();
+  const all = [..."天地玄黄宇宙洪荒日月盈"];
+  for (const c of all) await phrase(lin, c, c);
+  const { write } = await writer(lin);
+  const lines = all.map((c) => ({ line: c, flags: [{ char: c, place: 1, pinyin: "mā", expectedTone: 1, heardTone: 4 }], ok: [] }));
+  const failed = (r) => (r.tones ?? []).filter((t) => t.reviewed).length;
+  assert.equal(failed(await write(lines)), 10);
+  assert.deepEqual((await write(lines, { events: all.slice(0, 10).map((c) => ({ phrase: c, kind: "corrected" })) })).tones.map((t) => t.phrase), [all[10]]);
+});
+
+test("kids: a child's session with checks (there should be none) still fails and shows nothing", async () => {
+  const { sessionToneLines } = await import("../../web/server/toneReview.ts");
+  const lin = await someone();
+  const p = await phrase(lin);
+  const { id } = await session(lin, [["妈", MISSED]]);
+  const profile = { id: lin.languageId, learnerId: lin.learnerId };
+  assert.equal((await sessionToneLines(profile, { id, mode: "adult" }, "zh-CN")).length, 1);
+  assert.deepEqual(await sessionToneLines(profile, { id, mode: "kids" }, "zh-CN"), []);
+  assert.deepEqual(await sessionToneLines(profile, { id, mode: "adult" }, "es-MX"), []);
+  assert.equal((await shown(lin, id))[0].phraseId, p);
+  await q("update conversations set mode = 'kids' where id = $1", [id]);
+  assert.deepEqual(await shown(lin, id), []);
 });

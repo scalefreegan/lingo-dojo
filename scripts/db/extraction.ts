@@ -55,7 +55,7 @@ import { keepExample, planExtraction, type Extraction, type StoredTurn } from ".
 import { fromRow, review, toRow, type CardState } from "../../scripts/fsrs.mjs";
 import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, phraseMetrics } from "../../scripts/phrases.mjs";
-import { sessionToneMisses, type ToneLine } from "../../scripts/pronunciation-review.mjs";
+import { MAX_SESSION_TONE_MISSES, sessionToneMisses, type ToneLine } from "../../scripts/pronunciation-review.mjs";
 import type { MasteryBand, RecapEvent, RecapToneMiss, RecapVsLast } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, lockById, lockInNormOrder, recount, retrying, settleUnseen, stronger } from "./phrases.ts";
@@ -92,9 +92,12 @@ export interface StoredRecap {
 /** A phrase a tone flag failed. `was`: the rating the model's own event
  *  gave the same card (null: it named none), restored by "I said it right",
  *  which sets `dismissed` (kept over a re-run). `reviewed`: the miss is the
- *  session's review of the card. */
+ *  session's review of the card. `flags`: where it was heard (the line, the
+ *  place in it), so a dismissal holds for those flags whatever phrase a
+ *  re-run would find them in. */
 export interface StoredToneMiss extends RecapToneMiss {
   was: number | null;
+  flags: { line: string; place: number }[];
   reviewed: boolean;
   /** A dismissal only kept for a later run: this one has no such miss, so
    *  it isn't shown. */
@@ -306,24 +309,31 @@ async function writeBank(
   const plan = planExtraction(allowed, { known, locale });
 
   // The session's tone flags (ld-ne0.18): which phrase each is in, among the
-  // bank's and the ones this recap keeps. A phrase already failed by the
-  // model's own event needs nothing more; one the learner said they said
-  // right (a past run's tone miss dismissed) is skipped below, by id.
+  // bank's at the session's end and the ones this recap keeps (never one
+  // only added since: an earlier run's keep isn't held there by its miss).
+  // A phrase already failed by the model's own event needs nothing more.
   const toneLines = opts.toneLines ?? [];
   const failed = new Set(plan.events.filter((e) => e.skill === "produce" && e.rating === 1).map((e) => e.norm));
-  const bankTexts = toneLines.length ? await mine.list(phrases, COMPLETE) : [];
-  const seenNorms = new Set(bankTexts.map((p) => p.norm));
-  const misses = new Map(
-    sessionToneMisses(toneLines, [
-      // In the bank by the session's end, or only since (a re-run finds what
-      // the last run kept there).
-      ...bankTexts.map((p) => ({ norm: p.norm, text: p.text, late: new Date(p.createdAt) > at })),
-      ...plan.keep.filter((k) => !seenNorms.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true })),
-    ])
-      .filter((m) => !failed.has(m.norm))
-      .map((m) => [m.norm, m]),
-  );
-  const dismissed = new Map(storedTones(conv.extraction).flatMap((t) => (t.dismissed ? [[t.phraseId, t] as const] : [])));
+  const own = toneLines.length ? (await mine.list(phrases, COMPLETE)).filter((p) => new Date(p.createdAt) <= at) : [];
+  const ownBy = new Map(own.map((p) => [p.norm, p]));
+  const hadTones = storedTones(conv.extraction);
+  const dismissed = new Map(hadTones.flatMap((t) => (t.dismissed ? [[t.phraseId, t] as const] : [])));
+  // What the learner said they said right: those flags fail no other phrase
+  // either (one this run keeps, or a shorter one once theirs is deleted).
+  const flagKey = (f: { line: string; place: number }) => `${f.place}\u0000${f.line}`;
+  const rightFlags = new Set([...dismissed.values()].flatMap((t) => (t.flags ?? []).map(flagKey)));
+  const misses = new Map<string, ReturnType<typeof sessionToneMisses>[number]>();
+  let counted = 0;
+  for (const m of sessionToneMisses(toneLines, [...own, ...plan.keep.filter((k) => !ownBy.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true }))])) {
+    if (failed.has(m.norm)) continue;
+    const row = ownBy.get(m.norm) ?? existing.find((p) => p.norm === m.norm);
+    const gone = !!row && dismissed.has(row.id);
+    if (!gone && m.flags.every((f) => rightFlags.has(flagKey(f)))) continue;
+    // The cap is on what would be failed: not a suspended phrase, nor a
+    // dismissed miss (kept only to be shown as one).
+    if (!gone && !row?.suspended && ++counted > MAX_SESSION_TONE_MISSES) continue;
+    misses.set(m.norm, m);
+  }
 
   // Every complete phrase this write touches, in one norm-ordered pass:
   // kept ones upserted ("extraction" when new; a meaning only filled when
@@ -403,7 +413,7 @@ async function writeBank(
     if (e.event) events.set(`${e.norm}\u0000${e.skill}`, out);
     const gone = row && e.miss ? dismissed.get(row.id) : undefined;
     const was = e.event ? e.rating : null;
-    const miss = row && e.miss ? { phraseId: row.id, phrase: e.miss.text, line: e.miss.line, syllables: e.miss.syllables, was, reviewed: false, dismissed: !!gone } : null;
+    const miss = row && e.miss ? { phraseId: row.id, phrase: e.miss.text, line: e.miss.line, syllables: e.miss.syllables, flags: e.miss.flags, was, reviewed: false, dismissed: !!gone } : null;
     if (miss) tones.push(miss);
     if (!e.event && gone) continue;
     // A suspended phrase is out of practice by the learner's choice.
@@ -436,6 +446,15 @@ async function writeBank(
   }
   // A dismissal this run had no use for (the flag didn't come up, or the
   // model failed the phrase itself) is kept for the next one.
+  // The last run's miss on a card reviewed since is still the card's
+  // history (its review stays above): it stays listed as counted.
+  const kept = new Set(oldReviews.filter((o) => o.skill === "produce" && superseded.has(o.review.cardId)).map((o) => o.phraseId));
+  for (const t of hadTones) {
+    if (!t.reviewed || !kept.has(t.phraseId)) continue;
+    const i = tones.findIndex((x) => x.phraseId === t.phraseId);
+    if (i >= 0) tones[i] = t;
+    else tones.push(t);
+  }
   for (const t of dismissed.values()) if (!tones.some((x) => x.phraseId === t.phraseId)) tones.push({ ...t, idle: true });
   // A listen or produce card only the last run had made, back to never
   // reviewed and not reviewed now, goes (practice makes it again).

@@ -228,8 +228,8 @@ declare module "*/scripts/pronunciation-review.mjs" {
   export const MAX_SESSION_TONE_MISSES: number;
   export interface ToneLine { line: string; flags: FlagNote[]; ok: number[] }
   export function storedFlags(row: { syllables: unknown; line: string }): ToneLine | null;
-  export interface SessionToneMiss { norm: string; text: string; line: string; syllables: ToneMiss["syllables"] }
-  export function sessionToneMisses(lines: ToneLine[], phrases: { norm: string | null; text: string | null; late?: boolean }[], opts?: { max?: number }): SessionToneMiss[];
+  export interface SessionToneMiss { norm: string; text: string; line: string; syllables: ToneMiss["syllables"]; flags: { line: string; place: number }[] }
+  export function sessionToneMisses(lines: ToneLine[], phrases: { norm: string | null; text: string | null; late?: boolean }[]): SessionToneMiss[];
 }
 
 declare module "*/scripts/pronunciation-clips.mjs" {

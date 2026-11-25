@@ -2810,18 +2810,20 @@ a share (the engine doesn't judge them).
     tone, not before a third, one reading tone or a settled reading, zh-TW
     settled only. A stored line whose Han characters aren't the scored
     syllables, one for one, is skipped.
-  - **Which phrase**: the longest bank phrase (one added after the
-    session's end, as this recap's kept ones are, only where no older one
-    fits: a sentence the model keeps never takes the miss from the phrase
-    the learner practises, and a re-run picks the same) that starts at a leading place of the line, has the same characters in
+  - **Which phrase**: the longest bank phrase (in the bank by the
+    session's end, or kept by this recap; a kept one only where no older
+    one holds the flag, so a sentence the model keeps never takes the miss
+    from the phrase the learner practises) that starts at a leading place of the line, has the same characters in
     the same script, isn't cut by a sentence mark it doesn't have itself,
     ends where a word ends (`Intl.Segmenter`, a mark or the line's end) and
     holds the flag at a leading place of its own. A phrase of one character
     counts only as a whole clause (他 isn't 他们's). One phrase a flag, at
     most 10 phrases a session (`MAX_SESSION_TONE_MISSES`).
-  - **What was said last decides**: a later line with the phrase in the
-    same position and that syllable judged right clears the miss (coached,
-    then fixed); "not sure" clears nothing.
+  - **What was said last decides**: the syllable judged right later clears
+    the miss (coached, then fixed): the whole phrase again anywhere in a
+    line (我妈妈很忙), or a clause that is the phrase's words from that
+    syllable on (妈妈, the "just that word" strict coaching asks for). "Not
+    sure" clears nothing.
   - **One review a card**: the model's own event for the phrase's speak
     card and the miss make one session review, the miss's Again; the
     event's rating is kept beside it (`was`). A phrase the model already
@@ -2831,7 +2833,8 @@ a share (the engine doesn't judge them).
     /api/conversations/:id/recap-tones {phraseId}`: the card goes back to
     before the review and is graded as the model's event had it (no event:
     no review), so no lapse is left; a re-run of the recap keeps the
-    choice. 409 while the recap is being made or once the card was
+    choice, and those flags (line and place) fail no other phrase. A phrase
+    deleted since isn't listed. 409 while the recap is being made or once the card was
     reviewed later.
   - Kids: nothing is stored, so nothing is graded, shown or undone.
   - Not measured: how often this fires, or is wrong, on real speech. The

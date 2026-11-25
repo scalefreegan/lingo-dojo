@@ -277,7 +277,7 @@ export const recapStatus = statusOf;
 async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<SessionRecap> {
   const status = statusOf(c);
   const stored = status === "done" ? (c.extraction as unknown as StoredRecap | null) : null;
-  const ids = (stored?.keep ?? []).map((k) => k.phraseId).filter((id): id is string => !!id);
+  const ids = [...(stored?.keep ?? []), ...(stored?.tones ?? [])].map((k) => k.phraseId).filter((id): id is string => !!id);
   const now = await recapPhrases(rawDb(), profile, ids);
   return {
     conversationId: c.id,
@@ -302,7 +302,8 @@ async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<Se
       c.mode === "kids"
         ? []
         : (stored?.tones ?? [])
-            .filter((t) => t.reviewed || (t.dismissed && !t.idle))
+            // Not one deleted from the bank since: there is nothing to undo.
+            .filter((t) => now.has(t.phraseId) && (t.reviewed || (t.dismissed && !t.idle)))
             .map(({ phraseId, phrase, line, syllables, dismissed }) => ({ phraseId, phrase, line, syllables, dismissed })),
     extractedAt: c.extractedAt ? new Date(c.extractedAt).toISOString() : null,
     // The earlier session's id only while it still exists (the link

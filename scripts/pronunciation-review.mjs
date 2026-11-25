@@ -485,6 +485,27 @@ function saidAt(shape, { han, leading, ends }, start) {
   return end === han.length || leading.has(end + 1) || ends.has(end);
 }
 
+/** Whether a line says the missed syllable (`place` of the phrase `shape`)
+ *  right again, for "what was said last decides": the whole phrase anywhere
+ *  in it (我妈妈很忙 for 妈妈很忙; one character only as a whole clause), or a
+ *  clause that is the phrase's own words from that syllable on (strict
+ *  coaching asks for "just that word": 妈妈). Wider than what makes a miss:
+ *  when in doubt, none. */
+function saidRight(shape, place, { han, leading }, ok) {
+  const want = [...shape.han];
+  for (const at of ok) {
+    if (han[at - 1] !== want[place - 1]) continue;
+    const start = at - place + 1;
+    if (want.length > 1 && start >= 1 && han.slice(start - 1, start - 1 + want.length).join("") === shape.han) return true;
+    if (!leading.has(at)) continue;
+    let end = at;
+    while (end < han.length && !leading.has(end + 1)) end++;
+    const clause = han.slice(at - 1, end).join("");
+    if (clause && want.slice(place - 1).join("").startsWith(clause)) return true;
+  }
+  return false;
+}
+
 /**
  * The bank phrases a session's flagged syllables fail (ld-ne0.18;
  * docs/VOICE.md §Tones after the session). `lines`: the session's checks in
@@ -493,17 +514,19 @@ function saidAt(shape, { han, leading, ends }, start) {
  * `phrases`: the bank's, `{ norm, text, late }`; `late`: not in the bank
  * when the session ended (this recap kept it), taken only where no other
  * fits, so a sentence the model happens to keep never takes a miss from the
- * phrase the learner is practising, and a re-run picks the same one.
+ * phrase the learner is practising.
  *
  * A flag belongs to the longest phrase that starts at a leading place of
  * the line and holds the flag at a leading place of its own; at most one.
- * What the learner did last decides: a later line with the phrase in the
- * same position and that syllable judged right clears it (they were
- * coached and fixed it); "not sure" changes nothing.
- * → `[{ norm, text, line, syllables }]`, at most MAX_SESSION_TONE_MISSES,
- * in the order said; a syllable's `place` is its place in the phrase.
+ * What the learner did last decides: the syllable judged right later, in
+ * the phrase or in the part of it said again (saidRight), clears it (they
+ * were coached and fixed it); "not sure" changes nothing.
+ * → `[{ norm, text, line, syllables, flags }]` in the order said (the caller
+ * caps them: MAX_SESSION_TONE_MISSES); a syllable's `place` is its place in
+ * the phrase; `flags`: every flag behind the miss, `{ line, place }` with
+ * the place in the line.
  */
-export function sessionToneMisses(lines, phrases, { max = MAX_SESSION_TONE_MISSES } = {}) {
+export function sessionToneMisses(lines, phrases) {
   const shapes = [];
   for (const p of phrases ?? []) {
     const shape = p?.norm ? phraseShape(p.text) : null;
@@ -516,26 +539,28 @@ export function sessionToneMisses(lines, phrases, { max = MAX_SESSION_TONE_MISSE
   for (const l of lines ?? []) {
     const ctx = { han: [...hanOf(l.line)], leading: leadingPlaces(l.line), ends: wordEnds(l.line) };
     const ok = new Set(l.ok ?? []);
-    for (const start of ctx.leading) {
-      for (const miss of [...misses.values()]) {
-        if (!saidAt(miss.shape, ctx, start)) continue;
-        for (const place of [...miss.syllables.keys()]) if (ok.has(start + place - 1)) miss.syllables.delete(place);
-        if (!miss.syllables.size) misses.delete(miss.shape.norm);
+    for (let start = 1; start <= ctx.han.length; start++) {
+      if (ok.has(start)) {
+        for (const miss of [...misses.values()]) {
+          for (const place of [...miss.syllables.keys()]) if (saidRight(miss.shape, place, ctx, [start])) miss.syllables.delete(place);
+          if (!miss.syllables.size) misses.delete(miss.shape.norm);
+        }
       }
       // The flag at this place: the first phrase, from any leading place up
       // to it, that holds it. Chosen per flag, so a phrase that only starts
       // the line takes nothing from the one the flag is in.
-      const f = (l.flags ?? []).find((x) => x.place === start);
+      const f = ctx.leading.has(start) ? (l.flags ?? []).find((x) => x.place === start) : undefined;
       const from = f ? [...ctx.leading].filter((p) => p <= start) : [];
       const at = (x) => from.find((p) => x.leading.has(start - p + 1) && saidAt(x, ctx, p));
       const shape = from.length ? shapes.find((x) => at(x) !== undefined) : undefined;
       if (!shape) continue;
       const place = start - at(shape) + 1;
-      const miss = misses.get(shape.norm) ?? { shape, line: l.line, syllables: new Map() };
+      const miss = misses.get(shape.norm) ?? { shape, line: l.line, syllables: new Map(), flags: [] };
       miss.line = l.line;
+      miss.flags.push({ line: l.line, place: start });
       miss.syllables.set(place, { char: f.char, place, pinyin: f.pinyin, expectedTone: f.expectedTone, heardTone: Number.isInteger(f.heardTone) ? f.heardTone : null });
       misses.set(shape.norm, miss);
     }
   }
-  return [...misses.values()].slice(0, max).map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS) }));
+  return [...misses.values()].map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS), flags: m.flags }));
 }
