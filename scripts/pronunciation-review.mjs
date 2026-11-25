@@ -516,25 +516,25 @@ export function sessionToneMisses(lines, phrases, { max = MAX_SESSION_TONE_MISSE
   for (const l of lines ?? []) {
     const ctx = { han: [...hanOf(l.line)], leading: leadingPlaces(l.line), ends: wordEnds(l.line) };
     const ok = new Set(l.ok ?? []);
-    const taken = new Set();
     for (const start of ctx.leading) {
       for (const miss of [...misses.values()]) {
         if (!saidAt(miss.shape, ctx, start)) continue;
         for (const place of [...miss.syllables.keys()]) if (ok.has(start + place - 1)) miss.syllables.delete(place);
         if (!miss.syllables.size) misses.delete(miss.shape.norm);
       }
-      const shape = shapes.find((x) => saidAt(x, ctx, start));
+      // The flag at this place: the first phrase, from any leading place up
+      // to it, that holds it. Chosen per flag, so a phrase that only starts
+      // the line takes nothing from the one the flag is in.
+      const f = (l.flags ?? []).find((x) => x.place === start);
+      const from = f ? [...ctx.leading].filter((p) => p <= start) : [];
+      const at = (x) => from.find((p) => x.leading.has(start - p + 1) && saidAt(x, ctx, p));
+      const shape = from.length ? shapes.find((x) => at(x) !== undefined) : undefined;
       if (!shape) continue;
-      const n = [...shape.han].length;
-      for (const f of l.flags ?? []) {
-        const place = f.place - start + 1;
-        if (place < 1 || place > n || !shape.leading.has(place) || taken.has(f.place)) continue;
-        taken.add(f.place);
-        const miss = misses.get(shape.norm) ?? { shape, line: l.line, syllables: new Map() };
-        miss.line = l.line;
-        miss.syllables.set(place, { char: f.char, place, pinyin: f.pinyin, expectedTone: f.expectedTone, heardTone: Number.isInteger(f.heardTone) ? f.heardTone : null });
-        misses.set(shape.norm, miss);
-      }
+      const place = start - at(shape) + 1;
+      const miss = misses.get(shape.norm) ?? { shape, line: l.line, syllables: new Map() };
+      miss.line = l.line;
+      miss.syllables.set(place, { char: f.char, place, pinyin: f.pinyin, expectedTone: f.expectedTone, heardTone: Number.isInteger(f.heardTone) ? f.heardTone : null });
+      misses.set(shape.norm, miss);
     }
   }
   return [...misses.values()].slice(0, max).map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS) }));

@@ -286,6 +286,12 @@ test("sessionToneMisses: the phrase the flag starts, the longest, as words of it
   // One the recap kept only where no older one fits.
   assert.deepEqual(missed(line("妈妈很忙", [1]), [...bankOf("妈妈"), { norm: "妈妈很忙", text: "妈妈很忙", late: true }]), [["妈妈", [1]]]);
   assert.deepEqual(missed(line("妈妈很忙", [1]), [{ norm: "妈妈很忙", text: "妈妈很忙", late: true }]), [["妈妈很忙", [1]]]);
+  // Chosen for each flag: an older phrase that only starts the line doesn't
+  // keep the flag from the phrase it is in.
+  const late = { norm: "妈妈，他来", text: "妈妈，他来", late: true };
+  assert.deepEqual(missed(line("妈妈，他来。", [3]), [...bankOf("妈妈"), late]), [["妈妈，他来", [3]]]);
+  assert.deepEqual(missed(line("妈妈，他来。", [1, 3]), [...bankOf("妈妈"), late]), [["妈妈", [1]], ["妈妈，他来", [3]]]);
+  assert.deepEqual(missed(line("妈妈，他来。", [3]), [...bankOf("妈妈", "他来"), late]), [["他来", [1]]]);
   // Inside a word, or one character of a longer clause: not that phrase.
   assert.deepEqual(missed(line("他们来了", [1]), bankOf("他")), []);
   assert.deepEqual(missed(line("妈很忙", [1]), bankOf("妈")), []);
