@@ -1438,8 +1438,8 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
           early = playLines(history.length, feed, playCtrl.signal).then(() => null, (err: unknown) => err ?? new Error("playback failed"));
         }
       };
-      // Sent synchronously from here (no await before voiceTurn), and kept
-      // in inFlight until it answers, so closeConversation sees it.
+      // Sent synchronously from here (no await before voiceTurn); sendTurn
+      // keeps it in inFlight until it answers, so closeConversation sees it.
       const send = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
         const elapsedMs = Date.now() - (startedAtRef.current ?? Date.now());
         // With no conversation the server can't know a random scene's draw
@@ -1452,6 +1452,13 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
         ctrl.signal.addEventListener("abort", drop, { once: true });
         const answered = () => ctrl.signal.removeEventListener("abort", drop);
         req.then(answered, answered);
+        return req;
+      };
+      // Refused for the turn this one cut off: sent again when it has gone.
+      // In flight from the first try to the last, the waits between them
+      // included, so leaving Go never ends the conversation between two.
+      const sendTurn = (c: SavedConversation | null): Promise<VoiceTurnReply> => {
+        const req = resendTurn(() => send(c), droppedTurns.current.get(c?.id ?? "") ?? null, ctrl.signal);
         if (c) {
           inFlight.current.set(c.id, req);
           const done = () => {
@@ -1461,8 +1468,6 @@ function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutes
         }
         return req;
       };
-      // Refused for the turn this one cut off: sent again when it has gone.
-      const sendTurn = (c: SavedConversation | null) => resendTurn(() => send(c), droppedTurns.current.get(c?.id ?? "") ?? null, ctrl.signal);
       let r: VoiceTurnReply;
       let sent = conv;
       try {
