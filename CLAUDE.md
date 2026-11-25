@@ -288,6 +288,13 @@ and taps its picture.
   version (`pictureRef`), so a redraw isn't hidden by the year-long cache.
   Stock access is small functions in
   `scripts/picture-stock.mjs` (list, draw one, remove one, add a concept).
+- A word left out (`none`) before a stock picture that fits was drawn is
+  asked about again only by the Phrase bank's **Check N words again for a
+  shared picture** (ld-30r, `POST /api/pictures/recheck`, no migration):
+  `none` rows older than the newest offered stock picture's file
+  (`recheckTargets`), one check per 20 on the judge ledger and cap; only a
+  stock match changes a row (`noneRechecked`), nothing is drawn, and the
+  request is held in memory until the run has asked.
 - The check's description goes to the provider only through `cleanDescription`: a
   noun phrase of at most 12 words and 80 characters. If any word names a
   learner on the account, the word gets no picture. The match is

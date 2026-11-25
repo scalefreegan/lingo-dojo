@@ -690,6 +690,24 @@ export function restyleTargets(phrases, rows, themes) {
   return out;
 }
 
+/**
+ * The words a grown-up's "check again for a shared picture" takes up
+ * (ld-30r): practisable phrases whose verdict for their words as they are
+ * is `none`, given before the newest stock picture on offer was drawn
+ * (`newestStock`, ms; null with none drawn). So a word the check has
+ * already seen every drawn stock picture for is never asked about twice:
+ * only new stock pictures make it worth another call. Newest first.
+ */
+export function recheckTargets(phrases, rows, newestStock) {
+  if (newestStock == null) return [];
+  const out = [];
+  for (const p of [...phrases].filter(practisable).sort(workOrder)) {
+    const row = rows.get(p.id);
+    if (isCurrent(row, p) && row.status === "none" && +new Date(row.updatedAt) < newestStock) out.push(p);
+  }
+  return out;
+}
+
 /* ---------------------------------- the game -------------------------------- */
 
 /** A phrase's ready picture, or null. */

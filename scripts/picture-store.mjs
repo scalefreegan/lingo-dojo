@@ -134,6 +134,19 @@ export function stockVersion(theme, id, { dir = imagesDir() } = {}) {
   }
 }
 
+/** When a stock picture's file was last written (ms), or null with no
+ *  file: what tells a word judged before the picture was drawn from one
+ *  judged with it on offer (pictures.mjs recheckTargets, ld-30r). */
+export function stockDrawnAt(theme, id, { dir = imagesDir() } = {}) {
+  const at = stockPicture(theme, id, { dir });
+  if (!at) return null;
+  try {
+    return fs.statSync(at.path).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 /** A stock picture's bytes and type, or null. */
 export function readStockPicture(theme, id, { dir = imagesDir() } = {}) {
   const at = stockPicture(theme, id, { dir });

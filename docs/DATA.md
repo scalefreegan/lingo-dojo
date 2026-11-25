@@ -3633,6 +3633,34 @@ look-alike `group`, and `roundChoices` skips a second of one:
   answers a tap on such a round with a 409 and records no review.
   Otherwise nothing is relaxed: a round may offer fewer than four.
 
+### Check again for a shared picture
+
+A grown-up action on the Phrase bank's picture bar (`POST
+/api/pictures/recheck`, ld-30r, no migration), shown while
+`status.recheckable` is above 0. A verdict is given once, so a word the
+check left out (`none`) before a stock picture that fits it was drawn
+would stay out for ever. This asks again, about stock pictures only.
+- **Which words** (`recheckTargets` in `scripts/pictures.mjs`): practisable
+  phrases whose `none` row is current for their words and whose
+  `updated_at` is before the newest offered stock picture's file time
+  (`stockDrawnAt`). A word already asked with every drawn stock picture on
+  offer is never asked twice; a newer stock picture makes it worth one more.
+- **The request is in memory** (per language profile, until the run has
+  asked): `restyle` can't hold it, being for `ready` rows only by
+  constraint. A restart forgets it; the button is still there.
+- **The run** asks the picturable check with the drawn stock on offer, 20
+  words a call, on the judge ledger and under `PICTURE_DAILY_JUDGES`; past
+  the cap the request waits for the next trigger.
+- **Only a stock match changes a row**: it becomes `ready` on the stock
+  picture (`noneRechecked` in `scripts/db/pictures.ts`), with no image
+  call. A word the check now calls picturable with no stock picture stays
+  `none` (Draw it anyway is the way to a drawing), and its `updated_at`
+  becomes the file time of the newest stock picture it was offered (read
+  before the call, not the reply's time): that stops a second ask, and a
+  stock picture drawn while the call waited or ran still counts as newer.
+- Nothing asks by itself: not a status read, a page load or a run started
+  for other work.
+
 ### Redraw all in the current style
 
 A grown-up action on the Phrase bank's picture bar (`POST
@@ -3836,6 +3864,7 @@ Routes for it:
 - `POST /api/pictures/phrase/:id/remove|redraw`
 - `POST /api/pictures/phrase/:id/draw` with `{description?}`
 - `POST /api/pictures/restyle` (Redraw all in the current style)
+- `POST /api/pictures/recheck` (Check again for a shared picture)
 
 **Draw it anyway** (bead `ld-of0`, no migration: the row goes from `none`
 to `pending` with a description, which the checks already allow):

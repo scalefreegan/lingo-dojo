@@ -61,6 +61,7 @@ declare module "*/scripts/pictures.mjs" {
   export function readNewConcept(body: unknown, existing?: { id: string }[], names?: Iterable<string | null | undefined>): { concept: NewConcept; error?: undefined } | { error: string; concept?: undefined };
   export function readStockGroup(value: unknown): { group: string | null; error?: undefined } | { error: string; group?: undefined };
   export function restyleTargets<R extends PictureLike>(phrases: CandidatePhrase[], rows: Map<string, R>, themes: Set<string>): R[];
+  export function recheckTargets<P extends { id: string }>(phrases: P[], rows: Map<string, { status: string; phraseKey: string; updatedAt: Date | string }>, newestStock: number | null): P[];
   export const PICTURE_DAILY_IMAGES: number;
   export const PICTURE_DAILY_JUDGES: number;
   export const JUDGE_BATCH: number;
@@ -120,6 +121,7 @@ declare module "*/scripts/picture-store.mjs" {
   export function deletePicture(key: string, opts?: { dir?: string }): void;
   export function stockDir(theme: string, opts?: { dir?: string }): string;
   export function stockVersion(theme: string, id: string, opts?: { dir?: string }): string | null;
+  export function stockDrawnAt(theme: string, id: string, opts?: { dir?: string }): number | null;
   export function stockPicture(theme: string, id: string, opts?: { dir?: string }): { path: string; type: string } | null;
   export function readStockPicture(theme: string, id: string, opts?: { dir?: string }): { bytes: Buffer; type: string } | null;
   export function writeStockPicture(theme: string, id: string, bytes: Uint8Array, type: string, opts?: { dir?: string }): void;

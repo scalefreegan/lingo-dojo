@@ -63,6 +63,17 @@ export interface PictureStatus {
   /** Pictures out of the theme that only an image key can redraw (no
    *  stock picture fits, or none is drawn): 0 when there is a key. */
   needKey: number;
+  /** Words left out as having no clear picture that were judged before the
+   *  newest shared picture on offer was drawn (ld-30r): what Check again
+   *  for a shared picture would ask about. 0 while they are being asked. */
+  recheckable: number;
+}
+
+/** POST /api/pictures/recheck: how many words were queued for another
+ *  check against the shared pictures (the background run asks). */
+export interface RecheckReply {
+  rechecking: number;
+  status: PictureStatus;
 }
 
 /** POST /api/pictures/restyle: how many pictures were taken up (moved to

@@ -5,21 +5,21 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { languageProfileOwner, listLearners } from "../../scripts/db/accounts.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import {
-  changePicture, drawAnyway, markFailed, markNone, markReady, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureFileInUse, pictureOf, pictureRows, requestRestyle,
+  changePicture, drawAnyway, markFailed, markNone, markReady, noneRechecked, pictureById, pictureCallDone, pictureCallStarted, pictureCallsSince, pictureFileInUse, pictureOf, pictureRows, requestRestyle,
   restyleDone, restyleDropped, restyleToDraw, restyleToStock, storeVerdict,
   type PictureRow, type StockPointer,
 } from "../../scripts/db/pictures.ts";
 import { EDITED, PracticeError, practiceCandidates, practiceCard, recordAnswer } from "../../scripts/db/practice.ts";
 import { isUuid } from "../../scripts/phrases.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
-import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
+import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockDrawnAt, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
 import { adultsOverrides, stockList } from "./stockPictures.ts";
 import {
   JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, isRound, judgePrompt, lookAlikeGroups, ownLookAlike, parseJudgeReply,
-  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
+  pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, recheckTargets, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
 } from "../../scripts/pictures.mjs";
 import { cardVersion, phraseRevision } from "../../scripts/practice.mjs";
-import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RestyleReply, WordPictureItem, WordPicturesReply } from "../shared/game.ts";
+import type { GameAnswerReply, GameStartReply, GameStatusReply, PhrasePicture, PhrasePictureReply, PictureStatus, RecheckReply, RestyleReply, WordPictureItem, WordPicturesReply } from "../shared/game.ts";
 import { learnerMode, type LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { ImageFailed, ImageRefused, imageProvider, type DrawnImage } from "./imageProvider.ts";
@@ -57,6 +57,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/pictures/phrase/:id/remove    out of the game, file deleted
 //   POST /api/pictures/phrase/:id/redraw    drawn again (same description)
 //   POST /api/pictures/phrase/:id/draw      {description?}: a word judged "no clear picture" drawn anyway
+//   POST /api/pictures/recheck              Check again for a shared picture: `none` words judged before the newest stock picture (ld-30r)
 //   POST /api/pictures/restyle              Redraw all in the current style (every picture not in PICTURE_THEME)
 //
 // All mounted with wrap's `learner: true`, for kids and adult learners
@@ -118,6 +119,11 @@ const retryAt = new Map<string, number>();
  *  the ledger (no migration for it): a restart gives a word two more
  *  tries, which the daily cap still bounds. */
 const wordFailures = new Map<string, number>();
+/** Per language profile: the words a grown-up asked to have checked again
+ *  for a shared picture (ld-30r), until the run has asked. In memory (the
+ *  row can't say so: `restyle` is for ready rows only, by constraint); a
+ *  restart forgets the request, and the button is still there. */
+const rechecks = new Map<string, Set<string>>();
 /** After this many in a row, a word is given up like a refusal (`failed`;
  *  Draw again by hand still works), so one bad word doesn't stay first in
  *  the work list spending a ledger row every retry. */
@@ -134,6 +140,7 @@ export function resetPictureMemory(what: "all" | "backoff" = "all"): void {
   // "backoff": only the 10-minute wait, as if it had passed (the tests of
   // a word failing twice in a row).
   if (what === "all") wordFailures.clear();
+  if (what === "all") rechecks.clear();
 }
 
 const profileOf = (ctx: LearnerCtx): LanguageProfileRef => ({ id: ctx.language.id, learnerId: ctx.language.learnerId });
@@ -375,6 +382,15 @@ export function fillPictures(t: FillTarget): boolean {
         if (!(await restyleCheck(t, work.restyleCheck.slice(0, JUDGE_BATCH), names, offer, canDraw))) return;
         continue;
       }
+      // A grown-up's "check again for a shared picture": what is still
+      // worth asking (edited, drawn or settled since: dropped).
+      const asked = rechecks.get(id);
+      const again = asked?.size ? recheckTargets(phrases, rows, newestStock(offer)).filter((p) => asked.has(p.id)) : [];
+      if (asked && !again.length) rechecks.delete(id);
+      if (again.length && judgeRoom) {
+        if (!(await recheck(t, again.slice(0, JUDGE_BATCH), names, offer))) return;
+        continue;
+      }
       const imageRoom = (await pictureCallsSince(rawDb(), t.profile, "image", since())) < PICTURE_DAILY_IMAGES;
       if (canDraw && imageRoom && work.draw.length) {
         const p = work.draw[0];
@@ -504,6 +520,49 @@ async function judge(t: FillTarget, words: Word[], names: string[], offer: Stock
   // Every word left out again would loop: the cap bounds it, but a reply
   // that judged nothing ends this run.
   return judged > 0;
+}
+
+/** When the newest of the offered stock pictures was drawn (ms); null
+ *  with none. */
+function newestStock(offer: StockConcept[]): number | null {
+  let newest: number | null = null;
+  for (const c of offer) {
+    const at = stockDrawnAt(PICTURE_THEME.id, c.id);
+    if (at != null && (newest == null || at > newest)) newest = at;
+  }
+  return newest;
+}
+
+/**
+ * A grown-up's "check again for a shared picture" (ld-30r): words the
+ * check once left out as having no clear picture are asked about once more
+ * with the stock pictures drawn now on offer (one check call, on the judge
+ * ledger and under its cap). Only a stock match changes anything: the word
+ * is ready on that picture, with no image call. A word the check now calls
+ * picturable with no stock picture stays out (a verdict is given once; the
+ * grown-up's Draw anyway is the way to a drawing). Every word asked about
+ * leaves the request, answered or not, so a reply that skips one can't
+ * loop. False when the slot stayed busy.
+ */
+async function recheck(t: FillTarget, words: Word[], names: string[], offer: StockConcept[]): Promise<boolean> {
+  const sent = words.map((w) => ({ ...w, key: pictureKey(w) }));
+  const offeredAt = newestStock(offer) ?? Date.now();
+  const verdicts = await askCheck(t, sent, names, offer);
+  if (verdicts === false) return false;
+  if (verdicts === CAPPED) return true;
+  const asked = rechecks.get(t.profile.id);
+  // The stock the check was offered, as a time: read before the call, and
+  // rounded up to the row's millisecond so the newest offered picture is
+  // never "newer" than the row it was offered to.
+  const asOf = new Date(Math.ceil(offeredAt));
+  let matched = 0;
+  for (const [i, v] of verdicts.entries()) {
+    asked?.delete(sent[i].id);
+    const stock = v?.stock ? stockPointer(v.stock) : null;
+    if (await noneRechecked(rawDb(), t.profile, sent[i].id, sent[i].key, asOf, stock ? { stock, description: v!.description, lookAlike: matchedGroup(v!, offer) } : undefined)) matched++;
+  }
+  console.log(`[lingo-dojo] pictures: ${sent.length} word(s) with no picture checked again, ${matched} matched to a stock picture`);
+  return true;
 }
 
 /**
@@ -661,6 +720,7 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
   const pool = pictureBank(game.phrases.filter((p) => p.pool), game.rows).length;
   const work = pictureWork(phrases, rows);
   const provider = imageProvider();
+  const offered = await stockOffer(ctx.learner.mode, rows);
   const stock = (await stockOffer(ctx.learner.mode)).length;
   const outOfTheme = restyleTargets(phrases, rows, currentThemes(provider.key)).length;
   const restyling = work.restyleCheck.length + work.restyleDraw.length;
@@ -686,6 +746,9 @@ async function statusOf(ctx: LearnerCtx): Promise<PictureStatus> {
     // Out of the theme, with no stock picture fitting (or none asked yet)
     // and no image key to redraw them: Redraw all can't finish these.
     needKey: provider.problem() && !restyling ? outOfTheme : 0,
+    // Words left out as having no clear picture, judged before the newest
+    // shared picture on offer was drawn, and not already being asked about.
+    recheckable: recheckTargets(phrases, rows, newestStock(offered)).filter((p) => !rechecks.get(profile.id)?.has(p.id)).length,
     imagesToday: images,
     imagesCap: PICTURE_DAILY_IMAGES,
     heldForReading: all.length - phrases.length,
@@ -974,6 +1037,29 @@ async function restyleAll(ctx: LearnerCtx): Promise<RestyleReply> {
   return { restyled: moved + waiting, status: await statusOf(ctx) };
 }
 
+/**
+ * Check again for a shared picture (ld-30r): this language's words left out
+ * as having no clear picture, judged before the newest stock picture on
+ * offer was drawn, are queued for one more check against the stock
+ * pictures (the run's recheck: the judge ledger and cap; no image call).
+ * Returns how many were queued.
+ */
+async function recheckNone(ctx: LearnerCtx): Promise<RecheckReply> {
+  const profile = profileOf(ctx);
+  const [all, rows] = await Promise.all([practiceCandidates(rawDb(), profile), pictureRows(rawDb(), profile)]);
+  const phrases = await settledForKids(profile, ctx.learner.mode === "kids", mandarinLocale(ctx.language), all);
+  const offer = await stockOffer(ctx.learner.mode, rows);
+  if (!offer.length) throw new HttpError(400, "there are no shared pictures drawn to check against yet");
+  const targets = recheckTargets(phrases, rows, newestStock(offer));
+  if (targets.length) {
+    const asked = rechecks.get(profile.id) ?? new Set<string>();
+    for (const p of targets) asked.add(p.id);
+    rechecks.set(profile.id, asked);
+    fillPictures(targetOf(ctx));
+  }
+  return { rechecking: targets.length, status: await statusOf(ctx) };
+}
+
 /** A word's picture as the Phrase bank and My word pictures show it.
  *  `withheld` (stockWithheld): a kids learner's row pointing at an
  *  Adults only stock concept has no file to show (servePicture is a 404
@@ -1019,6 +1105,10 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
   if (parts.length === 1 && parts[0] === "restyle") {
     if (req.method !== "POST") return methodNotAllowed(res, "POST");
     return sendJson(res, 202, (await restyleAll(ctx)) satisfies RestyleReply);
+  }
+  if (parts.length === 1 && parts[0] === "recheck") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    return sendJson(res, 202, (await recheckNone(ctx)) satisfies RecheckReply);
   }
   if (parts[0] === "phrase" && (parts.length === 2 || parts.length === 3)) {
     if (!isUuid(parts[1])) throw new HttpError(404, "no such phrase");
