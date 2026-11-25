@@ -524,9 +524,11 @@ function saidRight(shape, place, { han, leading }, ok) {
  * → `[{ norm, text, line, syllables, flags }]` in the order said (the caller
  * caps them: MAX_SESSION_TONE_MISSES); a syllable's `place` is its place in
  * the phrase; `flags`: every flag behind the miss, `{ line, place }` with
- * the place in the line.
+ * the place in the line. With `fixed`, the phrases whose every flag was
+ * cleared come too, marked `fixed: true`, as they were when last flagged:
+ * what a recap that failed one anyway is undone by (ld-ne0.20).
  */
-export function sessionToneMisses(lines, phrases) {
+export function sessionToneMisses(lines, phrases, { fixed = false } = {}) {
   const shapes = [];
   for (const p of phrases ?? []) {
     const shape = p?.norm ? phraseShape(p.text) : null;
@@ -536,14 +538,19 @@ export function sessionToneMisses(lines, phrases) {
   // first that fits is the one.
   shapes.sort((a, b) => Number(a.late) - Number(b.late) || b.han.length - a.han.length || (a.norm < b.norm ? -1 : a.norm > b.norm ? 1 : 0));
   const misses = new Map();
+  const cleared = new Map();
   for (const l of lines ?? []) {
     const ctx = { han: [...hanOf(l.line)], leading: leadingPlaces(l.line), ends: wordEnds(l.line) };
     const ok = new Set(l.ok ?? []);
     for (let start = 1; start <= ctx.han.length; start++) {
       if (ok.has(start)) {
         for (const miss of [...misses.values()]) {
+          const was = new Map(miss.syllables);
           for (const place of [...miss.syllables.keys()]) if (saidRight(miss.shape, place, ctx, [start])) miss.syllables.delete(place);
-          if (!miss.syllables.size) misses.delete(miss.shape.norm);
+          if (!miss.syllables.size) {
+            misses.delete(miss.shape.norm);
+            cleared.set(miss.shape.norm, { ...miss, syllables: was, fixed: true });
+          }
         }
       }
       // The flag at this place: the first phrase, from any leading place up
@@ -562,5 +569,18 @@ export function sessionToneMisses(lines, phrases) {
       misses.set(shape.norm, miss);
     }
   }
-  return [...misses.values()].map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS), flags: m.flags }));
+  const all = [...misses.values(), ...(fixed ? [...cleared.values()].filter((m) => !misses.has(m.shape.norm)) : [])];
+  return all.map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS), flags: m.flags, ...(m.fixed ? { fixed: true } : {}) }));
+}
+
+/** Whether what the recap says the learner said holds the phrase as words
+ *  of its own (saidAt: 妈 isn't in 妈妈, nor 好吃 in 好。吃。): its words were right, so a correction beside a tone flag can
+ *  only be the tone's. Nothing recorded, or other words: not known. */
+export function saidItsWords(said, phrase) {
+  const shape = phraseShape(phrase);
+  if (!shape) return false;
+  const line = String(said ?? "");
+  const ctx = { han: [...hanOf(line)], leading: leadingPlaces(line), ends: wordEnds(line) };
+  // From a leading place, as a miss does: a word inside another isn't it.
+  return [...ctx.leading].some((p) => saidAt(shape, ctx, p));
 }

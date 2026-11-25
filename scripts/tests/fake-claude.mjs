@@ -51,6 +51,7 @@ export function fakeClaude() {
     clozeRan: path.join(bin, "cloze-ran"),
     clozeArgs: path.join(bin, "cloze-args.json"),
     picture: path.join(bin, "picture.txt"),
+    pictureHold: path.join(bin, "picture-hold"),
     pictureDelay: path.join(bin, "picture-delay.txt"),
     pictureRan: path.join(bin, "picture-ran"),
     pictureArgs: path.join(bin, "picture-args.json"),
@@ -161,13 +162,16 @@ if (!side && fs.existsSync(files.replies)) {
   text = list[Math.min(n, list.length) - 1];
 }
 const delay = Number(fs.readFileSync(side ? files[side + "Delay"] : files.delay, "utf8")) || 0;
-setTimeout(() => {
+const answer = () => {
   if (text === "!fail") {
     process.stderr.write("something broke");
     process.exit(1);
   }
   process.stdout.write(JSON.stringify({ type: "result", result: text, duration_ms: 1234, total_cost_usd: 0.0125 }));
-}, delay);
+};
+// Held until released (holdPicture), however slow the machine.
+const go = () => (side && files[side + "Hold"] && fs.existsSync(files[side + "Hold"]) ? setTimeout(go, 20) : answer());
+setTimeout(go, delay);
 `,
     { mode: 0o755 },
   );
@@ -206,6 +210,11 @@ setTimeout(() => {
     picture(text, delay = 0) {
       fs.writeFileSync(files.picture, text);
       fs.writeFileSync(files.pictureDelay, String(delay));
+    },
+    /** Hold the picturable checks back until the returned function is called. */
+    holdPicture() {
+      fs.writeFileSync(files.pictureHold, "");
+      return () => fs.rmSync(files.pictureHold, { force: true });
     },
     pictureRuns: () => count(files.pictureRan),
     /** The argv of the last picturable check. */

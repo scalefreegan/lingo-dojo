@@ -55,7 +55,7 @@ import { keepExample, planExtraction, type Extraction, type StoredTurn } from ".
 import { fromRow, review, toRow, type CardState } from "../../scripts/fsrs.mjs";
 import { normKey } from "../../scripts/match.mjs";
 import { MAX_EXAMPLES, phraseMetrics } from "../../scripts/phrases.mjs";
-import { MAX_SESSION_TONE_MISSES, sessionToneMisses, type ToneLine } from "../../scripts/pronunciation-review.mjs";
+import { MAX_SESSION_TONE_MISSES, saidItsWords, sessionToneMisses, type ToneLine } from "../../scripts/pronunciation-review.mjs";
 import type { MasteryBand, RecapEvent, RecapToneMiss, RecapVsLast } from "../../web/shared/wire.ts";
 import { forLanguageProfile, type Db, type LanguageProfileRef } from "./owned.ts";
 import { AUTO_MEANING, COMPLETE, IDENTITY, absorbPending, lockById, lockInNormOrder, recount, retrying, settleUnseen, stronger } from "./phrases.ts";
@@ -90,7 +90,8 @@ export interface StoredRecap {
 }
 
 /** A phrase a tone flag failed. `was`: the rating the model's own event
- *  gave the same card (null: it named none), restored by "I said it right",
+ *  gave the same card (null: it named none, or failed it for this tone:
+ *  ld-ne0.20), restored by "I said it right",
  *  which sets `dismissed` (kept over a re-run). `reviewed`: the miss is the
  *  session's review of the card. `flags`: where it was heard (the line, the
  *  place in it), so a dismissal holds for those flags whatever phrase a
@@ -311,9 +312,12 @@ async function writeBank(
   // The session's tone flags (ld-ne0.18): which phrase each is in, among the
   // bank's at the session's end and the ones this recap keeps (never one
   // only added since: an earlier run's keep isn't held there by its miss).
-  // A phrase already failed by the model's own event needs nothing more.
+  // A phrase the model's own event already failed needs nothing more, unless
+  // its words were right: then the tone is what was corrected, and the miss
+  // stands for that event (fixed later or not: the model's Again doesn't
+  // clear), so it can be taken back (ld-ne0.20).
   const toneLines = opts.toneLines ?? [];
-  const failed = new Set(plan.events.filter((e) => e.skill === "produce" && e.rating === 1).map((e) => e.norm));
+  const failed = new Map(plan.events.filter((e) => e.skill === "produce" && e.rating === 1).map((e) => [e.norm, e]));
   const own = toneLines.length ? (await mine.list(phrases, COMPLETE)).filter((p) => new Date(p.createdAt) <= at) : [];
   const ownBy = new Map(own.map((p) => [p.norm, p]));
   const hadTones = storedTones(conv.extraction);
@@ -323,8 +327,9 @@ async function writeBank(
   const flagKey = (f: { line: string; place: number }) => `${f.place}\u0000${f.line}`;
   const rightFlags = new Set([...dismissed.values()].flatMap((t) => (t.flags ?? []).map(flagKey)));
   const misses = new Map<string, ReturnType<typeof sessionToneMisses>[number]>();
-  for (const m of sessionToneMisses(toneLines, [...own, ...plan.keep.filter((k) => !ownBy.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true }))])) {
-    if (failed.has(m.norm)) continue;
+  for (const m of sessionToneMisses(toneLines, [...own, ...plan.keep.filter((k) => !ownBy.has(k.norm)).map((k) => ({ norm: k.norm, text: k.text, late: true }))], { fixed: true })) {
+    const event = failed.get(m.norm);
+    if (event ? !saidItsWords(event.said, m.text) : m.fixed) continue;
     const row = ownBy.get(m.norm) ?? existing.find((p) => p.norm === m.norm);
     const gone = !!row && dismissed.has(row.id);
     if (!gone && m.flags.every((f) => rightFlags.has(flagKey(f)))) continue;
@@ -411,10 +416,12 @@ async function writeBank(
     const out: RecapEvent = { phrase: e.phrase, kind: e.kind, said: e.said, note: e.note, phraseId: row?.id ?? null, reviewed: false };
     if (e.event) events.set(`${e.norm}\u0000${e.skill}`, out);
     const gone = row && e.miss ? dismissed.get(row.id) : undefined;
-    const was = e.event ? e.rating : null;
+    // The model failed it for the tone itself: no other grade to go back to.
+    const modelMiss = e.event && e.rating === 1 && !!e.miss;
+    const was = e.event && !modelMiss ? e.rating : null;
     const miss = row && e.miss ? { phraseId: row.id, phrase: e.miss.text, line: e.miss.line, syllables: e.miss.syllables, flags: e.miss.flags, was, reviewed: false, dismissed: !!gone } : null;
     if (miss) tones.push(miss);
-    if (!e.event && (gone || counted >= MAX_SESSION_TONE_MISSES)) continue;
+    if ((!e.event && (gone || counted >= MAX_SESSION_TONE_MISSES)) || (modelMiss && gone)) continue;
     // A suspended phrase is out of practice by the learner's choice.
     if (!row || row.suspended) continue;
     await mine.insertOrIgnore(cards, { phraseId: row.id, skill: e.skill });
@@ -425,7 +432,7 @@ async function writeBank(
     // grades what the learner knows now, and FSRS can't go back in time.
     if (card.last_review && new Date(card.last_review) > at) continue;
     const before: CardState = fromRow(card);
-    const tone = miss && !gone && counted < MAX_SESSION_TONE_MISSES ? miss : null;
+    const tone = miss && !gone && (modelMiss || counted < MAX_SESSION_TONE_MISSES) ? miss : null;
     const rating = tone ? 1 : e.rating;
     const { card: next } = review(before, rating, at, { utcOffsetMinutes });
     await mine.update(cards, toRow(next), eq(cards.id, card.id));
@@ -443,7 +450,7 @@ async function writeBank(
     out.reviewed = true;
     if (tone) {
       tone.reviewed = true;
-      counted++;
+      if (!modelMiss) counted++;
     }
   }
   // A dismissal this run had no use for (the flag didn't come up, or the
@@ -564,7 +571,10 @@ export async function dismissToneMiss(db: Db, profile: LanguageProfileRef, conve
         { lastPracticedAt: sql`(select max(r.reviewed_at) from reviews r join cards c on c.id = r.card_id where c.phrase_id = "phrases"."id")` },
         eq(phrases.id, phraseId),
       );
-      const next = { ...(conv.extraction as object), tones: tones.map((t) => (t.phraseId === phraseId ? { ...t, reviewed: false, dismissed: true } : t)) };
+      const recap = conv.extraction as unknown as StoredRecap;
+      // The model's own failing event, when there was one, graded nothing now.
+      const events = miss.was == null ? (recap.events ?? []).map((e) => (e.phraseId === phraseId && e.kind === "corrected" ? { ...e, reviewed: false } : e)) : recap.events;
+      const next = { ...recap, events, tones: tones.map((t) => (t.phraseId === phraseId ? { ...t, reviewed: false, dismissed: true } : t)) };
       await mine.update(conversations, { extraction: next as unknown as Record<string, unknown> }, eq(conversations.id, conv.id));
       return "done" as const;
     }),

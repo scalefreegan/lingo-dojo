@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  COMPARE_MIN, MAX_FLAGGED_SHOWN, leadingPlaces, settleFlags, settledPlaces, MAX_TONE_MISS, sessionToneMisses, storedFlags, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
+  COMPARE_MIN, MAX_FLAGGED_SHOWN, leadingPlaces, settleFlags, settledPlaces, MAX_TONE_MISS, saidItsWords, sessionToneMisses, storedFlags, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
 } from "../pronunciation-review.mjs";
 
 const syl = (char, expectedTone, verdict, extra = {}) => ({ char, pinyin: `${char}?`, expectedTone, verdict, startMs: 100, endMs: 300, ...extra });
@@ -315,11 +315,18 @@ test("sessionToneMisses: the phrase the flag starts, the longest, as words of it
   assert.deepEqual(sessionToneMisses(undefined, undefined), []);
 });
 
+test("saidItsWords: the phrase as words of its own, from where a clause starts", () => {
+  for (const [said, phrase] of [["妈", "妈"], ["妈。", "妈"], ["好，妈！", "妈"], ["妈妈很忙", "妈妈很忙"], ["妈妈很忙", "妈妈"], ["好吃", "好吃"]]) assert.equal(saidItsWords(said, phrase), true, `${phrase} in ${said}`);
+  for (const [said, phrase] of [["妈妈", "妈"], ["好。吃。", "好吃"], ["马车", "妈"], ["mā", "妈"], ["", "妈"], [null, "妈"], ["hola", "hola"]]) assert.equal(saidItsWords(said, phrase), false, `${phrase} in ${said}`);
+});
+
 test("sessionToneMisses: what was said last decides; not sure changes nothing; at most one miss a phrase", () => {
   const off = { line: "妈", flags: [toneFlag(1)], ok: [] };
   const ok = { line: "妈！", flags: [], ok: [1] };
   const unsure = { line: "妈", flags: [], ok: [] };
   assert.deepEqual(missed([off, ok], bankOf("妈")), [], "fixed after being coached");
+  assert.deepEqual(sessionToneMisses([off, ok], bankOf("妈"), { fixed: true }).map((m) => [m.text, m.syllables.map((s) => s.place), m.fixed]), [["妈", [1], true]], "unless asked for");
+  assert.deepEqual(sessionToneMisses([off, ok, off], bankOf("妈"), { fixed: true }).map((m) => m.fixed), [undefined], "flagged again: a miss, once");
   assert.deepEqual(missed([ok, off], bankOf("妈")), [["妈", [1]]]);
   assert.deepEqual(missed([off, unsure], bankOf("妈")), [["妈", [1]]]);
   assert.deepEqual(missed([off, off, off], bankOf("妈")), [["妈", [1]]], "one review, however often");

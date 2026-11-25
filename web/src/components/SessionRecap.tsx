@@ -145,7 +145,9 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
   if (status === "open" && !justEnded) return null;
 
   const well = (recap?.events ?? []).filter((e) => WENT_WELL.has(e.kind));
-  const fix = (recap?.events ?? []).filter((e) => !WENT_WELL.has(e.kind));
+  // A phrase the learner says they said right isn't one to work on (ld-ne0.20).
+  const saidRight = new Set((recap?.toneMisses ?? []).filter((t) => t.dismissed).map((t) => t.phraseId));
+  const fix = (recap?.events ?? []).filter((e) => !WENT_WELL.has(e.kind) && !(e.kind === "corrected" && e.phraseId && saidRight.has(e.phraseId)));
   const heading = kids ? "What you did today" : "Session recap";
 
   return (

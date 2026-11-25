@@ -3,6 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { workMs } from "./work.mjs";
 import { extractionPrompt, keepExample, learnerSpoke, parseExtraction, planExtraction, sessionTranscript, LIMITS } from "../extraction.mjs";
 import { extractJsonObject } from "../json-reply.mjs";
 import { SESSION_EVENT_KINDS } from "../fsrs.mjs";
@@ -254,9 +255,8 @@ test("keepExample: the dojo master's own line holding the phrase, never a from_c
 
 test("extractJsonObject: unbalanced braces can't stall the server (bounded work, not quadratic)", () => {
   for (const text of ["{".repeat(60_000), "{".repeat(500_000), `${"{ ".repeat(30_000)}{"a": 1}`]) {
-    const t0 = performance.now();
-    extractJsonObject(text);
-    assert.ok(performance.now() - t0 < 1000, `${text.length} chars took ${Math.round(performance.now() - t0)} ms`);
+    const took = workMs(() => extractJsonObject(text), 1000);
+    assert.ok(took < 1000, `${text.length} chars took ${Math.round(took)} ms`);
   }
   // A reply with a little prose and some stray braces before the object still parses.
   assert.deepEqual(extractJsonObject(`${"{x} ".repeat(20)}{"ok": 1}`), { ok: 1 });
