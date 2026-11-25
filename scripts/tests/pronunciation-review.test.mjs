@@ -320,6 +320,8 @@ test("sessionToneMisses: what was said last decides; not sure changes nothing; a
   const ok = { line: "妈！", flags: [], ok: [1] };
   const unsure = { line: "妈", flags: [], ok: [] };
   assert.deepEqual(missed([off, ok], bankOf("妈")), [], "fixed after being coached");
+  assert.deepEqual(sessionToneMisses([off, ok], bankOf("妈"), { fixed: true }).map((m) => [m.text, m.syllables.map((s) => s.place), m.fixed]), [["妈", [1], true]], "unless asked for");
+  assert.deepEqual(sessionToneMisses([off, ok, off], bankOf("妈"), { fixed: true }).map((m) => m.fixed), [undefined], "flagged again: a miss, once");
   assert.deepEqual(missed([ok, off], bankOf("妈")), [["妈", [1]]]);
   assert.deepEqual(missed([off, unsure], bankOf("妈")), [["妈", [1]]]);
   assert.deepEqual(missed([off, off, off], bankOf("妈")), [["妈", [1]]], "one review, however often");

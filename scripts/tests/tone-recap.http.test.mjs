@@ -256,6 +256,38 @@ test("no miss: fixed later in the session, already failed by the model, suspende
   assert.deepEqual([await reviewsOf(tp), tw.recap.toneMisses], [[], []]);
 });
 
+test("failed by the model for the tone alone (its words were right): listed with the undo, fixed later or not (ld-ne0.20)", async () => {
+  for (const turns of [[["妈", MISSED]], [["妈", MISSED], ["妈", RIGHT]]]) {
+    const lin = await someone();
+    const p = await phrase(lin);
+    const was = await mature(p, lin);
+    recapSays([{ phrase: "妈", kind: "corrected", said: "妈。" }]);
+    const { id, recap } = await session(lin, turns);
+    assert.equal(await flagsIn(id), 1);
+    assert.deepEqual(recap.toneMisses.map((t) => [t.phraseId, t.syllables[0].heardTone, t.dismissed]), [[p, 4, false]]);
+    assert.deepEqual((await reviewsOf(p)).map((r) => r.rating), [1], "one review");
+    const done = await right(lin, id, p);
+    assert.equal(done.status, 200, done.text);
+    assert.equal(done.body.recap.toneMisses[0].dismissed, true);
+    assert.equal(done.body.recap.events[0].reviewed, false);
+    assert.deepEqual(await reviewsOf(p), []);
+    assert.deepEqual(fromRow(await cardOf(p)), fromRow(was), "no lapse");
+    // A re-run keeps the choice, while the model says the same.
+    assert.equal((await retry(lin, id)).toneMisses[0].dismissed, true);
+    assert.deepEqual(await reviewsOf(p), []);
+    // Other words are the model's to fail.
+    recapSays([{ phrase: "妈", kind: "corrected", said: "马车" }]);
+    assert.deepEqual((await retry(lin, id)).toneMisses, []);
+    assert.deepEqual((await reviewsOf(p)).map((r) => r.rating), [1]);
+  }
+  // No flag: nothing to undo.
+  const wen = await someone();
+  const p = await phrase(wen);
+  recapSays([{ phrase: "妈", kind: "corrected", said: "妈" }]);
+  const { recap } = await session(wen, [["妈", RIGHT]]);
+  assert.deepEqual([recap.toneMisses, (await reviewsOf(p)).map((r) => r.rating)], [[], [1]]);
+});
+
 test("a phrase this recap keeps may be failed; kids: nothing stored, nothing shown, no route", async () => {
   const lin = await someone();
   recapSays([], [{ text: "妈", meaning: "mum", example: "", why: "" }]);
