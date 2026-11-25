@@ -2903,7 +2903,7 @@ a share (the engine doesn't judge them).
     card and the miss make one session review, the miss's Again; the
     event's rating is kept beside it (`was`). A phrase the model already
     failed (`corrected`) is left to that, unless what it says was said holds
-    the phrase's own characters (`saidItsWords`): then only the tone was
+    the phrase as words of its own (`saidItsWords`): then only the tone was
     wrong, so it is listed too, flagged and fixed later or not, outside the
     cap, and **I said it right** takes the review away (ld-ne0.20).
   - **I said it right**: the recap card lists the counted ones ("Right

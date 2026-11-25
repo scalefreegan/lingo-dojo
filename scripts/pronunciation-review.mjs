@@ -573,10 +573,14 @@ export function sessionToneMisses(lines, phrases, { fixed = false } = {}) {
   return all.map((m) => ({ norm: m.shape.norm, text: m.shape.text, line: m.line, syllables: [...m.syllables.values()].slice(0, MAX_TONE_MISS), flags: m.flags, ...(m.fixed ? { fixed: true } : {}) }));
 }
 
-/** Whether what the recap says the learner said holds the phrase's own
- *  characters: its words were right, so a correction beside a tone flag can
+/** Whether what the recap says the learner said holds the phrase as words
+ *  of its own (saidAt: 妈 isn't in 妈妈, nor 好吃 in 好。吃。): its words were right, so a correction beside a tone flag can
  *  only be the tone's. Nothing recorded, or other words: not known. */
 export function saidItsWords(said, phrase) {
   const shape = phraseShape(phrase);
-  return !!shape && hanOf(String(said ?? "")).includes(shape.han);
+  if (!shape) return false;
+  const line = String(said ?? "");
+  const ctx = { han: [...hanOf(line)], leading: leadingPlaces(line), ends: wordEnds(line) };
+  // From a leading place, as a miss does: a word inside another isn't it.
+  return [...ctx.leading].some((p) => saidAt(shape, ctx, p));
 }
