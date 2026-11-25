@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, getMe, logout, pickLanguage, pickLearner, setPageLearner, settleBeforeSwitch } from "./api";
+import { ApiError, STALE_LEARNER_EVENT, UNAUTHORIZED_EVENT, endConversation, getMe, getPageLearner, logout, pickLanguage, pickLearner, setBootId, setPageLearner, settleBeforeSwitch } from "./api";
+import { dropLiveSessions, endLeftSession } from "./liveSession";
+import { hydratePrefs } from "./prefs";
 import { adoptLearnerKeys, dropModeKeys } from "./draft";
 import type { MeReply } from "./types";
 import App from "./App";
@@ -23,6 +25,9 @@ import LearnerPicker from "./components/LearnerPicker";
  * re-ask. App is keyed by the user, the learner and the language, so a
  * switch remounts it with that profile's own mode, packs, draft and tab,
  * and nothing of the previous one's state survives. */
+/** A slow network delays a switch by at most this. */
+const LEAVE_MS = 1500;
+
 export default function AuthGate() {
   const [me, setMeState] = useState<MeReply | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +46,9 @@ export default function AuthGate() {
   const setMe = useCallback((m: MeReply) => {
     const page = m.user && m.learner && m.language ? { learnerId: m.learner.id, languageId: m.language.id } : null;
     if (m.learner?.languages[0]) adoptLearnerKeys(m.learner.id, m.learner.languages[0].id);
+    // Before the app draws: what it starts from is read from these.
+    if (page && m.prefs) hydratePrefs(page, m.prefs);
+    setBootId(m.boot);
     setPageLearner(page);
     setMeState(m);
   }, []);
@@ -75,9 +83,20 @@ export default function AuthGate() {
     if (!me?.learner || picking) document.documentElement.dataset.mode = "adult";
   }, [me, picking]);
 
+  /** What the page had open ends while its headers still name it: by the
+   *  app itself, or, with the learner list over it, here. */
+  async function leave() {
+    await settleBeforeSwitch();
+    const page = getPageLearner();
+    if (!page) return;
+    const ended = endLeftSession(page.languageId, (c) => endConversation(c.id, c.page));
+    await Promise.race([ended, new Promise((r) => setTimeout(r, LEAVE_MS))]);
+  }
+
   async function signOut() {
     // The open session's End needs the login it belongs to.
-    await settleBeforeSwitch();
+    await leave();
+    dropLiveSessions();
     try {
       await logout();
     } catch {
@@ -90,10 +109,11 @@ export default function AuthGate() {
   /** Switch, after the page has ended what it had open (the voice
    *  session's conversation) while its headers still name it. A refused
    *  switch says so where it was asked and re-reads the lists, which drops
-   *  a learner or language another tab archived. */
-  async function switchTo(pick: () => Promise<MeReply>, then?: () => void) {
+   *  a learner or language another tab archived. `stays`: the pick is who
+   *  is practising already, and a session goes on. */
+  async function switchTo(pick: () => Promise<MeReply>, then?: () => void, stays = false) {
     setSwitchError(null);
-    await settleBeforeSwitch();
+    await (stays ? settleBeforeSwitch() : leave());
     try {
       setMe(await pick());
       then?.();
@@ -103,7 +123,7 @@ export default function AuthGate() {
     }
   }
 
-  const choose = (id: string | null) => switchTo(() => pickLearner(id), () => setPicking(false));
+  const choose = (id: string | null) => switchTo(() => pickLearner(id), () => setPicking(false), picking && id === me?.learner?.id);
   const chooseLanguage = (id: string) => switchTo(() => pickLanguage(id));
 
   if (error && !me) {

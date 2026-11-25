@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApiError } from "../api";
+import { ApiError, getPageLearner } from "../api";
+import { keepPage } from "../keepPage";
+import { clearRound, doneCard, readRound, writeRound, type DoneCard } from "../practiceRound";
+import { keepPref, readPref } from "../prefs";
 import { answerCard, flagCloze, overrideAnswer, phraseAudio, practiceQueue, practiceStats, transcribeAnswer } from "../practiceApi";
 import { checksWordsHere, scorableText, scorePronunciation, scoresTonesHere } from "../pronunciationApi";
 import { speakItProcessing } from "../../shared/tone-text.ts";
@@ -48,7 +51,6 @@ const fine = "text-sm sm:text-xs";
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : String((e as Error)?.message || e));
 
 const LENGTHS = [5, 10, 20] as const;
-const PREFS_KEY = "lingo-dojo.practice.v1";
 /** The modes the picker offers: the drills of /api/practice, and the
  *  picture game (its own routes, /api/game: PictureGameView), which Mixed
  *  leaves out. */
@@ -91,9 +93,9 @@ interface Prefs {
   direction: PracticeDirection;
 }
 
-function loadPrefs(): Prefs {
+function loadPrefs(languageId: string): Prefs {
   try {
-    const raw = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "null");
+    const raw = JSON.parse(readPref(languageId, "practice") ?? "null");
     return {
       length: LENGTHS.includes(raw?.length) ? raw.length : 10,
       mode: MODES.some((m) => m.value === raw?.mode) ? raw.mode : "flashcards",
@@ -104,39 +106,47 @@ function loadPrefs(): Prefs {
   }
 }
 
-/** One answered card, for the session's summary: the words and meaning
- *  from the answer's reply (a listening card's item carries neither). */
-interface Done {
-  key: string;
-  text: string;
-  meaning: string;
-  lang: string;
-  rating: PracticeRating;
-}
-
 export default function PracticeView() {
-  const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
+  // The language this page shows (App remounts on a switch).
+  const [languageId] = useState(() => getPageLearner()?.languageId ?? "");
+  const [prefs, setPrefs] = useState<Prefs>(() => loadPrefs(languageId));
   const [info, setInfo] = useState<PracticeStatsReply | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   // The running session: its cards, where it is, what was answered.
-  const [items, setItems] = useState<PracticeItem[] | null>(null);
-  const [index, setIndex] = useState(0);
-  const [done, setDone] = useState<Done[]>([]);
+  // Kept as it goes (src/practiceRound.ts), so a reload goes on from the
+  // card it was at.
+  const [kept] = useState(() => readRound(languageId));
+  const [items, setItems] = useState<PracticeItem[] | null>(kept?.items ?? null);
+  const [index, setIndex] = useState(kept?.index ?? 0);
+  const [done, setDone] = useState<DoneCard[]>(kept?.done ?? []);
   const [reload, setReload] = useState(0);
 
+  const choosePrefs = (change: Partial<Prefs>) => {
+    const next = { ...prefs, ...change };
+    setPrefs(next);
+    keepPref(languageId, "practice", JSON.stringify(next));
+  };
+
+  const going = items !== null && index < items.length;
   useEffect(() => {
-    try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-    } catch {
-      /* blocked storage: the defaults next time */
-    }
-  }, [prefs]);
+    if (going && items) writeRound(languageId, { items, index, done });
+    else clearRound(languageId);
+  }, [languageId, going, items, index, done]);
+  useEffect(() => {
+    keepPage("practice", going);
+    return () => keepPage("practice", false);
+  }, [going]);
 
   // The counts, whenever the start screen shows (and after a session), for
-  // the mode picked: a phrase with several cards due counts once.
+  // the mode picked: a phrase with several cards due counts once. A round
+  // picked up after a reload needs them too: they carry the language its
+  // cards are read in (asked again at the next card, if that failed).
+  const inRound = items !== null;
+  const wanted = !inRound || !info;
+  const askedAt = inRound ? index : 0;
   useEffect(() => {
-    if (items) return;
+    if (!wanted) return;
     const ctrl = new AbortController();
     // After any answer still on its way (End during a speak-it check sends
     // the card's answer as the session closes), so the counts include it;
@@ -155,7 +165,7 @@ export default function PracticeView() {
       },
     );
     return () => ctrl.abort();
-  }, [items, reload, prefs.mode, prefs.direction]);
+  }, [wanted, askedAt, inRound, reload, prefs.mode, prefs.direction]);
 
   // Sentences being written for a started session: ask for the counts
   // again shortly, so they (and Start) catch up when they are in. The
@@ -202,6 +212,13 @@ export default function PracticeView() {
   // aids (pinyin/zhuyin for Mandarin) and their remembered setting.
   const locale = info?.language.locale ?? null;
 
+  if (going && !info && !error) {
+    return (
+      <p className="text-sm text-fg-3" role="status" data-testid="practice-restoring">
+        Picking up your round…
+      </p>
+    );
+  }
   if (items && index < items.length) {
     const item = items[index];
     return (
@@ -214,10 +231,13 @@ export default function PracticeView() {
         nativeName={nativeName}
         locale={locale}
         speechProblem={info?.setup?.speech ?? null}
+        onAnswered={(answered) => {
+          // The grade is showing: a reload now goes on from the next card
+          // (this one's answer is recorded).
+          writeRound(languageId, { items, index: index + 1, done: [...done, doneCard(item, answered)] });
+        }}
         onNext={(answered) => {
-          if (answered) {
-            setDone((d) => [...d, { key: `${item.phraseId}:${item.skill}`, text: answered.expected.text, meaning: answered.expected.meaning, lang: item.lang, rating: answered.review.rating }]);
-          }
+          if (answered) setDone((d) => [...d, doneCard(item, answered)]);
           setIndex((i) => i + 1);
         }}
         onQuit={() => {
@@ -269,7 +289,7 @@ export default function PracticeView() {
       <legend className={`${fine} mb-1 font-medium text-fg-2`}>Mode</legend>
       <div role="group" aria-label="Mode" className="flex flex-wrap gap-1">
         {MODES.map((m) => (
-          <Chip key={m.value} on={prefs.mode === m.value} title={m.hint} onClick={() => setPrefs((p) => ({ ...p, mode: m.value }))}>
+          <Chip key={m.value} on={prefs.mode === m.value} title={m.hint} onClick={() => choosePrefs({ mode: m.value })}>
             {m.label}
           </Chip>
         ))}
@@ -331,7 +351,7 @@ export default function PracticeView() {
           <legend className={`${fine} mb-1 font-medium text-fg-2`}>How many cards</legend>
           <div role="group" aria-label="Session length" className="flex gap-1">
             {LENGTHS.map((n) => (
-              <Chip key={n} on={prefs.length === n} onClick={() => setPrefs((p) => ({ ...p, length: n }))}>
+              <Chip key={n} on={prefs.length === n} onClick={() => choosePrefs({ length: n })}>
                 {n}
               </Chip>
             ))}
@@ -341,13 +361,13 @@ export default function PracticeView() {
           <fieldset className="flex flex-col gap-1.5">
             <legend className={`${fine} mb-1 font-medium text-fg-2`}>Which way</legend>
             <div role="group" aria-label="Direction" className="flex flex-wrap gap-1">
-              <Chip on={prefs.direction === "mixed"} onClick={() => setPrefs((p) => ({ ...p, direction: "mixed" }))}>
+              <Chip on={prefs.direction === "mixed"} onClick={() => choosePrefs({ direction: "mixed" })}>
                 Both ways
               </Chip>
-              <Chip on={prefs.direction === "recognize"} onClick={() => setPrefs((p) => ({ ...p, direction: "recognize" }))}>
+              <Chip on={prefs.direction === "recognize"} onClick={() => choosePrefs({ direction: "recognize" })}>
                 {languageName || "Target"} → {nativeName}
               </Chip>
-              <Chip on={prefs.direction === "produce"} onClick={() => setPrefs((p) => ({ ...p, direction: "produce" }))}>
+              <Chip on={prefs.direction === "produce"} onClick={() => choosePrefs({ direction: "produce" })}>
                 {nativeName} → {languageName || "target"}
               </Chip>
             </div>
@@ -503,9 +523,18 @@ function Session({
   position,
   total,
   onQuit,
+  onAnswered,
   ...rest
-}: Omit<CardProps, "answer" | "last"> & { position: number; total: number; onQuit: () => void }) {
+}: Omit<CardProps, "answer" | "last"> & { position: number; total: number; onQuit: () => void; onAnswered: (answered: PracticeAnswerReply) => void }) {
   const answer = useAnswer(item);
+  // The answer (or a changed grade) is in, its result on screen.
+  const answeredRef = useRef(onAnswered);
+  useEffect(() => {
+    answeredRef.current = onAnswered;
+  });
+  useEffect(() => {
+    if (answer.result) answeredRef.current(answer.result);
+  }, [answer.result]);
   const props: CardProps = { item, answer, last: position === total, ...rest };
   // False once this card is gone (End, then maybe a new session): a Skip
   // whose resend fails after that must not move the new session on.
@@ -750,15 +779,10 @@ function CardSentence({ sentence, locale, lang, flag, busy }: { sentence: Practi
 /** Playback speeds for the listening drill. The browser slows the clip and
  *  keeps its pitch (`preservesPitch`), so tones stay recognisable. */
 const PLAY_SPEEDS = [1, 0.75, 0.5] as const;
-const SPEED_KEY = "lingo.practice.speed";
 
 function savedSpeed(): number {
-  try {
-    const n = Number(localStorage.getItem(SPEED_KEY));
-    return (PLAY_SPEEDS as readonly number[]).includes(n) ? n : 1;
-  } catch {
-    return 1;
-  }
+  const n = Number(readPref(getPageLearner()?.languageId ?? "", "practice-speed"));
+  return (PLAY_SPEEDS as readonly number[]).includes(n) ? n : 1;
 }
 
 /**
@@ -814,11 +838,7 @@ function usePhraseAudio(phraseId: string) {
     speedRef.current = n;
     setSpeedState(n);
     if (audioRef.current) audioRef.current.playbackRate = n;
-    try {
-      localStorage.setItem(SPEED_KEY, String(n));
-    } catch {
-      // Private window or blocked storage: the choice just lasts the page.
-    }
+    keepPref(getPageLearner()?.languageId ?? "", "practice-speed", String(n));
   }
   return { ready, error, playing, play, speed, setSpeed };
 }
@@ -1540,7 +1560,7 @@ function RatingRow({ current, busy, onPick, focusFirst = false }: { current: Pra
   );
 }
 
-function Summary({ done, locale, onAgain, onClose, busy, error }: { done: Done[]; locale: string | null; onAgain: () => void; onClose: () => void; busy: boolean; error: string | null }) {
+function Summary({ done, locale, onAgain, onClose, busy, error }: { done: DoneCard[]; locale: string | null; onAgain: () => void; onClose: () => void; busy: boolean; error: string | null }) {
   const by = (n: PracticeRating) => done.filter((d) => d.rating === n).length;
   const missed = done.filter((d) => d.rating === 1);
   return (

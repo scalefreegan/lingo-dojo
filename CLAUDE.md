@@ -119,8 +119,20 @@ parts and the veil; no migration): the session's controls are one dock, fixed
 to the screen's bottom below 64rem (`--dock` on `<html>` is its height). A
 warm-up unit with `practice:` is two plan parts; in the second (kind
 `practice`) the Go tab blurs what came before the question (reversible,
-`localStorage`), and a CHOICES entry wholly in `<t>` is an answer: a tap sends
+remembered per language), and a CHOICES entry wholly in `<t>` is an answer: a tap sends
 `[pick] …` (`scripts/choices.mjs`), which the recap never counts as recalled.
+Reload and kept choices (ld-ch4, migration 0023, docs/VOICE.md §Reload,
+docs/DATA.md §Kept choices): a reload goes on with the Go tab's session,
+kept in the browser per language profile (`web/src/liveSession.ts`, one tab
+at a time by a Web Lock) and merged with the stored turns (`withStored`);
+the page going never ends a conversation (Close, a switch, leaving Go and
+the two idle hours do). `web/src/keepPage.ts` holds back Vite's own reloads
+(a dropped websocket) while something is going. What a learner picked is
+`language_prefs`, one row per profile and key (`PREFS` in
+`web/shared/prefs.ts`; queries only in `scripts/db/prefs.ts`; `PUT
+/api/prefs`, sent with `GET /api/auth/me`), `localStorage` only its cache: a
+new remembered choice goes through `readPref`/`keepPref` (`web/src/prefs.ts`),
+never `localStorage` alone.
 Pace (ld-9gz, docs/VOICE.md §Pace; no migration): the dojo master wraps
 what it says slowly in `<slow>…</slow>` (outside `<t>`), the only thing that
 slows a voice; a slow piece is a segment with `slow: true`, kept by the

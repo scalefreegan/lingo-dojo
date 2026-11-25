@@ -24,6 +24,7 @@ export default function GoTab({
   learnerLine,
   notes,
   minutes,
+  minutesReady = true,
   minuteChoices,
   onMinutes,
   onNotes,
@@ -55,6 +56,8 @@ export default function GoTab({
   notes: string;
   /** The session length the pack carries (null = No limit), the picker's lengths, and a pick. */
   minutes: number | null;
+  /** False until the remembered length is in (voice settings still loading). */
+  minutesReady?: boolean;
   minuteChoices: number[];
   onMinutes: (minutes: number | null) => void;
   onNotes: (notes: string) => void;
@@ -228,7 +231,7 @@ export default function GoTab({
       {/* The main event: the session here, with native voices. */}
       {/* A random scene's conversation is named after the scene drawn
           (the server's), not "Random scene". */}
-      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} previous={revisit?.id ?? null} onBuildsOn={onBuildsOn} drill={drill} />
+      <VoicePanel mode={content.mode} pack={pack} langs={langs} active={active} openRequest={practiceRequest} onOpened={onPracticeOpened} minutesPick={minutesPick} title={title || (random ? "" : sceneTitle)} canStar={inBankLanguage(content.profile?.target_language, langs.target)} onReview={onReview} blocked={blocked} onDrawn={setDrawnId} previous={revisit?.id ?? null} onBuildsOn={onBuildsOn} drill={drill} minutesReady={minutesReady} />
 
       <div className={narrow}>
 

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError } from "../api";
+import { ApiError, getPageLearner } from "../api";
+import { keepPage } from "../keepPage";
+import { keepPref, readPref } from "../prefs";
 import { answerRound, fillPictures, gameStatus, pictureBlob, startGame, wordAudio } from "../gameApi";
 import type { GameAnswerReply, GameRound, PictureStatus, PoolLevel } from "../types";
 import { RubyText } from "./Ruby";
@@ -71,7 +73,12 @@ export default function PictureGameView({
   // How far the shared picture pool reaches this game (ld-ec9): null is the
   // profile's level (status.poolLevel). The learner's own words are in
   // whatever their level.
-  const [level, setLevel] = useState<PoolLevel | null>(null);
+  const [languageId] = useState(() => getPageLearner()?.languageId ?? "");
+  const [level, setLevelState] = useState<PoolLevel | null>(() => LEVELS.find((l) => l === readPref(languageId, "picture-level")) ?? null);
+  const setLevel = (l: PoolLevel | null) => {
+    setLevelState(l);
+    keepPref(languageId, "picture-level", l ?? "");
+  };
   const shownAt = useRef(0);
   const submitIds = useRef(new Map<string, string>());
   const made = useRef<{ urls: string[]; audio: HTMLAudioElement[] }>({ urls: [], audio: [] });
@@ -82,6 +89,11 @@ export default function PictureGameView({
     made.current = { urls: [], audio: [] };
   };
   useEffect(() => release, []);
+  const playing = phase.kind === "loading" || phase.kind === "round";
+  useEffect(() => {
+    keepPage("game", playing);
+    return () => keepPage("game", false);
+  }, [playing]);
 
   // The counts on the home screen, read again every few seconds while
   // pictures are being drawn (a read: it never starts a drawing).

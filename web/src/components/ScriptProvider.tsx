@@ -1,24 +1,17 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ScriptContext, type CharContext, type ScriptState } from "../script/ruby.tsx";
-import { rubyStorageKey, type RubyMode } from "../script/script.ts";
+import type { RubyMode } from "../script/script.ts";
+import { keepPref, readPref } from "../prefs";
 
 // The card brings Hanzi Writer and the character data: its own chunk,
 // fetched the first time a character is tapped.
 const CharCard = lazy(() => import("./CharCard.tsx"));
 
-function loadStored(languageId: string): string | null {
-  try {
-    return localStorage.getItem(rubyStorageKey(languageId));
-  } catch {
-    return null;
-  }
-}
-
 /** Reading aids for one language profile (App keys it by the profile, so
  *  a switch starts from that profile's own choice): the Off / Pinyin /
- *  Zhuyin choice, remembered in this browser, and the one character card. */
+ *  Zhuyin choice, remembered for it (src/prefs.ts), and the one character card. */
 export default function ScriptProvider({ languageId, kids, children }: { languageId: string; kids: boolean; children: ReactNode }) {
-  const [stored, setStored] = useState<string | null>(() => loadStored(languageId));
+  const [stored, setStored] = useState<string | null>(() => readPref(languageId, "ruby"));
   const [card, setCard] = useState<{ ch: string; locale: string; from?: CharContext } | null>(null);
   // Where focus was when the card opened: it goes back there on close.
   const opener = useRef<HTMLElement | null>(null);
@@ -26,11 +19,7 @@ export default function ScriptProvider({ languageId, kids, children }: { languag
   const setMode = useCallback(
     (mode: RubyMode) => {
       setStored(mode);
-      try {
-        localStorage.setItem(rubyStorageKey(languageId), mode);
-      } catch {
-        /* private window or blocked storage: the choice lasts this visit */
-      }
+      keepPref(languageId, "ruby", mode);
     },
     [languageId],
   );

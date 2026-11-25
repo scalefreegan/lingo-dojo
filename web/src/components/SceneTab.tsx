@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContentReply, HiddenScene, Scenario } from "../types";
-import { draftPool, draftPoolMessage, foreignLanguage, fold, languageKey, sessionValues, togglePoolCollection, type Draft } from "../draft";
+import { draftPool, draftPoolMessage, foreignLanguage, fold, sessionValues, togglePoolCollection, type Draft } from "../draft";
 import { collectionKey, isHiddenScene, missingCollections, randomPool, scenesWord, visibleScenes, type HiddenKind, type HiddenSet } from "../../shared/scenes.ts";
+import { keepPref, readPref } from "../prefs";
 import { Button, Chevron, TrashGlyph, inputClass } from "./ui";
 
-const FILTER_KEY = "lingo-dojo.scene-filter.v1";
 /** Chip order (the adult library's categories); any other category a
  *  scenario uses, the kids library's included, follows alphabetically. */
 const CATEGORY_ORDER = ["Food & drink", "Getting around", "Shopping", "Outdoors & sport", "Culture & guides", "Lodging & logistics", "Health & help", "Emergencies", "People & social", "Errands & admin"];
@@ -14,13 +14,12 @@ const OTHER_SCENES = "Other scenes";
  *  place a beginner starts, so it is listed first, with a hint, whenever it
  *  fits the target language. */
 const drillsOnly = (items: readonly Scenario[]) => items.length > 0 && items.every((s) => s.format === "drill");
-const FOLDERS_KEY = "lingo-dojo.scene-folders.v1";
 
 /** Open/closed per collection, as the user last left it. A collection absent
  *  from the map has never been toggled and takes its default. */
 function loadFolders(languageId: string): Record<string, boolean> {
   try {
-    const raw = JSON.parse(localStorage.getItem(languageKey(FOLDERS_KEY, languageId)) ?? "null") as Record<string, unknown> | null;
+    const raw = JSON.parse(readPref(languageId, "scene-folders") ?? "null") as Record<string, unknown> | null;
     if (!raw || typeof raw !== "object") return {};
     return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === "boolean")) as Record<string, boolean>;
   } catch {
@@ -36,7 +35,7 @@ interface Filter {
 
 function loadFilter(languageId: string): Filter {
   try {
-    const f = JSON.parse(localStorage.getItem(languageKey(FILTER_KEY, languageId)) ?? "null") as Partial<Filter> | null;
+    const f = JSON.parse(readPref(languageId, "scene-filter") ?? "null") as Partial<Filter> | null;
     return { query: typeof f?.query === "string" ? f.query : "", category: typeof f?.category === "string" ? f.category : "" };
   } catch {
     return { query: "", category: "" };
@@ -69,7 +68,7 @@ export default function SceneTab({
   onChange,
   onNext,
 }: {
-  /** Which language profile's filters and folder state to remember (draft.ts languageKey). */
+  /** Which language profile's filters and folder state to remember (src/prefs.ts). */
   languageId: string;
   content: ContentReply;
   draft: Draft;
@@ -113,11 +112,7 @@ export default function SceneTab({
   const setFilter = (f: Filter) => {
     setFilterState(f);
     setTransient({});
-    try {
-      localStorage.setItem(languageKey(FILTER_KEY, languageId), JSON.stringify(f));
-    } catch {
-      /* blocked storage: the filter just won't survive a refresh */
-    }
+    keepPref(languageId, "scene-filter", JSON.stringify(f));
   };
   const clear = () => setFilter({ query: "", category: "" });
 
@@ -207,11 +202,7 @@ export default function SceneTab({
     }
     const map = { ...stored, [g.key]: next };
     setStored(map);
-    try {
-      localStorage.setItem(languageKey(FOLDERS_KEY, languageId), JSON.stringify(map));
-    } catch {
-      /* blocked storage: folders just reopen to their defaults next visit */
-    }
+    keepPref(languageId, "scene-folders", JSON.stringify(map));
   };
   const pick = (id: string) => onChange({ ...draft, scenarioMode: "library", scenario: id });
 

@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type Ref } from "react";
 import {
-  ApiError, addLibraryVoice, createConversation, endConversation, redrawConversation, getCast, getPageLearner, onBeforeSwitch, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
-  transcribe, voiceTurn, type PageLearner, type VoiceLanguages,
+  ApiError, addLibraryVoice, createConversation, endConversation, getConversation, redrawConversation, getCast, getPageLearner, onBeforeSwitch, getVoiceSettings, listVoices, saveVoiceSettings, searchLibrary, speakLine,
+  transcribe, voiceTurn, type VoiceLanguages,
 } from "../api";
 import { startRecording, type Recording } from "../recorder";
 import { Mochi, type MochiMood } from "./Mascots";
@@ -23,6 +23,9 @@ import type {
 import { useCopyStatus } from "../useCopyStatus";
 import { MAX_MINUTES, validMinutes } from "../draft";
 import { conversationFate, redrawAdopted, turnsSettled } from "../conversationLife";
+import { keepPage } from "../keepPage";
+import { liveKeeper, withStored, type LiveConversation, type LiveKeeper } from "../liveSession";
+import { keepPref, readPref } from "../prefs";
 import { drawQueue, type DrawBatch, type DrawQueue } from "../drawQueue";
 import { keepDrawn, unsavedTurnPack } from "../../shared/scenes.ts";
 import { deferredVoiceTaken } from "../../shared/voice-cast.ts";
@@ -33,9 +36,10 @@ import { Button, Card, Chevron, inputClass } from "./ui";
  * in its speaker's voice (web/server/voice.ts). The learner decides when a
  * turn ends — a tap, or a pause as long as they chose — so thinking and
  * backtracking never get talked over. The session lives in this component,
- * and each turn is also saved, as a conversation the Library's History lists
- * (docs/DATA.md §Conversations; the server keeps its copy matching what this
- * transcript shows). */
+ * kept in the browser as it goes so a reload brings it back (liveSession.ts,
+ * docs/VOICE.md §Reload), and each turn is also saved, as a conversation the
+ * Library's History lists (docs/DATA.md §Conversations; the server keeps its
+ * copy matching what this transcript shows). */
 
 type Phase = "idle" | "opening" | "recording" | "transcribing" | "thinking" | "speaking";
 
@@ -76,8 +80,8 @@ function lineFeed(lines: VoiceLine[] = [], done = false): LineFeed {
 
 /** What +5 min adds to the running session (scripts/plan.mjs EXTEND_MINUTES). */
 const EXTEND_MINUTES = 5;
+const COACHING: readonly Coaching[] = ["off", "light", "strict"];
 /** Whether the timeline beside the transcript is open (per browser). */
-const HIDE_KEY = "lingo.practice-veil";
 const TIMELINE_KEY = "lingo-dojo:voice-timeline";
 /** What the narrator says when the Dojo master button is tapped. */
 const MASTER_ACK = "Yes? I'm listening.";
@@ -98,6 +102,7 @@ export default function VoicePanel({
   previous = null,
   onBuildsOn,
   drill = false,
+  minutesReady = true,
 }: {
   mode: Mode;
   /** The scene is a drill (First steps): the narrator is the only voice,
@@ -123,6 +128,9 @@ export default function VoicePanel({
   title?: string;
   /** Bumped by every pick in the Go tab's "How long do you have?". */
   minutesPick?: number;
+  /** False until the remembered session length is in: the pack's minutes
+   *  changing as it comes isn't a pick. */
+  minutesReady?: boolean;
   /** False while the Go tab is hidden: nothing plays or listens then. */
   active?: boolean;
   /** Open now (the sticky bar's Practice); onOpened acknowledges it. */
@@ -136,12 +144,55 @@ export default function VoicePanel({
   onReview?: (review: RecallReview) => void;
 }) {
   const [open, setOpen] = useState(openRequest);
+  // This language's session as it was kept before a reload. App remounts on
+  // a switch, so the language is this panel's for good.
+  const [keeper] = useState(() => liveKeeper(getPageLearner()?.languageId ?? ""));
+  // "found": one is kept, and this tab is asking for it.
+  const [kept, setKept] = useState<"none" | "found" | "elsewhere">(() => (keeper.some() ? "found" : "none"));
+  useEffect(() => {
+    let live = true;
+    if (keeper.some()) {
+      void keeper.take().then((ok) => {
+        if (!live) return;
+        const was = ok ? keeper.read() : null;
+        if (was?.fresh) setOpen(true);
+        else if (was) {
+          // Left too long to go on with: it's in History. The server ends it
+          // on its own too, as of its last turn, whichever comes first.
+          const c = was.session.conversation;
+          if (c && !was.session.ended) void endConversation(c.id, c.page);
+          keeper.drop();
+        } else keeper.close();
+        setKept(ok || !keeper.some() ? "none" : "elsewhere");
+      });
+    }
+    // Let go as the page goes, once the session has kept its last words, so
+    // the next load needn't wait; a page brought back whole takes it again at
+    // its next line.
+    const onHide = () => {
+      keeper.leaving?.();
+      keeper.close();
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      live = false;
+      window.removeEventListener("pagehide", onHide);
+      keeper.close();
+    };
+  }, [keeper]);
   // A request while closed opens it during render (React's pattern for state
   // that follows a prop); the effect then tells the parent it's handled.
   if (openRequest && !open) setOpen(true);
   useEffect(() => {
     if (openRequest) onOpened?.();
   }, [openRequest, onOpened]);
+  if (kept === "found") {
+    return (
+      <p className="mx-auto w-full max-w-3xl text-sm text-fg-3" role="status" data-testid="voice-restoring">
+        Picking up your session…
+      </p>
+    );
+  }
   if (!open) {
     return (
       <section className="tatami mx-auto flex w-full max-w-3xl flex-col items-center gap-4 rounded-2xl border border-line-strong/60 px-5 py-6 text-center sm:flex-row sm:text-left">
@@ -149,6 +200,11 @@ export default function VoicePanel({
         <div className="flex flex-1 flex-col gap-1">
           <h2 className="text-xl font-semibold text-fg">Step onto the mat</h2>
           <p className="text-sm text-fg-2">Sensei Mochi runs the scene out loud with native voices. Answer by talking, or type if you'd rather.</p>
+          {kept === "elsewhere" && (
+            <p className="text-sm text-fg-2" data-testid="voice-elsewhere">
+              A session is open in another tab of this browser.
+            </p>
+          )}
         </div>
         <Button variant="primary" className="shrink-0 justify-center px-5 py-2.5 text-lg" onClick={() => setOpen(true)} data-testid="voice-open">
           Practice in the dojo
@@ -158,6 +214,8 @@ export default function VoicePanel({
   }
   return (
     <VoiceSession
+      keeper={keeper}
+      minutesReady={minutesReady}
       mode={mode}
       pack={pack}
       langs={langs}
@@ -183,12 +241,18 @@ export default function VoicePanel({
 /** The saved conversation a session writes to: its id, the transcript index
  *  it began at (0, unless an earlier one of this session was ended: leaving
  *  Go, two idle hours), and the learner and language it was started for. */
-type SavedConversation = { id: string; start: number; page: PageLearner };
+type SavedConversation = LiveConversation;
 
-function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn, drill, onClose }: { mode: Mode; drill: boolean; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
+function VoiceSession({ keeper, minutesReady, mode, pack, langs, active, minutesPick, title, canStar, onReview, blocked, onDrawn, previous, onBuildsOn: showBuildsOn, drill, onClose }: { keeper: LiveKeeper; minutesReady: boolean; mode: Mode; drill: boolean; pack: PackInput; langs: VoiceLanguages; active: boolean; minutesPick: number; title: string; canStar: boolean; onReview?: (review: RecallReview) => void; blocked: string | null; onDrawn?: (scenarioId: string | null) => void; previous: string | null; onBuildsOn?: (b: ConversationSummary["buildsOn"], made?: boolean) => void; onClose: () => void }) {
   const [reply, setReply] = useState<VoiceSettingsReply | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [entries, setEntries] = useState<VoiceHistoryItem[]>([]);
+  // The session a reload left, if this tab has it: where everything below
+  // that makes up the session starts from.
+  const [restored] = useState(() => {
+    const was = keeper.read();
+    return was?.fresh ? was.session : null;
+  });
+  const [entries, setEntries] = useState<VoiceHistoryItem[]>(restored?.entries ?? []);
   // The definition open under one line ("turn:line"), from a tap on a
   // glossed word or sentence; tapping it again closes it.
   const [picked, setPicked] = useState<{ at: string; gloss: VoiceGloss } | null>(null);
@@ -234,7 +298,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   });
   const onReplay = useCallback((i: number, j: number, lines: VoiceLine[]) => void replayRef.current(i, j, lines), []);
   // The session's parts (from the server, each turn) and where it is now.
-  const [plan, setPlan] = useState<VoicePlanItem[]>([]);
+  const [plan, setPlan] = useState<VoicePlanItem[]>(restored?.plan ?? []);
   // A reply that answers a jump without naming its part is taken to be
   // where it was sent, so "here" can't stay on the part it left (and that
   // part stays one to jump back to).
@@ -251,15 +315,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   }, [entries]);
   // A warm-up's practice part is answered from memory: the lines before the
   // question are veiled, unless the learner has turned that off (remembered
-  // in this browser) or lifted the veil for this part.
+  // for this language) or lifted the veil for this part.
   const practising = !!stage && plan.find((p) => p.id === stage)?.kind === PRACTICE_KIND;
-  const [hideOn, setHideOn] = useState(() => {
-    try {
-      return localStorage.getItem(HIDE_KEY) !== "off";
-    } catch {
-      return true;
-    }
-  });
+  const [languageId] = useState(() => getPageLearner()?.languageId ?? "");
+  const [hideOn, setHideOn] = useState(() => readPref(languageId, "practice-veil") !== "off");
   // The part the veil was lifted in: the next practice starts veiled again.
   const [liftedIn, setLiftedIn] = useState<string | null>(null);
   // Over once the session leaves that part (Restart included, which has no
@@ -275,11 +334,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   });
   const toggleHide = () => {
     const on = !hideOn;
-    try {
-      localStorage.setItem(HIDE_KEY, on ? "on" : "off");
-    } catch {
-      /* a remembered choice is a convenience */
-    }
+    keepPref(languageId, "practice-veil", on ? "on" : "off");
     setHideOn(on);
     // Turning it on is asking for it now, even where it was lifted.
     if (on) setLiftedIn(null);
@@ -300,7 +355,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Words for the dojo master that came back while Go was hidden, with a
   // practice answer already drafted in the box: kept apart (a chip above the
   // box) until sent or dismissed, never folded into the draft.
-  const [heldRequest, setHeldRequest] = useState<string | null>(null);
+  const [heldRequest, setHeldRequest] = useState<string | null>(restored?.heldRequest ?? null);
   // The header's voices line, opened past its two lines on a phone.
   const [castOpen, setCastOpen] = useState(false);
   // Whether the cast line is cut off at two lines on a phone (only then is
@@ -313,9 +368,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Which wait owns "Finding a voice…": only the owner clears it, so a late
   // wait finishing can't clear a newer one's, and Stop clears it outright.
   const findingOwner = useRef<object | null>(null);
-  const [notice, setNoticeState] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(null);
+  const [notice, setNoticeState] = useState<{ text: string; action?: { label: string; run: () => void } } | null>(restored && !restored.ended ? { text: "Picked up where you left off." } : null);
   const setNotice = (text: string | null, action?: { label: string; run: () => void }) => setNoticeState(text ? { text, action } : null);
-  const [composer, setComposer] = useState("");
+  const [composer, setComposer] = useState(restored?.composer ?? "");
   useEffect(() => {
     composerTextRef.current = composer;
   }, [composer]);
@@ -327,7 +382,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // out with nothing drafted; a cancelled or unheard recording leaves it as
   // it was. The recording's own mode is fixed when it starts (directRef,
   // and recDirect for its label).
-  const [direct, setDirect] = useState(false);
+  const [direct, setDirect] = useState(restored?.direct ?? false);
   useEffect(() => {
     directTagRef.current = direct;
   }, [direct]);
@@ -342,11 +397,11 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     if (el) el.style.width = `${Math.round(v * 100)}%`;
   }, []);
   const [playing, setPlaying] = useState<string | null>(null);
-  const [chars, setChars] = useState(0);
+  const [chars, setChars] = useState(restored?.chars ?? 0);
   // This session's voices, drawn at Start (Random slots differ each session)
   // and kept until Restart, so every character keeps one voice throughout.
-  const [cast, setCast] = useState<VoiceCastReply | null>(null);
-  const castRef = useRef<VoiceCastReply | null>(null);
+  const [cast, setCast] = useState<VoiceCastReply | null>(restored?.cast ?? null);
+  const castRef = useRef<VoiceCastReply | null>(restored?.cast ?? null);
   const [thinkingSecs, setThinkingSecs] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [copyStatus, copy] = useCopyStatus();
@@ -356,8 +411,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // a length was picked mid-session. Each turn sends the time since then,
   // and the server turns it into the dojo master's clock line. Restart
   // starts it all over.
-  const [extraMinutes, setExtraMinutes] = useState(0);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [extraMinutes, setExtraMinutes] = useState(restored?.extraMinutes ?? 0);
+  const [startedAt, setStartedAt] = useState<number | null>(restored?.startedAt ?? null);
   const baseMinutes = validMinutes(pack.overrides.minutes);
   // A length picked mid-session means that many minutes from now: the clock
   // starts again at the pick, the budget is exactly the length picked (any
@@ -368,9 +423,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // below. Keyed on the pick itself (`minutesPick`), not only on the value:
   // re-picking the length already shown (after it ran out, say) restarts
   // the clock too. A length that changes without a pick (another pack
-  // loaded mid-session) is treated the same.
-  const [lastPick, setLastPick] = useState({ pick: minutesPick, base: baseMinutes });
-  if (minutesPick !== lastPick.pick || baseMinutes !== lastPick.base) {
+  // loaded mid-session) is treated the same, once the remembered length has
+  // loaded: its coming in after a reload is neither.
+  const [lastPick, setLastPick] = useState({ pick: minutesPick, base: restored ? restored.baseMinutes : baseMinutes });
+  if (minutesPick !== lastPick.pick || (minutesReady && baseMinutes !== lastPick.base)) {
     setLastPick({ pick: minutesPick, base: baseMinutes });
     if (startedAt != null) {
       setStartedAt(Date.now());
@@ -380,7 +436,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // Capped where the server stops believing a budget (it would otherwise
   // drop the clock altogether).
   const budget = baseMinutes == null ? null : Math.min(MAX_MINUTES, baseMinutes + extraMinutes);
-  const startedAtRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number | null>(restored?.startedAt ?? null);
   // Turns chain through callbacks made in earlier renders (hands-free:
   // reply → listen → auto-stop → next turn; the "Play the reply" notice), so
   // a turn reads the budget and the pack from here at request time, never
@@ -402,8 +458,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
 
   // The saved conversation (docs/DATA.md §Conversations). Made by the
   // session's first turn (POST /api/conversations), ended by End, Restart,
-  // leaving Go, Close and page unload; a turn after that starts the next
-  // one. `creating` is a creation on its way, so a second turn waits for it
+  // leaving Go and Close, not by the page going (a reload picks it up again);
+  // a turn after that starts the next one. `creating` is a creation on its way, so a second turn waits for it
   // rather than making another. `saving` is what the header says: null
   // before the first turn, else whether turns are being stored (and why
   // not). `sessionEpoch` moves on at Restart and unmount, so a creation that
@@ -413,7 +469,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // next conversation starts there, so those turns are stored after all.
   // `inFlight` is each conversation's turn request on its way: ending waits
   // for it, so the turn is stored in the conversation it was sent for.
-  const convRef = useRef<SavedConversation | null>(null);
+  const convRef = useRef<SavedConversation | null>(restored?.conversation ?? null);
   const creating = useRef<Promise<SavedConversation | null> | null>(null);
   // A random scene's scenario, as the server drew it for this session's
   // first conversation. A later conversation of the same session (the
@@ -422,23 +478,41 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // mid-transcript, and a turn that must run unsaved plays it. Restart
   // forgets it, and Close unmounts the session, so the next Start draws
   // again.
-  const drawnRef = useRef<string | null>(null);
+  const drawnRef = useRef<string | null>(restored?.drawn ?? null);
   const sessionEpoch = useRef(0);
-  const unsavedFrom = useRef<number | null>(null);
+  const unsavedFrom = useRef<number | null>(restored?.unsavedFrom ?? null);
   const inFlight = useRef(new Map<string, Promise<unknown>>());
   // How many times the conversation has been closed (closeConversation), and
   // the ids an End was already sent for.
   const closes = useRef(0);
   const endsSent = useRef(new Set<string>());
-  const [saving, setSaving] = useState<{ on: true } | { on: false; why: string } | null>(null);
+  const [saving, setSaving] = useState<{ on: true } | { on: false; why: string } | null>(() => {
+    if (restored?.unsavedFrom != null) return { on: false, why: "the server could not store the last turn" };
+    return restored && (restored.ended ? restored.recapId : restored.conversation) ? { on: true } : null;
+  });
   // End was pressed: the session is over on screen (the transcript stays to
   // read and copy), until Restart.
-  const [ended, setEnded] = useState(false);
+  const [ended, setEnded] = useState(restored?.ended ?? false);
   // The conversation End closed, for its recap under the transcript.
-  const [recapId, setRecapId] = useState<string | null>(null);
+  const [recapId, setRecapId] = useState<string | null>(restored?.recapId ?? null);
 
   // Mutable session plumbing the async flows read without stale closures.
-  const entriesRef = useRef<VoiceHistoryItem[]>([]);
+  const entriesRef = useRef<VoiceHistoryItem[]>(restored?.entries ?? []);
+  // When something was last said, and the part of a streamed reply that is
+  // on screen before it is whole (never kept: nothing of it is stored yet).
+  const saidAt = useRef(restored?.at ?? 0);
+  const partial = useRef<VoiceHistoryItem | null>(null);
+  // The session was dropped (a switch, Close): nothing is kept until the
+  // next turn.
+  const dropped = useRef(false);
+  const buildsOnRef = useRef<ConversationSummary["buildsOn"]>(restored?.buildsOn ?? null);
+  const onBuildsOn = useCallback(
+    (b: ConversationSummary["buildsOn"], made = false) => {
+      buildsOnRef.current = b;
+      showBuildsOn?.(b, made);
+    },
+    [showBuildsOn],
+  );
   const recRef = useRef<Recording | null>(null);
   const ctrlRef = useRef<AbortController | null>(null);
   // While a streamed turn is speaking its first lines and the rest is still
@@ -589,8 +663,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // provider can only match with a young voice isn't asked for every turn.
   // `holder` is who each slot's voice belongs to now; `drawFails` caps the
   // redraws of one person whose search keeps failing.
-  const heldBy = useRef(new Map<string, HeldVoice>());
-  const holder = useRef(new Map<string, string>());
+  const heldBy = useRef(new Map(restored?.held as [string, HeldVoice][] | undefined));
+  const holder = useRef(new Map(restored?.holder));
   const drawFails = useRef(new Map<string, number>());
   // Draws on their way, by person, and which cast they belong to (Restart
   // or a whole new cast moves it on, and an older draw's answer is dropped).
@@ -621,12 +695,13 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   };
 
   const setSession = (next: VoiceHistoryItem[]) => {
+    saidAt.current = Date.now();
     entriesRef.current = next;
     setEntries(next);
   };
 
   // Pronunciation in conversation (docs/VOICE.md §Pronunciation in
-  // conversation): the session's coaching dial (adults in a Mandarin
+  // conversation): the coaching dial (adults in a Mandarin
   // session; kids have none and are always gentle), read by the async
   // turn flow through its ref; the tone marks of the learner's lines, by
   // entry index, with the take each was scored on (held in memory only);
@@ -636,13 +711,17 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   // it would be a control that does nothing.
   const dialKind: "tones" | "words" | null = mode !== "adult" ? null : scoresTonesHere(locale) ? "tones" : wordCheckLocale(locale) && reply?.configured.azure ? "words" : null;
   const showDial = dialKind !== null;
-  const [coaching, setCoachingState] = useState<Coaching>("light");
-  const coachingRef = useRef<Coaching>("light");
+  // Remembered per language (App remounts on a switch, so another learner or
+  // language starts from its own).
+  const [coaching, setCoachingState] = useState<Coaching>(() => COACHING.find((c) => c === readPref(languageId, "coaching")) ?? "light");
+  const coachingRef = useRef<Coaching>(coaching);
   const setCoaching = (c: Coaching) => {
     coachingRef.current = c;
     setCoachingState(c);
+    keepPref(languageId, "coaching", c);
   };
-  const [tones, setTones] = useState<ReadonlyMap<number, LineTones>>(() => new Map());
+  // Back from a reload the marks are there, without the recordings.
+  const [tones, setTones] = useState<ReadonlyMap<number, LineTones>>(() => new Map(restored?.tones.map(([i, reply]) => [i, { reply: reply as LineTones["reply"], take: null }])));
   const takeRef = useRef<{ text: string; wav: Blob } | null>(null);
 
   useEffect(() => {
@@ -675,10 +754,10 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
   const genRef = useRef(0);
 
   // Leaving the panel stops everything: no mic left open, no audio playing on.
-  // It ends the saved conversation too (Close; a learner or mode switch,
-  // which remounts the tab), as does the page going away (a reload, the tab
-  // shut, another site): pagehide, with a keepalive request that outlives it.
-  // A learner or language switch ends it before the switch (onBeforeSwitch),
+  // It doesn't end the saved conversation, and neither does the page going
+  // away (a reload, the tab shut): the session is kept (below) and picked up
+  // again, and one nobody comes back to ends after two idle hours. Close ends
+  // it, and a learner or language switch (onBeforeSwitch), before the switch,
   // while this page's headers still name the conversation's learner and
   // language: after it the server would refuse the End as stale.
   useEffect(() => {
@@ -686,31 +765,161 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     const gen = genRef;
     const audios = audiosRef;
     const epoch = sessionEpoch;
-    // The page is going: End now, with nothing to wait for (a turn on its
-    // way dies with the page).
-    const onPageHide = () => void closeConversation(true);
-    window.addEventListener("pagehide", onPageHide);
     const offSwitch = onBeforeSwitch(() => {
-      // The tone-coaching dial is the session's, and so the learner's and
-      // language's: the next one starts at the default. (The tab is keyed
-      // only by mode, so this panel stays mounted across the switch.)
-      coachingRef.current = "light";
-      setCoachingState("light");
+      dropped.current = true;
+      keeper.drop();
       return closeConversation(true);
     });
     return () => {
-      window.removeEventListener("pagehide", onPageHide);
       offSwitch();
       epoch.current += 1;
-      // Unmounting aborts the turn on its way (below): nothing to wait for.
-      closeConversation(true);
       gen.current += 1;
       ctrlRef.current?.abort();
       recRef.current?.cancel();
       for (const a of audios.current) a.pause();
       for (const p of cache.values()) void p.then(URL.revokeObjectURL, () => {});
     };
-  }, []);
+  }, [keeper]);
+
+  // What the Go tab shows of a restored session.
+  useEffect(() => {
+    if (!restored) return;
+    onDrawn?.(restored.drawn);
+    showBuildsOn?.(restored.buildsOn);
+    // Once: the callbacks are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restored]);
+
+  // Keep the session as it goes (liveSession.ts). Written as each thing that
+  // is part of it lands, without a reply still streaming; the box a moment
+  // after the typing stops, and when the page is put away.
+  const keepNow = useRef(() => {});
+  useEffect(() => {
+    keepNow.current = () => {
+      if (dropped.current) return;
+      const shown = entriesRef.current;
+      const whole = partial.current && shown[shown.length - 1] === partial.current ? shown.slice(0, -1) : shown;
+      if (!whole.length) return keeper.drop();
+      keeper.write({
+        v: 1,
+        at: saidAt.current,
+        entries: whole,
+        plan,
+        conversation: convRef.current,
+        unsavedFrom: unsavedFrom.current,
+        startedAt,
+        baseMinutes: lastPick.base,
+        extraMinutes,
+        drawn: drawnRef.current,
+        buildsOn: buildsOnRef.current,
+        cast: castRef.current,
+        held: [...heldBy.current],
+        holder: [...holder.current],
+        tones: [...tones].map(([i, t]) => [i, t.reply]),
+        composer,
+        direct,
+        heldRequest,
+        chars,
+        ended,
+        recapId,
+      });
+    };
+  });
+  useEffect(() => keepNow.current(), [entries, plan, cast, startedAt, extraMinutes, saving, tones, direct, heldRequest, ended, recapId, chars]);
+  useEffect(() => {
+    const t = window.setTimeout(() => keepNow.current(), 500);
+    return () => window.clearTimeout(t);
+  }, [composer]);
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") keepNow.current();
+    };
+    keeper.leaving = () => keepNow.current();
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      keeper.leaving = null;
+      document.removeEventListener("visibilitychange", onHide);
+    };
+  }, [keeper]);
+  // And no reload that can wait comes in the middle of it (an ended one is
+  // only there to read, and comes back the same).
+  useEffect(() => {
+    keepPage("go", hasEntries && !ended);
+    return () => keepPage("go", false);
+  }, [hasEntries, ended]);
+
+  /** Bring `shown` up to date with the conversation the server has: a reply
+   *  it stored that this page never got (the page went, or the phone slept,
+   *  as it landed). True when one was added. A conversation that has ended
+   *  meanwhile (another device, two idle hours) or is gone is let go: the
+   *  next turn makes another. Throws when the server can't be asked. */
+  async function catchUp(shown: VoiceHistoryItem[]): Promise<boolean> {
+    const c = convRef.current;
+    if (!c) return false;
+    const stored: VoiceHistoryItem[] = [];
+    let over = false;
+    try {
+      for (let from: number | null = 0; from != null; ) {
+        const r: Awaited<ReturnType<typeof getConversation>> = await getConversation(c.id, from);
+        over = r.conversation.endedAt != null;
+        for (const { idx: _i, at: _a, durationMs: _d, costUsd: _c, ...item } of r.turns) stored.push(item as VoiceHistoryItem);
+        from = r.nextFrom;
+      }
+    } catch (e) {
+      if (!(e instanceof ApiError && e.status === 404)) throw e;
+      over = true;
+    }
+    if (convRef.current?.id !== c.id) return false;
+    if (over) {
+      convRef.current = null;
+      setSaving((s) => (s?.on ? null : s));
+    }
+    const more = entriesRef.current === shown ? withStored(shown, c.start, stored) : null;
+    if (more) setSession(more);
+    return !!more;
+  }
+
+  // Back from a reload: whatever the server finished meanwhile.
+  useEffect(() => {
+    if (restored && !restored.ended) catchUp(restored.entries).catch(() => {});
+    // Its End may have been waiting on a turn the page took with it: the
+    // recap card waits for it. Ending twice is harmless.
+    const page = getPageLearner();
+    if (restored?.ended && restored.recapId && page) void endConversation(restored.recapId, page);
+    // Once, for the session this mount started from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restored]);
+
+  /** The learner's last line has no reply (the page or the network went
+   *  while it was on its way, it failed, or Stop): ask for it again. */
+  async function askAgain() {
+    const shown = entriesRef.current;
+    const last = shown[shown.length - 1];
+    if (last?.role !== "learner" || phaseRef.current !== "idle") return;
+    setError(null);
+    setNotice(null);
+    const gen = genRef.current;
+    setPhase("thinking");
+    try {
+      const landed = await catchUp(shown);
+      if (gen !== genRef.current) return;
+      const reply = entriesRef.current[entriesRef.current.length - 1];
+      if (landed && reply?.role === "master") {
+        setPhase("idle");
+        void replay(entriesRef.current.length - 1, 0, reply.lines, false).then((done) => {
+          if (done) listenAgain();
+        });
+        return;
+      }
+    } catch (e) {
+      if (gen !== genRef.current) return;
+      setPhase("idle");
+      setError(errText(e));
+      return;
+    }
+    setSession(shown.slice(0, -1));
+    void runTurn(last.text, gen);
+  }
 
   // Another tab opened: the session stays (Go is only hidden), the dojo
   // master stops talking and the mic closes. Work already paid for is kept:
@@ -728,6 +937,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
     // saying so (an "isn't being saved" reason stays: still true).
     closeConversation();
     setSaving((s) => (s?.on ? null : s));
+    keepNow.current();
     const p = phaseRef.current;
     if (p === "recording" || p === "opening") {
       stopAll();
@@ -794,8 +1004,8 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
    *  a turn makes after this — its creation still on its way, or not even
    *  asked for yet because the turn was loading its cast — is never adopted
    *  and is ended after that turn (conversationLife.ts). The open one is
-   *  ended after its turn on the way; `now` (pagehide, unmount, a learner
-   *  or language switch) ends it at once, the turn going with the page.
+   *  ended after its turn on the way; `now` (Close, a learner or language
+   *  switch) ends it at once, the turn going with the panel.
    *  Resolves when that End has been answered (the switch waits for it).
    *  The next turn starts a new one. */
   function closeConversation(now = false): Promise<void> {
@@ -808,7 +1018,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       if (now) return endOnce(c);
       endAfterTurn(c);
     } else if (pending && now) {
-      // The page is going: whatever lands is ended (its own fate check
+      // The panel is going: whatever lands is ended (its own fate check
       // would wait for a turn that won't come).
       return pending.then((made) => (made ? endOnce(made) : undefined));
     }
@@ -1126,6 +1336,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
 
   async function runTurn(message: string, gen = genRef.current) {
     if (!settingsRef.current || gen !== genRef.current) return;
+    dropped.current = false;
     setError(null);
     setNotice(null);
     const before = entriesRef.current;
@@ -1200,6 +1411,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
         const lines = [...feed.lines];
         lines[e.index] = e.line;
         provisional = { role: "master", lines, ...(e.castNotes.length ? { castNotes: e.castNotes } : {}) };
+        partial.current = provisional;
         setSession([...history, provisional]);
         // Someone new speaks in this turn: their voice is drawn before their
         // line plays (playLines waits for it), as after a whole reply.
@@ -1283,6 +1495,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       // with them), and playback goes on into the rest.
       arrivingRef.current = null;
       provisional = null;
+      partial.current = null;
       feed.set(r.lines, true);
       setSession([
         ...history,
@@ -1351,6 +1564,7 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       playCtrl.abort();
       // Only if it is still the last entry: Restart may have cleared it.
       const shown = entriesRef.current;
+      if (partial.current === provisional) partial.current = null;
       if (provisional && shown[shown.length - 1] === provisional) setSession(shown.slice(0, -1));
       if (ctrl.signal.aborted || isAbort(e) || gen !== genRef.current) return;
       setPhase("idle");
@@ -1999,6 +2213,9 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
           variant="ghost"
           onClick={() => {
             stopAll();
+            dropped.current = true;
+            keeper.drop();
+            void closeConversation(true);
             onClose();
           }}
         >
@@ -2142,6 +2359,20 @@ function VoiceSession({ mode, pack, langs, active, minutesPick, title, canStar, 
       {error && (
         <p className="rounded-md bg-err-soft p-3 text-sm text-err" data-testid="voice-error">
           {error}
+        </p>
+      )}
+      {live && phase === "idle" && !redrawing && lastEntry?.role === "learner" && (
+        <p className="flex flex-wrap items-center gap-2 text-sm text-fg-2" data-testid="voice-unanswered">
+          Your last line has no answer yet.
+          <QuickButton
+            onClick={() => {
+              void askAgain();
+              focusAfterAction();
+            }}
+            testid="voice-ask-again"
+          >
+            Ask again
+          </QuickButton>
         </p>
       )}
       {saving && !saving.on && (

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   SESSION_COOKIE, SESSION_MS, SLIDE_EVERY_MS, clearSessionCookie, clientAddress, createLoginThrottle, hashPassword, isDirectLocalRequest, isSecureRequest,
@@ -12,6 +13,7 @@ import {
   type Learner, type LearnerPatch, type NewLearnerWithLanguage,
 } from "../../scripts/db/accounts.ts";
 import type { Db } from "../../scripts/db/owned.ts";
+import { listPrefs } from "../../scripts/db/prefs.ts";
 import type {
   AuthUser, ErrorCode, LanguageHeader, LanguageInfo, LanguageReply, LanguageRequest, LanguagesReply, LearnerHeader, LearnerInfo, LearnerReply,
   LearnersReply, LoginRequest, MeReply, Mode, PickLanguageRequest, PickLearnerRequest, Profile,
@@ -216,6 +218,9 @@ async function learnerInfoOf(l: Learner): Promise<LearnerInfo> {
 
 const isLocal = (req: IncomingMessage) => isDirectLocalRequest(req.headers, req.socket.remoteAddress);
 
+/** This start of the server (MeReply.boot). */
+const BOOT_ID = randomUUID();
+
 async function meReply(ctx: PublicCtx, req?: IncomingMessage): Promise<MeReply> {
   if (!ctx.user) {
     const firstRun = !(await hasUsers(rawDb()));
@@ -232,6 +237,10 @@ async function meReply(ctx: PublicCtx, req?: IncomingMessage): Promise<MeReply> 
     learner: ctx.learner ? info(ctx.learner) : null,
     language: ctx.learner && ctx.language ? languageInfo(ctx.language) : null,
     learners: learners.map(info),
+    // With the first reply, so the page has the learner's choices before it
+    // draws anything (docs/DATA.md §Kept choices).
+    ...(ctx.learner && ctx.language ? { prefs: await listPrefs(rawDb(), ctx.language) } : {}),
+    boot: BOOT_ID,
   };
 }
 

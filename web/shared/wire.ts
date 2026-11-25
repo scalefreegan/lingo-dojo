@@ -460,6 +460,13 @@ export interface MeReply {
    *  exactly when `learner` is. */
   language: LanguageInfo | null;
   learners: LearnerInfo[];
+  /** The active language's kept choices (docs/DATA.md §Kept choices); with
+   *  no language active, none. */
+  prefs?: import("./prefs.ts").PrefMap;
+  /** Which start of the server answered: another value means it has been
+   *  restarted since, perhaps on newer code (web/src/keepPage.ts). With a
+   *  login only. */
+  boot?: string;
 }
 
 /** Every error reply: a sentence to show, and for the few errors the client

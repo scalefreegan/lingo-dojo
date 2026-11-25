@@ -966,6 +966,32 @@ export const hiddenScenes = pgTable(
   ],
 );
 
+/* ------------------------------ kept choices ------------------------------- */
+
+/** A choice a learner made in the app, kept per language profile so a
+ *  reload, another device or a browser that cleared its storage doesn't ask
+ *  again (DATA.md §Kept choices, migration 0023). `key` is one of the app's
+ *  own (web/shared/prefs.ts PREF_KEYS; not checked here, so a new one needs
+ *  no migration), `value` the text the page keeps, opaque to the server.
+ *  `changed_at` is when the learner chose: the newest choice stands. The
+ *  reader role (0005) gets nothing on it. */
+export const languagePrefs = pgTable(
+  "language_prefs",
+  {
+    learnerId: uuid("learner_id").notNull(),
+    languageProfileId: uuid("language_profile_id").notNull(),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+    changedAt: tz("changed_at").notNull(),
+  },
+  (t) => [
+    check("language_prefs_key_length", sql`char_length(${t.key}) between 1 and 40`),
+    check("language_prefs_value_length", sql`octet_length(${t.value}) <= 65536`),
+    primaryKey({ name: "language_prefs_pk", columns: [t.languageProfileId, t.key] }),
+    foreignKey({ name: "language_prefs_profile_fk", columns: [t.languageProfileId, t.learnerId], foreignColumns: [languageProfiles.id, languageProfiles.learnerId] }).onDelete("cascade"),
+  ],
+);
+
 /* ------------------------------ stock pictures ------------------------------ */
 
 /**

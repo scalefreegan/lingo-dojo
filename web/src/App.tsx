@@ -5,9 +5,10 @@ import {
 } from "./api";
 import type { AssembleResult, AuthUser, ContentReply, ConversationSummary, HiddenScene, LanguageInfo, LearnerInfo, Mode, Pack, PackInput, PacksReply, Problem, ProfileRequest } from "./types";
 import {
-  draftPool, draftPoolMessage, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, loadRememberedDraft, localTimestamp, newDraft, packId, packToDraft, withBackfill,
-  rememberDraft, sessionValues, splitPackId, type Draft,
+  draftPool, draftPoolMessage, draftToPack, effectiveMinutes, emptyOverrides, minutesWarning, validMinutes, formatSessionLine, joinPackId, languageKey, localTimestamp, newDraft, packId, packToDraft, readDraft, withBackfill,
+  sessionValues, splitPackId, type Draft,
 } from "./draft";
+import { keepPref, readPref } from "./prefs";
 import { hiddenSetOf, type HiddenKind } from "../shared/scenes.ts";
 import TopBar from "./components/TopBar";
 import SummaryBar from "./components/SummaryBar";
@@ -141,7 +142,7 @@ export default function App({
     setContentVersion((v) => v + 1);
     // A remembered draft may predate a slot added since (recall): it plays
     // that slot's default, as a saved pack does (withBackfill).
-    setDraft((d) => (fresh || !d ? withBackfill(c, loadRememberedDraft(languageId) ?? newDraft(c)) : d));
+    setDraft((d) => (fresh || !d ? withBackfill(c, readDraft(readPref(languageId, "draft")) ?? newDraft(c)) : d));
   }, []);
 
   // Load the library. The effect's own `live` flag drops a reply that lands
@@ -517,7 +518,7 @@ export default function App({
   // way back to the defaults. The draft is null until the first load, and a
   // null is not written (it would erase the remembered one).
   useEffect(() => {
-    if (draft && content?.mode === mode) rememberDraft(language.id, draft);
+    if (draft && content?.mode === mode) keepPref(language.id, "draft", JSON.stringify(draft));
   }, [mode, language.id, content, draft]);
 
   function startNew() {
@@ -606,6 +607,7 @@ export default function App({
                 learnerLine={learnerLine}
                 notes={draft.notes}
                 minutes={validMinutes(minutes)}
+                minutesReady={lastMinutes !== null}
                 minuteChoices={minuteChoices?.[mode] ?? []}
                 onMinutes={chooseMinutes}
                 onNotes={(notes) => setDraft({ ...draft, notes })}

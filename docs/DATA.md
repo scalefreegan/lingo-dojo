@@ -949,8 +949,9 @@ session), `wrap()` in `web/server/api.ts`, `scripts/user.mjs` (CLI).
   (Conversations), so a parent and a child on two devices under one account
   don't block each other; a turn that isn't being saved falls back to its
   login session (two tabs of one browser share a session, and its lock).
-- **Browser storage:** the remembered draft, tab, Scene filter and folder
-  state are kept per language profile (`<key>.language.<id>`), so German and
+- **Browser storage:** the remembered draft, tab, Scene filter, folder
+  state, the session in progress (docs/VOICE.md §Reload) and the other kept
+  choices (§Kept choices, the server's copy too) are kept per language profile (`<key>.language.<id>`), so German and
   Chinese keep their own unsaved picks, and the next learner or account on
   the same browser never sees the last one's unsaved name, level, language
   or quick-scenario text. The per-learner keys of before language profiles
@@ -1063,9 +1064,9 @@ docs/VOICE.md §Saved conversations is the user's side.
    open) sets `ended_at` and queues the extraction. A conversation left open for
    2 hours is ended on the next server request. As built:
    - `POST /api/conversations/:id/end` is idempotent: only a row whose
-     `ended_at` is null is updated. End, Restart, Close, leaving Go and
-     page unload all call it; unload uses a `keepalive` fetch (not
-     `sendBeacon`, which can't send the `X-Learner-Id` header `wrap` checks).
+     `ended_at` is null is updated. End, Restart, Close, leaving Go and a
+     learner or language switch all call it. The page going doesn't: a
+     reload goes on with the session (docs/VOICE.md §Reload, ld-ch4).
    - End and a turn share the conversation's lock (point 4). A turn takes it
      as soon as its body names the conversation, before any query; End, after
      checking the conversation is the learner's, waits until no turn holds
@@ -1077,7 +1078,7 @@ docs/VOICE.md §Saved conversations is the user's side.
      `conversations.pg.test.mjs`). The browser covers the turn the server
      hasn't received yet: when ending (End, Restart, leaving Go) it sends End
      once the open conversation's turn on the way has its answer. Only
-     pagehide and unmounting send it at once (the turn dies with the page).
+     Close and a switch send it at once (the turn dies with the panel).
      A turn may not have made its conversation yet when the session closes
      (it is still drawing its cast, or creating it), so the check sits
      where a conversation comes into being, not at each await: every close
@@ -1088,9 +1089,8 @@ docs/VOICE.md §Saved conversations is the user's side.
      the panel closed; `web/src/conversationLife.ts`). The next turn starts
      a new conversation.
    - Leaving Go keeps the session on screen; a turn after coming back
-     starts a new conversation (from that turn on). Reload ends the
-     conversation and the session; it can't be resumed until the history is
-     read back from the database.
+     starts a new conversation (from that turn on). A reload resumes the
+     session and its conversation in the same browser.
    - The idle end is lazy: every conversation route and the voice turn first
      end the account's open conversations, in every language of every
      learner (so one left open in another language still ends and its hook
@@ -1203,8 +1203,8 @@ recount and retry), `scripts/extraction.mjs` (pure: prompt, parser,
 transcript, the plan of what a reply may do, examples), and in the
 browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
 
-- **When.** `onConversationEnded` (End, Restart, leaving Go, Close, unload,
-  the idle end) starts the run in the background (`setImmediate`, never
+- **When.** `onConversationEnded` (End, Restart, leaving Go, Close, a
+  switch, the idle end) starts the run in the background (`setImmediate`, never
   awaited by the request). The run reads the stored turns; a conversation
   in which the learner said nothing is `skipped` with no model call. The
   call is `claude -p` with no tools, one turn, an empty temp cwd, the
@@ -2442,9 +2442,8 @@ is proposed; none of it was asked in the interview.
   clock's origin moves with every mid-session pick and the budget with +5
   min, both state the browser alone sees, so a server clock would need the
   pick time from the browser anyway (no more trustworthy than the elapsed
-  time it sends), plus a column for it; and a reload, which a server clock
-  could outlive, also loses the session itself, since the history isn't read
-  back yet. Revisit when it is.
+  time it sends), plus a column for it. A reload keeps the clock with the
+  session, in the browser (docs/VOICE.md §Reload).
 - **UI:** the timeline shows the time left, and a **+5 min** button extends the
   budget mid-session.
 
@@ -4430,6 +4429,33 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   `scripts/tests/pronunciation-review.http.test.mjs` (the routes, another
   learner's or language's session and clip unreachable, kids nothing, the
   speak-it miss with its replay and override).
+
+## Kept choices (ld-ch4, migration 0023)
+
+What the app would otherwise ask again: kept per language profile in
+`language_prefs` (`learner_id`, `language_profile_id`, `key`, `value` text,
+`changed_at`; primary key the profile and key; gone with the profile), with
+the browser's `localStorage` as its cache. Browser storage alone was not
+enough: it is per origin (a changed port is a new one), and iOS may clear it.
+
+- **Which:** `PREFS` in `web/shared/prefs.ts`, each with a rule and a size
+  limit: the draft, the reading aid, the Scene filter and folders, Practice's
+  choices and speed, the recall veil, the picture game's level and the
+  coaching dial. A value is the browser's own string; the page checks it as
+  it reads it, the server only its key and size.
+- **Coming together.** `GET /api/auth/me` carries the active language's, so
+  a page has them before it shows anything (`hydratePrefs`,
+  `web/src/prefs.ts`). An empty browser takes the server's, an empty server
+  is sent the browser's, and otherwise the newer stands (`reconcilePref`).
+  The draft is the exception (`fallback`): a browser's own is never replaced
+  by another device's, only an empty browser takes it.
+- **Writing:** `PUT /api/prefs {key, value, at}` (`learner: true`), a moment
+  after the last change and as the page goes; a later `at` wins in one
+  upsert, and an `at` ahead of the server's clock counts as now.
+- A practice round in progress (`web/src/practiceRound.ts`) and the Library's
+  view are the tab's own, in `sessionStorage`.
+- Tests: `scripts/tests/prefs.http.test.mjs`,
+  `scripts/tests/practice-round.test.mjs`.
 
 ## Docs to update as phases land
 
