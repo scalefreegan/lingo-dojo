@@ -1,5 +1,6 @@
 import type { ServerResponse } from "node:http";
-import { compareTones, doubtfulFlags, readTrendDays, sessionTones, settledPlaces, settleFlags, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
+import { compareTones, doubtfulFlags, readTrendDays, sessionTones, settledPlaces, settleFlags, storedFlags, toneTrend, trendWindow, TREND_MIN_SYLLABLES } from "../../scripts/pronunciation-review.mjs";
+import { scoresTones } from "../../scripts/pronunciation.mjs";
 import { localeFor } from "../../scripts/voice.mjs";
 import { charReadings, readCodePoints } from "../src/script/zh.ts";
 import { readUtcOffset } from "../../scripts/practice.mjs";
@@ -7,6 +8,8 @@ import { sessionChecks, toneConversation, trendChecks } from "../../scripts/db/p
 import { listCorrections } from "../../scripts/db/readings.ts";
 import { activeList } from "../../scripts/db/sharedReadings.ts";
 import type { FlagNote } from "../../scripts/pronunciation-live.mjs";
+import type { ToneLine } from "../../scripts/pronunciation-review.mjs";
+import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { SessionTonesReply, ToneTrendReply } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { rawDb } from "./db.ts";
@@ -124,8 +127,8 @@ export function peekPracticeTones(learnerId: string, languageId: string): FlagNo
  * entries (in a zh-TW language its Taiwan ones only, else only "all"). A recap's guess isn't
  * the learner's choice and settles nothing here.
  */
-async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
-  const [mine, shared] = await Promise.all([listCorrections(rawDb(), ctx.language), activeList(rawDb())]);
+async function settlingReadings(profile: LanguageProfileRef, locale: string): Promise<{ word: string; key: string; reading: string }[]> {
+  const [mine, shared] = await Promise.all([listCorrections(rawDb(), profile), activeList(rawDb())]);
   const tw = /-TW$/i.test(locale);
   const own = mine.filter((c) => c.source === "user" && (c.kind === "corrected" || c.kind === "confirmed"));
   // The learner's own > the shared list: a word they chose a reading for
@@ -149,8 +152,13 @@ async function settlingReadings(ctx: LearnerCtx, locale: string): Promise<{ word
  * only shaped what the check showed; it can't make a miss.
  */
 export async function settleHeld(ctx: LearnerCtx, text: string, flags: FlagNote[]): Promise<FlagNote[]> {
-  if (!flags.length) return flags;
   const locale = localeFor(ctx.language.targetLanguage, ctx.language.targetVariant) ?? "";
+  return settleIn(ctx.language, locale, text, flags);
+}
+
+/** settleHeld's rule for a text of a language profile in `locale`. */
+async function settleIn(profile: LanguageProfileRef, locale: string, text: string, flags: FlagNote[]): Promise<FlagNote[]> {
+  if (!flags.length) return flags;
   const readingsOf = (c: string) => charReadings(c, locale);
   // The reader's syllable at each Han place (1-based), for the 3-3 rule.
   const cps = [...text];
@@ -161,5 +169,28 @@ export async function settleHeld(ctx: LearnerCtx, text: string, flags: FlagNote[
   // rule itself always runs.
   if (!doubtfulFlags(flags, opts)) return settleFlags(flags, opts);
   const scored = new Map(flags.map((f) => [f.place, f.pinyin] as [number, string]));
-  return settleFlags(flags, { ...opts, settled: settledPlaces(text, await settlingReadings(ctx, locale), scored) });
+  return settleFlags(flags, { ...opts, settled: settledPlaces(text, await settlingReadings(profile, locale), scored) });
+}
+
+/**
+ * A finished session's checks as its recap may fail bank phrases by them
+ * (ld-ne0.18, docs/VOICE.md §Tones after the session): each scored line
+ * with the flags that pass Practice's narrow rule, read over the line as it
+ * was said, and the places judged right. [] when no flag passes (or the
+ * language isn't Mandarin, or the session a child's: nothing is kept for
+ * one, and the rule is said here as well). Which phrase a flag is in is
+ * decided in the recap's own write (scripts/db/extraction.ts).
+ */
+export async function sessionToneLines(profile: LanguageProfileRef, conversation: { id: string; mode: "adult" | "kids" }, locale: string | null): Promise<ToneLine[]> {
+  if (conversation.mode === "kids" || !locale || !scoresTones(locale)) return [];
+  const lines: ToneLine[] = [];
+  let any = false;
+  for (const row of await sessionChecks(rawDb(), profile, conversation.id)) {
+    const l = storedFlags(row);
+    if (!l) continue;
+    const flags = await settleIn(profile, locale, l.line, l.flags);
+    any ||= flags.length > 0;
+    lines.push({ ...l, flags });
+  }
+  return any ? lines : [];
 }

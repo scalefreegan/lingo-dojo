@@ -205,6 +205,15 @@ docs/VOICE.md §Tones after the session; pure rules
   never the page's `reading`, a recap guess or a GLOSS hint); in zh-TW
   only a settled reading (own, or a shared entry of scope `tw`). Check waits at most 2.5 s;
   leaving sends the answer without `tones`; one check per take.
+- The recap feeds the bank (ld-ne0.18, `sessionToneLines` +
+  `sessionToneMisses`, written in `scripts/db/extraction.ts`): a stored
+  flag that passes the same rule over the line as said fails the speak card
+  of the longest bank phrase starting at a leading place of that line (a
+  word end, one character only as a whole clause; what was said last
+  decides). One session review a card: it replaces the model event's
+  rating, kept as `was` in the stored recap's `tones`; **I said it right**
+  (`POST /api/conversations/:id/recap-tones`) restores it and survives
+  re-runs. No model call.
 - Kids: nothing shown (the routes answer empty), nothing stored, no hold.
 Word checks beyond Mandarin (ld-ne0.16; no migration; docs/VOICE.md §Words
 and sounds beyond Mandarin, docs/pronunciation-proof.md's section of that

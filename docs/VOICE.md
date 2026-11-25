@@ -2663,7 +2663,8 @@ transcript, the characters or the audio.
 
 What stage 2 keeps (one `pronunciation_checks` row per scored adult turn,
 docs/DATA.md §Pronunciation in sessions) read back to the adult learner,
-and one way a tone check may now change a Practice grade. Pure rules
+and the two ways a tone check may change a grade (Practice speak-it, and
+the recap: the last two points below). Pure rules
 `scripts/pronunciation-review.mjs`; routes `web/server/toneReview.ts`
 (mounted by `pronunciation.ts`, `learner: true`); queries
 `scripts/db/pronunciation.ts` (`sessionChecks`, `trendChecks`,
@@ -2797,13 +2798,44 @@ a share (the engine doesn't judge them).
   shown). **One check per take:** a second Check of the same recording
   (after a failed answer) reuses the first check's result, held or not,
   and sends `tones` again when it was held; a new recording is a new check.
-- **Not done: the recap feeding the bank.** A flagged syllable inside a
-  bank phrase giving that phrase a failing review at the recap was left
-  out: the recap's reviews are one per phrase per session, written once
-  under the extraction claim from the model's events, and a second source
-  of reviews there needs its own rules (which phrase holds a syllable
-  said in free speech, how it meets the model's event for the same
-  phrase). A bead can take it up.
+- **The recap feeds the bank** (ld-ne0.18, no migration, no model call; the
+  prompt is byte for byte unchanged). When an adult Mandarin session's
+  recap is written, a flag stored with its turns may fail the bank phrase
+  it was said in: the phrase's speak (`produce`) card gets Again. Server
+  half `sessionToneLines` (`toneReview.ts`), matching `sessionToneMisses`
+  and `storedFlags` (`scripts/pronunciation-review.mjs`), the write in
+  `scripts/db/extraction.ts` (docs/DATA.md §Post-session extraction).
+  - **Which flags**: the same rule as Practice (`settleFlags`), over the
+    whole line as it was said: a leading place *of the line*, own citation
+    tone, not before a third, one reading tone or a settled reading, zh-TW
+    settled only. A stored line whose Han characters aren't the scored
+    syllables, one for one, is skipped.
+  - **Which phrase**: the longest bank phrase (one added after the
+    session's end, as this recap's kept ones are, only where no older one
+    fits: a sentence the model keeps never takes the miss from the phrase
+    the learner practises, and a re-run picks the same) that starts at a leading place of the line, has the same characters in
+    the same script, isn't cut by a sentence mark it doesn't have itself,
+    ends where a word ends (`Intl.Segmenter`, a mark or the line's end) and
+    holds the flag at a leading place of its own. A phrase of one character
+    counts only as a whole clause (他 isn't 他们's). One phrase a flag, at
+    most 10 phrases a session (`MAX_SESSION_TONE_MISSES`).
+  - **What was said last decides**: a later line with the phrase in the
+    same position and that syllable judged right clears the miss (coached,
+    then fixed); "not sure" clears nothing.
+  - **One review a card**: the model's own event for the phrase's speak
+    card and the miss make one session review, the miss's Again; the
+    event's rating is kept beside it (`was`). A phrase the model already
+    failed (`corrected`) is left to that.
+  - **I said it right**: the recap card lists the counted ones ("Right
+    words, tone off") with that button, `POST
+    /api/conversations/:id/recap-tones {phraseId}`: the card goes back to
+    before the review and is graded as the model's event had it (no event:
+    no review), so no lapse is left; a re-run of the recap keeps the
+    choice. 409 while the recap is being made or once the card was
+    reviewed later.
+  - Kids: nothing is stored, so nothing is graded, shown or undone.
+  - Not measured: how often this fires, or is wrong, on real speech. The
+    tests score a generated voice.
 
 ### Words and sounds beyond Mandarin (ld-ne0.16)
 

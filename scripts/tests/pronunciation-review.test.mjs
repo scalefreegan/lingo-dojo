@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  COMPARE_MIN, MAX_FLAGGED_SHOWN, leadingPlaces, settleFlags, settledPlaces, MAX_TONE_MISS, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
+  COMPARE_MIN, MAX_FLAGGED_SHOWN, leadingPlaces, settleFlags, settledPlaces, MAX_SESSION_TONE_MISSES, MAX_TONE_MISS, sessionToneMisses, storedFlags, TREND_DAYS, TREND_MIN_SYLLABLES, compareTones, practiceToneMiss, readToneHold, readTrendDays, sessionTones, storedToneMiss, toneTrend, trendWindow,
 } from "../pronunciation-review.mjs";
 
 const syl = (char, expectedTone, verdict, extra = {}) => ({ char, pinyin: `${char}?`, expectedTone, verdict, startMs: 100, endMs: 300, ...extra });
@@ -259,4 +259,65 @@ test("settledPlaces: an entry in the text giving that place the syllable it was 
   // A traditional spelling matched by its key; a malformed entry ignored.
   assert.deepEqual([...settledPlaces("時間長", [{ word: "時間長", key: "时间长", reading: "shí jiān cháng" }, { word: "时", key: "时", reading: "" }], new Map([[3, "cháng"]]))], [3]);
   assert.deepEqual([...settledPlaces(text, [], scored)], []);
+});
+
+/* ------------------------- a session's tone misses (ld-ne0.18) ------------------------- */
+
+const toneFlag = (place, char = "妈", pinyin = "mā") => ({ char, place, pinyin, expectedTone: 1, heardTone: 4 });
+const bankOf = (...texts) => texts.map((text) => ({ norm: text, text }));
+const missed = (lines, phrases, opts) => sessionToneMisses(lines, phrases, opts).map((m) => [m.text, m.syllables.map((s) => s.place)]);
+
+test("storedFlags: places from the stored row, only when the line is what was scored", () => {
+  const syl = (char, verdict) => ({ char, pinyin: "mā", expectedTone: 1, verdict, ...(verdict === "off" ? { heardTone: 4 } : {}), startMs: 0, endMs: 1 });
+  const row = { line: "妈，妈！", syllables: [syl("妈", "off"), syl("妈", "ok")] };
+  assert.deepEqual(storedFlags(row), { line: "妈，妈！", flags: [toneFlag(1)], ok: [2] });
+  assert.equal(storedFlags({ ...row, line: "妈" }), null, "another text");
+  assert.equal(storedFlags({ ...row, line: "妈他" }), null, "another character");
+  assert.equal(storedFlags({ line: "妈", syllables: [{ char: "妈", verdict: "off" }] }), null, "an unusable row");
+  assert.equal(storedFlags({ line: "", syllables: [] }), null);
+});
+
+test("sessionToneMisses: the phrase the flag starts, the longest, as words of its own", () => {
+  const line = (text, places) => [{ line: text, flags: places.map((p) => toneFlag(p)), ok: [] }];
+  assert.deepEqual(missed(line("妈", [1]), bankOf("妈")), [["妈", [1]]]);
+  // The longest phrase that starts there, and only it.
+  assert.deepEqual(missed(line("妈妈很忙", [1]), bankOf("妈妈", "妈妈很忙", "妈")), [["妈妈很忙", [1]]]);
+  assert.deepEqual(missed(line("妈妈很忙", [1]), bankOf("妈妈")), [["妈妈", [1]]], "ends where a word ends");
+  // One the recap kept only where no older one fits.
+  assert.deepEqual(missed(line("妈妈很忙", [1]), [...bankOf("妈妈"), { norm: "妈妈很忙", text: "妈妈很忙", late: true }]), [["妈妈", [1]]]);
+  assert.deepEqual(missed(line("妈妈很忙", [1]), [{ norm: "妈妈很忙", text: "妈妈很忙", late: true }]), [["妈妈很忙", [1]]]);
+  // Inside a word, or one character of a longer clause: not that phrase.
+  assert.deepEqual(missed(line("他们来了", [1]), bankOf("他")), []);
+  assert.deepEqual(missed(line("妈很忙", [1]), bankOf("妈")), []);
+  assert.deepEqual(missed(line("妈，我来了", [1]), bankOf("妈")), [["妈", [1]]], "the whole clause");
+  // Not at the start of the line or a clause: never (听听 and the like).
+  assert.deepEqual(missed(line("我妈妈", [2]), bankOf("妈妈")), []);
+  assert.deepEqual(missed(line("我来了，妈妈", [4]), bankOf("妈妈")), [["妈妈", [1]]]);
+  // A flag past the phrase's leading places, or past the phrase: not its.
+  assert.deepEqual(missed(line("妈妈", [2]), bankOf("妈妈")), []);
+  assert.deepEqual(missed(line("妈妈，他来", [3]), bankOf("妈妈")), []);
+  // A phrase of two clauses holds both places, but a sentence mark it
+  // hasn't got stops it.
+  assert.deepEqual(missed(line("妈妈，他来", [3]), bankOf("妈妈，他来")), [["妈妈，他来", [3]]]);
+  assert.deepEqual(missed(line("好。吃", [1]), bankOf("好吃")), []);
+  // Not Mandarin alone, no norm, no flag: nothing.
+  assert.deepEqual(missed(line("妈", [1]), [{ norm: "妈 ok", text: "妈 ok" }, { norm: null, text: "妈" }]), []);
+  assert.deepEqual(missed(line("妈", []), bankOf("妈")), []);
+  assert.deepEqual(sessionToneMisses(undefined, undefined), []);
+});
+
+test("sessionToneMisses: what was said last decides; not sure changes nothing; at most one miss a phrase, and a cap", () => {
+  const off = { line: "妈", flags: [toneFlag(1)], ok: [] };
+  const ok = { line: "妈！", flags: [], ok: [1] };
+  const unsure = { line: "妈", flags: [], ok: [] };
+  assert.deepEqual(missed([off, ok], bankOf("妈")), [], "fixed after being coached");
+  assert.deepEqual(missed([ok, off], bankOf("妈")), [["妈", [1]]]);
+  assert.deepEqual(missed([off, unsure], bankOf("妈")), [["妈", [1]]]);
+  assert.deepEqual(missed([off, off, off], bankOf("妈")), [["妈", [1]]], "one review, however often");
+  assert.deepEqual(missed([{ line: "妈，妈", flags: [toneFlag(1)], ok: [2] }], bankOf("妈")), [], "within one line too");
+  assert.deepEqual(missed([{ line: "妈，妈", flags: [toneFlag(2)], ok: [1] }], bankOf("妈")), [["妈", [1]]]);
+  // Another phrase that starts with the same character clears nothing.
+  assert.deepEqual(missed([off, { line: "妈妈", flags: [], ok: [1, 2] }], bankOf("妈", "妈妈")), [["妈", [1]]]);
+  const many = [..."天地玄黄宇宙洪荒日月盈昃"].map((c) => ({ line: c, flags: [toneFlag(1, c)], ok: [] }));
+  assert.equal(sessionToneMisses(many, bankOf(...many.map((l) => l.line))).length, MAX_SESSION_TONE_MISSES);
 });

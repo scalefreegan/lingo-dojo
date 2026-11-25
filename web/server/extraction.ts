@@ -6,22 +6,23 @@ import { failureHint, startClaude } from "../../scripts/claude.mjs";
 import { extractionPrompt, learnerSpoke, parseExtraction, sessionTranscript } from "../../scripts/extraction.mjs";
 import { extractJsonObject } from "../../scripts/json-reply.mjs";
 import { compareAttempts, lastTimeSection, parseLastTime, storedRevisit } from "../../scripts/revisit.mjs";
-import { bankLocale } from "../../scripts/phrases.mjs";
+import { bankLocale, isUuid } from "../../scripts/phrases.mjs";
 import { languageProfileOwner } from "../../scripts/db/accounts.ts";
 import {
-  applyExtraction, claimExtraction, countAttempt, duePhrasesAt, finishExtraction, recapPhrases, type ExtractionStatus, type StoredRecap,
+  applyExtraction, claimExtraction, countAttempt, dismissToneMiss, duePhrasesAt, finishExtraction, recapPhrases, type ExtractionStatus, type StoredRecap,
 } from "../../scripts/db/extraction.ts";
 import type { LanguageProfileRef } from "../../scripts/db/owned.ts";
 import type { RecapReply, RecapStatus, SessionRecap } from "../shared/wire.ts";
 import type { LearnerCtx } from "./auth.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
-import { HttpError, methodNotAllowed, sendJson } from "./sse.ts";
+import { HttpError, methodNotAllowed, readJsonBody, sendJson } from "./sse.ts";
 import { getModel } from "./store.ts";
 import { loadContent, modeRoot } from "../../scripts/content.mjs";
 import { picturesAfterSession } from "./pictures.ts";
 import { offeredReview } from "./recall.ts";
 import { correctionsFor, judgeRecapReadings, logRecapReadings, settleRecapReadings, uncertainInTranscript } from "./readings.ts";
 import { readsHints } from "./hints.ts";
+import { sessionToneLines } from "./toneReview.ts";
 
 // The post-session extraction (docs/DATA.md §Post-session extraction): when
 // a conversation ends, one tool-less `claude -p` reads its transcript and
@@ -31,6 +32,7 @@ import { readsHints } from "./hints.ts";
 //
 //   GET  /api/conversations/:id/recap   → {recap}
 //   POST /api/conversations/:id/recap   → 202 {recap}: make it (again): Retry recap
+//   POST /api/conversations/:id/recap-tones {phraseId} → {recap}: I said it right
 //
 // Never in the way of End: the hook (conversations.ts onConversationEnded)
 // only starts the run, which claims the conversation, calls the model and
@@ -223,9 +225,18 @@ async function run(profile: LanguageProfileRef, conv: Conversation, claim: strin
       const vsLast = compareAttempts(revisit, parsed.value.events, judged);
       // The readings it gave, each checked like a hint (nothing is written yet).
       const read = zhLocale ? judgeRecapReadings(toRead, extractJsonObject(text)?.readings, zhLocale) : null;
+      // Mandarin, adults (ld-ne0.18): the session's tone flags that may fail
+      // a bank phrase. No model call; a failure here costs the tone misses,
+      // never the recap.
+      const toneLines = zhLocale
+        ? await sessionToneLines(profile, conv, zhLocale).catch((e) => {
+            console.error(`[lingo-dojo] recap of conversation ${conv.id}: tones: ${detail(e)}`);
+            return [];
+          })
+        : [];
       // null: the claim was taken over (this run was presumed dead); the
       // run that has it now writes.
-      const stored = await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows, vsLast, readings: read?.judged });
+      const stored = await applyExtraction(db, profile, { conversationId: conv.id, claim, value: parsed.value, dropped: parsed.dropped, bankLocale: locale, turns: rows, vsLast, readings: read?.judged, toneLines });
       if (stored && zhLocale && read) {
         logRecapReadings(conv.id, read.stats);
         // After the recap is stored (its kept phrases are in the bank): a
@@ -286,6 +297,13 @@ async function recapOf(profile: LanguageProfileRef, c: Conversation): Promise<Se
         : c.extractionStatus === "running"
           ? "the recap was interrupted (the server restarted)"
           : (shownReason(c.extractionError) ?? "the recap couldn't be made"),
+    // Phrases a tone flag failed (ld-ne0.18): an adult's only.
+    toneMisses:
+      c.mode === "kids"
+        ? []
+        : (stored?.tones ?? [])
+            .filter((t) => t.reviewed || (t.dismissed && !t.idle))
+            .map(({ phraseId, phrase, line, syllables, dismissed }) => ({ phraseId, phrase, line, syllables, dismissed })),
     extractedAt: c.extractedAt ? new Date(c.extractedAt).toISOString() : null,
     // The earlier session's id only while it still exists (the link
     // column nulls on its delete); the comparison itself stays.
@@ -318,4 +336,19 @@ export async function handleRecap(req: IncomingMessage, res: ServerResponse, ctx
   // Claimed by this request or by a run already going: either way it is
   // being made (or has just been, by a quick one).
   sendJson(res, 202, { recap: await recapOf(ctx.language, await find(ctx, id)) } satisfies RecapReply);
+}
+
+/** /api/conversations/:id/recap-tones: "I said it right" on a phrase the
+ *  recap failed for a tone (ld-ne0.18). The grade changes back to what the
+ *  recap would have given it; nothing in the request says what that is. */
+export async function handleRecapTones(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx, id: string): Promise<void> {
+  if (req.method !== "POST") return methodNotAllowed(res, "POST");
+  const body = await readJsonBody<{ phraseId?: unknown }>(req);
+  if (!isUuid(body?.phraseId)) throw new HttpError(400, "phraseId must be a phrase's id");
+  await find(ctx, id);
+  const out = await dismissToneMiss(rawDb(), ctx.language, id, String(body.phraseId).toLowerCase());
+  if (out === "none") throw new HttpError(404, "no tone miss for that phrase in this session");
+  if (out === "busy") throw new HttpError(409, "the recap isn't finished; try again when it is");
+  if (out === "later") throw new HttpError(409, "this phrase has been practised since, so its grade stays as it is");
+  sendJson(res, 200, { recap: await recapOf(ctx.language, await find(ctx, id)) } satisfies RecapReply);
 }

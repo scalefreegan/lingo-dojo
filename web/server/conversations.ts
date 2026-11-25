@@ -26,7 +26,7 @@ import { learnerMode, learnerProfile, type LearnerCtx } from "./auth.ts";
 import { withDrawnScene } from "../shared/scenes.ts";
 import { profileRows, rawDb, schema } from "./db.ts";
 import { drawOrRefuse, randomSceneOf } from "./randomScene.ts";
-import { extractAfterEnd, handleRecap, recapStatus } from "./extraction.ts";
+import { extractAfterEnd, handleRecap, handleRecapTones, recapStatus } from "./extraction.ts";
 import { handleOverview, lostPrevious, previousAttempt } from "./revisit.ts";
 import { sessionReview } from "./recall.ts";
 import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./sse.ts";
@@ -45,6 +45,7 @@ import { readVoiceSettings } from "./store.ts";
 //   POST   /api/conversations/:id/end     → {conversation}; idempotent
 //   GET    /api/conversations/:id/recap   → {recap}  (extraction.ts)
 //   POST   /api/conversations/:id/recap   → 202 {recap}: make it again (Retry recap)
+//   POST   /api/conversations/:id/recap-tones {phraseId} → {recap}: I said it right (extraction.ts)
 //   DELETE /api/conversations/:id         → {deleted: true}; the turns go with it
 //
 // All of them act for the active learner and its active language (wrap's
@@ -764,7 +765,7 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
     return parts[0] === "scenes" ? scenes(req, res, ctx) : handleOverview(res, ctx);
   }
   const [id, action, ...rest] = parts;
-  if (rest.length || (action !== undefined && action !== "end" && action !== "recap" && action !== "redraw")) return sendJson(res, 404, { error: "no such route" });
+  if (rest.length || (action !== undefined && action !== "end" && action !== "recap" && action !== "recap-tones" && action !== "redraw")) return sendJson(res, 404, { error: "no such route" });
   // A malformed id is no conversation of anyone's (and never reaches
   // Postgres, which would answer it with an error).
   if (!CONVERSATION_ID_RE.test(id)) throw new HttpError(404, "no such conversation", NO_CONVERSATION);
@@ -780,6 +781,7 @@ export async function handleConversations(req: IncomingMessage, res: ServerRespo
     await endIdle(ctx.user.id);
     return handleRecap(req, res, ctx, id.toLowerCase());
   }
+  if (action === "recap-tones") return handleRecapTones(req, res, ctx, id.toLowerCase());
   if (req.method === "GET") return get(req, res, ctx, id.toLowerCase());
   if (req.method === "DELETE") return remove(res, ctx, id.toLowerCase());
   methodNotAllowed(res, "GET, DELETE");

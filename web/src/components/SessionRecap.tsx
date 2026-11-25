@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { ApiError, getRecap, retryRecap } from "../api";
+import { ApiError, dismissToneMiss, getRecap, retryRecap } from "../api";
 import { openBank } from "../bankLink";
-import type { MasteryBand, RecapEvent, RecapVsLast, SessionRecap as Recap } from "../types";
+import type { MasteryBand, RecapEvent, RecapToneMiss, RecapVsLast, SessionRecap as Recap } from "../types";
 import { GlossStar } from "./GlossStar";
 import { RubyText } from "./Ruby";
 import { ReadingFix } from "./ReadingFix";
@@ -270,10 +270,11 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
               </ul>
             </div>
           )}
+          {!kids && recap.toneMisses.length > 0 && <ToneMisses id={id} items={recap.toneMisses} locale={locale} onChange={setRecap} />}
           {!kids && recap.vsLast && <SinceLastTime vs={recap.vsLast} locale={locale} />}
           {!kids && locale && recap.readings?.length > 0 && <ReadingsToCheck items={recap.readings} locale={locale} />}
           {!recap.inBank && <p className="text-xs text-fg-3">This session was in another language than this phrase bank's, so nothing went into it.</p>}
-          {recap.inBank && !kids && recap.events.some((e) => e.reviewed) && (
+          {recap.inBank && !kids && (recap.events.some((e) => e.reviewed) || recap.toneMisses.some((t) => !t.dismissed)) && (
             <p className="text-xs text-fg-3">How you did on these phrases is in your phrase bank's practice schedule.</p>
           )}
         </>
@@ -282,6 +283,56 @@ export function SessionRecap({ id, justEnded = false, locale = null }: { id: str
           with no model call, so they show whatever became of the recap. */}
       {recap && !kids && status !== "open" && <SessionTonesSection id={id} locale={locale} />}
     </section>
+  );
+}
+
+/** "Right words, tone off" (ld-ne0.18, docs/VOICE.md §Tones after the
+ *  session): the phrases this recap counted as a miss for a tone, each with
+ *  a way to take it back: the scorer is wrong sometimes, and the grade is
+ *  then what the words alone would have given. Adults only. */
+function ToneMisses({ id, items, locale, onChange }: { id: string; items: RecapToneMiss[]; locale: string | null; onChange: (r: Recap) => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function dismiss(phraseId: string) {
+    setBusy(phraseId);
+    setError(null);
+    try {
+      onChange((await dismissToneMiss(id, phraseId)).recap);
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+  return (
+    <div data-testid="recap-tone-misses">
+      <h4 className="text-xs font-medium tracking-wide text-fg-3 uppercase">Right words, tone off</h4>
+      <ul className="mt-1 flex flex-col gap-1 text-sm text-fg-2">
+        {items.map((t) => (
+          <li key={t.phraseId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-medium text-fg" lang={locale ?? undefined}>
+              <RubyText text={t.phrase} locale={locale} />
+            </span>
+            <span className="text-fg-3">
+              {t.syllables.map((s) => `${s.char} (${s.pinyin}: tone ${s.expectedTone}${s.heardTone != null ? `, heard ${s.heardTone}` : ""})`).join("; ")}
+            </span>
+            {t.dismissed ? (
+              <span className="text-fg-3">You said it right: not counted as a miss.</span>
+            ) : (
+              <Button variant="ghost" className="px-2 py-1 text-sm sm:text-xs" onClick={() => void dismiss(t.phraseId)} disabled={busy !== null} data-testid="recap-tone-right">
+                I said it right
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {items.some((t) => !t.dismissed) && <p className="mt-0.5 text-xs text-fg-3">Counted as a miss, so you'll practise saying {items.length === 1 ? "it" : "them"} again soon.</p>}
+      {error && (
+        <p className="text-sm text-err" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

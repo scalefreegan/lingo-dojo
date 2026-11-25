@@ -1024,6 +1024,20 @@ export interface SessionRecap {
    *  in the dojo master's line it came from (`at`: UTF-16 offset there);
    *  `suggested`: the recap gave a reading of its own, now shown. */
   readings: { word: string; sentence: string; at: number; suggested: boolean }[];
+  /** Mandarin, adults (ld-ne0.18): phrases whose speak card this recap
+   *  failed for a tone; `dismissed`: the learner said it was right, and the
+   *  grade is back to what it would have been. */
+  toneMisses: RecapToneMiss[];
+}
+
+export interface RecapToneMiss {
+  phraseId: string;
+  phrase: string;
+  /** The line it was said in. */
+  line: string;
+  /** `place`: the character's place in the phrase, 1-based. */
+  syllables: { char: string; place: number; pinyin: string; expectedTone: number; heardTone: number | null }[];
+  dismissed: boolean;
 }
 
 /** The recap's "since last time" (scripts/revisit.mjs compareAttempts). */

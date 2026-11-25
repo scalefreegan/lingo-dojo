@@ -1292,8 +1292,21 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
     override only regrades `flashcard` rows, so the two never restore a
     card over each other; the undo below reads only the FSRS fields of
     `card_before`, never Practice's extra keys.
-  - Seen: a phrase the recap names that none of the session's replies
-    glossed gets one `extraction` sighting at `ended_at`; counts and
+  - Tone misses (ld-ne0.18, adult Mandarin sessions; which flags and
+    which phrase: docs/VOICE.md §Tones after the session): a bank phrase
+    the session's stored tone flags fail has its produce card reviewed
+    with Again, as the one session review of that card: in place of the
+    rating of the model's own event, or alone when there is none (`answer`
+    is then the line). The phrase joins the norm-ordered lock pass, and
+    the same skips hold (suspended, reviewed later). Kept in the stored
+    recap's `tones` [{phraseId, phrase, line, syllables, was, reviewed,
+    dismissed, idle?}], never in `events`, so a revisit carries none.
+    `dismissToneMiss` ("I said it right") locks the conversation, the
+    phrase and the card, restores `card_before`, grades it `was` (null:
+    deletes the review, and a card it made) and sets `dismissed`, which
+    re-runs carry on (`idle` while a run has no such miss).
+  - Seen: a phrase the recap names (or a tone miss fails) that none of the
+    session's replies glossed gets one `extraction` sighting at `ended_at`; counts and
     times are recounted from sightings, `last_practiced_at` from the
     phrase's reviews.
   - **Idempotent re-run.** First the last run is undone: its
@@ -1311,7 +1324,8 @@ browser `SessionRecap.tsx` (the card) and `bankLink.ts`.
     sightings and examples identical (tested).
 - **Stored**: `summary`, `extraction` (`{v: 1, summary, keep[{text,
   meaning, why, phraseId}], events[{phrase, kind, said, note, phraseId,
-  reviewed}], corrections, dropped, inBank}`), `extracted_at`, status
+  reviewed}], corrections, dropped, inBank,
+  tones?}`), `extracted_at`, status
   `done`.
 - **Routes** (with the conversation routes' `learner: true` scope):
   `GET /api/conversations/:id/recap` → `{recap}` (status open, none,
@@ -4384,7 +4398,9 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   through the language's scope, and the previous attempt's through
   `toneConversation`) and the per-tone trend (`trendChecks`: the
   (language, time) index, newest first, at most `TREND_MAX_ROWS`), counted
-  in `scripts/pronunciation-review.mjs`. Neither writes anything.
+  in `scripts/pronunciation-review.mjs`. Neither writes anything. The
+  recap's tone misses (ld-ne0.18) read the same rows (`sessionChecks`) and
+  write only the bank's session reviews (§Post-session extraction).
 - **Practice speak-it's tone miss** (stage 3) is kept on its review, not
   here: `reviews.card_before.tone_miss` `{ rating, verdict, syllables }`,
   beside `submit_id` (docs/DATA.md's practice extras), the grade the words
@@ -4405,6 +4421,7 @@ reads it. Queries only in `scripts/db/pronunciation.ts`, through
   checks, cascades), `scripts/tests/pronunciation-live.http.test.mjs`
   (written with the turn, the cap, served to its learner only, gone with
   the conversation, nothing for kids).
+  ld-ne0.18: `scripts/tests/tone-recap.http.test.mjs`.
   Stage 3: `scripts/tests/pronunciation-review.test.mjs` (the counting,
   comparing, trend and tone-miss rules) and
   `scripts/tests/pronunciation-review.http.test.mjs` (the routes, another
