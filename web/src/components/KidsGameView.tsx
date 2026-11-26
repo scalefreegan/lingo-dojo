@@ -4,11 +4,13 @@ import { keepPage } from "../keepPage";
 import { answerRound, gameStatus, pictureBlob, startGame, wordAudio } from "../gameApi";
 import type { GameRound, PictureStatus } from "../types";
 import { Mochi } from "./Mascots";
+import { RubyText } from "./Ruby";
 
 /* The kids word game (docs/DATA.md §Kids word game): the Practice tab of a
  * kids learner, and all of it. The child hears a word in the language they
  * are learning and taps the matching picture. Usable without reading: big
- * icons and pictures, everything said aloud, no text the child must read.
+ * icons and pictures, everything said aloud, no text the child must read
+ * (the word is shown after each tap, ld-yls, for a child who reads along).
  * A right tap is a cheer and a star; a wrong one is gentle: the right
  * picture is shown and the word played again, nothing counted against
  * them. Each tap is recorded quietly as a review of the word's listen card
@@ -29,8 +31,8 @@ import { Mochi } from "./Mascots";
  * prefers-reduced-motion. */
 
 const POLL_MS = 5000;
-/** How long a cheer shows before the next round. */
-const CHEER_MS = 1400;
+/** How long a cheer (and the word) shows before the next round. */
+const CHEER_MS = 2200;
 
 interface Loaded {
   round: GameRound;
@@ -42,7 +44,7 @@ interface Loaded {
 type Phase =
   | { kind: "home" }
   | { kind: "loading" }
-  | { kind: "round"; i: number; picked: string | null; right: string | null; result: "right" | "wrong" | null }
+  | { kind: "round"; i: number; picked: string | null; right: string | null; result: "right" | "wrong" | null; word?: { text: string; lang: string; reading?: string } }
   | { kind: "done" };
 
 /** The time a round was shown and answered (for the review's duration). */
@@ -182,10 +184,10 @@ export default function KidsGameView() {
       const reply = await answerRound({ phraseId: r.phraseId, version: r.version, revision: r.revision, submitId, pictureId, durationMs: clock() - shownAt.current });
       if (reply.right) {
         setStars((s) => s + 1);
-        setPhase({ kind: "round", i, picked: pictureId, right: reply.pictureId, result: "right" });
+        setPhase({ kind: "round", i, picked: pictureId, right: reply.pictureId, result: "right", word: reply.word });
         setTimeout(() => enter(i + 1), CHEER_MS);
       } else {
-        setPhase({ kind: "round", i, picked: pictureId, right: reply.pictureId, result: "wrong" });
+        setPhase({ kind: "round", i, picked: pictureId, right: reply.pictureId, result: "wrong", word: reply.word });
         say(item);
       }
     } catch (e) {
@@ -259,6 +261,11 @@ export default function KidsGameView() {
             );
           })}
         </div>
+        {phase.word && (
+          <p className="text-4xl font-semibold text-fg" lang={phase.word.lang} data-testid="game-word">
+            <RubyText text={phase.word.text} locale={phase.word.lang} reading={phase.word.reading} />
+          </p>
+        )}
         {phase.result === "wrong" && (
           <BigButton label="Next" onClick={() => enter(phase.i + 1)} testId="game-next">
             <NextIcon />

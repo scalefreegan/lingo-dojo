@@ -130,9 +130,9 @@ export interface GameAnswerReply {
   pictureId: string;
   /** This same tap was already recorded (a resend). */
   replayed: boolean;
-  /** For an adult learner only: the word heard, shown after the tap like
-   *  the other adult drills' answers. A kids learner's reply never has it. */
-  word?: { text: string; meaning: string | null; reading?: string };
+  /** The word heard, shown after the tap: its meaning for an adult only
+   *  (null for a kids learner), `lang` the profile's locale. */
+  word: { text: string; meaning: string | null; lang: string; reading?: string };
 }
 
 export type PictureState = "pending" | "ready" | "none" | "failed" | "removed";

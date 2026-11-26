@@ -918,10 +918,12 @@ async function answer(req: IncomingMessage, res: ServerResponse, ctx: LearnerCtx
     }),
   );
   if (!own) throw new HttpError(409, "this word has no picture now; skip it");
-  // An adult sees the word and its meaning after the tap, like the other
-  // adult drills' answers; a child's game never shows text (ld-318).
-  const word = learnerMode(req, ctx) === "adult" ? { word: { text: phrase.text ?? "", meaning: phrase.meaning ?? null, ...(phrase.reading ? { reading: phrase.reading } : {}) } } : {};
-  sendJson(res, 200, { right: out.review.rating >= 3, pictureId: own.id, replayed: out.replayed, ...word } satisfies GameAnswerReply);
+  // The word heard, shown after the tap: an adult's with its meaning, like
+  // the other adult drills' answers; a child's the word alone (ld-yls), with
+  // the locale the page reads it in (the kids page has no profile info).
+  const adult = learnerMode(req, ctx) === "adult";
+  const word = { text: phrase.text ?? "", meaning: adult ? (phrase.meaning ?? null) : null, lang: targetLocale(ctx), ...(phrase.reading ? { reading: phrase.reading } : {}) };
+  sendJson(res, 200, { right: out.review.rating >= 3, pictureId: own.id, replayed: out.replayed, word } satisfies GameAnswerReply);
 }
 
 /** A picture's bytes, by its id and file: only this language's, only while
