@@ -160,11 +160,40 @@ export interface DrawAnywayRequest {
   description?: string;
 }
 
+/** Why a grown-up draws a picture again (ld-ur3). */
+export type RedrawReason = "wrong" | "lookalike" | "kids" | "style";
+
+/** POST /api/pictures/phrase/:id/redraw (ld-ur3), every field optional (no
+ *  body: drawn again from the same description). `show`: what the picture
+ *  should show instead, cleaned like Draw it anyway's description and
+ *  stored as the word's new one. `reason` on a shared picture (`stock`)
+ *  also reports that picture to an admin. */
+export interface RedrawRequest {
+  reason?: RedrawReason;
+  show?: string;
+}
+
 /** GET /api/pictures/phrase/:id and the remove/redraw/draw replies: the
  *  phrase's picture for its words as they are (null: not judged yet). */
 export interface PhrasePictureReply {
   picture: PhrasePicture | null;
   status: PictureStatus;
+  /** A redraw's: the shared picture it replaced was reported (ld-ur3). */
+  reported?: boolean;
+}
+
+/** One open report in the picture library's Reported list (admins). */
+export interface PictureReportView {
+  id: string;
+  conceptId: string;
+  reason: RedrawReason;
+  note: string | null;
+  at: string;
+}
+
+/** GET /api/stock-pictures/admin/reports. */
+export interface PictureReportsReply {
+  reports: PictureReportView[];
 }
 
 /** One word in the picture library's "My word pictures" (GET

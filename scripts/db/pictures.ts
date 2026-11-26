@@ -35,6 +35,11 @@ const ownFile = (row: PictureRow | undefined): string | null => (row && !row.sto
  *  no stock, nothing waiting. */
 const NO_FILE = { file: null, contentType: null, theme: null, stockId: null, restyle: null } as const;
 
+/** A grown-up's own description replacing the check's: its look-alike
+ *  group and kids verdict were for the old one, so the new words decide the
+ *  group (ownLookAlike) and a shared copy waits for the kids check again. */
+const NEW_DESCRIPTION = (description: string) => ({ description, lookAlike: null, kidsSafe: null });
+
 /** This language's picture rows, by phrase id. */
 export async function pictureRows(db: Db, profile: LanguageProfileRef): Promise<Map<string, PictureRow>> {
   const rows = await forLanguageProfile(db, profile).list(phrasePictures);
@@ -130,16 +135,19 @@ export async function changePicture(
   phraseId: string,
   phraseKey: string,
   action: "remove" | "redraw",
+  /** A redraw's new description (Draw again with "what it should show",
+   *  ld-ur3, already through grownUpDescription); absent keeps the old. */
+  description?: string,
 ): Promise<{ row: PictureRow; oldFile: string | null } | { problem: "none" | "stale" | "state" }> {
   const mine = forLanguageProfile(db, profile);
   const before = await mine.get(phrasePictures, eq(phrasePictures.phraseId, phraseId));
   if (!before) return { problem: "none" };
   if (before.phraseKey !== phraseKey) return { problem: "stale" };
   const from: Status[] = action === "remove" ? ["ready", "pending", "failed"] : ["ready", "failed", "removed"];
-  if (!from.includes(before.status) || (action === "redraw" && !before.description)) return { problem: "state" };
+  if (!from.includes(before.status) || (action === "redraw" && !before.description && !description)) return { problem: "state" };
   const [row] = await mine.update(
     phrasePictures,
-    { status: action === "remove" ? "removed" : "pending", ...NO_FILE, updatedAt: sql`now()` },
+    { status: action === "remove" ? "removed" : "pending", ...NO_FILE, ...(action === "redraw" && description ? NEW_DESCRIPTION(description) : {}), updatedAt: sql`now()` },
     and(eq(phrasePictures.id, before.id), eq(phrasePictures.phraseKey, phraseKey), inArray(phrasePictures.status, from)) as SQL,
   );
   if (!row) return { problem: "state" };

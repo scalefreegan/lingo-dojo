@@ -7,7 +7,7 @@
 
 import { json, req, reqBlob } from "./api";
 import type {
-  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStartRequest, GameStatusReply, PoolLevel, PhrasePictureReply, RecheckReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
+  AddStockConceptRequest, DrawAnywayRequest, DrawMissingRequest, GameAnswerReply, GameAnswerRequest, GameStartReply, GameStartRequest, GameStatusReply, PoolLevel, PhrasePictureReply, PictureReportsReply, RedrawRequest, RecheckReply, RestyleReply, SetStockAdultsRequest, SetStockGroupRequest, StockChangeReply, StockListReply,
   WordPicturesReply,
 } from "./types";
 import { utcOffset } from "./practiceApi";
@@ -47,9 +47,16 @@ export const recheckPictures = () => req<RecheckReply>("/api/pictures/recheck", 
 /** GET /api/pictures/phrase/:id: a word's picture. */
 export const phrasePicture = (phraseId: string, signal?: AbortSignal) => req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}`, { signal });
 
-/** POST /api/pictures/phrase/:id/remove | redraw. */
-export const changePhrasePicture = (phraseId: string, action: "remove" | "redraw") =>
-  req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}/${action}`, json({}));
+/** POST /api/pictures/phrase/:id/remove | redraw; a redraw may say why
+ *  and what to show instead (ld-ur3). */
+export const changePhrasePicture = (phraseId: string, action: "remove" | "redraw", redraw: RedrawRequest = {}) =>
+  req<PhrasePictureReply>(`/api/pictures/phrase/${encodeURIComponent(phraseId)}/${action}`, json(action === "redraw" ? redraw : {}));
+
+/** GET /api/stock-pictures/admin/reports: learners' open reports (admins). */
+export const pictureReports = (signal?: AbortSignal) => req<PictureReportsReply>("/api/stock-pictures/admin/reports", { signal });
+
+/** POST /api/stock-pictures/admin/reports/:id/resolve: every open report of its picture. */
+export const resolvePictureReport = (id: string) => req<{ resolved: number }>(`/api/stock-pictures/admin/reports/${encodeURIComponent(id)}/resolve`, json({}));
 
 /** POST /api/pictures/phrase/:id/draw: a word left out as "no clear
  *  picture", drawn anyway, as the grown-up describes it (or by its meaning). */

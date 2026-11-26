@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { listLearners } from "../../scripts/db/accounts.ts";
+import { kidsReportedConcepts, openPictureReports, resolvePictureReports } from "../../scripts/db/pictureReports.ts";
+import { isUuid } from "../../scripts/phrases.mjs";
 import {
   addCustomStockConcept, customStockConcepts, deleteCustomStockConcept, fillDrawingGroups, setCustomStockAdults, setCustomStockGroup, setStockAdultsOverride, stockAdultsOverrides, stockCallDone,
   stockCallStarted, stockCallsSince, type AdultsOverride, type CustomConcept,
@@ -9,7 +11,7 @@ import { drawStockPicture, listStock } from "../../scripts/picture-stock.mjs";
 import { deleteStockPicture, readStockPicture, stockPicture } from "../../scripts/picture-store.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
 import { PICTURE_DAILY_STOCK, PICTURE_THEME, STOCK_ID_RE, lookAlikeOf, mergeStock, readNewConcept, readStockGroup } from "../../scripts/pictures.mjs";
-import type { StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
+import type { PictureReportsReply, StockChangeReply, StockConceptView, StockListReply } from "../shared/game.ts";
 import type { Ctx } from "./auth.ts";
 import { rawDb } from "./db.ts";
 import { BFL_CREDITS_PER_IMAGE, ImageRefused, bflProvider, imageProvider, type ImageProvider } from "./imageProvider.ts";
@@ -29,6 +31,8 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/stock-pictures/admin/:id/remove      delete a concept added from the page, and its picture
 //   POST /api/stock-pictures/admin/:id/adults      {adults}: set or clear its Adults only flag
 //   POST /api/stock-pictures/admin/:id/group       {group}: set or clear (null, "") an added concept's look-alike group
+//   GET  /api/stock-pictures/admin/reports         learners' open reports of shared pictures (ld-ur3)
+//   POST /api/stock-pictures/admin/reports/:id/resolve  resolve every open report of that report's concept
 //
 // The first two are mounted with wrap's default "user" (the shared set is
 // nobody's: no learner check); the rest with "admin", so a non-admin gets
@@ -108,7 +112,11 @@ export async function customConcepts(): Promise<CustomConcept[]> {
  *  learner's view doesn't depend on the flag). */
 export async function adultsOverrides(): Promise<AdultsOverride[]> {
   try {
-    return await stockAdultsOverrides(rawDb());
+    // An open "not right for kids" report (ld-ur3) keeps its concept, file
+    // or added, from kids until an admin resolves it, whatever the flag.
+    const [set, reported] = await Promise.all([stockAdultsOverrides(rawDb()), kidsReportedConcepts(rawDb())]);
+    const held = new Set(reported);
+    return [...set.filter((o) => !held.has(o.id)), ...reported.map((id) => ({ id, adults: true, held: true }))];
   } catch (e) {
     console.warn("[lingo-dojo] pictures: the stock Adults only settings couldn't be read; every file concept is kept from kids:", String((e as Error)?.message || e));
     try {
@@ -318,6 +326,21 @@ export async function handleStock(req: IncomingMessage, res: ServerResponse, ctx
 /** /api/stock-pictures/admin (wrap's "admin"): every stock write. */
 export async function handleStockAdmin(req: IncomingMessage, res: ServerResponse, ctx: Ctx): Promise<void> {
   const parts = subPath(req).split("/").filter(Boolean);
+  // Learners' reports of shared pictures (ld-ur3): the open ones, and
+  // Resolve, which closes every open report of that report's concept (an
+  // open kids one stops keeping it from kids).
+  if (parts.length === 1 && parts[0] === "reports") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    const reports = (await openPictureReports(rawDb())).map((r) => ({ id: r.id, conceptId: r.conceptId, reason: r.reason, note: r.note, at: r.createdAt.toISOString() }));
+    return sendJson(res, 200, { reports } satisfies PictureReportsReply);
+  }
+  if (parts.length === 3 && parts[0] === "reports" && parts[2] === "resolve") {
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
+    if (!isUuid(parts[1])) throw new HttpError(404, "no such report");
+    const n = await resolvePictureReports(rawDb(), parts[1].toLowerCase(), ctx.user.id);
+    if (!n) throw new HttpError(404, "no such open report");
+    return sendJson(res, 200, { resolved: n });
+  }
   if (req.method !== "POST") return methodNotAllowed(res, "POST");
   if (parts.length === 1 && parts[0] === "concepts") {
     const body = await readJsonBody(req);

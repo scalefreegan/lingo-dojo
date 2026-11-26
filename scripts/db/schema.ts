@@ -1437,3 +1437,33 @@ export const pronunciationChecks = pgTable(
     index("pronunciation_checks_profile_idx").on(t.languageProfileId, t.createdAt),
   ],
 );
+
+/**
+ * A learner's report of a shared picture (ld-ur3, docs/DATA.md §Picture
+ * reports): made when a grown-up draws again a word that pointed at a stock
+ * concept or a shared drawing, with a reason. The word gets its own drawing
+ * at once; the report waits for an admin in the picture library. An open
+ * `kids` report keeps the concept from kids learners (laid over the Adults
+ * only flags, stockPictures.ts adultsOverrides) until resolved. Install-wide
+ * rows read only by an admin; a learner's own come from its user and
+ * language profile. `note` is the cleaned "what it should show instead".
+ */
+export const pictureReports = pgTable(
+  "picture_reports",
+  {
+    id: id(),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    languageProfileId: uuid("language_profile_id").references(() => languageProfiles.id, { onDelete: "set null" }),
+    conceptId: text("concept_id").notNull(),
+    reason: text("reason").$type<"wrong" | "lookalike" | "kids" | "style">().notNull(),
+    note: text("note"),
+    createdAt: createdAt(),
+    resolvedAt: tz("resolved_at"),
+    resolvedBy: uuid("resolved_by").references(() => users.id, { onDelete: "set null" }),
+  },
+  (t) => [
+    check("picture_reports_reason", sql`${t.reason} in ('wrong', 'lookalike', 'kids', 'style')`),
+    index("picture_reports_open_idx").on(t.conceptId).where(sql`${t.resolvedAt} is null`),
+    index("picture_reports_user_idx").on(t.userId, t.createdAt),
+  ],
+);
