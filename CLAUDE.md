@@ -377,8 +377,9 @@ Settled readings and kids readings (ld-0mn, migration 0017, docs/VOICE.md
 Adults play it too, and the picture library (ld-318, migration 0013,
 docs/DATA.md §The game for adults, and the picture library):
 - Practice's **Pictures** mode (`web/src/components/PictureGameView.tsx`,
-  not in Mixed) on the same `/api/game/*` routes, no longer kids-only; only
-  an adult's answer reply carries `word {text, meaning}`. An adult session's
+  not in Mixed) on the same `/api/game/*` routes, no longer kids-only; an
+  answer reply carries `word {text, meaning, lang}`, the meaning an adult's
+  only (a kids reply's is null; the kids game shows the word, ld-yls). An adult session's
   end queues picture work like a kids one, under the same cap; the Phrase
   bank's picture actions show for adults.
 - The menu's **Picture library** (`web/src/components/PictureLibraryView.tsx`,

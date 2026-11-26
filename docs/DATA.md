@@ -3955,9 +3955,10 @@ the kids game:
   pictures** (`POST /api/pictures/fill`);
 - a round shows progress `n / total` with a bar and End like the other
   adult modes, the word plays, and after the tap Correct / Not quite with
-  the word and its meaning: `POST /api/game/answer` adds `word: {text,
-  meaning}` only when `learnerMode` is adult (a kids reply never has it, so
-  the child's game still shows nothing to read);
+  the word and its meaning: `POST /api/game/answer` carries `word: {text,
+  meaning, lang}`, the meaning only when `learnerMode` is adult (a kids
+  reply's is null: the child's game shows the word alone under the
+  pictures after each tap, ld-yls, never anything the child must read);
 - the summary is "X of Y picked right" and the missed words.
 
 An adult session's end queues picture work like a kids one

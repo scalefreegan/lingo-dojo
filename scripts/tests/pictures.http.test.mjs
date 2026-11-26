@@ -331,10 +331,10 @@ test("the game: rounds from ready pictures only; a tap is a quiet review of the 
 
   const right = await tap(pip, one, pictureOf.get(one.phraseId));
   assert.equal(right.status, 200, right.text);
-  assert.deepEqual(right.body, { right: true, pictureId: pictureOf.get(one.phraseId), replayed: false });
+  assert.deepEqual(right.body, { right: true, pictureId: pictureOf.get(one.phraseId), replayed: false, word: { text: right.body.word.text, meaning: null, lang: "de-DE" } });
   const wrongPick = two.choices.find((c) => c.id !== pictureOf.get(two.phraseId)).id;
   const wrong = await tap(pip, two, wrongPick);
-  assert.deepEqual(wrong.body, { right: false, pictureId: pictureOf.get(two.phraseId), replayed: false });
+  assert.deepEqual(wrong.body, { right: false, pictureId: pictureOf.get(two.phraseId), replayed: false, word: { text: wrong.body.word.text, meaning: null, lang: "de-DE" } });
   const reviews = await q(
     "select r.mode, r.rating, r.verdict, c.skill, c.phrase_id from reviews r join cards c on c.id = r.card_id where r.language_profile_id = $1 order by r.id",
     [pip.languageId],

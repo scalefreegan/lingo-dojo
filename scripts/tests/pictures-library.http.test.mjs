@@ -127,7 +127,7 @@ test("an adult plays the picture game: rounds from ready pictures, a tap is a li
   const right = await tap(sam, one, pictureOf.get(one.phraseId));
   assert.equal(right.status, 200, right.text);
   const word = Object.values(p).find((x) => x.id === one.phraseId);
-  assert.deepEqual(right.body, { right: true, pictureId: pictureOf.get(one.phraseId), replayed: false, word: { text: word.text, meaning: word.meaning } });
+  assert.deepEqual(right.body, { right: true, pictureId: pictureOf.get(one.phraseId), replayed: false, word: { text: word.text, meaning: word.meaning, lang: "es-MX" } });
   const wrongPick = two.choices.find((c) => c.id !== pictureOf.get(two.phraseId)).id;
   const wrong = await tap(sam, two, wrongPick);
   assert.equal(wrong.body.right, false);
@@ -159,14 +159,17 @@ test("an adult's tap: a resend replays, another answer at that version and an ed
   assert.equal(count, 1);
 });
 
-test("a kids learner's tap never carries the word; the kid still can't reach the adult drills", async () => {
+test("a kids learner's tap carries the word alone, no meaning (ld-yls); the kid still can't reach the adult drills", async () => {
   const pip = await someone([KID]);
   const p = await add(pip, [["der Hund", "dog"], ["die Katze", "cat"], ["der Ball", "ball"]]);
   await drawAll(pip);
   const [one] = (await pip.call("POST", "/api/game/start")).body.rounds;
   const r = await tap(pip, one, one.choices[0].id);
   assert.equal(r.status, 200, r.text);
-  assert.deepEqual(Object.keys(r.body).sort(), ["pictureId", "replayed", "right"]);
+  assert.deepEqual(Object.keys(r.body).sort(), ["pictureId", "replayed", "right", "word"]);
+  assert.equal(r.body.word.meaning, null, "no meaning for a child");
+  assert.ok(["der Hund", "die Katze", "der Ball"].includes(r.body.word.text), r.body.word.text);
+  assert.equal(r.body.word.lang, "de-DE");
   for (const [m, url] of [["GET", "/api/practice"], ["GET", "/api/practice/queue"], ["POST", "/api/practice/answer"], ["GET", `/api/practice/audio/${p["der Hund"].id}`]]) {
     assert.equal((await pip.call(m, url, m === "POST" ? {} : undefined)).status, 403, `${m} ${url}`);
   }
