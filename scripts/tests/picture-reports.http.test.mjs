@@ -213,3 +213,16 @@ test("mergeStock: a held override (an open kids report) keeps an added concept f
   assert.deepEqual(adults([{ id: "kite", adults: true }]), { dog: false, kite: false });
   assert.deepEqual(adults([{ id: "kite", adults: true, held: true }, { id: "dog", adults: true, held: true }]), { dog: true, kite: true });
 });
+
+test("open reports that can't be read fail closed: every concept, added ones too, is kept from kids", async () => {
+  const { adultsOverrides } = await import("../../web/server/stockPictures.ts");
+  await q("insert into picture_stock_concepts (id, category, description, words) values ('kite', 'Toys', 'a red kite', '{kite}')");
+  await q("alter table picture_reports rename to picture_reports_away");
+  try {
+    const o = await adultsOverrides();
+    assert.ok(o.some((x) => x.id === "dog" && x.adults), "the file's");
+    assert.ok(o.some((x) => x.id === "kite" && x.adults && x.held), "an added one, held");
+  } finally {
+    await q("alter table picture_reports_away rename to picture_reports");
+  }
+});

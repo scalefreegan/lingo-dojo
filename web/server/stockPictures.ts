@@ -105,26 +105,38 @@ export async function customConcepts(): Promise<CustomConcept[]> {
   }
 }
 
-/** An admin's Adults only settings for the file's concepts (migration
- *  0018); never throws. A read that fails is logged and fails closed: every
- *  file concept counts as adults only, so a setting that couldn't be read
- *  never lets a child see a picture an admin kept from kids (an adult
- *  learner's view doesn't depend on the flag). */
-export async function adultsOverrides(): Promise<AdultsOverride[]> {
+/** The file concepts, every one adults only: what a read that failed
+ *  falls back to (none if the file can't be read either). */
+function allFileAdults(): AdultsOverride[] {
   try {
-    // An open "not right for kids" report (ld-ur3) keeps its concept, file
-    // or added, from kids until an admin resolves it, whatever the flag.
-    const [set, reported] = await Promise.all([stockAdultsOverrides(rawDb()), kidsReportedConcepts(rawDb())]);
-    const held = new Set(reported);
-    return [...set.filter((o) => !held.has(o.id)), ...reported.map((id) => ({ id, adults: true, held: true }))];
-  } catch (e) {
-    console.warn("[lingo-dojo] pictures: the stock Adults only settings couldn't be read; every file concept is kept from kids:", String((e as Error)?.message || e));
-    try {
-      return loadPictureStock().concepts.map((c) => ({ id: c.id, adults: true }));
-    } catch {
-      return [];
-    }
+    return loadPictureStock().concepts.map((c) => ({ id: c.id, adults: true }));
+  } catch {
+    return [];
   }
+}
+
+/** An admin's Adults only settings for the file's concepts (migration
+ *  0018), with each concept an open kids report holds (ld-ur3: `held`, file
+ *  or added, kept from kids until an admin resolves it); never throws. Each
+ *  read that fails is logged and fails closed on its own: settings that
+ *  can't be read keep every file concept from kids; reports that can't be
+ *  read hold every concept, added ones too, so a picture waiting for an
+ *  admin's look never reaches a child (an adult learner's view doesn't
+ *  depend on the flag). */
+export async function adultsOverrides(): Promise<AdultsOverride[]> {
+  const [set, reported] = await Promise.all([
+    stockAdultsOverrides(rawDb()).catch((e) => {
+      console.warn("[lingo-dojo] pictures: the stock Adults only settings couldn't be read; every file concept is kept from kids:", String((e as Error)?.message || e));
+      return allFileAdults();
+    }),
+    kidsReportedConcepts(rawDb()).catch(async (e) => {
+      console.warn("[lingo-dojo] pictures: the open picture reports couldn't be read; every concept is kept from kids:", String((e as Error)?.message || e));
+      // customConcepts never throws (an unreadable list is none).
+      return [...allFileAdults().map((o) => o.id), ...(await customConcepts()).map((c) => c.id)];
+    }),
+  ]);
+  const held = new Set(reported);
+  return [...set.filter((o) => !held.has(o.id)), ...reported.map((id) => ({ id, adults: true, held: true }))];
 }
 
 /** The whole stock list (the file's and the database's, with the admin's
