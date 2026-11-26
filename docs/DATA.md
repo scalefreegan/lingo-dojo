@@ -3649,6 +3649,51 @@ look-alike `group`, and `roundChoices` skips a second of one:
   answers a tap on such a round with a 409 and records no review.
   Otherwise nothing is relaxed: a round may offer fewer than four.
 
+#### Picture reports (ld-ur3, migration 0024)
+
+**Draw again** in a word's picture (the Phrase bank, and My word pictures;
+the grown-up's side for a kids learner, never the child's game) opens a
+small form: an optional reason (Wrong thing, Looks like another picture,
+Not right for kids, Style is off) and an optional "What should it show
+instead?". `POST /api/pictures/phrase/:id/redraw` takes `{reason?, show?}`;
+no body is the old redraw from the same description.
+
+- `show` becomes the word's description through `grownUpDescription` (the
+  check's own cleaning; a learner's name or nothing to draw is a 400 and
+  nothing changes), and with it the row's `look_alike` and `kids_safe` are
+  cleared: they were the check's verdicts on the old description, so the
+  new words decide the group (`ownLookAlike`) and a shared copy waits for
+  the kids check again. The field asks what to show, never what is wrong:
+  "not a dog" in a prompt draws a dog.
+- A word on a shared picture (`stock_id`: a stock concept or someone's
+  shared drawing) gets its own drawing either way. With a reason, the
+  shared picture is also reported: one `picture_reports` row, written only
+  after the redraw went through (the reply's `reported: true`).
+- At most `PICTURE_DAILY_REPORTS` (20) a user in any 24 hours, counted
+  before the redraw (a 429 and nothing changes; Draw again without a reason
+  still works). A plain count, not under a lock: two at once may make 21.
+
+`picture_reports`: `id`, `user_id` and `language_profile_id` (who and from
+which language; SET NULL), `concept_id` (text: a file concept or an added
+one), `reason` (check: `wrong`, `lookalike`, `kids`, `style`), `note` (the
+cleaned `show`, or null), `created_at`, `resolved_at`, `resolved_by`. A
+partial index on open rows by concept. Install-wide like the stock tables
+(queries only in `scripts/db/pictureReports.ts`); the reader role gets
+nothing. The note is never logged.
+
+- **Kept from kids:** a concept with an open `kids` report is laid over
+  the Adults only flags as `{ adults: true, held: true }`
+  (`stockPictures.ts` `adultsOverrides`); `mergeStock` takes `held` for an
+  added concept too (a plain override never touches one). So it leaves a
+  kids learner's list, picturable check and game at once, and comes back
+  when the report is resolved. A read that fails fails closed as before.
+- **The admin's side:** the picture library's Shared library shows a
+  **Reported** card (`GET /api/stock-pictures/admin/reports`): each
+  reported picture with its reasons and notes, and **Resolve** (`POST
+  /api/stock-pictures/admin/reports/:id/resolve`: every open report of that
+  report's concept; 404 when none is open). The tile's own buttons redraw it
+  or set Adults only.
+
 ### Check again for a shared picture
 
 A grown-up action on the Phrase bank's picture bar (`POST

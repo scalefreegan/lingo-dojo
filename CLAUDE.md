@@ -415,6 +415,14 @@ docs/DATA.md §The game for adults, and the picture library):
   fills the ones shared before 0021 once, free). A round of one picture
   only is left out of the game and never graded (`isRound`); a game with
   none left isn't `ready`.
+- **Draw again with a note** (ld-ur3, migration 0024, docs/DATA.md §Picture
+  reports): a word's Draw again takes an optional reason and "what should it
+  show instead" (`{reason?, show?}`; `show` is the new description through
+  `grownUpDescription`). A word on a shared picture gets its own drawing,
+  and with a reason the shared one is reported (`picture_reports`, queries in
+  `scripts/db/pictureReports.ts`, 20 a user a day); an open `kids` report
+  keeps that concept from kids (`adultsOverrides`' `held`) until an admin
+  resolves it in the Shared library's **Reported** card.
 - An admin sets or clears any concept's Adults only from its tile (ld-cvd,
   migration 0018, docs/DATA.md §Adults only, set from the page; `POST
   /api/stock-pictures/admin/:id/adults`): an added one's column, a file

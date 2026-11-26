@@ -15,6 +15,7 @@ import { isUuid } from "../../scripts/phrases.mjs";
 import { loadPictureStock } from "../../scripts/content.mjs";
 import { deletePicture, newPictureKey, readPicture, readStockPicture, stockDir, stockDrawnAt, stockPicture, stockVersion, writePicture } from "../../scripts/picture-store.mjs";
 import { adultsOverrides, stockList } from "./stockPictures.ts";
+import { REPORT_REASONS, addPictureReport, mayReport, type ReportReason } from "../../scripts/db/pictureReports.ts";
 import {
   JUDGE_BATCH, MIN_PICTURED, PICTURE_DAILY_IMAGES, PICTURE_DAILY_JUDGES, PICTURE_THEME, currentThemes, drawnTheme, gameRounds, grownUpDescription, isCurrent, isRound, judgePrompt, lookAlikeGroups, ownLookAlike, parseJudgeReply,
   pictureBank, pictureKey, picturePrompt, pictureWork, readGameAnswer, recheckTargets, restyleTargets, roundChoices, mergeStock, stockForMode, stockKey,
@@ -56,7 +57,7 @@ import { HttpError, methodNotAllowed, readJsonBody, sendJson, subPath } from "./
 //   POST /api/pictures/fill                 draw pictures for the words waiting (the backlog)
 //   GET  /api/pictures/phrase/:id           a word's picture
 //   POST /api/pictures/phrase/:id/remove    out of the game, file deleted
-//   POST /api/pictures/phrase/:id/redraw    drawn again (same description)
+//   POST /api/pictures/phrase/:id/redraw    {reason?, show?}: drawn again, `show` its new description; a shared picture with a reason is reported (ld-ur3)
 //   POST /api/pictures/phrase/:id/draw      {description?}: a word judged "no clear picture" drawn anyway
 //   POST /api/pictures/recheck              Check again for a shared picture: `none` words judged before the newest stock picture (ld-30r)
 //   POST /api/pictures/restyle              Redraw all in the current style (every picture not in PICTURE_THEME)
@@ -1161,7 +1162,35 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
       fillPictures(targetOf(ctx));
       return sendJson(res, 200, { picture: pictureView(drawn.row, await stockWithheld(ctx.learner.mode)), status: await statusOf(ctx) } satisfies PhrasePictureReply);
     }
-    const changed = await changePicture(rawDb(), profile, phraseId, pictureKey(phrase), action);
+    // Draw again with a note (ld-ur3): a reason, and what it should show
+    // instead (the word's new description, by the check's own rules).
+    let description: string | undefined;
+    let reason: ReportReason | undefined;
+    if (action === "redraw") {
+      const body = ((await readJsonBody(req)) ?? {}) as { reason?: unknown; show?: unknown };
+      if (body.reason != null && !REPORT_REASONS.includes(body.reason as ReportReason)) throw new HttpError(400, `reason must be one of ${REPORT_REASONS.join(", ")}`);
+      reason = (body.reason ?? undefined) as ReportReason | undefined;
+      if (body.show != null && typeof body.show !== "string") throw new HttpError(400, "show must be text");
+      if (typeof body.show === "string" && body.show.trim() !== "") {
+        const names = (await listLearners(rawDb(), ctx.user.id, { archived: true })).map((l) => l.name);
+        const d = grownUpDescription(body.show, names);
+        if (d.error !== undefined) {
+          throw new HttpError(
+            400,
+            d.error === "name"
+              ? "A picture's description can't have a learner's name in it. Say what to draw without the name."
+              : "That doesn't say what to draw. Use a few plain words, like \"a sleeping cat\".",
+          );
+        }
+        description = d.description;
+      }
+    }
+    // A word on a shared picture (a stock concept, someone's drawing) gets
+    // its own drawing, and with a reason the shared one is reported to an
+    // admin; past the day's cap that's a 429 before anything changes.
+    const sharedFrom = action === "redraw" && reason ? (await pictureOf(rawDb(), profile, phraseId))?.stockId ?? null : null;
+    if (sharedFrom && !(await mayReport(rawDb(), ctx.user.id))) throw new HttpError(429, "That's enough picture reports for today. Draw it again without a reason, or try tomorrow.");
+    const changed = await changePicture(rawDb(), profile, phraseId, pictureKey(phrase), action, description);
     if ("problem" in changed) {
       throw new HttpError(409, changed.problem === "state" ? `this picture can't be ${action === "remove" ? "removed" : "drawn again"} now` : "this word hasn't been judged for a picture yet");
     }
@@ -1170,8 +1199,13 @@ export async function handlePictures(req: IncomingMessage, res: ServerResponse, 
     await unshareFile(changed.oldFile);
     await dropPictureFile(changed.oldFile);
     // A grown-up's explicit redraw is a trigger (the same caps and ledger).
+    let reported = false;
+    if (sharedFrom) {
+      await addPictureReport(rawDb(), { userId: ctx.user.id, languageProfileId: profile.id, conceptId: sharedFrom, reason: reason!, note: description ?? null });
+      reported = true;
+    }
     if (action === "redraw") fillPictures(targetOf(ctx));
-    return sendJson(res, 200, { picture: pictureView(changed.row, await stockWithheld(ctx.learner.mode)), status: await statusOf(ctx) } satisfies PhrasePictureReply);
+    return sendJson(res, 200, { picture: pictureView(changed.row, await stockWithheld(ctx.learner.mode)), status: await statusOf(ctx), ...(reported ? { reported } : {}) } satisfies PhrasePictureReply);
   }
   sendJson(res, 404, { error: "no such route" });
 }

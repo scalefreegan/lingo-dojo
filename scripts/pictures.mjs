@@ -214,7 +214,10 @@ export const PICTURE_DAILY_STOCK = 300;
  * admin's Adults only settings for the file's concepts, made from the page
  * (the app never writes content/): each replaces its file concept's flag.
  * They never touch an added concept (its own column is its flag) nor a
- * shadowed row, and one whose id the file no longer has is ignored.
+ * shadowed row, and one whose id the file no longer has is ignored; the
+ * exception is one marked `held: true`, an open kids report (ld-ur3, laid
+ * in by stockPictures.ts adultsOverrides), which keeps any concept, added
+ * ones too, from kids.
  * An added concept that is a learner's shared drawing (`origin: drawing`,
  * migration 0020, ld-ec9) is `adults` until its kids check passed
  * (`kidsSafe` true), and carries `drawing: true, kidsChecked`.
@@ -223,6 +226,7 @@ export const PICTURE_DAILY_STOCK = 300;
 export function mergeStock(base, custom = [], adultsOverrides = []) {
   const taken = new Set(base.map((c) => c.id));
   const override = new Map((adultsOverrides ?? []).map((o) => [o.id, o.adults === true]));
+  const held = new Set((adultsOverrides ?? []).filter((o) => o.held === true).map((o) => o.id));
   const raw = { categories: {} };
   for (const c of base) {
     const adults = override.has(c.id) ? override.get(c.id) : c.adults;
@@ -243,7 +247,9 @@ export function mergeStock(base, custom = [], adultsOverrides = []) {
     // A learner's shared drawing (ld-ec9) reaches kids only once its kids
     // check said yes: until then, and after a no, it is adults only
     // whatever its own flag says.
-    const adults = c.adults === true || (c.origin === "drawing" && c.kidsSafe !== true);
+    // `held`: an open kids report (ld-ur3), the one override an added
+    // concept takes (an admin's setting for it is its own column).
+    const adults = c.adults === true || held.has(c.id) || (c.origin === "drawing" && c.kidsSafe !== true);
     (raw.categories[c.category] ??= []).push({ id: c.id, description: c.description, words: c.words, ...(c.group ? { group: c.group } : {}), ...(adults ? { adults: true } : {}) });
   }
   if (shadowed.length) {

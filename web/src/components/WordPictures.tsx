@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { changePhrasePicture, drawPhrasePictureAnyway, fillPictures, phrasePicture, pictureBlob, pictureStatus, recheckPictures, restylePictures } from "../gameApi";
-import type { PhrasePicture, PictureStatus } from "../types";
+import type { PhrasePicture, PictureStatus, RedrawReason } from "../types";
 import { Button, inputClass } from "./ui";
 
 /* The grown-up's side of the word game (docs/DATA.md §Kids word game), in
@@ -149,6 +149,14 @@ const STATE_TEXT: Record<PhrasePicture["status"], string> = {
   removed: "Removed: it stays out of the word game.",
 };
 
+/** Draw again's reasons (ld-ur3), as the grown-up sees them. */
+const REASONS: { id: RedrawReason; label: string }[] = [
+  { id: "wrong", label: "Wrong thing" },
+  { id: "lookalike", label: "Looks like another picture" },
+  { id: "kids", label: "Not right for kids" },
+  { id: "style", label: "Style is off" },
+];
+
 /** One word's picture in its detail: the image, and Remove / Draw again. */
 const REDRAW_POLL_MS = 3000;
 const REDRAW_POLLS = 20;
@@ -170,6 +178,11 @@ export function PictureSection({ phraseId, onChanged, reload = 0 }: { phraseId: 
   const [watch, setWatch] = useState(0);
   // What the grown-up wants drawn for a word the check left out.
   const [wanted, setWanted] = useState("");
+  // Draw again's form (ld-ur3): open, its reason and what to show instead.
+  const [redrawing, setRedrawing] = useState(false);
+  const [reason, setReason] = useState<RedrawReason | null>(null);
+  const [show, setShow] = useState("");
+  const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -235,9 +248,17 @@ export function PictureSection({ phraseId, onChanged, reload = 0 }: { phraseId: 
     if (action === "remove" && !window.confirm("Remove this picture? The word leaves the word game until you draw it again.")) return;
     setBusy(true);
     setError(null);
+    setNote(null);
     try {
-      setPicture((await changePhrasePicture(phraseId, action)).picture);
+      const r = await changePhrasePicture(phraseId, action, action === "redraw" ? { ...(reason ? { reason } : {}), ...(show.trim() ? { show } : {}) } : {});
+      setPicture(r.picture);
       setWatch(action === "redraw" ? REDRAW_POLLS : 0);
+      if (action === "redraw") {
+        setRedrawing(false);
+        setReason(null);
+        setShow("");
+        if (r.reported) setNote("Thanks: the shared picture was reported too, so an admin can look at it.");
+      }
       onChanged?.();
     } catch (e) {
       setError(errText(e));
@@ -288,12 +309,69 @@ export function PictureSection({ phraseId, onChanged, reload = 0 }: { phraseId: 
                   Remove picture
                 </Button>
               )}
-              {picture.description && picture.status !== "pending" && picture.status !== "none" && (
-                <Button variant="ghost" className={small} onClick={() => void change("redraw")} disabled={busy} data-testid="picture-redraw">
+              {picture.description && picture.status !== "pending" && picture.status !== "none" && !redrawing && (
+                <Button variant="ghost" className={small} onClick={() => setRedrawing(true)} disabled={busy} data-testid="picture-redraw">
                   Draw again
                 </Button>
               )}
             </div>
+            {redrawing && (
+              <form
+                className="flex flex-col gap-2 rounded-lg border border-line p-2"
+                data-testid="picture-redraw-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void change("redraw");
+                }}
+              >
+                <p className={`${fine} text-fg-2`}>What's wrong with it? (optional)</p>
+                <div className="flex flex-wrap gap-1">
+                  {REASONS.map((r) => (
+                    <button
+                      key={r.id}
+                      type="button"
+                      aria-pressed={reason === r.id}
+                      disabled={busy}
+                      data-testid={`picture-reason-${r.id}`}
+                      onClick={() => setReason(reason === r.id ? null : r.id)}
+                      className={`rounded-full border px-2.5 py-0.5 text-sm sm:text-xs ${reason === r.id ? "border-accent bg-accent-soft text-accent" : "border-line text-fg-2 hover:bg-raised"}`}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={show}
+                  onChange={(e) => setShow(e.target.value)}
+                  maxLength={DESCRIPTION_MAX}
+                  placeholder="What should it show instead? e.g. a sleeping cat"
+                  aria-label="What should it show instead? (optional)"
+                  disabled={busy}
+                  className={`${inputClass} ${fine} min-w-0 sm:max-w-xs`}
+                  data-testid="picture-redraw-show"
+                />
+                {picture.stock && reason && <p className={`${fine} text-fg-3`}>This is a shared picture: this word gets its own drawing, and the shared one is reported to an admin.</p>}
+                <div className="-ml-2 flex flex-wrap gap-1">
+                  <Button type="submit" variant="ghost" className={small} disabled={busy} data-testid="picture-redraw-go">
+                    Draw again
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className={small}
+                    disabled={busy}
+                    onClick={() => {
+                      setRedrawing(false);
+                      setReason(null);
+                      setShow("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            )}
+            {note && <p className={`${fine} text-fg-3`} data-testid="picture-reported">{note}</p>}
             {picture.status === "none" && (
               <form
                 className="flex flex-wrap items-center gap-2"

@@ -135,6 +135,9 @@ export async function fillDrawingGroups(db: Db, groupOf: (description: string) =
 export interface AdultsOverride {
   id: string;
   adults: boolean;
+  /** An open kids report (ld-ur3, stockPictures.ts adultsOverrides):
+   *  kept from kids, added concepts too (pictures.mjs mergeStock). */
+  held?: boolean;
 }
 
 /** Every Adults only setting an admin made on a file concept (migration 0018). */

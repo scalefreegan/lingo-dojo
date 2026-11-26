@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError } from "../api";
-import { addStockConcept, changeStockPicture, drawMissingStock, setStockAdults, setStockGroup, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
-import type { StockConceptView, StockListReply, WordPictureItem, WordPicturesReply } from "../types";
+import { addStockConcept, changeStockPicture, drawMissingStock, pictureReports, resolvePictureReport, setStockAdults, setStockGroup, pictureBlob, stockPictureBlob, stockPictures, wordPictures } from "../gameApi";
+import type { PictureReportView, RedrawReason, StockConceptView, StockListReply, WordPictureItem, WordPicturesReply } from "../types";
 import { PictureSection, PicturesBar } from "./WordPictures";
 import { Badge, Button, Card, inputClass } from "./ui";
 
@@ -295,6 +295,7 @@ function SharedLibrary() {
       {list.canEdit && list.problem && <p className={`${fine} text-warn`}>{list.problem}</p>}
       {list.canEdit && list.stopped && <p className={`${fine} text-warn`} data-testid="stock-stopped">{list.stopped}</p>}
       {error && <p className={`${fine} text-err`} role="alert">{error}</p>}
+      {list.canEdit && <Reported concepts={list.concepts} tick={tick} onResolved={() => setTick((n) => n + 1)} />}
       {list.canEdit && (
         <datalist id="stock-groups">
           {groups.map((g) => (
@@ -552,6 +553,88 @@ function AddConcept({ categories, busy, onAdd }: { categories: string[]; busy: b
 
 /** A blob URL for a picture fetched with the page's headers (an <img src>
  *  can't send them), made again when `key` changes, released after. */
+const REASON_TEXT: Record<RedrawReason, string> = {
+  wrong: "Wrong thing",
+  lookalike: "Looks like another picture",
+  kids: "Not right for kids",
+  style: "Style is off",
+};
+
+/** Learners' reports of shared pictures (ld-ur3), for an admin: by picture,
+ *  each reason and "should show" note, and Resolve (every open report of
+ *  that picture). The tile's own buttons below redraw it or set Adults only;
+ *  an open "not right for kids" report keeps it from kids until resolved. */
+function Reported({ concepts, tick, onResolved }: { concepts: StockConceptView[]; tick: number; onResolved: () => void }) {
+  const [reports, setReports] = useState<PictureReportView[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    pictureReports(ctrl.signal).then(
+      (r) => setReports(r.reports),
+      (e) => {
+        if (!ctrl.signal.aborted) setError(errText(e));
+      },
+    );
+    return () => ctrl.abort();
+  }, [tick]);
+  const byConcept = useMemo(() => {
+    const out = new Map<string, PictureReportView[]>();
+    for (const r of reports ?? []) out.set(r.conceptId, [...(out.get(r.conceptId) ?? []), r]);
+    return [...out.entries()];
+  }, [reports]);
+  if (error) return <p className={`${fine} text-err`}>{error}</p>;
+  if (!byConcept.length) return null;
+  const resolve = async (id: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await resolvePictureReport(id);
+      onResolved();
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card data-testid="stock-reported">
+      <h4 className="text-sm font-semibold text-fg">Reported ({byConcept.length})</h4>
+      <p className={`${fine} text-fg-3`}>Learners drew these again with a reason. Their word has its own drawing now; redraw or change the shared picture below, then Resolve. A picture reported as not right for kids is kept from kids until resolved.</p>
+      <ul className="mt-2 flex flex-col gap-3">
+        {byConcept.map(([id, rs]) => (
+          <ReportedItem key={id} c={concepts.find((c) => c.id === id) ?? null} id={id} reports={rs} busy={busy} onResolve={() => void resolve(rs[0].id)} />
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+function ReportedItem({ c, id, reports, busy, onResolve }: { c: StockConceptView | null; id: string; reports: PictureReportView[]; busy: boolean; onResolve: () => void }) {
+  const url = useBlobUrl(c?.version ? `${c.id}/${c.version}` : null, (signal) => stockPictureBlob(c!.id, c!.version!, signal));
+  return (
+    <li className="flex flex-wrap items-start gap-3" data-testid="stock-reported-item" data-concept={id}>
+      {url ? <img src={url} alt={c?.description ?? ""} className="size-20 rounded-lg border border-line object-cover" /> : <div className="size-20 rounded-lg border border-dashed border-line" />}
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <p className="text-sm text-fg">{c ? c.description : `${id} (no longer in the set)`}</p>
+        <ul className={`${fine} flex flex-col gap-0.5 text-fg-2`}>
+          {reports.map((r) => (
+            <li key={r.id}>
+              {REASON_TEXT[r.reason]}
+              {r.note ? `: should show "${r.note}"` : ""} <span className="text-fg-3">· {new Date(r.at).toLocaleDateString()}</span>
+            </li>
+          ))}
+        </ul>
+        <div>
+          <Button variant="ghost" onClick={onResolve} disabled={busy} data-testid="stock-report-resolve">
+            Resolve
+          </Button>
+        </div>
+      </div>
+    </li>
+  );
+}
+
 function useBlobUrl(key: string | null, fetchBlob: (signal: AbortSignal) => Promise<Blob>): string | null {
   const [shown, setShown] = useState<{ key: string; url: string } | null>(null);
   useEffect(() => {
